@@ -1,0 +1,32 @@
+[package]
+name = "windscore"
+version = "0.1.0"
+description = "WindScore · 电吹管动态谱"
+authors = ["AYOU"]
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.6", features = [
+  "dialog-open",
+  "dialog-save",
+  "fs-all",
+  "path-all",
+  "protocol-asset",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# 生产构建时启用，避免依赖本地 dev server
+custom-protocol = ["tauri/custom-protocol"]
+default = ["custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"

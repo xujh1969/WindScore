@@ -1,0 +1,944 @@
+/**
+ * v2 写谱器样式。
+ *
+ * 设计刻度：DESIGN_VARIANCE 3（可预测对齐）/ MOTION_INTENSITY 2（仅功能反馈）
+ *           VISUAL_DENSITY 6（数字用等宽）
+ * 锁定：单一强调色（沿用 WindScore 品牌金）、单一圆角体系（面板 10px / 控件 6px）、
+ *       单一主题（跟随系统，整页同模式）。
+ */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+}
+
+.v2-app {
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --border: #e4e4e7;
+  --text: #27272a;
+  --muted: #71717a;
+  /* 强调色：压暗到 #8a6a12 以满足正文 4.5:1 对比（WCAG AA） */
+  --accent: #8a6a12;
+  --accent-soft: #f6e7bd;
+  --ok: #15803d;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 字号只有两档：界面文字一律 12px，标题 14px。层级靠字重和颜色，不靠字号。 */
+  --fs-ui: 12px;
+  --fs-title: 14px;
+  --lh: 1.5;
+
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* 主题由 .v2-app 的 data-theme 决定，不跟系统走——用户要有得切。
+   浅色是上面的默认值，这里只覆盖深色那一套。
+   color-scheme 让原生滚动条 / 数字输入框也跟着深。 */
+.v2-app[data-theme='dark'] {
+  --surface: #18181b;
+  --surface-2: #09090b;
+  --border: #3f3f46;
+  --text: #e4e4e7;
+  --muted: #a1a1aa;
+  --accent: #d9b23c;
+  --accent-soft: #4a3c12;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --error: #f87171;
+  color-scheme: dark;
+}
+
+/* ── 顶栏 ── */
+.v2-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 14px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+/* 谱面校验：绝对居中，左右内容怎么变都不影响它 */
+.v2-head-check {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.v2-check {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.v2-check.is-ok {
+  color: var(--muted);
+  cursor: default;
+}
+
+.v2-check.is-bad {
+  color: var(--error);
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+/* 明细：挂在按钮下方，盖在谱面上 */
+.v2-check-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  min-width: 340px;
+  max-width: 560px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+  text-align: left;
+}
+
+.v2-brand {
+  font-size: var(--fs-title);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.v2-brand-tag {
+  margin-left: 6px;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.v2-meta {
+  display: flex;
+  gap: 14px;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* 文件状态：回答「这份东西存哪儿了、有没有存过」 */
+.v2-file {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: 4px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+  font-size: var(--fs-ui);
+  min-width: 0;
+}
+
+.v2-file-badge {
+  flex: 0 0 auto;
+  color: var(--ok);
+}
+
+.v2-file-badge.is-dirty {
+  color: var(--warn);
+}
+
+.v2-file-name {
+  color: var(--muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+/* 通用控件：圆角统一 6px（按钮 / 输入） */
+.v2-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  line-height: var(--lh);
+  cursor: pointer;
+}
+
+.v2-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.v2-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.v2-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-ui);
+  line-height: var(--lh);
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-link:hover {
+  text-decoration: underline;
+}
+
+.v2-title {
+  font-family: inherit;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ── 主体 ── */
+.v2-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 0;
+}
+
+.v2-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  gap: 10px;
+}
+
+.v2-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+/* 示例乐谱：左侧固定文字 + 下拉选择（按钮多了会挤占工具栏，收进下拉） */
+.v2-library {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.v2-library-label {
+  font-size: var(--fs-ui);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.v2-library-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.v2-tiers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.v2-tiers-label {
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+/* 音符间距：连续滑杆，比档位按钮更适合“调到一个舒服的密度”（只影响编辑视图） */
+.v2-spacing {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+.v2-spacing input[type='range'] {
+  width: 116px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.v2-spacing-val {
+  min-width: 40px;
+  font-family: var(--mono);
+  text-align: right;
+  color: var(--text);
+}
+
+.v2-status {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: var(--fs-ui);
+  line-height: var(--lh);
+  color: var(--muted);
+}
+
+.v2-keys {
+  margin-left: auto;
+  font-family: inherit;
+}
+
+.v2-msg {
+  color: var(--accent);
+}
+
+.v2-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* 简谱区滚动条：颜色全走变量，深浅两套自动都对 */
+.v2-scroll {
+  scrollbar-color: var(--muted) transparent;
+  scrollbar-width: thin;
+}
+
+.v2-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.v2-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.v2-scroll::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 5px;
+}
+
+.v2-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text);
+}
+
+.v2-scroll canvas {
+  display: block;
+  /* 标准平台光标：提示这里可以点选和拖拉 */
+  cursor: text;
+}
+
+.v2-empty {
+  padding: 40px;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+/* 侧栏小标题统一左右布局：左边是块名，右边可放结论（如不变量通过数） */
+.v2-side-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 收起但不卸载：曲目信息与音符属性互斥，同一时刻只露一块 */
+.v2-side-block.is-hidden {
+  display: none;
+}
+
+/* ── 右侧面板 ── */
+.v2-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: 14px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  overflow: hidden auto;
+}
+
+/* 源码视图：右栏整块收起，编辑器铺满舞台。
+   用 data-view 而不是条件渲染，aside 那段结构不必跟着缩进一层。 */
+.v2-body[data-view='source'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.v2-body[data-view='source'] .v2-side {
+  display: none;
+}
+
+.v2-side-block {
+  flex: 0 0 auto;
+}
+
+.v2-side-grow {
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  flex: 1 1 auto;
+}
+
+.v2-side-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+/* 属性检查器：成组的可点选项，取代记忆语法 */
+.v2-field {
+  margin-bottom: 10px;
+}
+
+.v2-field-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+.v2-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.v2-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.v2-grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.v2-grid-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.v2-grid-7 {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.v2-grid .v2-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 文字按钮和带减时线的字形按钮不等高，网格里靠它对齐 */
+  min-height: 26px;
+  padding: 3px 2px;
+  text-align: center;
+}
+
+/* 属性检查器标题：左边是谁被选中，右边是它当前的时值写法 */
+.v2-inspector-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.v2-title-token {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* 简谱写法按钮：数字 + 上方八度点 / 下方减时线。
+   按钮要长成谱面上的样子，用户才不必在「3/2」和
+   「数字下面一条横线的 3」之间来回翻译。 */
+.v2-glyph {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  line-height: 1;
+  font-family: var(--mono);
+}
+
+/* 数字与它左边的变音记号同一行——八度点在上下方，变音记号在左 */
+.v2-glyph-body {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+}
+
+.v2-glyph-acc {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.v2-glyph-digit {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.v2-glyph-dots,
+.v2-glyph-beams {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.v2-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.v2-beam {
+  /* 宽度贴着数字：减时线在简谱里就是压着数字下面那一横 */
+  width: 100%;
+  min-width: 14px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.v2-btn.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/*
+ * 气息 / 技法 / 附点的常驻配色：不点亮也有各自的边色和文字色，
+ * 不用先点亮才能看出分组。点亮 = 同色加深加底。
+ */
+.v2-btn.v2-btn-breath {
+  color: var(--warn);
+  border-color: rgba(218, 165, 32, 0.5);
+}
+
+.v2-btn.v2-btn-breath.is-on {
+  background: rgba(218, 165, 32, 0.22);
+  border-color: var(--warn);
+  font-weight: 600;
+}
+
+/* 附点 / 双附点：装饰记号，蓝色系，与时值档位的金色区分开 */
+.v2-btn.v2-btn-orn {
+  color: #4a7fd4;
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.v2-btn.v2-btn-orn.is-on {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: #3b82f6;
+  font-weight: 600;
+}
+
+.v2-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: var(--fs-ui);
+  line-height: var(--lh);
+}
+
+.v2-kv dt {
+  color: var(--muted);
+}
+
+.v2-kv dd {
+  margin: 0;
+  font-family: var(--mono);
+}
+
+.v2-hint {
+  margin: 0;
+  font-size: var(--fs-ui);
+  line-height: var(--lh);
+  color: var(--muted);
+}
+
+.v2-diag {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-ui);
+  line-height: var(--lh);
+}
+
+.v2-diag li {
+  color: var(--muted);
+}
+
+.v2-diag .is-ok {
+  color: var(--ok);
+}
+
+.v2-diag .is-warn {
+  color: var(--warn);
+}
+
+.v2-diag .is-error {
+  color: var(--error);
+}
+
+/* textarea 是替换元素，默认按 cols 定宽，不会自动撑满——必须显式给 100% */
+.v2-dsl {
+  width: 100%;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-ui);
+  line-height: 1.6;
+  /* 软折行：pre-wrap 只在显示层换行，不会往文本里插 \n，
+     所以「应用」回读不受影响。 */
+  white-space: pre-wrap;
+  /* 只在单个记号本身就超宽时才断词，正常情况靠空格折行 */
+  overflow-wrap: break-word;
+  color: var(--text);
+  resize: vertical;
+}
+
+.v2-dsl:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 源码是独立视图，textarea 要占满舞台高度，不再受侧栏的 220px 限制 */
+.v2-dsl-full {
+  max-height: none;
+  min-height: 0;
+}
+
+.v2-dsl-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+/* 源码视图：铺满整个舞台 */
+.v2-source {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+}
+
+.v2-source .v2-diag {
+  flex: 0 0 auto;
+  max-height: 160px;
+  overflow: auto;
+}
+
+/* 简谱 / 源码 整体切换 */
+.v2-view-switch {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.v2-seg {
+  padding: 5px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-ui);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.v2-seg:hover {
+  color: var(--text);
+}
+
+.v2-seg.is-on {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+/* 附点按钮（一拍以内）：数字 + 减时线 + 右侧的附点，点与数字同高 */
+.v2-dotglyph {
+  display: inline-flex;
+  align-items: flex-start;
+}
+
+.v2-dotglyph-dot {
+  margin-left: 1px;
+  font-weight: 600;
+}
+
+/* 划分候选：按谱面实际画法渲染的组——连横的减时线 + 连音断弧标号。
+   按钮比普通按钮高：数字下方要留出减时线的空间，横线绝不与音符重叠 */
+.v2-cand {
+  display: block;
+  width: 100%;
+  padding: 4px 8px 0;
+  line-height: 1;
+  text-align: center;
+}
+
+.v2-ggroup {
+  position: relative;
+  display: inline-block;
+  padding-top: 13px;
+  min-width: 72px;
+}
+
+/* 连音弧：向下弯的拱，断口由中间的标号（带面板底色）遮出 */
+.v2-ggroup-arc {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+  border: 1.2px solid var(--text);
+  border-bottom: 0;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+}
+
+.v2-ggroup-tuplet {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 5px;
+  background: var(--surface);
+  font-style: normal;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 数字在上，底部预留 13px 给减时线（最多 3 层：0/4/8px） */
+.v2-ggroup-row {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding-bottom: 13px;
+}
+
+.v2-ggroup-note {
+  text-align: center;
+  font-weight: 600;
+  font-size: 1.15em;
+}
+
+/* 减时线：第 lv 层从第一个带 lv+1 条线的音连到最后一个，与谱面一致 */
+.v2-ggroup-beam {
+  position: absolute;
+  height: 1.6px;
+  background: var(--text);
+}
+
+/*
+ * 倚音录入：`[ 前 ] [□][□][□] [ 后 ] 清除`
+ *   - 三格是音符输入框，点开下面弹出三排按键（上高八度 / 中正常 / 低八度）
+ *   - 前 / 后勾选框互斥，勾上哪边，这三格就是哪一侧的倚音
+ */
+.v2-grace-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.v2-grace-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.v2-grace-check input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* 音符输入框：空格子是细边框，填了音符就是实心字 */
+.v2-grace-slot {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.v2-grace-slot.is-filled {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.v2-grace-slot.is-open {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 弹出的音符输入框：三排按键 + 底部说明 */
+.v2-grace-picker {
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* 倚音输入行：一排音级键 = 10 个键强制挤在一行（换行就变成两排、看不出高低八度） */
+.v2-grace-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex-wrap: nowrap;
+  margin-bottom: 4px;
+}
+
+.v2-grace-row:last-of-type {
+  margin-bottom: 0;
+}
+
+.v2-grace-key {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 4px 1px;
+}
+
+/* 一排 12 个键，格子窄：字形比普通按钮小一号才放得下 #5 这种两字符 */
+.v2-grace-key .v2-glyph-digit {
+  font-size: 11px;
+}
+
+.v2-grace-key .v2-glyph-acc {
+  font-size: 10px;
+}
+
+.v2-grace-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.v2-grace-foot-btns {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* 播放指示开关的标签：不许折行（v2-meta-label 是固定 36px，四个字会被掰成两行） */
+.v2-playstyle-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+/* 曲目信息：名称 / 调号 / 拍号 / 速度 / 音色 */
+.v2-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v2-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+
+.v2-meta-label {
+  flex: 0 0 36px;
+}
+
+.v2-meta-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-ui);
+}
+
+.v2-meta-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .v2-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .v2-side {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}

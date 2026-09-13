@@ -1,0 +1,30 @@
+{
+  "name": "windscore",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "icon": "node scripts/gen-icon.cjs",
+    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs",
+    "build:skill": "esbuild scripts/build-skill-validator.ts --bundle --platform=node --format=esm --outfile=skills/windscore-jps/validate.mjs --log-level=error"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^1.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

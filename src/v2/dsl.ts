@@ -1,0 +1,731 @@
+/**
+ * DSL 文本语法（M0-4 / spec §10）：无损 round-trip 的主界面。
+ *
+ *   parse(serialize(score)) 必须与 score 深度相等。
+ *
+ * 本文件实现 M0 需要的子集，结构与 §10.2 完全对齐，
+ * 反复 / 跳房子 / 跳转 / 装饰音留到 M3-M4 按同样方式追加：
+ *
+ *   元信息   @title @key @beat @bpm @patch @patchName
+ *   音符     5 | 5/2 5/4 5/8 | 5. 5.. | 5- 5-- | 5^ 5^^ | 5v 5vv | 0（休止）
+ *   拍内组   <5/2 3/4 2/4>      一拍组
+ *            <3: 5/3 3/3 2/3>   三连音组（显式标号）
+ *   连线     5~5（tie，同音高）   (5 6 5)（slur，区间 → 链式 ties）
+ *   记号     5! 跳音  5= 保持音  5> 重音  5@ 延长号  5V 换气（音符技法，非独立事件）
+ *   小节     |   ||   |{partial}
+ *
+ * ( ) 与 < > 是两条互不相关的记号，各自独立开闭，**允许交叉**：
+ *   - ( ) 画上方弧线，跨度随意，可跨小节线
+ *   - < > 画下方减时线，限定 1 拍内、不能跨小节线
+ *   例：5 4 (3 <4/2) 2/2> —— 连线覆盖 3、4/2，减时线覆盖 4/2、2/2
+ */
+
+import {
+  DIVISION_TICKS,
+  TICK_DIVISIONS,
+  TICKS_PER_BEAT,
+  withDots,
+} from './ticks';
+import { normalizeKey } from './timeline';
+import type {
+  Accidental,
+  Articulation,
+  BeatGroup,
+  Degree,
+  GraceNote,
+  Event,
+  NoteEvent,
+  RestEvent,
+  Score,
+  ScoreMeta,
+  TimedEvent,
+} from './types';
+
+/**
+ * 记号式：变音/八度 音级 八度 附点 /除法 增时线 ~延音线 演奏法（! = > @ t）
+ *
+ * 变音记号与八度点共用前导位，所以 `#5`、`^5`、`#^5` 都合法——
+ * 简谱里升降号写在音级左边（`#5` `b3`），和八度点谁先谁后没有硬规矩。
+ * ♯ ♭ ♮ 字形与 # b 等同。
+ */
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqh]*)$/;
+
+/**
+ * 技法记号的后缀字母 → 数据值。
+ * k 是双吐的 K，归 tongue；其余进 technique，字形见 paint.ts 的 TECHNIQUE_GLYPH。
+ */
+const TECHNIQUE_LETTER: Record<string, string> = {
+  V: 'breath', // 换气 V（大写，避开低八度点 v）
+  r: 'trill', // 颤音 tr
+  f: 'flutter', // 花舌 *
+  d: 'da', // 打音 ♮
+  m: 'mordentUp', // 上波音 ≈
+  w: 'mordentDown', // 下波音 ≈（上下翻转）
+  s: 'slideUp', // 上滑音 ↑
+  x: 'slideDown', // 下滑音 ↓
+  q: 'bendUp', // 前弯音 ↗
+  h: 'bendDown', // 后弯音 ↘
+};
+
+/** 技法数据值 → 后缀字母（序列化用） */
+const TECHNIQUE_OF: Record<string, string> = Object.fromEntries(
+  Object.entries(TECHNIQUE_LETTER).map(([letter, value]) => [value, letter]),
+);
+
+/** 变音记号字形 → 数据值 */
+const ACCIDENTALS: Record<string, Accidental> = {
+  '#': '#',
+  '♯': '#',
+  b: 'b',
+  '♭': 'b',
+  '♮': '♮',
+};
+
+/** 力度记号：独立 token，渲染在谱行下方 */
+/** 力度 token：常规档位 + 渐强渐弱（写在音符前面，绑到那个音上） */
+const DYNAMIC_RE = /^(pp|mp|mf|ff|p|f|cresc|dim)$/;
+
+const DEFAULT_META: ScoreMeta = {
+  title: '未命名曲谱',
+  key: '1=C',
+  beat: '4/4',
+  bpm: 90,
+  patch: 73,
+};
+
+export interface ParseResult {
+  score: Score | null;
+  errors: string[];
+}
+
+/**
+ * 解析倚音串：`5`、`65`、`#6`、`6^`、`#6v5` —— 每个倚音 = [变音]音级[八度点]。
+ * 返回 null 表示写法不合法（空串、休止符 0、夹着别的字符都会落到这里）。
+ */
+export function parseGraceNotes(text: string): GraceNote[] | null {
+  if (!text) return null;
+  const parts = text.match(/[#b♯♭♮]*[1-7][v^]*/g);
+  if (!parts || parts.join('') !== text) return null;
+  return parts.map((p) => {
+    const m = /^([#b♯♭♮]*)([1-7])([v^]*)$/.exec(p)!;
+    let octave = 0;
+    for (const c of m[3]) octave += c === '^' ? 1 : -1;
+    const g: GraceNote = { degree: Number(m[2]) as Degree, octave };
+    const acc = [...m[1]].find((c) => c in ACCIDENTALS);
+    if (acc) g.accidental = ACCIDENTALS[acc];
+    return g;
+  });
+}
+
+/** 倚音的书写形式：`#6`、`6^`；序列化与面板显示共用 */
+export function renderGraceNote(g: GraceNote): string {
+  const oct = g.octave > 0 ? '^'.repeat(g.octave) : 'v'.repeat(-g.octave);
+  return `${g.accidental ?? ''}${g.degree}${oct}`;
+}
+
+export function parseDsl(text: string): ParseResult {
+  const errors: string[] = [];
+  const meta: ScoreMeta = { ...DEFAULT_META };
+  const body: string[] = [];
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line === '---') continue;
+    if (line.startsWith('//')) continue;
+
+    if (line.startsWith('@')) {
+      const sp = line.indexOf(' ');
+      const k = (sp > 0 ? line.slice(1, sp) : line.slice(1)).toLowerCase();
+      const v = sp > 0 ? line.slice(sp + 1).trim() : '';
+      switch (k) {
+        case 'title':
+          meta.title = v;
+          break;
+        case 'key':
+          meta.key = v;
+          break;
+        case 'beat':
+          meta.beat = v;
+          break;
+        case 'bpm': {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) meta.bpm = n;
+          else errors.push(`BPM 解析失败：${v}`);
+          break;
+        }
+        case 'patch': {
+          const n = Number(v);
+          if (Number.isInteger(n) && n >= 0 && n <= 127) meta.patch = n;
+          else errors.push(`patch 解析失败：${v}`);
+          break;
+        }
+        case 'patchname':
+          meta.patchName = v;
+          break;
+        case 'size': {
+          // 谱面字号（px）。合法范围 12–56，越界报错而不是吞掉
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 12 && n <= 56) meta.fontSize = n;
+          else errors.push(`字号解析失败（应为 12–56 的数字）：${v}`);
+          break;
+        }
+        case 'space': {
+          // 字间距（px）。可以为负（收紧），范围 -4–24
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= -4 && n <= 24) meta.letterSpacing = n;
+          else errors.push(`字间距解析失败（应为 -4–24 的数字）：${v}`);
+          break;
+        }
+        default:
+          break;
+      }
+      continue;
+    }
+    body.push(line);
+  }
+
+  const events: Event[] = [];
+  const groups: BeatGroup[] = [];
+  const byId = new Map<string, Event>();
+  let seq = 0;
+  let groupSeq = 0;
+  const nextId = () => `e${++seq}`;
+
+  let lastNoteId: string | null = null;
+  let pendingTie = false;
+  /** 待生效的转调记号（`转1=G`）：绑到它后面的第一个音符上 */
+  let pendingKey: string | undefined;
+
+  /**
+   * ( ) 连音线与 < > 拍内组是**两条互不相关的记号**：
+   *   - ( ) 画上方的弧线，跨度随意，可跨小节线
+   *   - < > 画下方的减时线，限定在 1 拍内
+   *
+   * 因此它们各自独立开闭，**允许交叉**。真实谱面里连线止于组内某个音是常态：
+   *   5 4 (3 <4/2) 2/2>      连线覆盖 3 和 4/2，减时线覆盖 4/2 和 2/2
+   * 强行要求两层括号互相嵌套会把这种合法谱面判成错误。
+   *
+   * 各自内部的限制仍然保留：
+   *   - 拍内组：不能嵌套、不能跨小节线、不能为空
+   *   - 连音线：不能漏闭合 / 多余闭合，至少要括住两个音
+   *
+   * 已知歧义：> 既是组闭合也是重音记号。约定「有未闭合的组、或整个 token 就是一个 >」
+   * 时才算组闭合，否则按重音处理（重音总是贴着音符写，如 5>）。
+   */
+  interface SlurScope {
+    last: string | null;
+    notes: number;
+  }
+  const slurStack: SlurScope[] = [];
+  let currentGroup: BeatGroup | null = null;
+  /** 经函数取值，避免 TS 把 currentGroup 收窄成 null（赋值发生在闭包里） */
+  const topGroup = (): BeatGroup | null => currentGroup;
+
+  const addTie = (fromId: string, toId: string, kind: 'tie' | 'slur') => {
+    const from = byId.get(fromId);
+    if (!from || from.kind !== 'note') return;
+    from.ties = [...(from.ties ?? []), { to: toId, kind }];
+  };
+
+  const pushTimed = (core: string, gBefore?: GraceNote[], gAfter?: GraceNote[]) => {
+    const m = NOTE_RE.exec(core);
+    if (!m) {
+      errors.push(`无法解析的记号：${core}`);
+      return;
+    }
+    const [, pre, digit, post, dots, div, dashes, tieMark, artic] = m;
+
+    let octave = 0;
+    for (const c of pre + post) {
+      if (c === '^') octave += 1;
+      else if (c === 'v') octave -= 1; // 变音字形不参与八度计数
+    }
+    const accChar = [...pre].find((c) => c in ACCIDENTALS);
+    const accidental = accChar ? ACCIDENTALS[accChar] : undefined;
+
+    const divN = div ? Number(div) : 1;
+    const base = DIVISION_TICKS[divN];
+    if (base === undefined) {
+      errors.push(`不支持的除法记号 /${divN}`);
+      return;
+    }
+    const dotCount = dots.length as 0 | 1 | 2;
+    const ticks = withDots(base, dotCount) + dashes.length * TICKS_PER_BEAT;
+    const degree = Number(digit);
+    const id = nextId();
+
+    let ev: TimedEvent;
+    if (degree === 0) {
+      if (gBefore || gAfter) errors.push('倚音只能加在音符上，不能加在休止符上');
+      const rest: RestEvent = { id, kind: 'rest', ticks };
+      // 休止符与音符一样可带附点（0. = 1.5 拍）
+      if (dotCount) rest.dot = dotCount;
+      ev = rest;
+    } else {
+      const note: NoteEvent = {
+        id,
+        kind: 'note',
+        degree: degree as Degree,
+        octave,
+        ticks,
+        dot: dotCount,
+      };
+      if (accidental) note.accidental = accidental;
+      // 转调记号（转1=G）绑到它后面的第一个音符上：演奏到此音起改用新调
+      if (pendingKey) {
+        note.keyChange = pendingKey;
+        pendingKey = undefined;
+      }
+      const arts: Articulation[] = [];
+      let fermata = false;
+      let tongue: 'T' | 'K' | undefined;
+      const techniques: string[] = [];
+      for (const c of artic) {
+        if (c === '!') arts.push('staccato');
+        else if (c === '=') arts.push('tenuto');
+        else if (c === '>') arts.push('accent');
+        else if (c === '@') fermata = true;
+        else if (c === 't') tongue = 'T';
+        else if (c === 'k') tongue = 'K';
+        else if (c in TECHNIQUE_LETTER) techniques.push(TECHNIQUE_LETTER[c]);
+      }
+      if (arts.length) note.articulations = arts;
+      if (fermata) note.fermata = true;
+      if (tongue) note.tongue = tongue;
+      if (techniques.length) note.techniques = techniques;
+      // 倚音（不占时值）：挂在这个主音上
+      if (gBefore?.length) note.graceBefore = gBefore;
+      if (gAfter?.length) note.graceAfter = gAfter;
+      ev = note;
+    }
+
+    if (currentGroup) {
+      ev.groupId = currentGroup.id;
+      currentGroup.memberIds.push(id);
+    }
+
+    if (pendingTie) {
+      if (lastNoteId && ev.kind === 'note') addTie(lastNoteId, id, 'tie');
+      else errors.push(`延音线必须连接两个音符：${core}`);
+    }
+    pendingTie = tieMark === '~';
+
+    events.push(ev);
+    byId.set(id, ev);
+    if (ev.kind === 'note') {
+      lastNoteId = id;
+      // 只喂给最内层未闭合的连线：嵌套时内层的音不该串到外层链上
+      const s = slurStack[slurStack.length - 1];
+      if (s) {
+        if (s.last && s.last !== id) addTie(s.last, id, 'slur');
+        s.last = id;
+        s.notes += 1;
+      }
+    } else {
+      // 休止符不接延音线，但仍落在连线的跨度里
+      lastNoteId = null;
+    }
+  };
+
+  const openSlur = (): void => {
+    slurStack.push({ last: null, notes: 0 });
+  };
+
+  const closeSlur = (): void => {
+    const s = slurStack.pop();
+    if (!s) {
+      errors.push('多余的 )，没有对应的 (');
+      return;
+    }
+    if (s.notes < 2) errors.push('连音线至少要括住两个音');
+  };
+
+  const openGroup = (): void => {
+    if (currentGroup) errors.push('拍内组不能嵌套');
+    const id = `g${++groupSeq}`;
+    const g: BeatGroup = { id, totalTicks: 0, memberIds: [] };
+    groups.push(g);
+    currentGroup = g;
+  };
+
+  const closeGroup = (): void => {
+    if (!currentGroup) {
+      errors.push('多余的 >，没有对应的 <');
+      return;
+    }
+    if (currentGroup.memberIds.length === 0) {
+      errors.push('拍内组为空，< > 之间至少要有一个音');
+    }
+    let sum = 0;
+    for (const id of currentGroup.memberIds) {
+      const m = byId.get(id);
+      if (m && (m.kind === 'note' || m.kind === 'rest')) sum += m.ticks;
+    }
+    currentGroup.totalTicks = sum;
+    currentGroup = null;
+  };
+
+  const pushBarline = (style: 'single' | 'final', partial = false) => {
+    if (currentGroup) {
+      errors.push('拍内组不得跨小节，请先用 > 收尾');
+      currentGroup = null;
+    }
+    const id = nextId();
+    const ev: Event = partial
+      ? { id, kind: 'barline', style, partial: true }
+      : { id, kind: 'barline', style };
+    events.push(ev);
+    byId.set(id, ev);
+    lastNoteId = null;
+  };
+
+
+  for (const line of body) {
+    // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
+    const tokens = line.replace(/~/g, '~ ').split(/\s+/).filter(Boolean);
+    for (let raw of tokens) {
+      // 前缀只可能是 ( 或 <，按文本顺序入栈（外层在前）
+      const opens: ('slur' | 'group')[] = [];
+      while (raw.startsWith('(') || raw.startsWith('<')) {
+        opens.push(raw[0] === '(' ? 'slur' : 'group');
+        raw = raw.slice(1);
+      }
+      // 先开括号：后缀判断依赖「当前有没有未闭合的组」
+      for (const t of opens) {
+        if (t === 'slur') openSlur();
+        else openGroup();
+      }
+
+      // 后缀只可能是 ) 或 >，从右往左读再反转成文本顺序。
+      // > 歧义消解：有未闭合的组、或整个 token 就是一个 > 时算组闭合，
+      // 否则它是重音记号（重音总是贴着音符写，如 5>）。
+      const closes: ('slur' | 'group')[] = [];
+      while (
+        raw.endsWith(')') ||
+        (raw.endsWith('>') && (topGroup() !== null || raw.length === 1))
+      ) {
+        closes.push(raw[raw.length - 1] === ')' ? 'slur' : 'group');
+        raw = raw.slice(0, -1);
+      }
+      closes.reverse();
+
+      // 三连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>
+      if (raw !== '' && /^\d+:$/.test(raw)) {
+        const g = topGroup();
+        if (g && g.memberIds.length === 0) {
+          g.tuplet = Number(raw.slice(0, -1));
+          raw = '';
+        }
+      }
+
+      // 倚音：`{5}3`（前倚音）/ `3{65}`（后倚音）。`|{partial}` 是弱起小节线，
+      // 名字里也带花括号，必须先排除掉。
+      let graceBefore: GraceNote[] | undefined;
+      let graceAfter: GraceNote[] | undefined;
+      if (raw !== '|{partial}' && raw !== '') {
+        if (raw.startsWith('{')) {
+          const end = raw.indexOf('}');
+          if (end < 0) {
+            errors.push(`倚音缺少右花括号：${raw}`);
+          } else {
+            graceBefore = parseGraceNotes(raw.slice(1, end)) ?? undefined;
+            if (!graceBefore) errors.push(`倚音写法无法识别（应为 {5} 或 {65}）：${raw}`);
+            raw = raw.slice(end + 1);
+          }
+        }
+        if (raw.endsWith('}') && !raw.startsWith('|')) {
+          const start = raw.lastIndexOf('{');
+          if (start < 0) {
+            errors.push(`倚音缺少左花括号：${raw}`);
+          } else {
+            graceAfter = parseGraceNotes(raw.slice(start + 1, -1)) ?? undefined;
+            if (!graceAfter) errors.push(`倚音写法无法识别（应为 {5} 或 {65}）：${raw}`);
+            raw = raw.slice(0, start);
+          }
+        }
+      }
+
+      if (raw !== '') {
+        if (raw === '|') pushBarline('single');
+        else if (raw === '||') pushBarline('final');
+        else if (raw === '|{partial}') pushBarline('single', true);
+        else if (raw === "'") {
+          // 换气记号（早期设计）已从规范中取消：换气是音符技法，写作后缀 V（如 5V）。
+          // 这里明确报错而不是悄悄丢掉，老谱面才不会无声变形。
+          errors.push("不再支持换气记号 '（请改用音符后缀 V，如 5V）");
+        } else if (/^转\s*(\S+)$/.test(raw)) {
+          const mKey = /^转\s*(\S+)$/.exec(raw)!;
+          const norm = normalizeKey(mKey[1]);
+          if (norm) pendingKey = norm;
+          else errors.push(`转调记号无法识别（应为 1=C 形式）：${raw}`);
+        } else if (DYNAMIC_RE.test(raw)) {
+          const id = nextId();
+          const ev: Event = { id, kind: 'directive', type: 'dynamic', value: raw };
+          events.push(ev);
+          byId.set(id, ev);
+        } else if (
+          raw === '|:' ||
+          raw.startsWith(':|') ||
+          /^\[\d+\]$/.test(raw) ||
+          raw.startsWith('$')
+        ) {
+          errors.push(`本阶段未实现的记号（M4）：${raw}`);
+        } else {
+          pushTimed(raw, graceBefore, graceAfter);
+        }
+      }
+
+      for (const t of closes) {
+        if (t === 'slur') closeSlur();
+        else closeGroup();
+      }
+    }
+  }
+
+  // 未闭合的记号：从内到外逐个报错
+  for (let i = slurStack.length - 1; i >= 0; i -= 1) {
+    errors.push('谱面结束时 ( 未闭合');
+    slurStack.pop();
+  }
+  if (currentGroup) {
+    errors.push('谱面结束时 < 未闭合');
+    closeGroup();
+  }
+  if (events.length === 0) errors.push('谱面为空');
+
+  // 转调记号没有落到任何音符上（写在行尾 / 终止线前 / 全曲最后一个记号）：
+  // 原来这种写法是**静默丢弃**的，谱面上什么都没变、也不报错，
+  // 看起来就像「转调有时有效有时无效」。现在明确报错。
+  if (pendingKey) {
+    errors.push(`转调记号 转${pendingKey} 后面没有音符，无法生效（转调必须写在它生效的第一个音前面）`);
+    pendingKey = undefined;
+  }
+
+  // 力度 token 紧跟音符 → 绑到那个音上（画在音符下方），不再是独立事件。
+  // 站在别处的力度（休止符前、乐句间）仍是独立事件。
+  {
+    const kept: Event[] = [];
+    for (let i = 0; i < events.length; i += 1) {
+      const e = events[i];
+      const next = events[i + 1];
+      if (
+        e.kind === 'directive' &&
+        e.type === 'dynamic' &&
+        next &&
+        next.kind === 'note'
+      ) {
+        if (e.value === 'cresc' || e.value === 'dim') {
+          next.hairpin = e.value;
+          continue;
+        }
+        if (!next.dynamic) {
+          next.dynamic = e.value;
+          continue;
+        }
+      }
+      kept.push(e);
+    }
+    events.length = 0;
+    events.push(...kept);
+  }
+
+  return {
+    score: events.length ? { version: 2, meta, events, groups } : null,
+    errors,
+  };
+}
+
+/** 时长还原：tick + 附点数 → 附点/除法/增时线写法 */
+function renderDuration(ticks: number, dot: 0 | 1 | 2): string {
+  const dots = dot ?? 0;
+  const factor = dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75;
+  const undotted = ticks / factor;
+  if (!Number.isInteger(undotted)) {
+    throw new Error(`tick ${ticks} 与附点数 ${dots} 不自洽，无法还原写法`);
+  }
+  let base = undotted;
+  let dashes = 0;
+  while (base > TICKS_PER_BEAT) {
+    base -= TICKS_PER_BEAT;
+    dashes += 1;
+  }
+  const div = TICK_DIVISIONS[base];
+  if (div === undefined) {
+    throw new Error(`tick ${ticks}（去附点后 ${base}）没有对应的除法记号，无法无损还原`);
+  }
+  let s = dots === 1 ? '.' : dots === 2 ? '..' : '';
+  if (div !== 1) s += `/${div}`;
+  return s + '-'.repeat(dashes);
+}
+
+/**
+ * 给定音级与目标时值，渲染出谱面上的实际写法：3---、3-、3/2…
+ * 属性面板的时值按钮直接拿它当文字——按钮长什么样，
+ * 写进源码就是什么样，用户不必在脑内把「3 拍」换算成「3--」。
+ * 八度按钮传 octave 即得 3^ / 3vv 这类实际写法。
+ */
+export function renderNoteToken(
+  degree: number,
+  ticks: number,
+  dot: 0 | 1 | 2 = 0,
+  octave = 0,
+): string {
+  const marks = octave > 0 ? '^'.repeat(octave) : 'v'.repeat(-octave);
+  try {
+    return `${degree}${marks}${renderDuration(ticks, dot)}`;
+  } catch {
+    // 时值不在合法粒度上时退回音级本身：按钮总得有字，不能抛错炸掉面板
+    return `${degree}${marks}`;
+  }
+}
+
+function renderTimed(ev: TimedEvent, tieOut: boolean): string {
+  if (ev.kind === 'rest') return `0${renderDuration(ev.ticks, ev.dot ?? 0)}`;
+  const n = ev;
+  const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
+  // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致
+  const acc = n.accidental ?? '';
+  const body = `${acc}${n.degree}${marks}${renderDuration(n.ticks, n.dot ?? 0)}`;
+  const arts = (n.articulations ?? [])
+    .map((a) =>
+      a === 'staccato' ? '!' : a === 'tenuto' ? '=' : a === 'accent' ? '>' : '',
+    )
+    .join('');
+  const ferm = n.fermata ? '@' : '';
+  const tong = n.tongue === 'K' ? 'k' : n.tongue === 'T' ? 't' : '';
+  const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? '').join('');
+  // 倚音：前倚音写主音前、后倚音写主音后；复倚音连写 {65}
+  const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join('')}}` : '';
+  const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join('')}}` : '';
+  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${ga}`;
+}
+
+export function serializeDsl(score: Score): string {
+  const head = [
+    `@title ${score.meta.title}`,
+    `@key ${score.meta.key}`,
+    `@beat ${score.meta.beat}`,
+    `@bpm ${score.meta.bpm}`,
+    `@patch ${score.meta.patch}`,
+  ];
+  if (score.meta.patchName) head.push(`@patchName ${score.meta.patchName}`);
+  // 版式参数只在用户改过时写出（缺省值不写，老文件保持原样）
+  if (score.meta.fontSize !== undefined) head.push(`@size ${score.meta.fontSize}`);
+  if (score.meta.letterSpacing !== undefined) head.push(`@space ${score.meta.letterSpacing}`);
+
+  const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
+  const nextOf = new Map<string, Event>();
+  score.events.forEach((e, i) => {
+    if (i + 1 < score.events.length) nextOf.set(e.id, score.events[i + 1]);
+  });
+
+  /**
+   * 延音线只可能连紧邻的两个音，所以按「下一个事件」判定。
+   * 圆滑线可以跨小节线、跨换气记号，因此只看连线本身是否存在，不看是否紧邻。
+   */
+  const tieOut = (from: Event): boolean => {
+    if (from.kind !== 'note') return false;
+    const next = nextOf.get(from.id);
+    if (!next) return false;
+    return (from.ties ?? []).some((t) => t.to === next.id && t.kind === 'tie');
+  };
+
+  // 连音线是链式存储的，先还原成每条链的起止音序，才能决定括号放内还是放外
+  const idxOf = new Map<string, number>(score.events.map((e, i) => [e.id, i]));
+  const slurNext = new Map<string, string>();
+  for (const e of score.events) {
+    if (e.kind !== 'note') continue;
+    for (const t of e.ties ?? []) if (t.kind === 'slur') slurNext.set(e.id, t.to);
+  }
+  /** 链首音序 → 链尾音序 */
+  const slurSpan = new Map<number, number>();
+  {
+    const isTarget = new Set(slurNext.values());
+    for (const e of score.events) {
+      if (e.kind !== 'note' || !slurNext.has(e.id) || isTarget.has(e.id)) continue;
+      const seen = new Set<string>();
+      let cur: string | undefined = e.id;
+      let hi = idxOf.get(e.id)!;
+      while (cur !== undefined && !seen.has(cur)) {
+        seen.add(cur);
+        hi = Math.max(hi, idxOf.get(cur) ?? hi);
+        cur = slurNext.get(cur);
+      }
+      slurSpan.set(idxOf.get(e.id)!, hi);
+    }
+  }
+  /** 链尾音序 → 链首音序集合 */
+  const slurEndsAt = new Map<number, number[]>();
+  for (const [lo, hi] of slurSpan) {
+    const arr = slurEndsAt.get(hi);
+    if (arr) arr.push(lo);
+    else slurEndsAt.set(hi, [lo]);
+  }
+
+  const out: string[] = [];
+  const emitted = new Set<string>();
+
+  for (const ev of score.events) {
+    if (emitted.has(ev.id)) continue;
+
+    if ((ev.kind === 'note' || ev.kind === 'rest') && ev.groupId) {
+      const g = score.groups.find((x) => x.id === ev.groupId);
+      if (g && g.memberIds[0] === ev.id) {
+        const members = g.memberIds
+          .map((id) => byId.get(id))
+          .filter((m): m is TimedEvent => !!m && (m.kind === 'note' || m.kind === 'rest'));
+        // 两层记号互不相关，括号直接按事件位置排即可：
+        // 连线在组内起止就写进 < > 里面，如 (3 <4/2) 2/2>
+        const inner = members
+          .map((m) => {
+            const mi = idxOf.get(m.id)!;
+            const pre = slurSpan.has(mi) ? '(' : '';
+            const post = (slurEndsAt.get(mi) ?? []).length > 0 ? ')' : '';
+            // 组内成员的力度 / 渐变 / 转调写在成员前面，解析时会绑回那个音
+            const dyn =
+              m.kind === 'note'
+                ? [m.dynamic, m.hairpin].filter(Boolean).join(' ')
+                : '';
+            const kc = m.kind === 'note' && m.keyChange ? `转${m.keyChange} ` : '';
+            return `${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m))}${post}`;
+          })
+          .join(' ');
+
+        out.push(`<${g.tuplet ? `${g.tuplet}: ` : ''}${inner}>`);
+        members.forEach((m) => emitted.add(m.id));
+        continue;
+      }
+      continue; // 非首成员，已随组输出
+    }
+
+    switch (ev.kind) {
+      case 'note':
+      case 'rest': {
+        const i = idxOf.get(ev.id)!;
+        const pre = slurSpan.get(i) !== undefined ? '(' : '';
+        const post = (slurEndsAt.get(i) ?? []).length > 0 ? ')' : '';
+        // 跟音符绑定的力度 / 渐变 / 转调写在音符前面，解析时绑回那个音
+        const dyn =
+          ev.kind === 'note'
+            ? [ev.dynamic, ev.hairpin].filter(Boolean).join(' ')
+            : '';
+        const kc = ev.kind === 'note' && ev.keyChange ? `转${ev.keyChange} ` : '';
+        out.push(`${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev))}${post}`);
+        emitted.add(ev.id);
+        break;
+      }
+      case 'barline':
+        out.push(ev.style === 'final' ? '||' : ev.partial ? '|{partial}' : '|');
+        emitted.add(ev.id);
+        break;
+      case 'directive':
+        out.push(ev.value);
+        emitted.add(ev.id);
+        break;
+      default:
+        break;
+    }
+  }
+
+  return `${head.join('\n')}\n\n${out.join(' ')}\n`;
+}

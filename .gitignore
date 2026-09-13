@@ -1,0 +1,8 @@
+node_modules
+dist
+.DS_Store
+
+# 测试 / 诊断的临时产物
+.tmp*
+.dev-server.log
+.codebuddy

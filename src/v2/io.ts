@@ -31,8 +31,52 @@ export interface SaveResult {
  */
 export async function saveScore(score: Score, suggested: string): Promise<SaveResult> {
   if (score.events.length === 0) return { ok: false, path: null };
-  const text = serializeDsl(score);
+  return saveTextAsFile(serializeDsl(score), suggested);
+}
 
+/** 二进制落盘的默认参数（曲库打包 = .wspack） */
+export interface BytesFileOptions {
+  /** 扩展名（不含点），默认 wspack */
+  ext?: string;
+  /** MIME，默认按 zip */
+  mime?: string;
+  /** 保存对话框里的过滤器名 */
+  label?: string;
+}
+
+/** 把二进制存成文件（曲库打包 .wspack、导出 PDF / 视频都走这里） */
+export async function saveBytesAsFile(
+  bytes: Uint8Array,
+  suggested: string,
+  opts: BytesFileOptions = {},
+): Promise<SaveResult> {
+  const ext = opts.ext ?? 'wspack';
+  const mime = opts.mime ?? 'application/zip';
+  if (isTauri()) {
+    const dialog = await import('@tauri-apps/api/dialog');
+    const fs = await import('@tauri-apps/api/fs');
+    const path = await dialog.save({
+      defaultPath: suggested,
+      filters: [{ name: opts.label ?? 'WindScore 打包', extensions: [ext] }],
+    });
+    if (!path) return { ok: false, path: null };
+    await fs.writeBinaryFile(path, bytes);
+    return { ok: true, path };
+  }
+
+  // 复制一份再交给 Blob：Uint8Array<ArrayBufferLike> 不是 BlobPart
+  const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggested;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { ok: true, path: null };
+}
+
+/** 把一段文本直接存成文件（曲库导出用：手上只有文本，不一定有 Score 对象） */
+export async function saveTextAsFile(text: string, suggested: string): Promise<SaveResult> {
   if (isTauri()) {
     const dialog = await import('@tauri-apps/api/dialog');
     const fs = await import('@tauri-apps/api/fs');

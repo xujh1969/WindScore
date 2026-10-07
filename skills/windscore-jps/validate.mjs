@@ -338,6 +338,44 @@ function parseDsl(text2) {
     byId.set(id, ev);
     lastNoteId = null;
   };
+  const barrier = () => {
+    if (currentGroup) {
+      errors.push("\u62CD\u5185\u7EC4\u4E0D\u5F97\u8DE8\u53CD\u590D\u8BB0\u53F7\uFF0C\u8BF7\u5148\u7528 > \u6536\u5C3E");
+      currentGroup = null;
+    }
+    lastNoteId = null;
+  };
+  const pushSimple = (ev) => {
+    events.push(ev);
+    byId.set(ev.id, ev);
+  };
+  const pushRepeatBarline = (repeat, times) => {
+    barrier();
+    const ev = { id: nextId(), kind: "barline", style: "single", repeat };
+    if (repeat === "end") ev.times = times ?? 2;
+    pushSimple(ev);
+  };
+  const lastBarline = () => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (e.kind === "barline") return e;
+    }
+    return void 0;
+  };
+  const markVolta = (numbers) => {
+    const bar = lastBarline();
+    if (!bar) {
+      errors.push(`\u623F\u5B50 [${numbers.join(",")}] \u524D\u9762\u6CA1\u6709\u5C0F\u8282\u7EBF\uFF08\u623F\u5B50\u8981\u5199\u5728\u5C0F\u8282\u7EBF\u540E\u9762\uFF0C\u5982 | [1] \u2026\uFF09`);
+      return;
+    }
+    if (bar.volta) {
+      errors.push(
+        `\u7B2C ${bar.volta.join(",")} \u623F\u4E0E [${numbers.join(",")}] \u623F\u4E4B\u95F4\u7F3A\u5C11\u5C0F\u8282\u7EBF\uFF08\u4E24\u4E2A\u623F\u5B50\u5FC5\u987B\u5404\u81EA\u8D77\u5728\u4E00\u6839\u5C0F\u8282\u7EBF\u4E0A\uFF09`
+      );
+      return;
+    }
+    bar.volta = numbers;
+  };
   for (const line of body) {
     const tokens = line.replace(/~/g, "~ ").split(/\s+/).filter(Boolean);
     for (let raw of tokens) {
@@ -403,8 +441,14 @@ function parseDsl(text2) {
           const ev = { id, kind: "directive", type: "dynamic", value: raw };
           events.push(ev);
           byId.set(id, ev);
-        } else if (raw === "|:" || raw.startsWith(":|") || /^\[\d+\]$/.test(raw) || raw.startsWith("$")) {
-          errors.push(`\u672C\u9636\u6BB5\u672A\u5B9E\u73B0\u7684\u8BB0\u53F7\uFF08M4\uFF09\uFF1A${raw}`);
+        } else if (raw === "|:") {
+          pushRepeatBarline("start");
+        } else if (/^:\|\d*$/.test(raw)) {
+          pushRepeatBarline("end", raw.length > 2 ? Number(raw.slice(2)) : 2);
+        } else if (/^\[\d+(,\d+)*\]$/.test(raw)) {
+          markVolta(raw.slice(1, -1).split(",").map(Number));
+        } else if (raw.startsWith("$")) {
+          errors.push(`\u8DF3\u8F6C\u8BB0\u53F7\u6682\u4E0D\u652F\u6301\uFF08\u540E\u7EED\u7248\u672C\uFF09\uFF1A${raw}`);
         } else {
           pushTimed(raw, graceBefore, graceAfter);
         }
@@ -574,10 +618,18 @@ function serializeDsl(score2) {
         emitted.add(ev.id);
         break;
       }
-      case "barline":
-        out.push(ev.style === "final" ? "||" : ev.partial ? "|{partial}" : "|");
+      case "barline": {
+        let tok;
+        if (ev.repeat === "start") tok = "|:";
+        else if (ev.repeat === "end") tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ":|";
+        else if (ev.style === "final") tok = "||";
+        else if (ev.partial) tok = "|{partial}";
+        else tok = "|";
+        out.push(tok);
+        if (ev.volta) out.push(`[${ev.volta.join(",")}]`);
         emitted.add(ev.id);
         break;
+      }
       case "directive":
         out.push(ev.value);
         emitted.add(ev.id);
@@ -662,6 +714,9 @@ function deriveGlyph(fontSize) {
     caretTail: s(GLYPH.caretTail),
     fontSize
   };
+}
+function isBarrier(ev) {
+  return ev.kind === "barline";
 }
 function beatsPerMeasureOf(beat) {
   const [n, d] = beat.split("/").map(Number);
@@ -751,8 +806,11 @@ function layoutScore(score2, opts) {
     if (ev.kind === "note" || ev.kind === "rest") {
       const graceCount = ev.kind === "note" ? (ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0) : 0;
       w = Math.max(26 * k, ev.ticks * unit + 10 * k) + accWidthOf(ev) + graceCount * glyph.graceW + spacing;
-    } else if (ev.kind === "barline") w = (ev.style === "final" ? 26 : 20) * k + spacing;
-    else if (ev.kind === "directive") w = 26 * k + spacing;
+    } else if (isBarrier(ev)) {
+      const bar = ev;
+      const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
+      w = base * k + spacing;
+    } else if (ev.kind === "directive") w = 26 * k + spacing;
     return { ev, w };
   });
   const starts = [0];
@@ -774,9 +832,13 @@ function layoutScore(score2, opts) {
       lastGroupEnd = -1;
     }
     const ev = widths[i].ev;
-    if (ev.kind === "barline") {
-      lastBarAny = i + 1;
-      if (!slurCrossedBars.has(i)) lastBar = i + 1;
+    if (isBarrier(ev)) {
+      const bar = ev;
+      if (!bar.volta) {
+        const isRepeatStart = bar.repeat === "start";
+        lastBarAny = isRepeatStart ? i : i + 1;
+        if (!slurCrossedBars.has(i)) lastBar = isRepeatStart ? i : i + 1;
+      }
     }
     if (ev.kind === "note" || ev.kind === "rest") {
       const gid = groupOfEvent.get(ev.id);
@@ -787,6 +849,17 @@ function layoutScore(score2, opts) {
   const expected = Math.round(beatsPerMeasureOf(score2.meta.beat) * TICKS_PER_BEAT);
   const lines = [];
   const hitIndex = [];
+  const voltaEndOf = /* @__PURE__ */ new Map();
+  {
+    const voltaBars = [];
+    for (let i = 0; i < score2.events.length; i += 1) {
+      const ev = score2.events[i];
+      if (ev.kind === "barline" && ev.volta) voltaBars.push(i);
+    }
+    voltaBars.forEach((i, k2) => {
+      if (k2 + 1 < voltaBars.length) voltaEndOf.set(i, voltaBars[k2 + 1]);
+    });
+  }
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
@@ -842,27 +915,31 @@ function layoutScore(score2, opts) {
           item.dashes = dashCountOf(ev.ticks, item.dot);
         }
         items.push(item);
-      } else if (ev.kind === "barline") {
+      } else if (isBarrier(ev)) {
+        const bar = ev;
         items.push({
           eventId: ev.id,
           kind: "barline",
           eventIndex: i,
           x: cx,
           w,
-          final: ev.style === "final",
-          partial: ev.partial
+          final: bar.style === "final",
+          ...bar.partial ? { partial: true } : {},
+          ...bar.repeat ? { repeat: bar.repeat } : {},
+          ...bar.repeat === "end" && bar.times ? { repeatTimes: bar.times } : {},
+          ...bar.volta ? { volta: bar.volta } : {}
         });
       } else if (ev.kind === "directive") {
         items.push({ eventId: ev.id, kind: "directive", eventIndex: i, x: cx, w, value: ev.value });
       }
-      cx += ev.kind === "barline" ? w : w * stretch;
+      cx += isBarrier(ev) ? w : w * stretch;
     }
     const badges = [];
     {
       let acc = 0;
       let open = false;
       let barX = padding;
-      const startsNewMeasure = from === 0 || widths[from - 1].ev.kind === "barline";
+      const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       let measurePartial = false;
       let firstPartial = false;
@@ -900,6 +977,16 @@ function layoutScore(score2, opts) {
           barX = it.x;
         }
       }
+    }
+    const voltas = [];
+    for (const it of items) {
+      if (!it.volta) continue;
+      const endIdx = voltaEndOf.get(it.eventIndex);
+      const endItem = endIdx === void 0 ? void 0 : items.find((m) => m.eventIndex === endIdx);
+      const nextBar = items.find((m) => m.kind === "barline" && m.eventIndex > it.eventIndex);
+      const x0 = it.x + it.w / 2;
+      const x1 = endItem ? endItem.x + endItem.w / 2 : (nextBar?.x ?? padding + maxX) + (nextBar ? nextBar.w / 2 : 0);
+      if (x1 - x0 > 10) voltas.push({ x0, x1, numbers: it.volta });
     }
     const beams = [];
     const tuplets = [];
@@ -1026,7 +1113,7 @@ function layoutScore(score2, opts) {
       if (it.kind !== "directive") continue;
       hitIndex.push({ eventId: it.eventId, x: it.x, y: y + 14, w: it.w, h: 30 });
     }
-    lines.push({ index: li, y, items, beams, arcs, badges, tuplets });
+    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas });
   }
   return {
     lines,

@@ -1,10 +1,40 @@
 # WindScore
 
-面向电吹管演奏者的**简谱写谱器**。录入 → 排版 → 播放 → 存成 `.jps` 文本文件，一套源码同时跑桌面（Tauri）和浏览器。
+面向电吹管演奏者的**简谱动态谱工具**：写谱 → 对轨（配伴奏并对齐节奏）→ 入库 → 演奏 → 导出 PDF / 视频。一套源码同时跑桌面（Tauri exe）和浏览器，全部数据在本机，不联网、不依赖服务端。
 
-界面是自绘 Canvas：排版（`layout.ts`）与绘制（`paint.ts`）分离，命中测试（`pickAt` / `caretAt`）和绘制共用同一套度量——点在谱面上的位置和程序判定的位置永远一致。
+界面是自绘 Canvas：排版（`layout.ts`）与绘制（`paint.ts`）分离，命中测试和绘制共用同一套度量——点在谱面上的位置和程序判定的位置永远一致。
 
-## 现在能做什么
+## 四个入口
+
+| 页面 | 作用 |
+|---|---|
+| `index.html` | 落地页：LOGO + 三个入口 |
+| `editor.html` | **动态谱编辑**：记谱 ⇄ 对轨（页内切换） |
+| `library.html` | **曲库管理**：导入、打包分享、重命名、删除 |
+| `play.html` | **动态谱演奏**：曲库查询 + 播放（只放不编） |
+
+每个单功能页左上角都有「← 返回首页」。演奏页的顶栏不显示（它是独立入口，工具条自带返回）。
+
+## 动态谱演奏（play.html）
+
+首屏是**动态谱首页**（左中右三栏）：
+
+- **左**：最新动态、我的收藏（点 ☆ 收藏，常用的置顶）
+- **中**：全部曲目，右侧首字母索引 A/B/C 可直接跳
+- **右**：最近搜索（可单条删除 / 清空）
+- 顶部搜索框：搜歌名或谱面标题，回车搜索
+
+点任意一首进**播放界面**：
+
+- 音源：**伴奏**（用对轨标定的真实分轨）/ **合成音**（按谱面奏，三角波）随时切换；没对过轨的歌「伴奏」自动置灰
+- 反复处理：**原谱 / 展开反复**——展开后反复与 D.S. 按顺序铺开，指示条、滚动、导出都按线性谱走
+- 播放指示：**光标**（跟着当前音跳的色块 + 平滑竖线）/ **高亮条**（从行首随音乐变宽）
+- **字号 / 字距**滑杆：播放时的观看偏好，只影响显示，谱面文件不变；改完存本地，换歌重开都记得
+- **导出**：PDF 与视频（见下）
+
+## 动态谱编辑（editor.html）
+
+### 记谱
 
 | 类别 | 支持 |
 |---|---|
@@ -16,18 +46,68 @@
 | 力度 | `pp p mp mf f ff` 与渐强 / 渐弱 |
 | 转调 | 任意音符上标 `转1=G`，从该音起改用新调 |
 | 版式 | 谱面字号、字间距（写在 `.jps` 里，打开即还原） |
-| 播放 | 从光标处起播，光标 / 高亮条两种指示 |
 | 校验 | 每小节拍数、拍内组不变量 I1–I5，工具栏实时显示 |
 | 编辑 | 撤销/重做、复制粘贴、拖拉建选区、源码视图（实时解析，切回简谱自动应用） |
+
+### 对轨（配伴奏并对齐节奏）
+
+1. **载入音频**：一次可载多条分轨（人声 / 伴奏），可单独静音；`wav` 载入时**自动压成 mp3** 再入库
+2. **自动测速**：从音频里估 BPM 与网格原点；拿不准就用「÷2 / ×2」看波形网格是否压在鼓点上
+3. **绑定锚点**（推荐）：波形上点一条节奏线 → 谱面点一根小节线 = 绑定；谱面最左端还有虚拟的「开头」靶标对应第 0 拍。**两个以上锚点自动生成变速曲线**，两点之间按曲线拉伸，前奏和谱面长度不一致也能跟住
+4. **快速对准**：波形点人声开口 → 谱面选中那颗音 → 「把选中的音对到这里」，用于某个字总差半拍时的微调
+5. **音轨分离工具下载**：按钮给出免费的 OD Trama 下载地址，先把整首歌拆成分轨再载入
+6. **打包**：把谱面 + 伴奏 + 标定打成一个 `.wspack`，分享给别人可完整还原
+
+## 曲库管理（library.html）
+
+- 导入 `.wspack`（谱面 + 伴奏 + 标定一起进库，别人发的也能用）、收录 `.jps` 谱面
+- 重命名、删除、打包分享（导出 `.wspack`）
+- 曲库列表显示调号 / 拍号 / BPM / 小节数 / 音符数，坏谱标红但不拦着删或导出
+
+## 导出
+
+**PDF**（打印 / 投影）
+
+- A4 纵向 / 横向，150 或 300 dpi，字号 1.1–2.4× 可调
+- 可选首页标题与小节号；**多页时每页页尾写「歌名-页号/总页数」**（如 `灰姑娘-1/3`）
+- 弹窗里实时预览页数，不用等导出
+
+**视频**（分享到手机 / 群）
+
+- 九档比例：`9:16`、`16:9`、`16:10`、`10:16`、`4:3`、`3:4`、`3:2`、`2:3`、`1:1`
+- 分辨率短边 720 / 1080 / 1440；帧率 25 / 30 / 60
+- 声音：伴奏（真实分轨）/ 合成音 / 静音；外观可选浅色 / 深色
+- 画面按所选比例**重新排版**并随播放位置滚动，带播放指示与底部进度条
+- 离线编码（WebCodecs + mediabunny）：不实时播放、不用守着页面，几分钟的歌几十秒出片；MP4(H.264+AAC) 优先，不支持则 WebM(VP9+Opus)
+
+## 存储与迁移
+
+曲库数据只有一种格式——**一个文件夹**：
+
+```
+曲库文件夹/
+├─ library.json   全部曲目（清单 + 谱面文本）
+├─ align.json     每首歌的对轨标定
+└─ audio/…        伴奏分轨（wav 一律压成 mp3 后进库）
+```
+
+| 运行环境 | 存哪 |
+|---|---|
+| 桌面版 exe | 应用数据目录（Windows 是 `%APPDATA%`） |
+| 浏览器（Chrome / Edge） | 你选的一个真实文件夹（File System Access API，与 exe 版格式完全一致） |
+| 兜底（其他浏览器 / 没选文件夹） | localStorage + IndexedDB |
+
+**迁移 = 拷贝这个文件夹**。首次连接文件夹时，原有曲库会自动迁进去；断连期间写进本地的歌，重连后自动合并回来。浏览器重启后授权会失效，页面点一下即静默续权；曲库页有「重新连接」按钮兜底。
 
 ## 快速开始
 
 ```bash
 npm install
-npm run dev        # 浏览器预览 http://localhost:5173
-npm test           # 内核回归测试（500+ 条断言，纯 Node 跑）
-npm run build      # 类型检查 + 生产构建
-npm run tauri:dev  # 桌面版（需 Rust 工具链）
+npm run dev         # 浏览器预览 http://localhost:5173
+npm test            # 内核回归测试（1000+ 条断言，纯 Node 跑）
+npm run build       # 类型检查 + 生产构建
+npm run tauri:dev   # 桌面版开发（需 Rust 工具链）
+npx tauri build     # 打包 exe / 安装包（产物在 src-tauri/target/release）
 npm run build:skill # 重新打包 skill 里的独立校验器（改了 dsl/validate/layout 后要跑）
 ```
 
@@ -77,20 +157,37 @@ npm run build:skill # 重新打包 skill 里的独立校验器（改了 dsl/vali
 
 ```
 src/v2/
-  types.ts     数据模型（Score / Event / BeatGroup）与类型
-  dsl.ts       .jps 的解析与序列化（唯一的文件格式入口）
-  ticks.ts     时值 ↔ tick、减时线条数、时值档位
-  edit.ts      全部编辑操作（纯函数，改一个音 / 一组音都在这里）
-  layout.ts    排版：度量派生、断行、落位、命中测试、插入点
-  paint.ts     Canvas 绘制（只读 layout 的结果）
-  validate.ts  I1–I5 不变量
-  timeline.ts  音高与演奏时间线（调号 / 转调在这里生效）
-  audio.ts     合成音播放
-src/v2/ui/     React 界面（EditorApp / ScoreCanvas / editor.css）
-src/scores/    内置示例谱（茉莉花、送别、欢乐颂、小星星、青花瓷）
-scripts/       v2-test.ts 回归测试、build-skill-validator.ts、图标生成
-skills/        windscore-jps：给大模型用的简谱转录 skill
-windscore-v2-spec.md  设计方案（v2 全部决策与不变量）
+  types.ts      数据模型（Score / Event / BeatGroup）与类型
+  dsl.ts        .jps 的解析与序列化（唯一的文件格式入口）
+  ticks.ts      时值 ↔ tick、减时线条数、时值档位
+  edit.ts       全部编辑操作（纯函数）
+  layout.ts     排版：度量派生、断行、落位、命中测试
+  paint.ts      Canvas 绘制（只读 layout 的结果）
+  validate.ts   I1–I5 不变量
+  timeline.ts   演奏时间线（调号 / 转调在这里生效）
+  tempo.ts      TempoMap：恒定 BPM 与变速曲线（由锚点生成）
+  expand.ts     反复与跳转展开成线性谱
+  audio.ts      合成音播放 / 音频旁路（录制用）
+  mp3.ts        WAV → MP3 压缩（LAME，纯 JS）
+  pack.ts       zip（store 方式）读写
+  export/
+    pdf.ts      PDF 字节组装（分页 + xref）
+    render.ts   导出用的绘制层（PDF 分页 / 视频帧共用）
+    video.ts    比例、滚动与时长口径（纯计算）
+    encode.ts   WebCodecs 编码封装
+    videoExport.ts  视频导出流程（离线混音 + 逐帧编码）
+    tasks.ts    导出胶水层
+  ui/
+    EditorApp.tsx     主界面（四个入口共用）
+    ScoreCanvas.tsx   Canvas 视图
+    DiscoverScreen.tsx  动态谱首页
+    LibraryScreen.tsx   曲库（编辑 / 只读两态）
+    ExportDialog.tsx    导出弹窗
+    AudioWaveform.tsx   对轨波形
+    libraryStore.ts / alignStore.ts / storeBackend.ts / storeInit.ts  曲库与标定存储
+src/scores/     内置示例谱（茉莉花、送别、欢乐颂、小星星、青花瓷）
+scripts/        回归测试（v2 / expand / beat / discover / export / store / mp3）
+skills/         windscore-jps：给大模型用的简谱转录 skill
 ```
 
 ## 让大模型帮你写谱
@@ -105,7 +202,8 @@ node skills/windscore-jps/validate.mjs 曲名.jps   # PASS / FAIL + 退出码
 
 ## 开发约定
 
-- 内核（types / dsl / edit / layout / validate / timeline）不依赖 DOM，可在 Node 里直接测
+- 内核（types / dsl / edit / layout / validate / timeline / tempo）不依赖 DOM，可在 Node 里直接测
 - 任何编辑操作都是 `edit.ts` 里的纯函数：`(score, …) => Score`，改一处只走一条写入路径
-- 排版/绘制/命中三处必须用同一套度量（`layout.deriveGlyph`），各写一份就会出现「看着点在缝里、实际被判成点在音上」
+- 排版 / 绘制 / 命中三处必须用同一套度量（`layout.deriveGlyph`），各写一份就会出现「看着点在缝里、实际被判成点在音上」
+- 曲库的读写只走 `libraryStore` / `alignStore` 一个出口，后端（文件夹 / 本地）由 `storeBackend` 决定
 - 界面文案说人话，内部术语（BeatGroup、不变量编号）不出现在面板上

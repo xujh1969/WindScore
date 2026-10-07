@@ -6,7 +6,8 @@
  */
 
 import { TICKS_PER_BEAT } from './ticks';
-import type { Accidental, NoteEvent, Score } from './types';
+import { measureAt } from './expand';
+import type { Accidental, Event as ScoreEvent, NoteEvent, Score } from './types';
 
 /** 音级 1..7 相对主音的半音数（自然大调音阶） */
 const DEGREE_SEMITONE = [0, 2, 4, 5, 7, 9, 11];
@@ -78,9 +79,22 @@ export function toMidi(
   return 60 + semis;
 }
 
-export function buildTimeline(score: Score): TimelineEntry[] {
+/**
+ * 时间线条目的 eventId 用哪种口径：
+ *   - `source`（默认）= **原谱 id**（展开出的克隆用 originId）。播放、合成音、
+ *     伴奏对齐都只认 tick，用哪种都行；而原谱 id 能反查回谱面事件，最通用。
+ *   - `own` = 该事件**自己的 id**（展开出的克隆是 `n12~2`）。
+ *     显示**展开谱**时必须用这个：排版结果的 item.eventId 取自 ev.id，
+ *     播放指示按 id 找音符——口径不一致就一个都找不到（副歌第二遍没有指示）。
+ */
+export type TimelineIdFlavor = 'source' | 'own';
+
+export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {}): TimelineEntry[] {
   const out: TimelineEntry[] = [];
   const byId = new Map(score.events.map((e) => [e.id, e]));
+  /** 条目 id：口径由 opts.ids 决定 */
+  const eid = (ev: { id: string; originId?: string }): string =>
+    opts.ids === 'own' ? ev.id : (ev.originId ?? ev.id);
   let tick = 0;
   /** 当前生效的调号：遇到带 keyChange 的音符就切换（含该音本身） */
   let curKey = score.meta.key;
@@ -89,7 +103,7 @@ export function buildTimeline(score: Score): TimelineEntry[] {
     if (ev.kind !== 'note' && ev.kind !== 'rest') continue; // 小节线 / 换气不占时值
 
     if (ev.kind === 'rest') {
-      out.push({ eventId: ev.id, startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null });
+      out.push({ eventId: eid(ev), startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null });
       tick += ev.ticks;
       continue;
     }
@@ -109,7 +123,7 @@ export function buildTimeline(score: Score): TimelineEntry[] {
       let gs = tick;
       for (const g of gBefore) {
         out.push({
-          eventId: ev.id,
+          eventId: eid(ev),
           startTick: gs,
           endTick: gs + each,
           degree: g.degree,
@@ -122,7 +136,7 @@ export function buildTimeline(score: Score): TimelineEntry[] {
       gs = tick + ev.ticks - afterTicks;
       for (const g of gAfter) {
         out.push({
-          eventId: ev.id,
+          eventId: eid(ev),
           startTick: gs,
           endTick: gs + each,
           degree: g.degree,
@@ -167,7 +181,7 @@ export function buildTimeline(score: Score): TimelineEntry[] {
 
     // 主音：前倚音占掉开头、后倚音占掉结尾，中间才是主音本身
     out.push({
-      eventId: ev.id,
+      eventId: eid(ev),
       startTick: tick + beforeTicks,
       endTick: tick + ev.ticks - afterTicks,
       degree: ev.degree,
@@ -215,6 +229,67 @@ export function activeAt(
   return null;
 }
 
-export function tickToBeat(tick: number): number {
-  return tick / TICKS_PER_BEAT;
+/**
+ * 展开后的**实际演奏顺序**（按小节）：反复与跳转写了不一定弹对，
+ * 用耳朵逐句核对很慢——把播放路径列出来就能一眼看出
+ * 「跳回的是不是这一段、结束句有没有被跳到」。
+ *
+ * 返回连续小节区间的文本序列（如 ['1–11','12–21','12–21','22–36','26–40']）；
+ * 谱里既没有反复也没有跳转时返回 null（顺序就是 1..N，不必提示）。
+ */
+export function playOrderMeasures(src: ScoreEvent[], played: ScoreEvent[]): string[] | null {
+  const hasStructure = src.some(
+    (e) => e.kind === 'jump' || (e.kind === 'barline' && (e as { repeat?: string }).repeat),
+  );
+  if (!hasStructure) return null;
+  const idxById = new Map(src.map((e, i) => [e.id, i]));
+  const seq: number[] = [];
+  for (const e of played) {
+    // 只看**时值事件**：小节线 / 跳转记号只是装饰，不决定「正在演奏第几小节」
+    if (e.kind !== 'note' && e.kind !== 'rest') continue;
+    const i = idxById.get((e as { originId?: string }).originId ?? e.id);
+    if (i === undefined) continue;
+    const m = measureAt(src, i);
+    if (seq[seq.length - 1] !== m) seq.push(m); // 同一小节内的连续事件压成一个
+  }
+  const runs: string[] = [];
+  let start = -1;
+  let prev = -1;
+  const flush = (): void => {
+    if (start > 0) runs.push(start === prev ? `${start}` : `${start}–${prev}`);
+  };
+  for (const m of seq) {
+    if (m === prev + 1) {
+      prev = m;
+      continue;
+    }
+    flush();
+    start = m;
+    prev = m;
+  }
+  flush();
+  return runs.length ? runs : null;
 }
+
+/**
+ * 播放指示（高亮 / 竖线）用的 act：**只认主音**条目。
+ *
+ * 倚音在时间线里是独立条目（从主音时值里切出来，eventId 与主音相同）。
+ * 直接用 activeAt 时，每走到一颗倚音，progress 都从 0 再走一遍——
+ * 指示条在同一个主音框里反复从左边重新扫一次，看着就是闪烁来回抖（用户实测）。
+ * 这里把倚音段并回主音：前倚音段 = 0（站在框的开头等主音），
+ * 后倚音段 = 1（主音已走完，停在框尾），主音段照常插值——整体单调向前。
+ */
+export function activeMainAt(
+  tl: TimelineEntry[],
+  tick: number,
+): { entry: TimelineEntry; progress: number } | null {
+  const act = activeAt(tl, tick);
+  if (!act || !act.entry.grace) return act;
+  const main = tl.find((e) => e.eventId === act.entry.eventId && !e.grace);
+  if (!main) return act;
+  const span = main.endTick - main.startTick;
+  const p = span > 0 ? (tick - main.startTick) / span : 0;
+  return { entry: main, progress: Math.max(0, Math.min(1, p)) };
+}
+

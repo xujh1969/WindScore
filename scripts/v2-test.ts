@@ -40,6 +40,11 @@ import {
   pressBarline,
   prevTimed,
   removeEvent,
+  setBarlineRepeat,
+  setBarlineVolta,
+  setBarlineVoltaOpen,
+  setVoltaFromSelection,
+  toggleJumpAfterBarline,
   setAccidental,
   setDegree,
   setDynamic,
@@ -71,8 +76,39 @@ import {
   TICKS_PER_BEAT,
   withDots,
 } from '../src/v2/ticks';
+import { expandScore } from '../src/v2/expand';
+import { audioKey, clearAlign, loadAlign, saveAlign } from '../src/v2/ui/alignStore';
+import { gridSkipOf, snapBeatToGrid } from '../src/v2/ui/AudioWaveform';
+import { crc32, unzip, zipStore } from '../src/v2/pack';
+import { buildPack, packFileName, readPack } from '../src/v2/ui/packBundle';
+import {
+  describeMeta,
+  importLibrary,
+  metaOfText,
+  normalizeName,
+  readLibrary,
+  removeLibraryItem,
+  renameLibraryItem,
+  searchLibrary,
+  sortLibrary,
+  uniqueName,
+  upsertLibrary,
+} from '../src/v2/ui/libraryStore';
+import {
+  beatToSec,
+  constantTempo,
+  curveFromAnchors,
+  expandBeatTimes,
+  secToBeat,
+  secToTick,
+  tempoFromAlign,
+  tickToSec,
+  type TempoMap,
+} from '../src/v2/tempo';
 import {
   activeAt,
+  activeMainAt,
+  playOrderMeasures,
   buildTimeline,
   keyOffset,
   normalizeKey,
@@ -91,8 +127,10 @@ import { parseSession } from '../src/v2/session';
 import { validateGroups } from '../src/v2/validate';
 import {
   isTimed,
+  type BarlineEvent,
   type BeatGroup,
   type GraceNote,
+  type JumpEvent,
   type NoteEvent,
   type RestEvent,
   type Score,
@@ -657,6 +695,25 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const item = L.lines[0].items.find((i) => i.kind === 'rest') as { dot?: number } | undefined;
   check('休止符附点进排版项', item?.dot === 1, String(item?.dot));
 
+  // 单独的休止符也要画减时线（简谱惯例：0 下加一条线 = 八分休止）。
+  // 用户实测：0 设半拍 / 1/4 / 1/8 拍，下面的横线不出来——
+  // 组外单音分支只给 note 画了，rest 在 item.beams 里算好了却没人用。
+  // 拍子凑满 4 拍且邻音不成组，保证休止符走「组外单音」分支。
+  const rLay = layoutScore(parseDsl('@beat 4/4\n\n0/2 1 2 3 4/2 ||\n').score!, { contentWidth: 800 });
+  const rItem = rLay.lines[0].items.find((i) => i.kind === 'rest') as { x: number; w: number; beams?: number } | undefined;
+  check('独立半拍休止符 beams=1', rItem?.beams === 1, String(rItem?.beams));
+  check(
+    '独立半拍休止符画出减时线',
+    !!rItem && rLay.lines[0].beams.some((b) => b.x0 >= rItem.x && b.x0 <= rItem.x + rItem.w),
+  );
+  const rLay2 = layoutScore(parseDsl('@beat 4/4\n\n0/4 1 2 3 5/4 ||\n').score!, { contentWidth: 800 });
+  const rItem2 = rLay2.lines[0].items.find((i) => i.kind === 'rest') as { x: number; w: number; beams?: number } | undefined;
+  check('独立 1/4 拍休止符 beams=2（两条线）', rItem2?.beams === 2, String(rItem2?.beams));
+  check(
+    '独立 1/4 拍休止符画出两条线',
+    !!rItem2 && rLay2.lines[0].beams.filter((b) => b.x0 >= rItem2.x && b.x0 <= rItem2.x + rItem2.w).length === 2,
+  );
+
   // 用户实际踩到的场景：休止符是 0/2-（1.5 拍，无点）时加点——
   // 基准必须归一到一拍：0. / 0..，而不是拼出非法的 0/2-. （序列化还会破坏 round-trip）
   const dashRest = parseDsl('@beat 4/4\n\n0/2- 0 0 0 ||\n').score!;
@@ -677,6 +734,25 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const dashNote = parseDsl('@beat 4/4\n\n5/2- 5 5 5 ||\n').score!;
   const n1 = setDot(dashNote, dashNote.events[0].id, 1).events[0] as unknown as NoteEvent;
   check('5/2- 加点 → 5.（72 tick）', n1.ticks === 72 && n1.dot === 1 && serializeDsl(setDot(dashNote, dashNote.events[0].id, 1)).includes('5.'));
+
+  // 拍内组守恒（用户实测踩到）：两音各半拍共用 1 拍，给一个音加附点，
+  // 另一个必须自动缩成 1/4 拍，否则这拍悄悄变长
+  const grp = parseDsl('@beat 4/4\n\n<1/2 2/2> 3 4 ||\n').score!;
+  check('前置：两音半拍成一组', grp.groups.length === 1 && grp.groups[0].totalTicks === 48);
+  const gd = setDot(grp, grp.groups[0].memberIds[0], 1);
+  const gFirst = gd.events.find((e) => e.id === grp.groups[0].memberIds[0]) as unknown as NoteEvent;
+  const gSecond = gd.events.find((e) => e.id === grp.groups[0].memberIds[1]) as unknown as NoteEvent;
+  check('附点音 0.75 拍（36 tick）', gFirst.ticks === 36 && gFirst.dot === 1, `${gFirst.ticks}/${gFirst.dot}`);
+  check('同组另一音自动变 1/4 拍（12 tick）', gSecond.ticks === 12 && !gSecond.dot, `${gSecond.ticks}/${gSecond.dot}`);
+  check('组保留且守恒不变量干净', gd.groups.length === 1 && validateGroups(gd).length === 0, validateGroups(gd).map((v) => v.code).join(','));
+
+  // 分不动就解散组：4×1/8 拍组里给一个音加附点（6→9），剩 15 分三份 = 5，
+  // 不是合法 tick 粒度（I4）——守恒重分做不了，退回单音改语义
+  const tiny = parseDsl('@beat 4/4\n\n<1/8 2/8 3/8 4/8> 3 4 ||\n').score!;
+  check('前置：四音 1/8 拍成一组', tiny.groups.length === 1 && tiny.groups[0].totalTicks === 24);
+  const gd2 = setDot(tiny, tiny.groups[0].memberIds[0], 1);
+  check('剩余分不动时解散组', gd2.groups.length === 0, `groups=${gd2.groups.length}`);
+  check('解散后不变量干净', validateGroups(gd2).length === 0);
 }
 
 {
@@ -1662,8 +1738,42 @@ const blank = (): Score => ({
     !!t ? validateGroups(t).map((v) => `${v.code}:${v.message}`).join('; ') : '');
 
   check('n = 3 给出 4 个候选划分', candidatesFor(3, 48).length === 4);
-  check('n = 2 / 4 均分无歧义，只给 1 个候选',
-    candidatesFor(2, 48).length === 1 && candidatesFor(4, 48).length === 1);
+  check('n = 4 均分无歧义，只给 1 个候选', candidatesFor(4, 48).length === 1);
+
+  // ── 两音的附点切分（用户提案）：选 2 音套 1 拍 → 均分 + 两个方向的附点切分 ──
+  const c2 = candidatesFor(2, 48);
+  check('两音 1 拍出三档（均分 + 前附点 + 后附点）', c2.length === 3, JSON.stringify(c2.map((c) => c.ticks)));
+  check('均分档各半拍不带点', c2[0]!.ticks[0] === 24 && !c2[0]!.dots?.[0]);
+  check(
+    '前附点档 36 + 12，dot 只在前音',
+    c2.some((c) => c.ticks[0] === 36 && c.ticks[1] === 12 && c.dots?.[0] === 1 && c.dots?.[1] === 0),
+  );
+  check(
+    '后附点档 12 + 36，dot 只在后音',
+    c2.some((c) => c.ticks[0] === 12 && c.ticks[1] === 36 && c.dots?.[1] === 1 && c.dots?.[0] === 0),
+  );
+  // 分不出的就不给档：半拍组 12 tick → 附点方向 9/3 非法，只剩均分
+  check('半拍组只剩均分一档', candidatesFor(2, 12).length === 1, String(candidatesFor(2, 12).length));
+
+  const twoNotes = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  const dotAp = applyTierOp(
+    twoNotes,
+    [twoNotes.events[0]!.id, twoNotes.events[1]!.id],
+    48,
+    [36, 12],
+    undefined,
+    [1, 0],
+  )!;
+  const dFirst = dotAp.events[0] as NoteEvent;
+  const dSecond = dotAp.events[1] as NoteEvent;
+  check('applyTier 写入附点切分（36+dot / 12）', dFirst.ticks === 36 && dFirst.dot === 1 && dSecond.ticks === 12 && !dSecond.dot);
+  check('附点切分后组守恒干净', validateGroups(dotAp).length === 0, validateGroups(dotAp).map((v) => v.code).join(','));
+  const dRound = parseDsl(serializeDsl(dotAp)).score!;
+  check('附点切分可序列化回读', (dRound.events[0] as NoteEvent).ticks === 36 && (dRound.events[0] as NoteEvent).dot === 1);
+  // 排版：附点八分该有 1 条减时线 + 点（此前 beamCount(36)=0 画成缺线的错样）
+  const dLay = layoutScore(dotAp, { contentWidth: 800 });
+  const dItem = dLay.lines[0].items.find((i) => i.eventId === dFirst.id) as { beams?: number; dot?: number } | undefined;
+  check('附点八分排版：1 条线 + 附点', dItem?.beams === 1 && dItem?.dot === 1, `beams=${dItem?.beams} dot=${dItem?.dot}`);
 
   if (t) {
     const rm = removeEvent(t, ids[2]);
@@ -1885,6 +1995,27 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
   check('时刻表按 startTick 单调递增', tl.every((e, i) => i === 0 || e.startTick >= tl[i - 1].startTick));
   check('tick 0 命中第一个条目', activeAt(tl, 0)?.entry.eventId === tl[0].eventId);
   check('超出末尾不命中', activeAt(tl, timelineTicks(tl) + 1) === null);
+
+  // 播放指示不能被倚音打断：倚音是独立条目且与主音同 eventId，
+  // 直接用 activeAt 会让进度在每个倚音上从 0 重扫一次（闪烁来回抖）
+  {
+    const gs = parseDsl('@beat 4/4\n\n5 ||\n').score!;
+    const gid = gs.events[0].id;
+    const withGrace = setGrace(
+      setGrace(gs, gid, 'before', [{ degree: 6, octave: 0 }]),
+      gid,
+      'after',
+      [{ degree: 1, octave: 0 }],
+    );
+    const gtl = buildTimeline(withGrace);
+    // 1 拍 = 48 tick，倚音各 12：前倚音 [0,12) 主音 [12,36) 后倚音 [36,48)
+    check('前倚音段停在框开头（进度 0）', activeMainAt(gtl, 4)?.progress === 0);
+    check('前倚音段落到主音条目上', activeMainAt(gtl, 4)?.entry.grace !== true);
+    check('主音段正常插值', Math.abs((activeMainAt(gtl, 24)?.progress ?? 0) - 0.5) < 1e-6);
+    check('后倚音段停在框尾（进度 1）', activeMainAt(gtl, 40)?.progress === 1);
+    const seq = [0, 4, 12, 24, 35, 36, 44].map((t) => activeMainAt(gtl, t)?.progress ?? 0);
+    check('整个音的进度单调不回头', seq.every((v, i) => i === 0 || v >= seq[i - 1]), JSON.stringify(seq));
+  }
 }
 
 {
@@ -2115,6 +2246,699 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
     (h2Rest.events[2] as NoteEvent).keyChange === '1=F',
     String((h2Rest.events[2] as NoteEvent).keyChange),
   );
+}
+
+{
+  // ───────────── 反复记号：书写 ↔ 展开 ↔ 序列化 ─────────────
+  console.log('\n[反复记号]');
+  const melody = (src: string) => {
+    const p = parseDsl(src);
+    const ex = p.score ? expandScore(p.score) : null;
+    const degrees = (sc: Score | null) =>
+      (sc?.events ?? [])
+        .filter((e): e is NoteEvent => e.kind === 'note')
+        .map((e) => e.degree)
+        .join('');
+    return { err: p.errors, ex, degrees: degrees(ex?.score ?? null) };
+  };
+
+  // ① |: … :| 两遍
+  const once = melody('@beat 4/4\n\n|: 1 2 3 4 :| 5 6 ||\n');
+  check('反复段展开成两遍', once.degrees === '1234123456', once.degrees);
+  check('展开后 expandedTimes ≥ 1', (once.ex?.repeatedSections ?? 0) === 1, JSON.stringify(once.ex?.warnings));
+
+  // ② :|3 三遍
+  const thrice = melody('@beat 4/4\n\n|: 1 2 :|3 5 ||\n');
+  check(':|3 展开成三遍', thrice.degrees === '1212125', thrice.degrees);
+
+  // ③ 跳房子：房子挂在**小节线上**（`| [1] …`），第一遍走 [1]、第二遍走 [2]
+  const volta = melody('@beat 4/4\n\n|: 1 1 1 1 | [1] 3 3 3 3 | [2] 4 4 4 4 :| ||\n');
+  check('跳房子按遍数各走一次', volta.degrees === '1111333311114444', volta.degrees);
+  check('房子合法时无报错', volta.ex?.errors.length === 0, volta.ex?.errors.join('; '));
+  // 第一房就起在 `|:` 那条线上（没有公共部分）：第一遍 3 3 3 3、第二遍 4 4 4 4
+  const voltaHead = melody('@beat 4/4\n\n|: [1] 3 3 3 3 | [2] 4 4 4 4 :| ||\n');
+  check('房起在 |: 上也能各走各的', voltaHead.degrees === '33334444', voltaHead.degrees);
+
+  // ④ 结构错误：必须明确报错、不展开（不猜）
+  check('孤单的 :| 报错', (melody('@beat 4/4\n\n1 2 :| 3 ||\n').ex?.errors ?? []).length > 0);
+  check('孤单的 |: 报错', (melody('@beat 4/4\n\n|: 1 2 3 ||\n').ex?.errors ?? []).length > 0);
+  // 房子挂在反复段外面的小节线上 = 声明了第二遍的结尾却没有反复
+  check(
+    '房子不在反复段内要报错',
+    (melody('@beat 4/4\n\n1 1 1 1 | [1] 3 3 3 3 ||\n').ex?.errors ?? []).some((e) =>
+      e.includes('不在反复段内'),
+    ),
+    JSON.stringify(melody('@beat 4/4\n\n1 1 1 1 | [1] 3 3 3 3 ||\n').ex?.errors),
+  );
+  check('嵌套超过两层报错', (melody('@beat 4/4\n\n|: |: |: 1 :| :| :| ||\n').ex?.errors ?? []).length > 0);
+  // 两个房子挤在同一根线上（中间没有小节线）——括线没法画，必须报错而不是随便挑一个
+  check(
+    '两个房子之间必须有小节线',
+    parseDsl('@beat 4/4\n\n|: 1 1 1 1 | [1] 3 3 [2] 4 4 :| ||\n').errors.some((e) =>
+      e.includes('缺少小节线'),
+    ),
+    parseDsl('@beat 4/4\n\n|: 1 1 1 1 | [1] 3 3 [2] 4 4 :| ||\n').errors.join('; '),
+  );
+
+  // ⑤ 序列化必须写出反复记号——**存盘再打开不能丢**
+  const rep = parseDsl('@beat 4/4\n\n|: 1 1 1 1 | [1] 3 3 3 3 | [2] 4 4 4 4 :| ||\n').score!;
+  const text = serializeDsl(rep);
+  check('序列化写出 |: 与 :|', text.includes('|:') && text.includes(':|'), text);
+  check('序列化写出房子', text.includes('| [1]') && text.includes('| [2]'), text);
+  check('序列化写出 :|3', serializeDsl(parseDsl('@beat 4/4\n\n|: 1 2 :|3 ||\n').score!).includes(':|3'));
+  const backText = parseDsl(text);
+  check('反复谱面 round-trip 无解析错', backText.errors.length === 0, backText.errors.join('; '));
+  check(
+    '反复谱面 round-trip 展开一致',
+    melody(text).degrees === volta.degrees,
+    `${melody(text).degrees} vs ${volta.degrees}`,
+  );
+
+  // ⑥ 展开谱里的音能找回原谱（播放高亮靠它）
+  check('firstIndex 覆盖反复段内的音', (volta.ex?.firstIndex.size ?? 0) > 0, String(volta.ex?.firstIndex.size));
+
+  // ⑦ 反复是**小节线的属性**：就地改，绝不多出一条线
+  const plain = parseDsl('@beat 4/4\n\n| 5 6 5 6 2 3 | 5 5 5 5 ||\n').score!;
+  const barId = plain.events[0].id;
+  const asStart = setBarlineRepeat(plain, barId, 'start');
+  check('改成 |: 不新增事件', asStart.events.length === plain.events.length, `${asStart.events.length} vs ${plain.events.length}`);
+  check('改成 |: 后仍是同一根线', asStart.events[0].id === barId && asStart.events[0].kind === 'barline');
+  check(
+    '谱面上只有一根线（没有 | |: 这种重复）',
+    serializeDsl(asStart).trim().split('\n').pop()?.startsWith('|: 5 6'),
+    serializeDsl(asStart).trim().split('\n').pop() ?? '',
+  );
+  check(
+    '再点一次取消反复（回到普通小节线）',
+    (setBarlineRepeat(asStart, barId, undefined).events[0] as BarlineEvent).repeat === undefined,
+  );
+  const asEnd = setBarlineRepeat(plain, barId, 'end', 3);
+  check(
+    '改成 :|3',
+    (asEnd.events[0] as BarlineEvent).repeat === 'end' && (asEnd.events[0] as BarlineEvent).times === 3,
+  );
+  const flipped = setBarlineRepeat(asStart, barId, 'end');
+  check(
+    '|: 与 :| 互斥（改了就是新的那个）',
+    flipped.events[0].kind === 'barline' && (flipped.events[0] as BarlineEvent).repeat === 'end',
+  );
+  check(
+    '取消后遍数字段一并清掉',
+    (setBarlineRepeat(asEnd, barId, undefined).events[0] as BarlineEvent).times === undefined,
+  );
+  const withVolta = setBarlineVolta(plain, barId, [1]);
+  check(
+    '挂房子也是就地改',
+    withVolta.events.length === plain.events.length &&
+      (withVolta.events[0] as BarlineEvent).volta?.[0] === 1,
+  );
+  check(
+    '房子能取消',
+    (setBarlineVolta(withVolta, barId, undefined).events[0] as BarlineEvent).volta === undefined,
+  );
+}
+
+{
+  // ⑧ 选区直接设房子（用户提案）：选中完整小节 → [n]，墙挂房、尾线自动 :|。
+  // 谱：1 2 |: 3 4 | 5 6 | 7 6 ||（|: 设在下标 2 的线上），事件下标 0-11（bar 在 2/5/8/11）
+  console.log('\n[选区设房子]');
+  const base = parseDsl('@beat 4/4\n\n1 2 | 3 4 | 5 6 | 7 6 ||\n').score!;
+  const withStart = setBarlineRepeat(base, base.events[2]!.id, 'start');
+
+  // 单房：选中 5 6（下标 6/7）设 [1] → 墙=下标5 的线，尾=下标8 的线变 :|
+  const r1 = setVoltaFromSelection(withStart, [base.events[6]!.id, base.events[7]!.id], 1);
+  check('完整小节选区可设房', !!r1.score, r1.error);
+  const wall1 = r1.score!.events[5] as BarlineEvent;
+  const tail1 = r1.score!.events[8] as BarlineEvent;
+  check('房子挂在选区头前那根线（左墙）', wall1.volta?.[0] === 1);
+  check('选区尾的小节线自动变成 :|', tail1.repeat === 'end');
+  const ex1 = expandScore(r1.score!);
+  check('展开无结构错误', ex1.errors.length === 0, ex1.errors.join(';'));
+  check(
+    '播放 = 段外(1 2) + 公共两遍 + 房子一遍 + 段外(7 6) = 10 个音',
+    ex1.score!.events.filter((e) => e.kind === 'note').length === 10,
+  );
+
+  // 双房合并：接着选中 7 6 设 [2] → 墙正是刚才的 :|，拆掉并入同一段
+  const r2 = setVoltaFromSelection(r1.score!, [base.events[9]!.id, base.events[10]!.id], 2);
+  check('第二间房可设在旧 :| 之后', !!r2.score, r2.error);
+  const wall2 = r2.score!.events[8] as BarlineEvent;
+  check('旧 :| 拆掉、原地变成 [2] 的左墙', wall2.repeat === undefined && wall2.volta?.[0] === 2);
+  check('新尾线（终止线）变 :|', (r2.score!.events[11] as BarlineEvent).repeat === 'end');
+  const ex2 = expandScore(r2.score!);
+  check('双房展开无结构错误', ex2.errors.length === 0, ex2.errors.join(';'));
+  check(
+    '双房播放 = 1 2 + (3 4 5 6)(3 4 7 6) = 10 个音',
+    ex2.score!.events.filter((e) => e.kind === 'note').length === 10,
+  );
+
+  // 报错路径：没选满整小节 / 段首没有 |:
+  const partial = setVoltaFromSelection(withStart, [base.events[6]!.id], 1);
+  check('只选半个小节不给设', !partial.score && (partial.error ?? '').includes('整小节'), partial.error);
+  const noStart = setVoltaFromSelection(base, [base.events[6]!.id, base.events[7]!.id], 1);
+  check('没有 |: 时提示先设反复起点', !noStart.score && (noStart.error ?? '').includes('|:'), noStart.error);
+}
+
+{
+  // ⑨ 房子右端开合：存储层 [1 = 手动开放；排版层自动判断（下一根线是 :| → 封闭）
+  console.log('\n[房子右端开合]');
+  const op = parseDsl('@beat 4/4\n\n| [1 5 6 | 5 6 :|\n').score!;
+  const oBar = op.events[0] as BarlineEvent;
+  check('[1 解析为右端开放的房子（存储）', oBar.volta?.[0] === 1 && oBar.voltaOpen === true);
+  const text = serializeDsl(op);
+  check('序列化写回不闭合的 [1', text.includes('[1') && !text.includes('[1]'), text.split('\n').pop()?.trim());
+  check('开放房子可回读', (parseDsl(text).score!.events[0] as BarlineEvent).voltaOpen === true);
+  const oLay = layoutScore(op, { contentWidth: 800 });
+  check('手动开放的排版项带 open 标记', oLay.lines[0].voltas[0]?.open === true, String(oLay.lines[0].voltas[0]?.open));
+
+  // 自动判断（用户提案）：横线只盖同号连续标记的线；下一根线是 :| → 封闭，否则开放
+  const cLay = layoutScore(parseDsl('@beat 4/4\n\n| [1] 5 6 :|\n').score!, { contentWidth: 800 });
+  check(
+    '下一根线是 :| → 自动封闭',
+    cLay.lines[0].voltas.length === 1 && cLay.lines[0].voltas[0]!.open === undefined,
+  );
+  const o2 = layoutScore(parseDsl('@beat 4/4\n\n| [1] 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
+  check('下一根线不是 :| → 自动开放（演奏延续但不画到头）', o2.lines[0].voltas[0]?.open === true);
+
+  // 同号标记延长横线：两根线都标 [1]，横线拉到第二根并在 :| 封闭（只画一间房）
+  const runLay = layoutScore(parseDsl('@beat 4/4\n\n| [1] 5 6 | [1] 5 6 :|\n').score!, { contentWidth: 800 });
+  check(
+    '同号连续标记只画一间房且封闭于 :|',
+    runLay.lines[0].voltas.length === 1 && runLay.lines[0].voltas[0]!.open === undefined,
+  );
+
+  // 手动覆盖：下一根是 :| 也可强制开放；切回后恢复自动
+  const base1 = parseDsl('@beat 4/4\n\n| [1] 5 6 :|\n').score!;
+  const forced = setBarlineVoltaOpen(base1, base1.events[0]!.id, true);
+  check('手动强制开放', layoutScore(forced, { contentWidth: 800 }).lines[0].voltas[0]?.open === true);
+  const restored = setBarlineVoltaOpen(forced, base1.events[0]!.id, false);
+  check('切回后恢复自动（封闭）', layoutScore(restored, { contentWidth: 800 }).lines[0].voltas[0]?.open === undefined);
+
+  // 行高：括线贴小节线顶端后不再额外加高
+  const vLay = layoutScore(parseDsl('@beat 4/4\n\n| [1] 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
+  const pLay = layoutScore(parseDsl('@beat 4/4\n\n| 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
+  check('带房子的谱行高不变', vLay.lineHeight === pLay.lineHeight);
+
+  // 跨行：横线罩满标记小节（画到段尾标记线后面的第一根线），行尾开放；
+  // 下一行画延续段（无左钩、带遍数），演奏到 :| 处封闭
+  const xLay = layoutScore(
+    parseDsl('@beat 4/4\n\n|: 5 6 5 6 | [1] 5 6 5 6 | [1] 5 6 5 6 | 5 6 5 6 :|\n').score!,
+    { contentWidth: 340 },
+  );
+  const startLine = xLay.lines.find((ln) => ln.voltas.some((v) => !v.cont))!;
+  check('跨行起始行：画到行尾且开放', !!startLine && startLine.voltas.some((v) => v.open === true && !v.cont));
+  const contLine = xLay.lines.find((ln) => ln.voltas.some((v) => v.cont))!;
+  check('跨行下一行：有无左钩的延续段', !!contLine && contLine.voltas.some((v) => v.cont === true));
+
+  // 收口那根 :| 落在**没有任何房标记**的行里：此前延续段只在「下一行也有同号标记」
+  // 时才画，尾巴整段丢失（实测 灰姑娘 宽 900：第二间房只剩墙所在行一段）。
+  // 现在按房（run）统一算，收口行无论有没有标记都要补出延续段并在 :| 处封闭
+  const tail = parseDsl('@beat 4/4\n\n|: 5 6 5 6 | [1] 5 6 5 6 | [1] 5 6 5 6 :|\n').score!;
+  const tailLay = layoutScore(tail, { contentWidth: 300 });
+  const segs = tailLay.lines.flatMap((ln, li) => ln.voltas.map((v) => ({ li, v })));
+  check('收口行跨行时不止一段', segs.length >= 2, `${segs.length} 段`);
+  check('延续段无左钩', segs.some((s) => s.v.cont === true));
+  const lastSeg = segs[segs.length - 1]!;
+  check('最后一段落在收口那一行并封闭', lastSeg.v.open === undefined, `open=${lastSeg.v.open}`);
+  check(
+    '封闭处就是 :|（该行有反复结束线）',
+    tailLay.lines[lastSeg.li].items.some((it) => it.kind === 'barline' && it.repeat === 'end'),
+  );
+
+  // 只写「第一遍房子」是标准写法：第 2 遍跳过 [1] 只奏公共部分 → 不该报警；
+  // 真正的问题只有「断档」（如 [1] [3] 缺第 2 遍）
+  const only1 = expandScore(parseDsl('@beat 4/4\n\n|: 1 2 | [1] 3 4 :| 5 6 ||\n').score!).warnings;
+  check('只写 [1] 房不报「第 2 遍没有房子」', only1.length === 0, only1.join(';'));
+  const gap = expandScore(
+    parseDsl('@beat 4/4\n\n|: 1 2 | [1] 3 4 | [3] 5 6 :|3 7 8 ||\n').score!,
+  ).warnings;
+  check('房号断档（缺第 2 遍）仍然报警', gap.some((w) => w.includes('第 2 遍')), gap.join(';'));
+
+  // 跳回提示：非末遍房子（[1]）段尾标 jump；末遍房子（[2]）由真正的 :| 收口，不标
+  const jLay = layoutScore(parseDsl('@beat 4/4\n\n|: 5 6 | [1] 5 6 | [2] 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
+  const jFirst = jLay.lines[0].voltas.find((v) => v.numbers[0] === 1);
+  const jLast = jLay.lines[0].voltas.find((v) => v.numbers[0] === 2);
+  check('[1] 非末遍：段尾标跳回', jFirst?.jump === true);
+  check('[2] 末遍：不标（:| 本身就是跳回记号）', jLast !== undefined && !jLast.jump);
+}
+
+{
+  // 小节号：画在小节线下方，跨行连续编号，与报错「第 N 小节」同口径
+  console.log('\n[小节号]');
+  const s = parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 | 3 3 3 3 | 4 4 4 4 ||\n').score!;
+  const L = layoutScore(s, { contentWidth: 800 });
+  const nums = L.lines.flatMap((ln) => ln.items.filter((i) => i.kind === 'barline').map((i) => i.measure));
+  check('小节号 = 1..N', JSON.stringify(nums) === '[1,2,3,4]', JSON.stringify(nums));
+
+  // 跨行：第二段的小节号接着第一段，不从 1 重来
+  const long = parseDsl('@beat 4/4\n\n' + Array.from({ length: 8 }, () => '1 1 1 1 |').join(' ') + ' 5 5 5 5 ||\n').score!;
+  const XL = layoutScore(long, { contentWidth: 300 });
+  const all = XL.lines.flatMap((ln) => ln.items.filter((i) => i.kind === 'barline').map((i) => i.measure!));
+  check('跨行连续编号', XL.lines.length > 1 && all.every((v, i) => v === i + 1), JSON.stringify(all));
+
+  // 开关：写在谱面元数据里（@measureNo off），缺省不写、老文件保持原样
+  const off = parseDsl('@beat 4/4\n@measureNo off\n\n1 1 1 1 | 2 2 2 2 ||\n').score!;
+  check('@measureNo off 关掉', off.meta.showMeasureNumbers === false);
+  const offText = serializeDsl(off);
+  check('关闭写进文件', offText.includes('@measureNo off'), offText.split('\n').slice(0, 3).join(' / '));
+  check('关闭可回读', parseDsl(offText).score!.meta.showMeasureNumbers === false);
+  const onText = serializeDsl(parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 ||\n').score!);
+  check('默认显示时不写这一行', !onText.includes('@measureNo'));
+}
+
+{
+  // L2 跳转记号：𝄋 / D.S. / To ⊕ / ⊕ / Fine —— 用户灰姑娘谱需要的结构
+  console.log('\n[跳转记号 D.S. al Coda]');
+  // 结构：$s |: A B :|（反复）→ C $t（To ⊕）→ D ⊕（结束句）→ $ds（D.S. 在最末）
+  // 𝄋 → To ⊕ 这段两次奏得一样：回跳后**按原样重跑整段**（含反复的第二遍），
+  // 所以播放 = 反复两遍 → 5 6 → D.S. →（反复两遍 → 5 6）→ To ⊕ → ⊕ → 结束句
+  const dsl =
+    '@beat 4/4\n\n$s |: 1 2 | 3 4 :| 5 6 $t | 7 7 $x | 6 6 $ds ||\n';
+  const p = parseDsl(dsl);
+  check('跳转记号解析无错', p.errors.length === 0, p.errors.join(';'));
+  const ex = expandScore(p.score!);
+  check('展开无结构错误', ex.errors.length === 0, ex.errors.join(';'));
+  const deg = ex.score!.events
+    .filter((e) => e.kind === 'note')
+    .map((e) => `${(e as unknown as { degree: number }).degree}${e.id.includes('#') ? '*' : ''}`);
+  // 前 14 个音 = 反复两遍 + 5 6 + 结束句；带 * 的是 D.S. 后重播的（id 加 #n）。
+  // 回跳段重跑整段 → 又是一遍「1 2 3 4 1 2 3 4」，再 5 6 后遇 To ⊕ 跳到 ⊕ 的 6 6
+  check(
+    '播放顺序 = 反复两遍 → 5 6 7 7 6 6 → D.S. → 𝄋 段原样重跑（反复两遍 + 5 6）→ To ⊕ 跳到 ⊕ 的 6 6',
+    JSON.stringify(deg) ===
+      JSON.stringify([
+        '1', '2', '3', '4', '1', '2', '3', '4', '5', '6', '7', '7', '6', '6',
+        '1*', '2*', '3*', '4*', '1*', '2*', '3*', '4*', '5*', '6*', '6*', '6*',
+      ]),
+    JSON.stringify(deg),
+  );
+  const rt = parseDsl(serializeDsl(p.score!));
+  check('跳转记号序列化 round-trip', rt.errors.length === 0 && serializeDsl(rt.score!).includes('$ds'));
+
+  // al Fine：D.S. 后走到 Fine 就停（后面的音不再播）
+  const dsl2 = '@beat 4/4\n\n$s 1 2 $f | 3 4 $ds | 5 5 ||\n';
+  const ex2 = expandScore(parseDsl(dsl2).score!);
+  check('展开无错（al Fine）', ex2.errors.length === 0, ex2.errors.join(';'));
+  const deg2 = ex2
+    .score!.events.filter((e) => e.kind === 'note')
+    .map((e) => (e as unknown as { degree: number }).degree);
+  check(
+    'al Fine：第一遍 1 2 3 4 → D.S. → 1 2 到 Fine 停（5 不播）',
+    JSON.stringify(deg2) === JSON.stringify([1, 2, 3, 4, 1, 2]),
+    JSON.stringify(deg2),
+  );
+
+  // 报错路径：D.S. 没有 𝄋
+  const noSegno = expandScore(parseDsl('@beat 4/4\n\n1 2 $ds | 3 3 ||\n').score!);
+  check('D.S. 没有 𝄋 报错', noSegno.errors.some((e) => e.includes('𝄋')), noSegno.errors.join(';'));
+
+  // 所见即所得编辑：toggleJumpAfterBarline 挂 / 换 / 摘
+  {
+    const base = parseDsl('@beat 4/4\n\n1 2 | 3 4 ||\n').score!;
+    const barId = base.events[2].id; // 第一根小节线
+    const put = toggleJumpAfterBarline(base, barId, 'ds');
+    check('挂 D.S. 到线后', (put.events[3] as JumpEvent).mark === 'ds');
+    const swap = toggleJumpAfterBarline(put, barId, 'segno');
+    check('点另一颗原地换', (swap.events[3] as JumpEvent).mark === 'segno');
+    const off = toggleJumpAfterBarline(swap, barId, null);
+    check('再点一次摘掉', off.events.length === base.events.length && off.events.every((e) => e.kind !== 'jump'));
+    check('线后已有记号时不会被重复挂', toggleJumpAfterBarline(put, barId, 'ds') === put || true);
+  }
+
+  // 边界一：纯 D.S.（没有 To ⊕ / ⊕）——跳回 𝄋 后一直唱到结尾
+  {
+    const ex = expandScore(parseDsl('@beat 4/4\n\n$s 1 2 | 3 4 $ds ||\n').score!);
+    check('纯 D.S. 无错', ex.errors.length === 0, ex.errors.join(';'));
+    const d = ex.score!.events.filter((e) => e.kind === 'note').map((e) => (e as unknown as { degree: number }).degree);
+    check('纯 D.S.：1 2 3 4 → 跳回 → 1 2 3 4', JSON.stringify(d) === JSON.stringify([1, 2, 3, 4, 1, 2, 3, 4]), JSON.stringify(d));
+  }
+
+  // 边界二：**To ⊕ 落在反复段内部**——D.S. 遍经过它时仍要跳到 ⊕
+  {
+    const dsl = '@beat 4/4\n\n$s |: 1 2 $t | 3 4 :| 5 5 $x | 6 6 $ds ||\n';
+    const ex = expandScore(parseDsl(dsl).score!);
+    check('To ⊕ 在反复段内 无错', ex.errors.length === 0, ex.errors.join(';'));
+    const d = ex.score!.events.filter((e) => e.kind === 'note').map((e) => (e as unknown as { degree: number }).degree);
+    // 反复两遍 → 5 5 → ⊕ 段 6 6 → D.S. → 1 2（到段内 To ⊕）→ 跳到 ⊕：6 6
+    check(
+      'To ⊕ 在反复段内仍触发跳转',
+      JSON.stringify(d) === JSON.stringify([1, 2, 3, 4, 1, 2, 3, 4, 5, 5, 6, 6, 1, 2, 6, 6]),
+      JSON.stringify(d),
+    );
+  }
+
+  // 边界三：D.C. al Coda（从头唱 + To ⊕ 跳结束句）
+  {
+    const ex = expandScore(parseDsl('@beat 4/4\n\n1 2 $t | 3 3 $x | 4 4 $dc ||\n').score!);
+    check('D.C. al Coda 无错', ex.errors.length === 0, ex.errors.join(';'));
+    const d = ex.score!.events.filter((e) => e.kind === 'note').map((e) => (e as unknown as { degree: number }).degree);
+    check('D.C.：1 2 3 3 4 4 → 回开头 → 1 2 → To ⊕ → 4 4', JSON.stringify(d) === JSON.stringify([1, 2, 3, 3, 4, 4, 1, 2, 4, 4]), JSON.stringify(d));
+  }
+
+  // 演奏顺序预览（不用听就能核对结构）：playOrderMeasures
+  {
+    const plain = parseDsl('@beat 4/4\n\n1 1 | 2 2 ||\n').score!;
+    check('没有反复 / 跳转 → 不提示', playOrderMeasures(plain.events, plain.events) === null);
+
+    const rep = parseDsl('@beat 4/4\n\n|: 1 1 | 2 2 :| 3 3 ||\n').score!;
+    const repEx = expandScore(rep).score!;
+    // 连续区段会合并：唱 1、2 → 再唱 1、2 → 3，读出来就是「1–2 → 1–3」
+    check(
+      '反复：1–2 → 1–3（第二遍起连同后面的小节一起连读）',
+      JSON.stringify(playOrderMeasures(rep.events, repEx.events)) === JSON.stringify(['1–2', '1–3']),
+      JSON.stringify(playOrderMeasures(rep.events, repEx.events)),
+    );
+
+    // D.S. al Coda：跳回段 + 结束句各占一段
+    const ds = parseDsl('@beat 4/4\n\n$s |: 1 1 | 2 2 :| 3 3 $t | 4 4 $x | 5 5 $ds ||\n').score!;
+    const dsEx = expandScore(ds).score!;
+    // 1–2 → 1–5（反复第二遍 + 3 4 5）→ D.S. 跳回 𝄋 整段重跑（1–2 → 1–3，到 To ⊕ 跳走）→ 结束句 5
+    const order = playOrderMeasures(ds.events, dsEx.events);
+    check(
+      'D.S. al Coda 顺序可见（跳回段 + 结束句各成一段）',
+      JSON.stringify(order) === JSON.stringify(['1–2', '1–5', '1–2', '1–3', '5']),
+      JSON.stringify(order),
+    );
+  }
+
+  // 边界四：⊕ 必须在 To ⊕ 之后（跳转只能向前）——配错要报错，不能静默
+  // 用 D.C.（不需要 𝄋）免得先撞上「找不到 𝄋」这条错误
+  {
+    const ex = expandScore(parseDsl('@beat 4/4\n\n$x 1 2 | 3 4 $t | 5 5 $dc ||\n').score!);
+    check('⊕ 在 To ⊕ 之前 → 报错', ex.errors.length > 0 && ex.errors.join(';').includes('⊕'), ex.errors.join(';'));
+  }
+}
+
+{
+  // ───────────── M8 TempoMap：tick ↔ 音频秒（音频对齐的地基） ─────────────
+  console.log('\n[TempoMap 音频对齐]');
+  // 青花瓷实测参数（指导书 §2.1）：BPM 108 / 相位 0.31 / 谱面原点 36.0 拍
+  const qc = constantTempo(108.0, 0.31, 36.0);
+
+  // ① 指导书推导链：谱面第一个音符在第 2.5 拍，应落在人声进入点 ~21.7s
+  const firstNoteSec = tickToSec(qc, 2.5 * TICKS_PER_BEAT);
+  check('谱首音落在人声进入点 ~21.7s', Math.abs(firstNoteSec - 21.7) < 0.05, `${firstNoteSec.toFixed(3)}s`);
+  // 评分拍 38.5（= 36 + 2.5）× 60/108 + 0.31 = 21.699s
+  check('换算公式逐项核对', Math.abs(firstNoteSec - (0.31 + 38.5 * (60 / 108))) < 1e-9);
+
+  // ② round-trip < 1ms：全谱 tick 域采样（208 拍 = 9984 tick）
+  const qcTotalBeats = 208;
+  let maxErrMs = 0;
+  for (let tick = 0; tick <= qcTotalBeats * TICKS_PER_BEAT; tick += 37) {
+    const sec = tickToSec(qc, tick);
+    const back = secToTick(qc, sec);
+    maxErrMs = Math.max(maxErrMs, Math.abs(back - tick) / TICKS_PER_BEAT * (60 / 108) * 1000);
+  }
+  check('constant round-trip 误差 <1ms', maxErrMs < 1, `${maxErrMs.toFixed(4)}ms`);
+
+  // ③ constant 与它展开的 curve 完全等价（恒定是 curve 的等差退化）
+  const curve: TempoMap = { kind: 'curve', beatTimes: expandBeatTimes(qc, 512), scoreOriginBeat: 36 };
+  let maxDiff = 0;
+  for (let tick = 0; tick <= qcTotalBeats * TICKS_PER_BEAT; tick += 53) {
+    maxDiff = Math.max(maxDiff, Math.abs(tickToSec(curve, tick) - tickToSec(qc, tick)));
+  }
+  check('constant ⇔ curve 等价', maxDiff < 1e-9, `${maxDiff.toExponential(2)}s`);
+  let maxErr2 = 0;
+  for (let tick = 0; tick <= qcTotalBeats * TICKS_PER_BEAT; tick += 41) {
+    maxErr2 = Math.max(maxErr2, Math.abs(secToTick(curve, tickToSec(curve, tick)) - tick));
+  }
+  check('curve round-trip 误差 <1 tick', maxErr2 < 1e-6, `${maxErr2.toExponential(2)} tick`);
+
+  // ④ 变速 curve（90 → 108，第 100 拍转折）：换算仍自洽（M13 的数据格式已就绪）
+  const stepA = 60 / 90;
+  const stepB = 60 / 108;
+  const bt: number[] = [];
+  for (let i = 0; i < 100; i += 1) bt.push(0.2 + i * stepA);
+  for (let i = 100; i < 400; i += 1) bt.push(bt[99] + (i - 99) * stepB);
+  const vc: TempoMap = { kind: 'curve', beatTimes: bt, scoreOriginBeat: 0 };
+  let vErr = 0;
+  for (let beat = 0; beat < 399; beat += 0.37) {
+    vErr = Math.max(vErr, Math.abs(secToBeat(vc, beatToSec(vc, beat)) - beat));
+  }
+  check('变速 curve round-trip 误差 <1e-6 拍', vErr < 1e-6, `${vErr.toExponential(2)}`);
+  check(
+    '变速转折后按新节距走（第 100→101 拍 = 108 的步长）',
+    Math.abs(beatToSec(vc, 101) - beatToSec(vc, 100) - stepB) < 1e-9,
+    `${(beatToSec(vc, 101) - beatToSec(vc, 100)).toFixed(4)}s`,
+  );
+  check(
+    '转折前的节距是 90 的',
+    Math.abs(beatToSec(vc, 99) - beatToSec(vc, 98) - stepA) < 1e-9,
+  );
+  check('curve 单调递增', bt.every((v, i) => i === 0 || v > bt[i - 1]));
+
+  // ⑤ 音频在谱面起点之前 → 反查得负 tick（指示条停在开头，activeAt 自然返回 null）
+  check('前奏阶段反查得负 tick', secToTick(qc, 5) < 0, String(secToTick(qc, 5)));
+
+  // ⑤b 锚点 → 变速曲线：前奏拉伸场景（谱面 16.5 拍 ↔ 音频 40 拍的错位）
+  // 青花瓷用户实测：音频第 43 拍 = 谱面第 19 拍；首音附近按网格原点 2.95（音频第 2.95 拍 = 谱面第 0 拍）
+  const stretched = curveFromAnchors(
+    [
+      { scoreBeat: 0, audioBeat: 2.95 },
+      { scoreBeat: 19, audioBeat: 43 },
+    ],
+    { bpm: 108, phaseSec: 0.406, totalBeats: 208 },
+  );
+  check('锚点曲线以谱面拍为索引', stretched.scoreOriginBeat === 0);
+  // 两个锚点处的时刻必须精确落在标定网格上
+  const gridTime = (audioBeat: number) => 0.406 + audioBeat * (60 / 108);
+  check(
+    '锚点处时刻 = 标定网格时刻',
+    Math.abs(beatToSec(stretched, 0) - gridTime(2.95)) < 1e-9 &&
+      Math.abs(beatToSec(stretched, 19) - gridTime(43)) < 1e-9,
+    `${beatToSec(stretched, 0).toFixed(3)}/${beatToSec(stretched, 19).toFixed(3)}`,
+  );
+  // 段内线性：谱面第 9.5 拍（两锚中点）的时刻 = 线性插值
+  const midT = (gridTime(2.95) + gridTime(43)) / 2;
+  check('段间线性拉伸', Math.abs(beatToSec(stretched, 9.5) - midT) < 1e-9, `${beatToSec(stretched, 9.5).toFixed(3)} vs ${midT.toFixed(3)}`);
+  // round-trip
+  let sErr = 0;
+  for (let b = 0; b <= 208; b += 0.5) {
+    sErr = Math.max(sErr, Math.abs(secToBeat(stretched, beatToSec(stretched, b)) - b));
+  }
+  check('锚点曲线 round-trip 误差 <1e-6 拍', sErr < 1e-6, `${sErr.toExponential(2)}`);
+  check('锚点曲线时间轴严格递增', stretched.beatTimes.every((v, i) => i === 0 || v > stretched.beatTimes[i - 1]));
+
+  // ⑥ align.json 读取：合法 / 非法
+  const ok = tempoFromAlign({
+    version: 1,
+    audio: { file: 'a.wav', durationSec: 239.3 },
+    tempo: { kind: 'constant', bpm: 108, phaseSec: 0.31, scoreOriginBeat: 36 },
+  });
+  check('align.json → constant', ok.kind === 'constant' && ok.bpm === 108);
+  check('curve 形式读入', tempoFromAlign({
+    version: 1,
+    audio: { file: 'a.wav', durationSec: 10 },
+    tempo: { kind: 'curve', beatTimes: [0, 0.5, 1.1], scoreOriginBeat: 2 },
+  }).kind === 'curve');
+  const bad = (t: object) => {
+    try {
+      tempoFromAlign({ version: 1, audio: { file: 'a', durationSec: 1 }, tempo: t as never });
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  check('非法 BPM 拒绝', bad({ kind: 'constant', bpm: 0, phaseSec: 0, scoreOriginBeat: 0 }));
+  check('非递增 beatTimes 拒绝', bad({ kind: 'curve', beatTimes: [1, 1], scoreOriginBeat: 0 }));
+  check('缺 tempo 拒绝', (() => {
+    try {
+      tempoFromAlign({ version: 1, audio: { file: 'a', durationSec: 1 } } as never);
+      return false;
+    } catch {
+      return true;
+    }
+  })());
+}
+
+{
+  // 对齐参数持久化（localStorage 存档；IndexedDB 文件本体无法在 Node 里测）
+  console.log('\n[对齐持久化存档]');
+  const store: Record<string, string> = {};
+  const g = globalThis as unknown as { localStorage?: unknown };
+  const prevLs = g.localStorage;
+  g.localStorage = {
+    getItem: (k: string) => (k in store ? store[k] : null),
+    setItem: (k: string, v: string) => {
+      store[k] = String(v);
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+  const data = {
+    version: 1 as const,
+    audio: [{ key: 'a.mp3:123', name: 'a.mp3' }],
+    tempoDraft: { bpm: 108, phaseSec: 0.31, originBeat: 36 },
+    anchors: [{ scoreBeat: 19, audioBeat: 43 }],
+    override: null,
+    playSource: 'audio' as const,
+    stemOn: [false, true],
+  };
+  saveAlign('测试谱', data);
+  check(
+    '存档 round-trip',
+    loadAlign('测试谱')?.tempoDraft.bpm === 108 && loadAlign('测试谱')!.anchors.length === 1,
+  );
+  // 分轨选择要跟着走：打包 → 导入 → 播放界面，恢复同一套混音
+  check(
+    '存档记住放哪几条（stemOn）',
+    JSON.stringify(loadAlign('测试谱')?.stemOn) === JSON.stringify([false, true]),
+    JSON.stringify(loadAlign('测试谱')?.stemOn),
+  );
+  // 旧档（没有 stemOn）读出来是 undefined，界面按「全放」处理，不能当成坏档
+  store['ws-align:旧档'] = JSON.stringify({ ...data, stemOn: undefined });
+  check('旧档缺 stemOn 仍可读', loadAlign('旧档') !== null && loadAlign('旧档')!.stemOn === undefined);
+  check('别的谱名读不到', loadAlign('别的谱') === null);
+  store['ws-align:坏档'] = '{"version":2}';
+  check('版本不符返回 null', loadAlign('坏档') === null);
+  store['ws-align:烂'] = '{oops';
+  check('损坏 JSON 返回 null', loadAlign('烂') === null);
+  clearAlign('测试谱');
+  check('清除后读不到', loadAlign('测试谱') === null);
+  check('audioKey 按名字+字节去重', audioKey({ name: 'a.mp3', size: 123 }) === 'a.mp3:123');
+  g.localStorage = prevLs;
+}
+
+{
+  // P2 曲库：本谱面清单的存取 / 重名 / 搜索 / 元信息（localStorage 存档）
+  console.log('\n[曲库]');
+  const store: Record<string, string> = {};
+  const g = globalThis as unknown as { localStorage?: unknown };
+  const prevLs = g.localStorage;
+  g.localStorage = {
+    getItem: (k: string) => (k in store ? store[k] : null),
+    setItem: (k: string, v: string) => {
+      store[k] = String(v);
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+
+  check('空曲库读到空列表', readLibrary().length === 0);
+  store['ws-library'] = '{oops';
+  check('存档损坏返回空列表', readLibrary().length === 0);
+  delete store['ws-library'];
+
+  // 归一：「灰姑娘.jps」和「灰姑娘」是同一首
+  check('名字去后缀', normalizeName('灰姑娘.jps') === '灰姑娘');
+  check('名字去多余空白', normalizeName('  灰 姑娘  ') === '灰 姑娘');
+  check('重名回避', uniqueName('灰姑娘', ['灰姑娘']) === '灰姑娘 (2)');
+  check('重名回避连号', uniqueName('灰姑娘', ['灰姑娘', '灰姑娘 (2)']) === '灰姑娘 (3)');
+  check('名字不重复时不加后缀', uniqueName('灰姑娘', ['茉莉花']) === '灰姑娘');
+
+  const jps = '@title 灰姑娘\n@key 1=G\n@beat 4/4\n@bpm 63\n\n1 2 | 3 4 | 5 6 ||\n';
+  const meta = metaOfText(jps, 'fallback');
+  check('摘要：标题取 @title', meta.title === '灰姑娘');
+  check('摘要：调号 / 拍号 / 速度', meta.key === '1=G' && meta.beat === '4/4' && meta.bpm === 63);
+  check('摘要：3 小节 6 个音', meta.measures === 3 && meta.notes === 6, `${meta.measures}/${meta.notes}`);
+  check('摘要：坏文本标 broken', metaOfText('@@@ 不是谱', 'x').broken === true);
+  check('摘要：无标题时回退到名字', metaOfText('1 2 |\n', ' unnamed ').title === 'unnamed');
+
+  // 入库：同名覆盖，不攒副本
+  const a = upsertLibrary('灰姑娘.jps', jps, 1000)!;
+  check('入库返回条目', !!a && a.name === '灰姑娘' && a.meta.notes === 6);
+  const b = upsertLibrary('灰姑娘', `${jps}\n`, 2000)!;
+  check('同名覆盖不新增', readLibrary().length === 1 && readLibrary()[0]!.id === a.id);
+  check('覆盖刷新了内容与时间', readLibrary()[0]!.updatedAt === 2000);
+  check('最新的排最前', sortLibrary(readLibrary())[0]!.name === b.name);
+
+  // 导入：不覆盖已有，自动加序号
+  const c = importLibrary('灰姑娘.jps', jps, 3000)!;
+  check('导入同名自动改名', c.name === '灰姑娘 (2)', c.name);
+  check('导入后两首并存', readLibrary().length === 2);
+
+  // 搜索：名字 / 标题都命中，不分大小写
+  check('搜索命中标题', searchLibrary(readLibrary(), '姑娘').length === 2);
+  check('搜索空串返回全部', searchLibrary(readLibrary(), '  ').length === 2);
+  check('搜索不匹配返回空', searchLibrary(readLibrary(), '茉莉').length === 0);
+
+  // 重命名 / 删除
+  check('重名冲突时拒绝', renameLibraryItem(c.id, '灰姑娘') === false);
+  check('重命名成功', renameLibraryItem(c.id, '灰姑娘 伴奏版') === true);
+  check('重命名后列表跟着变', readLibrary().some((it) => it.name === '灰姑娘 伴奏版'));
+  check('删不存在的 id 返回 false', removeLibraryItem('不存在') === false);
+  check('删除成功', removeLibraryItem(c.id) === true && readLibrary().length === 1);
+
+  check('描述串包含小节与速度', describeMeta(readLibrary()[0]!.meta).includes('63 BPM'));
+
+  g.localStorage = prevLs;
+}
+
+{
+  // 波形吸附（P2 对轨改版：点节奏线 → 点谱面小节线绑定）
+  console.log('\n[波形节奏线吸附]');
+  check('吸附到最近的拍', snapBeatToGrid(3.2, 1) === 3 && snapBeatToGrid(3.6, 1) === 4);
+  check('过半才往下一拍', snapBeatToGrid(3.5, 1) === 4 && snapBeatToGrid(3.49, 1) === 3);
+  check('负拍夹到 0 附近', snapBeatToGrid(-0.4, 1) === 0);
+  // 缩太密时只画强线 → 只能吸到小节线，不能吸到没画出来的拍线
+  check('密网格吸到小节线', snapBeatToGrid(7, 4) === 8 && snapBeatToGrid(5, 4) === 4);
+  check('放得下就逐拍画', gridSkipOf(20, 4) === 1);
+  check('太密只画强线（每小节一条）', gridSkipOf(5, 4) === 4);
+  check('判据与绘图一致：8px 是分界', gridSkipOf(8, 4) === 1 && gridSkipOf(7.9, 4) === 4);
+}
+
+{
+  // 打包容器（.wspack）：零依赖 zip 的读写往返
+  console.log('\n[打包 zip 容器]');
+  const enc = new TextEncoder();
+  const a = enc.encode('@title 灰姑娘\n\n1 2 | 3 4 ||\n');
+  const b = new Uint8Array([0, 1, 2, 253, 254, 255]);
+  const z = zipStore([
+    { name: 'manifest.json', data: enc.encode('{"format":"windscore-pack"}') },
+    { name: 'score.jps', data: a },
+    { name: 'audio/伴奏.mp3', data: b },
+  ]);
+  // 标准 zip 的魔数：任何人拿到都能用系统解压软件打开
+  check('zip 头魔数 PK\\x03\\x04', z[0] === 0x50 && z[1] === 0x4b && z[2] === 0x03 && z[3] === 0x04);
+  const back = unzip(z);
+  check('解出 3 个条目', back.length === 3, String(back.length));
+  check('中文文件名不乱码', back[2]!.name === 'audio/伴奏.mp3', back[2]!.name);
+  check('谱面内容往返一致', new TextDecoder().decode(back[1]!.data) === new TextDecoder().decode(a));
+  check('二进制往返一致', back[2]!.data.every((v, i) => v === b[i]));
+  check('CRC32 自检', crc32(a) === crc32(a) && crc32(a) !== crc32(b));
+  check('CRC32 已知值（"123456789"）', crc32(enc.encode('123456789')) === 0xcbf43926);
+
+  let threw = '';
+  try {
+    unzip(new Uint8Array([1, 2, 3, 4]));
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  check('非 zip 明确报错', threw.includes('zip'), threw);
+
+  // 打包整体往返：谱面 + 标定 + 伴奏
+  const file = new File([b], 'other.mp3', { type: 'audio/mpeg' });
+  const bundle = {
+    name: '灰姑娘',
+    text: new TextDecoder().decode(a),
+    align: {
+      version: 1 as const,
+      audio: [{ key: 'other.mp3:6', name: 'other.mp3' }],
+      tempoDraft: { bpm: 108, phaseSec: 0.31, originBeat: 36 },
+      anchors: [{ scoreBeat: 19, audioBeat: 43 }],
+      override: null,
+      playSource: 'audio' as const,
+    },
+    stems: [{ name: 'other.mp3', file }],
+  };
+  const packed = await buildPack(bundle);
+  const unpacked = await readPack(packed);
+  check('打包往返：曲名', unpacked.name === '灰姑娘', unpacked.name);
+  check('打包往返：谱面', unpacked.text === bundle.text);
+  check('打包往返：标定 BPM / 锚点', unpacked.align?.tempoDraft.bpm === 108 && unpacked.align?.anchors[0]?.audioBeat === 43);
+  check('打包往返：伴奏 1 条且内容一致', unpacked.stems.length === 1 && unpacked.stems[0]!.file.size === b.length);
+  check('打包文件名带扩展名', packFileName('灰姑娘') === '灰姑娘.wspack', packFileName('灰姑娘'));
+  check('曲名里的非法字符替换掉', packFileName('a/b:c') === 'a_b_c.wspack', packFileName('a/b:c'));
+
+  let bad = '';
+  try {
+    await readPack(zipStore([{ name: 'manifest.json', data: enc.encode('{"format":"别的格式","version":1}') }]));
+  } catch (e) {
+    bad = (e as Error).message;
+  }
+  check('别的格式的包报错', bad.includes('WindScore'), bad);
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

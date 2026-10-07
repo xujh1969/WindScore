@@ -32,7 +32,7 @@
     },
     "bundle": {
       "active": true,
-      "targets": "all",
+      "targets": "msi",
       "identifier": "com.ayou.windscore",
       "icon": [
         "icons/32x32.png",
@@ -47,7 +47,7 @@
     },
     "windows": [
       {
-        "title": "WindScore · 电吹管动态谱",
+        "title": "WindScore · 动态谱制作工具",
         "width": 1180,
         "height": 760,
         "minWidth": 900,

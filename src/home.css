@@ -1,0 +1,229 @@
+/*
+ * 首页（启动页）样式。
+ *
+ * 设计取向：一屏读完。品牌沿用既有身份：深墨蓝底 + 金色强调（与 home-bg.svg
+ * 的五线谱剪影同源），系统字栈（离线 exe 不能拉 webfont）。中心构图是启动页
+ * 的本分：LOGO、一句话、两个按钮，别的都不放。
+ *
+ * 规则锁：按钮一律全圆角（pill），面板 / LOGO 底 14px；金色是页面唯一强调色；
+ * 入场动画只做一次且尊重 prefers-reduced-motion。
+ */
+
+body.ws-home {
+  margin: 0;
+  min-height: 100%;
+  font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  color: #f2f3f7;
+  background: #080c22;
+}
+
+/* 背景图铺满固定：五线谱剪影 + 暗角，任何屏幕上文字对比度都够（WCAG AA） */
+.ws-home-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: linear-gradient(180deg, rgba(5, 6, 15, 0.2), rgba(5, 6, 15, 0.74)),
+    url('/home-bg.svg');
+  background-size: cover;
+  background-position: center;
+}
+
+.ws-home-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+  min-height: 100dvh;
+  padding: 48px 24px 36px;
+  text-align: center;
+}
+
+/* ── LOGO ── */
+.ws-logo {
+  width: 76px;
+  height: 76px;
+}
+
+.ws-logo svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 6px 22px rgba(217, 178, 60, 0.22));
+}
+
+/* ── 标题区 ── */
+.ws-home-head {
+  max-width: 720px;
+}
+
+.ws-home-kicker {
+  margin: 0 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.42em;
+  /* 字距拉开后右边会多出空白，居中要跟着补偿 */
+  text-indent: 0.42em;
+  color: rgba(217, 178, 60, 0.85);
+}
+
+.ws-home-title {
+  margin: 0;
+  font-size: clamp(32px, 5.6vw, 56px);
+  font-weight: 700;
+  line-height: 1.16;
+  letter-spacing: 0.02em;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+}
+
+.ws-home-title-en {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.62em;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+  color: #f4e3b2;
+}
+
+.ws-home-sub {
+  margin: 16px 0 0;
+  font-size: 15px;
+  line-height: 1.7;
+  color: rgba(233, 236, 245, 0.78);
+}
+
+/* ── 两个入口按钮 ──
+   主按钮：金底墨字（金底配白字对比度不够，墨字 8:1+）；
+   副按钮：描边幽灵，白字。两枚都是 pill 形，与卡片圆角形成固定规则。 */
+.ws-home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px;
+}
+
+.ws-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 218px;
+  padding: 14px 34px;
+  border-radius: 999px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.ws-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.ws-btn:active {
+  transform: translateY(1px);
+}
+
+.ws-btn:focus-visible {
+  outline: 2px solid #f4e3b2;
+  outline-offset: 3px;
+}
+
+.ws-btn-primary {
+  border: 1px solid #d9b23c;
+  background: #d9b23c;
+  color: #0b0e1e;
+  box-shadow: 0 10px 30px rgba(217, 178, 60, 0.24);
+}
+
+.ws-btn-primary:hover {
+  background: #e6c356;
+  border-color: #e6c356;
+  box-shadow: 0 12px 34px rgba(217, 178, 60, 0.32);
+}
+
+.ws-btn-ghost {
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f2f3f7;
+}
+
+.ws-btn-ghost:hover {
+  border-color: rgba(217, 178, 60, 0.7);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ── 页脚 ── */
+.ws-home-foot {
+  margin-top: 6px;
+}
+
+.ws-home-author {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: rgba(226, 230, 240, 0.55);
+}
+
+/* ── 入场：只做一次的淡入上移，四层各差一拍 ──
+   动机的说明：启动页只有一次「开门」的时刻，入场序列就是全部动效 */
+@media (prefers-reduced-motion: no-preference) {
+  .ws-logo,
+  .ws-home-head,
+  .ws-home-actions,
+  .ws-home-foot {
+    animation: ws-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .ws-home-head {
+    animation-delay: 0.08s;
+  }
+
+  .ws-home-actions {
+    animation-delay: 0.16s;
+  }
+
+  .ws-home-foot {
+    animation-delay: 0.24s;
+  }
+
+  @keyframes ws-rise {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* ── 移动端：按钮纵排、占满宽度，LOGO 缩一档 ── */
+@media (max-width: 560px) {
+  .ws-home-main {
+    gap: 28px;
+    padding: 40px 20px 32px;
+  }
+
+  .ws-logo {
+    width: 62px;
+    height: 62px;
+  }
+
+  .ws-home-actions {
+    flex-direction: column;
+    width: 100%;
+    max-width: 320px;
+  }
+
+  .ws-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

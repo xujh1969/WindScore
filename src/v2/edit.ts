@@ -15,10 +15,11 @@ import {
   withDots,
   type DurationTier,
 } from './ticks';
-import { isTimed } from './types';
+import { isTimed, type JumpEvent, type JumpMark } from './types';
 import type {
   Accidental,
   Articulation,
+  BarlineEvent,
   BeatGroup,
   Degree,
   GraceNote,
@@ -62,6 +63,37 @@ function newIds(score: Score): { ev: string; grp: string } {
     ev: `e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`,
     grp: `g${maxSeq(score.groups.map((g) => g.id), 'g') + 1}`,
   };
+}
+
+/**
+ * 跳转记号（L2）的所见即所得编辑：挂 / 换 / 摘选中**小节线后面**的那颗。
+ *
+ * 记号永远是独立事件（跟 DSL 的 `$s` 写在小节线后面一致）：
+ *   - 线后没有跳转记号 → 插入
+ *   - 线后已是同一颗   → 摘掉（再点一次取消）
+ *   - 线后是另一颗     → 原地换（一根线只挂一颗，不叠罗汉）
+ * mark 传 null = 摘掉。
+ */
+export function toggleJumpAfterBarline(
+  score: Score,
+  barlineId: string,
+  mark: JumpMark | null,
+): Score {
+  const idx = score.events.findIndex((e) => e.id === barlineId);
+  if (idx < 0 || score.events[idx].kind !== 'barline') return score;
+  const next = score.events[idx + 1];
+  const existing = next && next.kind === 'jump' ? next : null;
+
+  if (!mark || existing?.mark === mark) {
+    if (!existing) return score;
+    return { ...score, events: score.events.filter((e) => e.id !== existing.id) };
+  }
+  const id = newIds(score).ev;
+  const ev: JumpEvent = { id, kind: 'jump', mark };
+  const events = [...score.events];
+  if (existing) events.splice(idx + 1, 1, ev);
+  else events.splice(idx + 1, 0, ev);
+  return { ...score, events };
 }
 
 function insert(score: Score, at: number, ev: Event): Score {
@@ -248,6 +280,150 @@ export function pressBarline(score: Score, at: number): { score: Score; cursor: 
     return { score: setBarlineStyle(score, left.id, 'final'), cursor: at };
   }
   return { score: insertBarline(score, at), cursor: at + 1 };
+}
+
+// ───────────────────────── 小节线的反复属性 ─────────────────────────
+
+/**
+ * 改一根小节线的反复属性。**就地改，绝不新增事件**：
+ * 反复记号就是这条线自己的状态（`|` → `|:` / `:|`），
+ * 若像早期那样往光标处插一个独立记号，谱面就会多出一条线（`| |: 5 6 …`）。
+ *
+ * repeat 传 undefined = 取消（回到普通小节线）；`'start'` 与 `'end'` 互斥，
+ * 同一根线不能既是反复开始又是反复结束。
+ */
+export function setBarlineRepeat(
+  score: Score,
+  id: string,
+  repeat?: 'start' | 'end',
+  times?: number,
+): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'barline') return e;
+      const bar: BarlineEvent = { ...e };
+      if (repeat) {
+        bar.repeat = repeat;
+        if (repeat === 'end') bar.times = Math.max(2, Math.round(times ?? bar.times ?? 2));
+      } else {
+        delete bar.repeat;
+      }
+      if (repeat !== 'end') delete bar.times;
+      return bar;
+    }),
+  };
+}
+
+/** 改反复遍数（`:|3`）；传 2 就是缺省的两遍 */
+export function setRepeatTimes(score: Score, id: string, times: number): Score {
+  return {
+    ...score,
+    events: score.events.map((e) =>
+      e.id === id && e.kind === 'barline' && e.repeat === 'end'
+        ? { ...e, times: Math.max(2, Math.round(times)) }
+        : e,
+    ),
+  };
+}
+
+/**
+ * 设 / 清跳房子：`[1]` 表示「从这条线起，后面这一房是第 1 遍的结尾」。
+ * 房的范围到下一个带房子的线（或所在反复段的那根 `:|`）为止，所以只设开头。
+ * numbers 传 undefined = 取消这个房。
+ */
+export function setBarlineVolta(score: Score, id: string, numbers?: number[]): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'barline') return e;
+      const bar: BarlineEvent = { ...e };
+      if (numbers && numbers.length > 0) bar.volta = [...numbers];
+      else delete bar.volta;
+      return bar;
+    }),
+  };
+}
+
+/** 切换房子的「右端开放」（简谱惯例：长房 / 跨行房开放，两三小节的短房画右钩） */
+export function setBarlineVoltaOpen(score: Score, id: string, open: boolean): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'barline') return e;
+      const bar: BarlineEvent = { ...e };
+      if (open) bar.voltaOpen = true;
+      else delete bar.voltaOpen;
+      return bar;
+    }),
+  };
+}
+
+/**
+ * 把「完整小节」选区直接设成第 n 房——比逐根点小节线顺手得多：
+ *
+ *   - 选区头**前面**那根小节线 = 房子左墙，挂上 [n]（房子向右自动延伸）
+ *   - 选区尾**后面**那根小节线 = 自动变反复结束 :|（房子右端正好收口在它上面）
+ *   - 左墙本身是旧段的 :| 时先拆掉：两间房必须同处一段（|: A [1] B [2] C :|），
+ *     拆完旧 |: 自然变成容纳两房的段首——这正是用户从单房扩成双房时的实际路径
+ *
+ * 返回 null = 选区不是完整小节 / 段首没有 |:（error 里说明给 UI 显示）。
+ */
+export function setVoltaFromSelection(
+  score: Score,
+  ids: string[],
+  n: number,
+): { score: Score | null; error?: string } {
+  if (ids.length === 0) return { score: null, error: '先选中音符' };
+  const positions = ids
+    .map((id) => score.events.findIndex((e) => e.id === id))
+    .filter((i) => i >= 0)
+    .sort((a, b) => a - b);
+  if (positions.length !== ids.length) return { score: null, error: '选区不连续' };
+  const first = positions[0];
+  const last = positions[positions.length - 1];
+  // 选区是**时值事件**的集合：跨多小节时中间的小节线（以及换气等装饰）不在选区里，
+  // 不算断开；但范围内的时值事件必须全被选中——漏选中间的音就不是「完整小节」
+  const selected = new Set(positions);
+  for (let i = first; i <= last; i += 1) {
+    const ev = score.events[i];
+    if ((ev.kind === 'note' || ev.kind === 'rest') && !selected.has(i)) {
+      return { score: null, error: '选区中间有没选到的音——房子要罩住整小节，请整小节选满' };
+    }
+  }
+  const wall = first > 0 ? score.events[first - 1] : undefined;
+  const tail = last + 1 < score.events.length ? score.events[last + 1] : undefined;
+  if (!wall || wall.kind !== 'barline') {
+    return { score: null, error: '要从整小节的开头选起（选区前一根应是小节线）' };
+  }
+  if (!tail || tail.kind !== 'barline') {
+    return { score: null, error: '要选到整小节的结尾（选区后一根应是小节线）' };
+  }
+
+  // 段首检查：墙之前要有还没闭合的 |:。墙自身是旧 :| 时按「将被拆掉」处理，
+  // 不当闭合算——拆完之后旧 |: 正好管到新加的这间房
+  const stack: number[] = [];
+  for (let i = 0; i < first; i += 1) {
+    const ev = score.events[i];
+    if (ev.kind !== 'barline') continue;
+    const bar = ev as BarlineEvent;
+    if (bar.repeat === 'start') stack.push(i);
+    else if (bar.repeat === 'end' && i !== first - 1) stack.pop();
+  }
+  if (stack.length === 0) {
+    return { score: null, error: '选区前面没有反复起点 |:——先选中段首那根小节线设成 |:，再来挂房子' };
+  }
+
+  const wallId = wall.id;
+  let next = score;
+  if ((wall as BarlineEvent).repeat === 'end') {
+    next = setBarlineRepeat(next, wallId, undefined);
+  }
+  next = setBarlineRepeat(next, tail.id, 'end');
+  next = setBarlineVolta(next, wallId, [n]);
+  // 右端开合不用在这里定：排版层自动判断（下一根线是 :| → 封闭，否则开放），
+  // voltaOpen 仅作手动覆盖
+  return { score: next };
 }
 
 // ───────────────────────── 修改单个事件 ─────────────────────────
@@ -646,6 +822,12 @@ export interface TierCandidate {
   label: string;
   ticks: number[];
   tuplet?: number;
+  /**
+   * 与 ticks 对齐的每音附点数（缺省全 0）。附点切分必须带上——
+   * 「半拍+附点」= 36 tick，不写 dot 的话排版会画成四分音符的错样
+   * （beamCount(36)=0，也没有增时线），数字看着是一拍响出来只有 0.75。
+   */
+  dots?: (0 | 1 | 2)[];
 }
 
 function beatLabel(t: number): string {
@@ -673,9 +855,24 @@ export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
 
   if (n === 1) return [{ label: `整 ${beatLabel(totalTicks)}`, ticks: [totalTicks] }];
   if (n === 2 || n === 4 || n === 8) {
-    return Number.isInteger(even)
-      ? [{ label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) }].filter(legal)
-      : [];
+    const out =
+      Number.isInteger(even)
+        ? [{ label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) }].filter(legal)
+        : [];
+    // 两音的附点切分（与三音的「前八后十六」同思路）：附点音占 3t/4、短音占 t/4，
+    // 两个方向各一档。附点音的基准正好是均分值（1.5 × t/2 = 3t/4），所以带 dot=1。
+    // t 不能被 4 整除或 3t/4 不是合法 tick（如 t=12 → 9/3、t=36 → 27）就自然出局。
+    if (n === 2 && totalTicks % 4 === 0) {
+      const q = totalTicks / 4;
+      const a = totalTicks - q;
+      const dotted = (first: boolean): TierCandidate => ({
+        label: `${first ? '前音' : '后音'}附点 ${beatLabel(a)} + ${first ? '后音' : '前音'} ${beatLabel(q)}`,
+        ticks: first ? [a, q] : [q, a],
+        dots: first ? [1, 0] : [0, 1],
+      });
+      out.push(dotted(true), dotted(false));
+    }
+    return out.filter(legal);
   }
 
   const out: TierCandidate[] = [];
@@ -723,6 +920,7 @@ export function applyTier(
   totalTicks: number,
   ticks?: number[],
   tuplet?: number,
+  dots?: (0 | 1 | 2)[],
 ): Score | null {
   if (ids.length === 0) return null;
 
@@ -768,16 +966,17 @@ export function applyTier(
     ];
   }
 
-  const byId: Record<string, number> = {};
-  members.forEach((m, i) => (byId[m.id] = parts[i]));
+  const byId: Record<string, { ticks: number; dot: 0 | 1 | 2 }> = {};
+  members.forEach((m, i) => (byId[m.id] = { ticks: parts[i], dot: dots?.[i] ?? 0 }));
 
   return {
     ...score,
     groups,
     events: score.events.map((e) => {
-      const inSel = e.id in byId;
-      const patched = inSel ? { ...e, ticks: byId[e.id] } : e;
-      if (!inSel) return patched;
+      const p = byId[e.id];
+      if (!p) return e;
+      // dot 一律显式写（0 = 无点）：附点切分换档后旧附点不能残留
+      const patched = { ...e, ticks: p.ticks, dot: p.dot };
       return { ...patched, groupId: gid ?? groups[groups.length - 1].id };
     }),
   };
@@ -972,17 +1171,47 @@ export function canonicalDurationBase(ticks: number): number | undefined {
 }
 
 export function setDot(score: Score, id: string, dots: 0 | 1 | 2): Score {
+  const ev = score.events.find((e) => e.id === id);
+  if (!ev || (ev.kind !== 'note' && ev.kind !== 'rest')) return score;
+  const prev = ev.dot ?? 0;
+  // 基准时值：带点的按点数还原；不带点的先归一到「加点前基准」
+  const base =
+    prev > 0 ? ev.ticks / (prev === 1 ? 1.5 : 1.75) : (canonicalDurationBase(ev.ticks) ?? ev.ticks);
+  const target = withDots(base, dots);
+
+  // 拍内组守恒（I1）：本音加点占掉多少，同组其余成员按守恒重分——
+  // 两音 1 拍组里给一个音加附点（0.5 → 0.75 拍），另一个自动变 1/4 拍，
+  // 否则 Σ成员 ≠ 组总时值，这拍就悄悄变长了。分不动（剩余不够最小合法粒度）
+  // 才解散组，退回「单音改」的语义（与 setTicks 一致）。
+  const gid = (ev as { groupId?: string }).groupId;
+  const g = gid ? score.groups.find((x) => x.id === gid) : undefined;
+  if (g) {
+    const others = g.memberIds.filter((m) => m !== id);
+    const remain = g.totalTicks - target;
+    const parts = remain > 0 ? distribute(remain, others.length) : [];
+    const ok = others.length >= 1 && parts.length === others.length && parts.every((p) => isLegalTick(p) && p > 0);
+    if (ok) {
+      const byId: Record<string, number> = {};
+      others.forEach((m, i) => (byId[m] = parts[i]));
+      return {
+        ...score,
+        events: score.events.map((e) => {
+          if (e.id === id) return { ...e, dot: dots, ticks: target };
+          // 重分直接给定 tick，旧附点必须清掉（带点的 ticks 不再是纯时值）
+          return e.id in byId ? { ...e, ticks: byId[e.id], dot: 0 } : e;
+        }),
+      };
+    }
+    const dissolved = ungroup(score, gid!);
+    return {
+      ...dissolved,
+      events: dissolved.events.map((e) => (e.id === id ? { ...e, dot: dots, ticks: target } : e)),
+    };
+  }
+
   return {
     ...score,
-    events: score.events.map((e) => {
-      // 休止符与音符一样可带附点（0. = 1.5 拍）
-      if (e.id !== id || (e.kind !== 'note' && e.kind !== 'rest')) return e;
-      const prev = e.dot ?? 0;
-      // 基准时值：带点的按点数还原；不带点的先归一到「加点前基准」
-      const base =
-        prev > 0 ? e.ticks / (prev === 1 ? 1.5 : 1.75) : (canonicalDurationBase(e.ticks) ?? e.ticks);
-      return { ...e, dot: dots, ticks: withDots(base, dots) };
-    }),
+    events: score.events.map((e) => (e.id === id ? { ...e, dot: dots, ticks: target } : e)),
   };
 }
 

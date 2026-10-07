@@ -19,6 +19,13 @@ export type OrnamentKind = 'trill' | 'mordent' | 'turn' | 'appoggiatura';
 
 export interface BaseEvent {
   id: string;
+  /**
+   * 展开产物的血缘：这个事件是从原谱哪个事件复制来的。
+   * **只出现在 expandScore() 的输出里**，原谱事件不带它。
+   * 用途：播放到第二遍反复时，光标/高亮要落回原谱那同一个音上；
+   * 点击展开谱的音也要能定位回原谱（见 expand.ts）。
+   */
+  originId?: string;
 }
 
 /** tie = 延音线（同音高，播放时合并）；slur = 圆滑线（不吐音）。两者必须分开存（§5.2） */
@@ -96,29 +103,32 @@ export interface RestEvent extends BaseEvent {
   groupId?: string;
 }
 
+/**
+ * 小节线。**反复记号是它的属性，不是独立事件**：
+ * `|:`、`:|`、跳房子都画在这一根线上，所以谱面上永远不会多出一条线。
+ * （早期把它们做成独立事件，插入时就会在原有小节线旁边再长一条 `| |:`，
+ *   而且「点这条线改它」也无从下手。）
+ */
 export interface BarlineEvent extends BaseEvent {
   kind: 'barline';
   style: 'single' | 'final';
   /** 弱起 / 不完全小节开关（§8.2） */
   partial?: boolean;
-}
-
-export interface RepeatStartEvent extends BaseEvent {
-  kind: 'repeatStart';
-}
-
-export interface RepeatEndEvent extends BaseEvent {
-  kind: 'repeatEnd';
-  times: number;
-}
-
-export interface VoltaStartEvent extends BaseEvent {
-  kind: 'voltaStart';
-  numbers: number[];
-}
-
-export interface VoltaEndEvent extends BaseEvent {
-  kind: 'voltaEnd';
+  /** `|:` 反复开始 / `:|` 反复结束 */
+  repeat?: 'start' | 'end';
+  /** `:|` 的演奏遍数，缺省 2（`:|3` = 三遍） */
+  times?: number;
+  /**
+   * 跳房子：从这一根线起，后面这一房属于第几遍（如 `[1]`、`[2]`、`[1,2]`）。
+   * 房的范围 = 本线 → 下一条带 volta 的线（或所在反复段的那根 `:|`）。
+   */
+  volta?: number[];
+  /**
+   * 房子**右端开放**（DSL 写不闭合的 `[1`）：括线只有左钩、横线拉到收口处
+   * 但不画右钩。简谱惯例：房子跨很多小节 / 跨行时右端开放
+   * （「一直演奏直到 :|」），只有两三个小节的短房才画右钩。缺省闭合。
+   */
+  voltaOpen?: boolean;
 }
 
 export type JumpMark = 'segno' | 'coda' | 'fine' | 'dc' | 'ds' | 'tocoda';
@@ -142,10 +152,6 @@ export type Event =
   | NoteEvent
   | RestEvent
   | BarlineEvent
-  | RepeatStartEvent
-  | RepeatEndEvent
-  | VoltaStartEvent
-  | VoltaEndEvent
   | JumpEvent
   | DirectiveEvent;
 
@@ -187,6 +193,11 @@ export interface ScoreMeta {
   fontSize?: number;
   /** 字间距（px），缺省 0。加在每个记号占位的横向空隙上，正数拉开、负数收紧 */
   letterSpacing?: number;
+  /**
+   * 小节线下方是否画小节号（`@measureNo off` 关掉）。缺省 true——
+   * 只有用户明确关掉时才写进文件，老文件保持原样
+   */
+  showMeasureNumbers?: boolean;
 }
 
 export interface Score {
@@ -201,10 +212,3 @@ export function isTimed(e: Event): e is TimedEvent {
   return e.kind === 'note' || e.kind === 'rest';
 }
 
-export function isNote(e: Event): e is NoteEvent {
-  return e.kind === 'note';
-}
-
-export function groupOf(score: Score, id: string): BeatGroup | undefined {
-  return score.groups.find((g) => g.id === id);
-}

@@ -135,11 +135,3 @@ export function validateGroups(score: Score): Violation[] {
   return out;
 }
 
-/** 开发期断言：违反即崩（spec §6.3「开发期即崩，不留隐患」） */
-export function assertInvariants(score: Score): void {
-  const v = validateGroups(score);
-  if (v.length > 0) {
-    const detail = v.map((x) => `[${x.code}] ${x.groupId}: ${x.message}`).join('\n  ');
-    throw new Error(`BeatGroup 不变量违反：\n  ${detail}`);
-  }
-}

@@ -30,6 +30,7 @@ import { normalizeKey } from './timeline';
 import type {
   Accidental,
   Articulation,
+  BarlineEvent,
   BeatGroup,
   Degree,
   GraceNote,
@@ -85,7 +86,7 @@ const ACCIDENTALS: Record<string, Accidental> = {
 /** 力度 token：常规档位 + 渐强渐弱（写在音符前面，绑到那个音上） */
 const DYNAMIC_RE = /^(pp|mp|mf|ff|p|f|cresc|dim)$/;
 
-const DEFAULT_META: ScoreMeta = {
+export const DEFAULT_META: ScoreMeta = {
   title: '未命名曲谱',
   key: '1=C',
   beat: '4/4',
@@ -174,6 +175,13 @@ export function parseDsl(text: string): ParseResult {
           const n = Number(v);
           if (Number.isFinite(n) && n >= -4 && n <= 24) meta.letterSpacing = n;
           else errors.push(`字间距解析失败（应为 -4–24 的数字）：${v}`);
+          break;
+        }
+        case 'measureno': {
+          // 小节号：只有 off 会写进文件（缺省是显示）
+          if (/^(off|0|false|no)$/i.test(v)) meta.showMeasureNumbers = false;
+          else if (/^(on|1|true|yes)$/i.test(v)) meta.showMeasureNumbers = true;
+          else errors.push(`小节号开关解析失败（应为 on / off）：${v}`);
           break;
         }
         default:
@@ -379,6 +387,63 @@ export function parseDsl(text: string): ParseResult {
     lastNoteId = null;
   };
 
+  /** 反复记号也是小节线：拍内组不得跨过它，延音线也不接续 */
+  const barrier = () => {
+    if (currentGroup) {
+      errors.push('拍内组不得跨反复记号，请先用 > 收尾');
+      currentGroup = null;
+    }
+    lastNoteId = null;
+  };
+
+  const pushSimple = (ev: Event): void => {
+    events.push(ev);
+    byId.set(ev.id, ev);
+  };
+
+  /**
+   * 反复记号本身就是一根小节线，只是多了属性：
+   * `|:` = 这条线开始反复，`:|` = 这条线结束反复。
+   * 所以这里**建的是小节线事件**，不会在谱面上多出一条线。
+   */
+  const pushRepeatBarline = (repeat: 'start' | 'end', times?: number) => {
+    barrier();
+    const ev: BarlineEvent = { id: nextId(), kind: 'barline', style: 'single', repeat };
+    if (repeat === 'end') ev.times = times ?? 2;
+    pushSimple(ev);
+  };
+
+  /** 最近一条小节线（房子 `[n]` 要挂在它身上） */
+  const lastBarline = (): BarlineEvent | undefined => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (e.kind === 'barline') return e;
+    }
+    return undefined;
+  };
+
+  /**
+   * 跳房子 `[n]`：写在小节线**后面**，表示从这条线起进入第 n 遍的结尾。
+   * 房的范围到「下一条带房子的线」或「所在反复段的那根 `:|`」为止，
+   * 因此不需要收尾记号——用户只写开头。
+   * `[n`（不闭合右括号）= **右端开放**：括线只画左钩，演奏一直延续到 :|。
+   */
+  const markVolta = (numbers: number[], open: boolean) => {
+    const bar = lastBarline();
+    if (!bar) {
+      errors.push(`房子 [${numbers.join(',')}] 前面没有小节线（房子要写在小节线后面，如 | [1] …）`);
+      return;
+    }
+    if (bar.volta) {
+      errors.push(
+        `第 ${bar.volta.join(',')} 房与 [${numbers.join(',')}] 房之间缺少小节线（两个房子必须各自起在一根小节线上）`,
+      );
+      return;
+    }
+    bar.volta = numbers;
+    if (open) bar.voltaOpen = true;
+  };
+
 
   for (const line of body) {
     // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
@@ -463,13 +528,30 @@ export function parseDsl(text: string): ParseResult {
           const ev: Event = { id, kind: 'directive', type: 'dynamic', value: raw };
           events.push(ev);
           byId.set(id, ev);
-        } else if (
-          raw === '|:' ||
-          raw.startsWith(':|') ||
-          /^\[\d+\]$/.test(raw) ||
-          raw.startsWith('$')
-        ) {
-          errors.push(`本阶段未实现的记号（M4）：${raw}`);
+        } else if (raw === '|:') {
+          pushRepeatBarline('start');
+        } else if (/^:\|\d*$/.test(raw)) {
+          // `:|` 两遍，`:|3` 三遍
+          pushRepeatBarline('end', raw.length > 2 ? Number(raw.slice(2)) : 2);
+        } else if (/^\[\d+(,\d+)*\]$/.test(raw)) {
+          // 跳房子 `[1]` `[2]` `[1,2]`：挂在前面的那根小节线上
+          markVolta(raw.slice(1, -1).split(',').map(Number), false);
+        } else if (/^\[\d+(,\d+)*$/.test(raw)) {
+          // `[1` 不闭合 = 右端开放的房子（长房 / 跨行房的简谱惯例）
+          markVolta(raw.slice(1).split(',').map(Number), true);
+        } else if (/^\$(s|x|t|f|ds|dc)$/i.test(raw)) {
+          // 跳转记号（L2）：$s=𝄋 segno · $x=⊕ coda · $t=To ⊕ · $f=Fine · $ds=D.S. · $dc=D.C.
+          const mark = ({ s: 'segno', x: 'coda', t: 'tocoda', f: 'fine', ds: 'ds', dc: 'dc' } as const)[
+            raw.slice(1).toLowerCase()
+          ]!;
+          const id = nextId();
+          const ev: Event = { id, kind: 'jump', mark };
+          events.push(ev);
+          byId.set(id, ev);
+        } else if (raw.startsWith('$')) {
+          errors.push(
+            `跳转记号无法识别：${raw}（可用 $s=𝄋 · $x=⊕ · $t=To⊕ · $f=Fine · $ds=D.S. · $dc=D.C.）`,
+          );
         } else {
           pushTimed(raw, graceBefore, graceAfter);
         }
@@ -491,6 +573,8 @@ export function parseDsl(text: string): ParseResult {
     errors.push('谱面结束时 < 未闭合');
     closeGroup();
   }
+  // 房子没有收尾记号：范围由「下一条带房子的线 / 所在反复段的 :|」决定，
+  // 展开器会据此判断它是否在反复段内、属于第几遍。
   if (events.length === 0) errors.push('谱面为空');
 
   // 转调记号没有落到任何音符上（写在行尾 / 终止线前 / 全曲最后一个记号）：
@@ -612,6 +696,7 @@ export function serializeDsl(score: Score): string {
   // 版式参数只在用户改过时写出（缺省值不写，老文件保持原样）
   if (score.meta.fontSize !== undefined) head.push(`@size ${score.meta.fontSize}`);
   if (score.meta.letterSpacing !== undefined) head.push(`@space ${score.meta.letterSpacing}`);
+  if (score.meta.showMeasureNumbers === false) head.push('@measureNo off');
 
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
   const nextOf = new Map<string, Event>();
@@ -714,10 +799,28 @@ export function serializeDsl(score: Score): string {
         emitted.add(ev.id);
         break;
       }
-      case 'barline':
-        out.push(ev.style === 'final' ? '||' : ev.partial ? '|{partial}' : '|');
+      case 'barline': {
+        // 反复记号是这条线的属性，不是另一个记号——所以只有**一个** token
+        let tok: string;
+        if (ev.repeat === 'start') tok = '|:';
+        else if (ev.repeat === 'end') tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ':|';
+        else if (ev.style === 'final') tok = '||';
+        else if (ev.partial) tok = '|{partial}';
+        else tok = '|';
+        out.push(tok);
+        // 房子写在这条线后面：`| [1] 3 3 | [2] 4 4 :|`；开放右端写不闭合的 `[1`
+        if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(',')}` : `[${ev.volta.join(',')}]`);
         emitted.add(ev.id);
         break;
+      }
+      case 'jump': {
+        const tok = { segno: '$s', coda: '$x', tocoda: '$t', fine: '$f', ds: '$ds', dc: '$dc' }[
+          ev.mark
+        ];
+        out.push(tok);
+        emitted.add(ev.id);
+        break;
+      }
       case 'directive':
         out.push(ev.value);
         emitted.add(ev.id);

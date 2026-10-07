@@ -71,16 +71,6 @@ export function isLegalTick(t: number): boolean {
   return LEGAL_SET.has(t);
 }
 
-/** 落到最近的合法 tick（spec §3.3「落到附近合法 tick 并提示」） */
-export function snapToLegalTick(t: number): number {
-  if (isLegalTick(t)) return t;
-  let best = LEGAL_TICKS[0];
-  for (const c of LEGAL_TICKS) {
-    if (Math.abs(c - t) < Math.abs(best - t)) best = c;
-  }
-  return best;
-}
-
 export interface DurationTier {
   label: string;
   ticks: number;

@@ -4,9 +4,63 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WindScore · 电吹管动态谱</title>
+    <meta name="description" content="WindScore：简谱写谱器、对轨（伴奏对齐）与曲库，一体化动态谱制作工具" />
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/home.css" />
   </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+  <body class="ws-home">
+    <div class="ws-home-bg" aria-hidden="true"></div>
+
+    <main class="ws-home-main">
+      <!-- LOGO：金色记谱标记 + WindScore 字标（矢量，随页面缩放） -->
+      <div class="ws-logo" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" role="img">
+          <rect x="2" y="2" width="60" height="60" rx="14" fill="rgba(217,178,60,0.14)" stroke="#d9b23c" stroke-width="1.5" />
+          <g stroke="#d9b23c" stroke-width="2" stroke-linecap="round" opacity="0.55">
+            <path d="M14 24h36" />
+            <path d="M14 32h36" />
+            <path d="M14 40h24" />
+          </g>
+          <path d="M26 42V22l16-3.5V38" stroke="#f4e3b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <ellipse cx="22.5" cy="42.5" rx="4.6" ry="3.6" transform="rotate(-18 22.5 42.5)" fill="#f4e3b2" />
+          <ellipse cx="38.5" cy="38.5" rx="4.6" ry="3.6" transform="rotate(-18 38.5 38.5)" fill="#f4e3b2" />
+        </svg>
+      </div>
+
+      <header class="ws-home-head">
+        <p class="ws-home-kicker">电吹管动态谱</p>
+        <h1 class="ws-home-title">
+          <span class="ws-home-title-en">WindScore</span>
+          动态谱制作工具
+        </h1>
+        <p class="ws-home-sub">简谱写谱、伴奏对轨、曲库管理，一首歌从纸面到动态谱。</p>
+      </header>
+
+      <nav class="ws-home-actions" aria-label="入口">
+        <a class="ws-btn ws-btn-primary" href="./play.html">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path d="M6 4.5v11l9-5.5z" />
+          </svg>
+          动态谱演奏
+        </a>
+        <a class="ws-btn ws-btn-ghost" href="./editor.html">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12.8 3.9l3.3 3.3L7 16.3l-4 1 1-4z" />
+          </svg>
+          动态谱编辑
+        </a>
+        <!-- 曲库管理是独立页面（library.html）：不进记谱，直接管一批谱 -->
+        <a class="ws-btn ws-btn-ghost" href="./library.html">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 4h4v12H3zM8.5 4h4v12h-4zM14 3.6h3.1l-1 12.8H14z" />
+          </svg>
+          曲库编辑
+        </a>
+      </nav>
+
+      <footer class="ws-home-foot">
+        <p class="ws-home-author">软件作者：程序员老许，VX：da-han</p>
+      </footer>
+    </main>
   </body>
 </html>

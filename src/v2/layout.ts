@@ -9,8 +9,16 @@
  *   2. 不在 BeatGroup 中间断行（共用减时线的一组必须同行）
  */
 
-import { beamCount, TICKS_PER_BEAT, tupletBeamCount } from './ticks';
-import type { Accidental, Event, GraceNote, NoteEvent, Score } from './types';
+import { beamCount, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
+import type {
+  Accidental,
+  BarlineEvent,
+  Event,
+  GraceNote,
+  JumpMark,
+  NoteEvent,
+  Score,
+} from './types';
 
 export interface HitBox {
   eventId: string;
@@ -22,9 +30,11 @@ export interface HitBox {
 
 export interface PlacedItem {
   eventId: string;
-  kind: 'note' | 'rest' | 'barline' | 'directive';
+  kind: 'note' | 'rest' | 'barline' | 'directive' | 'jump';
   /** directive 的文本，如力度 mf */
   value?: string;
+  /** jump 的记号类型（𝄋 / ⊕ / To ⊕ / D.S. / D.C. / Fine） */
+  mark?: JumpMark;
   /** 在 score.events 中的下标，供光标定位 */
   eventIndex: number;
   x: number;
@@ -54,6 +64,16 @@ export interface PlacedItem {
   graceInk?: number;
   /** 断音 / 顿音（小圆点），画在音符上方 */
   staccato?: boolean;
+  /** 反复记号：这一格是小节线 + 反复点（start = 右侧两点，end = 左侧两点） */
+  repeat?: 'start' | 'end';
+  /** `:|3` 的遍数，画在反复点上方 */
+  repeatTimes?: number;
+  /** 房子号（`[1]` → [1]），画在括线里 */
+  volta?: number[];
+  /** 房子右端开放（不画右钩） */
+  voltaOpen?: boolean;
+  /** 小节号（画在小节线下方的小字，便于定位）：这条线结束的是第几小节 */
+  measure?: number;
   /** 力度，画在音符下方 */
   dynamic?: string;
   /** 渐强 / 渐弱，画在音符下方力度记号旁边 */
@@ -91,6 +111,19 @@ export interface PlacedTuplet {
   text: string;
 }
 
+/** 跳房子的括线：从 `[1]` 那根小节线拉到房子的收尾处，里面写遍数 */
+export interface PlacedVolta {
+  x0: number;
+  x1: number;
+  numbers: number[];
+  /** 右端开放（不画右钩）：长房 / 跨行房的简谱惯例 */
+  open?: boolean;
+  /** 跨行延续段（不画左钩，从行首画起） */
+  cont?: boolean;
+  /** 这一遍唱完要跳回反复起点（非末遍的房子），段尾画「↩跳回」提示 */
+  jump?: boolean;
+}
+
 export interface LayoutLine {
   index: number;
   y: number;
@@ -99,6 +132,7 @@ export interface LayoutLine {
   arcs: PlacedArc[];
   badges: PlacedBadge[];
   tuplets: PlacedTuplet[];
+  voltas: PlacedVolta[];
 }
 
 /** 谱面开头的标题块（简谱惯例：标题居中，下方一行调号 / 拍号 / 速度） */
@@ -157,6 +191,10 @@ export interface LayoutOptions {
   contentWidth: number;
   /** 每 tick 像素宽，默认 1.3 → 1 拍约 62px（简谱惯用紧凑比例）。调大即放宽字间距 */
   unit?: number;
+  /** 字号覆盖（px）：播放页的观看偏好用，不给 = 跟随谱面 meta.fontSize */
+  fontSize?: number;
+  /** 字间距覆盖（px）：同上，不给 = 跟随谱面 meta.letterSpacing */
+  letterSpacing?: number;
   lineHeight?: number;
   padding?: number;
   /** 是否在谱面开头画标题块，默认 true */
@@ -346,6 +384,15 @@ export function clusterSpan(
   return { x: it.x + ink.from + shift, w: ink.to - ink.from };
 }
 
+/**
+ * 「小节线类」记号：都画在格子线上，都要断小节（拍数校验）、都当断行锚点、
+ * 两端对齐时都不参与拉伸。反复记号与房子是小节线的**属性**，
+ * 所以这里只有小节线一种——谱面上不会因此多出一条线。
+ */
+export function isBarrier(ev: Event): boolean {
+  return ev.kind === 'barline';
+}
+
 function beatsPerMeasureOf(beat: string): number {
   const [n, d] = beat.split('/').map(Number);
   if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
@@ -367,13 +414,16 @@ function dashCountOf(ticks: number, dot: 0 | 1 | 2): number {
 
 export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const unit = opts.unit ?? 1.3;
-  // 版式度量随谱面字号派生（缺省 21px = 基准值，尺寸与老文件完全一致）
-  const fontSize = score.meta.fontSize ?? 21;
+  // 版式度量随谱面字号派生（缺省 21px = 基准值，尺寸与老文件完全一致）；
+  // opts.fontSize / opts.letterSpacing 是播放页的观看偏好覆盖，谱面本身不变
+  const fontSize = opts.fontSize ?? score.meta.fontSize ?? 21;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
   /** 字间距（px）：加在每个记号的占位宽度上，正数拉开、负数收紧 */
-  const spacing = score.meta.letterSpacing ?? 0;
-  // 行高要容得下自下而上的四层：减时线 → 音符 → 连音线 → 换气 / 吐音标记
+  const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? 0;
+  // 行高要容得下自下而上的四层：减时线 → 音符 → 连音线 → 换气 / 吐音标记。
+  // 房子括线贴着小节线顶端画（y − barHalf − 5，遍数数字最高到基线上方约 39px），
+  // 行高 86 的上半行（43px）装得下，不用为它加高
   const lineHeight = opts.lineHeight ?? glyph.lineHeight;
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
@@ -469,9 +519,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         spacing;
     }
     // 小节线留出较宽的占位：竖线画在格子正中，两侧自然形成空隙，
-    // 插入点才有地方可站，不会和竖线糊在一起
-    else if (ev.kind === 'barline') w = (ev.style === 'final' ? 26 : 20) * k + spacing;
-    else if (ev.kind === 'directive') w = 26 * k + spacing;
+    // 插入点才有地方可站，不会和竖线糊在一起。
+    // 带反复记号的那根线还要多留一点：两点画在竖线旁边，不然会压到相邻的音。
+    else if (isBarrier(ev)) {
+      const bar = ev as BarlineEvent;
+      const base = bar.style === 'final' ? 26 : bar.repeat ? 24 : 20;
+      w = base * k + spacing;
+    } else if (ev.kind === 'directive' || ev.kind === 'jump') w = 26 * k + spacing;
     return { ev, w };
   });
 
@@ -499,9 +553,17 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       lastGroupEnd = -1;
     }
     const ev = widths[i].ev;
-    if (ev.kind === 'barline') {
-      lastBarAny = i + 1;
-      if (!slurCrossedBars.has(i)) lastBar = i + 1;
+    if (isBarrier(ev)) {
+      const bar = ev as BarlineEvent;
+      // 房子开头那条线**不把断点留在它后面**：房子必须和它的内容在同一行，
+      // 否则括线只剩行尾一小截（甚至画不出来），看着像这个房没标上
+      if (!bar.volta) {
+        // 反复起点把断行留在它**前面**：`|:` 该领着自己那段一起起行，
+        // 孤零零挂在行尾不好看，也容易让人以为反复从下一行开始时才算
+        const isRepeatStart = bar.repeat === 'start';
+        lastBarAny = isRepeatStart ? i : i + 1;
+        if (!slurCrossedBars.has(i)) lastBar = isRepeatStart ? i : i + 1;
+      }
     }
     if (ev.kind === 'note' || ev.kind === 'rest') {
       const gid = groupOfEvent.get(ev.id);
@@ -515,6 +577,67 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const lines: LayoutLine[] = [];
   const hitIndex: HitBox[] = [];
 
+  // 房子的横线延伸：沿小节线找「连着标了同号」的连续段（选旁边的线再点一次
+  // [n] 就是在延长横线；第一个不带同号标记的线 = 画到这里为止）。
+  // voltaRunLast: 房起点（连续段的墙）→ 段尾那根标记线的下标
+  const voltaRunLast = new Map<number, number>();
+  {
+    let wall = -1;
+    let nums = '';
+    let last = -1;
+    for (let i = 0; i < score.events.length; i += 1) {
+      const ev = score.events[i];
+      if (ev.kind !== 'barline') continue;
+      const n = (ev as BarlineEvent).volta?.join(',') ?? '';
+      if (n && n === nums) {
+        last = i;
+      } else {
+        if (wall >= 0) voltaRunLast.set(wall, last);
+        wall = n ? i : -1;
+        nums = n;
+        last = n ? i : -1;
+      }
+    }
+    if (wall >= 0) voltaRunLast.set(wall, last);
+  }
+  /** 某根小节线之后的下一根小节线（事件下标），没有则 -1 */
+  const nextBarIdxOf = (i: number): number => {
+    for (let j = i + 1; j < score.events.length; j += 1) {
+      if (score.events[j].kind === 'barline') return j;
+    }
+    return -1;
+  };
+
+  // 反复配对（与 expand 同口径）：给房子算「唱完这一遍要不要跳回」。
+  // 规则：房子遍数 < 所在段的总遍数 → 非末遍，唱完必跳回；
+  // 末遍房子不标（它自己有真正的 :|，或直接走出段外）
+  const repeatPair = new Map<number, number>();
+  {
+    const stack: number[] = [];
+    for (let i = 0; i < score.events.length; i += 1) {
+      const ev = score.events[i];
+      if (ev.kind !== 'barline') continue;
+      const r = (ev as BarlineEvent).repeat;
+      if (r === 'start') stack.push(i);
+      else if (r === 'end') {
+        const s = stack.pop();
+        if (s !== undefined) repeatPair.set(s, i);
+      }
+    }
+  }
+  const houseJumps = (wallIdx: number, numbers: number[]): boolean => {
+    let seg: [number, number] | undefined;
+    for (const [s, e] of repeatPair) {
+      if (s <= wallIdx && wallIdx < e && (!seg || s > seg[0])) seg = [s, e];
+    }
+    if (!seg) return false;
+    const times = (score.events[seg[1]] as BarlineEvent).times ?? 2;
+    return Math.min(...numbers) < times;
+  };
+
+  /** 已经放过音符 / 休止符了吗——谱面开头的小节线不编号（与 measureAt 同口径） */
+  let anyTimed = false;
+
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
@@ -522,6 +645,18 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
 
     const items: PlacedItem[] = [];
     let cx = padding;
+    /** 本行起始的小节号：跨行连续，不从 1 重来。口径与 measureAt 完全一致
+     *  （前面还没有音符的小节线是开头边界，不计入） */
+    let measureNo = 1;
+    let seenTimed = false;
+    for (let k = 0; k < from; k += 1) {
+      const e = score.events[k];
+      if (e.kind === 'note' || e.kind === 'rest') {
+        seenTimed = true;
+        continue;
+      }
+      if (e.kind === 'barline' && seenTimed) measureNo += 1;
+    }
 
     // ── 两端对齐（§7.3 美观约束）──
     // 断行只看「装不装得下」，装不下才折行，于是每行右边留白参差不齐。
@@ -563,9 +698,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           }
           // 连音的减时线不按每个音自己的 ticks 算（连音音值不是 2 的幂，会是 0 条），
           // 按「这组连音顶替的常规音符级别」算：3 连音占 1 拍 → 1 条线，占半拍 → 2 条线
+          // 带附点的按**去点后的基准**算线数：附点八分（36 tick）该有 1 条线 + 点，
+          // 直接拿 36 算是 0 条，会画成「数字 + 点」缺线的错样
           const gid = groupOfEvent.get(n.id);
           const g = gid ? groupById.get(gid) : undefined;
-          item.beams = g?.tuplet ? tupletBeamCount(g.totalTicks, g.tuplet) : beamCount(n.ticks);
+          item.beams = g?.tuplet
+            ? tupletBeamCount(g.totalTicks, g.tuplet)
+            : beamCount(undotTicks(n.ticks, n.dot ?? 0));
           item.dot = n.dot ?? 0;
           item.dashes = dashCountOf(n.ticks, item.dot);
           if (n.tongue) item.tongue = n.tongue;
@@ -581,30 +720,47 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if (n.dynamic) item.dynamic = n.dynamic;
           if (n.hairpin) item.hairpin = n.hairpin;
         } else {
-          // 休止符与音符一样带时值记号：减时线 / 增时线 / 附点
+          // 休止符与音符一样带时值记号：减时线 / 增时线 / 附点（线数同音符按去点基准算）
           const gid = groupOfEvent.get(ev.id);
           const g = gid ? groupById.get(gid) : undefined;
-          item.beams = g?.tuplet ? tupletBeamCount(g.totalTicks, g.tuplet) : beamCount(ev.ticks);
+          item.beams = g?.tuplet
+            ? tupletBeamCount(g.totalTicks, g.tuplet)
+            : beamCount(undotTicks(ev.ticks, ev.dot ?? 0));
           item.dot = ev.dot ?? 0;
           item.dashes = dashCountOf(ev.ticks, item.dot);
         }
         items.push(item);
-      } else if (ev.kind === 'barline') {
+        anyTimed = true;
+      } else if (isBarrier(ev)) {
+        // 反复记号 / 房子是这条线的**属性**：还是一根小节线，
+        // 只是多挂几个绘制标记（反复点、房子的 1 / 2）
+        const bar = ev as BarlineEvent;
         items.push({
           eventId: ev.id,
           kind: 'barline',
           eventIndex: i,
           x: cx,
           w,
-          final: ev.style === 'final',
-          partial: ev.partial,
+          final: bar.style === 'final',
+          // 小节号：这条线**结束**的是第几小节（与报错「第 N 小节」同口径）。
+          // 谱面开头那根线是第 1 小节的左边界，不编号也不推进计数——否则所有
+          // 小节号会偏一位（|: 开头的谱实测踩到）
+          measure: anyTimed ? measureNo : undefined,
+          ...(bar.partial ? { partial: true } : {}),
+          ...(bar.repeat ? { repeat: bar.repeat } : {}),
+          ...(bar.repeat === 'end' && bar.times ? { repeatTimes: bar.times } : {}),
+          ...(bar.volta ? { volta: bar.volta, ...(bar.voltaOpen ? { voltaOpen: true } : {}) } : {}),
         });
+        // 这条线结束的是第 measureNo 小节，下一根线就是下一小节（开头那根不算）
+        if (anyTimed) measureNo += 1;
       } else if (ev.kind === 'directive') {
         items.push({ eventId: ev.id, kind: 'directive', eventIndex: i, x: cx, w, value: ev.value });
+      } else if (ev.kind === 'jump') {
+        items.push({ eventId: ev.id, kind: 'jump', eventIndex: i, x: cx, w, mark: ev.mark });
       }
 
       // 对齐拉伸只加在步进上：小节线格子固定，作为行尾锚点
-      cx += ev.kind === 'barline' ? w : w * stretch;
+      cx += isBarrier(ev) ? w : w * stretch;
     }
 
     // 小节拍数校验徽标（§7.2）：挂在每条小节线上。
@@ -617,7 +773,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       let acc = 0;
       let open = false;
       let barX = padding;
-      const startsNewMeasure = from === 0 || widths[from - 1].ev.kind === 'barline';
+      const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       /** 本小节是否以弱起线开头 */
       let measurePartial = false;
@@ -670,7 +826,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const g = gid ? groupById.get(gid) : undefined;
 
       if (!g) {
-        if ((it.beams ?? 0) >= 1 && it.kind === 'note') {
+        // 休止符与音符一样画减时线（简谱惯例：0 下加一条线 = 八分休止）——
+        // 上面 item.beams 已给 rest 算好，这里漏了 kind 判断之外没别的差别
+        if ((it.beams ?? 0) >= 1) {
           const x1 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
           beams.push({ x0: it.x + 2, x1, level: 1 });
           if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1, level: 2 });
@@ -825,7 +983,72 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       hitIndex.push({ eventId: it.eventId, x: it.x, y: y + 14, w: it.w, h: 30 });
     }
 
-    lines.push({ index: li, y, items, beams, arcs, badges, tuplets });
+    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas: [] });
+  }
+
+  /*
+   * 房子的括线——放在行循环**之后**统一算：房子经常跨行，收口那根 `:|`
+   * 落在下一行时，逐行算只能画到行尾、尾巴就丢了（实测：宽 900 时第二间房
+   * 只剩墙所在行一段，收口段整个没画出来）。
+   *
+   * 画法（用户提案 + 跨行）：
+   *   - 一段 = 一个「同号连续标记」的房；横线画到段尾标记线**后面的第一根线**
+   *     （标记线是它所罩小节的开头，罩到下一根线正好盖满这个小节）。
+   *     未标记的后续小节不画线，但演奏仍隐式延续到 :| / 下一间房
+   *   - 右端开合自动判断：那根线是 :| → 拉过去封闭右钩；否则开放
+   *   - 跨行：墙所在行画到行尾（无右钩），中间行 / 收口行画延续段
+   *     （从行首起、无左钩），收口行按开合决定要不要右钩
+   *   - voltaOpen 手动强制开放
+   */
+  {
+    /** 事件下标 → 它落在哪一行、什么位置 */
+    const barPos = new Map<number, { li: number; x: number; w: number }>();
+    lines.forEach((ln, li) => {
+      for (const it of ln.items) {
+        if (it.kind === 'barline') barPos.set(it.eventIndex, { li, x: it.x, w: it.w });
+      }
+    });
+    /** 某行内容的右边界（房子跨行时横线画到这里为止） */
+    const rightEdge = (li: number): number => {
+      let r = padding;
+      for (const it of lines[li].items) r = Math.max(r, it.x + it.w);
+      return r;
+    };
+
+    for (const [wall, last] of voltaRunLast) {
+      const wallBar = score.events[wall] as BarlineEvent;
+      const numbers = wallBar.volta ?? [];
+      const manualOpen = wallBar.voltaOpen ?? false;
+      // 横线画到段尾标记线**后面的第一根线**（标记线是它所罩小节的开头，
+      // 罩到下一根线正好盖满这个小节）。那根线是 :| 就拉过去封闭右钩，否则开放
+      const nb = nextBarIdxOf(last);
+      const closes =
+        nb >= 0 && (score.events[nb] as BarlineEvent).repeat === 'end' && !manualOpen;
+      const endIdx = nb >= 0 ? nb : last;
+      const wp = barPos.get(wall);
+      if (!wp) continue;
+      const ep = barPos.get(endIdx);
+      const to = ep ? ep.li : wp.li;
+      for (let li = wp.li; li <= to; li += 1) {
+        const isWallSeg = li === wp.li;
+        const isEndSeg = li === to;
+        // 只有收口行（且真的封闭在 :| 上）才画右钩；其余一律开放
+        const open = !(closes && isEndSeg);
+        const x0 = isWallSeg ? wp.x + wp.w / 2 : padding;
+        const x1 = isEndSeg && ep ? ep.x + ep.w / 2 : rightEdge(li);
+        if (x1 - x0 <= 10) continue;
+        lines[li].voltas.push({
+          x0,
+          x1,
+          numbers,
+          ...(open ? { open: true } : {}),
+          ...(isWallSeg ? {} : { cont: true }),
+          // 开放段尾若是「非末遍房子」的跳回点（如 [1] 后面跟 [2]），标「↩跳回」；
+          // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号
+          ...(isEndSeg && open && houseJumps(wall, numbers) ? { jump: true } : {}),
+        });
+      }
+    }
   }
 
   return {
@@ -931,6 +1154,33 @@ export interface LayoutPick {
   cursor: number;
 }
 
+/** 配对用的「谱面开头」虚拟靶标 id——不是真实事件 id */
+export const SCORE_START_ID = '__scoreStart__';
+
+/**
+ * 谱面开头那根**虚拟线**的位置，只在**对轨配对**时存在。
+ *
+ * 简谱开头不画小节线（小节线是分隔记号、不是边界记号），但绑定需要一个
+ * 跟「谱面第 0 拍」对应的靶标：否则点了音频最前面的节奏点，谱面上却没有
+ * 可以点的东西——总不能为它单开一个按钮，那跟点线绑就是两套交互了。
+ * 所以画一个和小节线同款的靶标，点它 = 绑定第 0 拍；它不写进谱面、不参与排版。
+ */
+export function scoreStartTarget(
+  layout: LayoutResult,
+): { x: number; y: number; half: number } | null {
+  const ln = layout.lines[0];
+  if (!ln) return null;
+  const first = ln.items[0];
+  return { x: (first?.x ?? 0) - 6, y: ln.y, half: layout.glyph.barHalf };
+}
+
+/** 点是否落在开头靶标上（它在谱面最左边缘、没有宽度，容差给得比小节线宽） */
+export function hitScoreStart(layout: LayoutResult, x: number, y: number): boolean {
+  const t = scoreStartTarget(layout);
+  if (!t) return false;
+  return Math.abs(x - t.x) <= 9 && Math.abs(y - t.y) <= t.half + 8;
+}
+
 /**
  * 命中测试：点在音符字形上 → over；点在字形之外的空隙 → insert。
  * 感知区只覆盖字形墨迹，剩下的空白全部让给插入，音符之间的缝才点得进去。
@@ -943,8 +1193,22 @@ export function pickAt(layout: LayoutResult, x: number, y: number): LayoutPick |
     const it = line.items.find((i) => i.eventId === id);
     if (!it) continue;
 
+    if (it.kind === 'barline') {
+      // 点竖线 = **选中这条线**（反复 / 终止线 / 房子都是它的属性，点它才能改）。
+      // 线的两侧留作插入点：只有正中那一小条是「选线」，免得想插音却选中了线。
+      const mid = it.x + it.w / 2;
+      if (x >= mid - 5 && x <= mid + 5) {
+        return { index: it.eventIndex, mode: 'over', cursor: it.eventIndex + 1 };
+      }
+      return {
+        index: it.eventIndex,
+        mode: 'insert',
+        cursor: x < mid ? it.eventIndex : it.eventIndex + 1,
+      };
+    }
+
     if (it.kind !== 'note' && it.kind !== 'rest') {
-      // 小节线 / 力度没有字形，按左右半边决定插在它前面还是后面
+      // 力度等没有字形的记号：按左右半边决定插在它前面还是后面
       return {
         index: it.eventIndex,
         mode: 'insert',

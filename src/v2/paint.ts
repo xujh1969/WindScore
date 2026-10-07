@@ -7,6 +7,7 @@
 
 import {
   clusterSpan,
+  SCORE_START_ID,
   type GlyphMetrics,
   type LayoutLine,
   type LayoutResult,
@@ -221,6 +222,22 @@ export interface PaintOptions {
   focusId?: string | null;
   /** 播放指示方式，默认 head（跳动的色块 + 竖线）；band = 行进度条 */
   playStyle?: 'head' | 'band';
+  /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
+  showMeasureNumbers?: boolean;
+  /**
+   * **对轨配对中**：波形上已点好节奏线，等你点一根小节线。
+   * 此时每根小节线都画上金色的绑定靶标（顶端圆钮 + 加粗的一小截），
+   * 悬停的那根再整条点亮并加光环——一眼看出「点这里就绑上了」。
+   */
+  pairing?: boolean;
+  /** 配对中鼠标正压着的那根线（eventId，或 SCORE_START_ID） */
+  pairingHoverId?: string | null;
+  /**
+   * 配对中且谱面开头**没有**小节线 → 在最左端画一个「开头」靶标。
+   * 简谱开头不画竖线（小节线是分隔不是边界），但要给「谱面第 0 拍」一个
+   * 可点的目标，否则点了音频最前面的节奏点却没处点。
+   */
+  pairingStart?: boolean;
   /** 画布实际高度，用于底色填充 */
   height?: number;
 }
@@ -249,6 +266,10 @@ export function paintLayout(
       playhead: opts.playhead ?? null,
       focusId: opts.focusId ?? null,
       playStyle: opts.playStyle ?? 'head',
+      showMeasureNumbers: opts.showMeasureNumbers ?? true,
+      pairing: opts.pairing ?? false,
+      pairingHoverId: opts.pairingHoverId ?? null,
+      pairingStart: opts.pairingStart ?? false,
     });
   }
 }
@@ -304,6 +325,45 @@ function paintGear(
   ctx.lineCap = 'butt';
 }
 
+/**
+ * 绑定靶标：顶端金色圆钮 + 线头加粗的一小截；hot = 鼠标压着的那根，
+ * 整条点亮并加一圈光环——点下去绑的就是它。
+ * 小节线与「谱面开头」共用这一个画法：交互一致才不用记两套操作。
+ */
+function paintBindTarget(
+  ctx: CanvasRenderingContext2D,
+  bx: number,
+  y: number,
+  theme: PaintTheme,
+  hot: boolean,
+): void {
+  ctx.save();
+  ctx.strokeStyle = theme.accent;
+  ctx.fillStyle = theme.accent;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = hot ? 3.5 : 2.5;
+  ctx.beginPath();
+  ctx.moveTo(bx, y - M.barHalf);
+  ctx.lineTo(bx, y - M.barHalf + 11 * M.k);
+  ctx.stroke();
+  const knobY = y - M.barHalf - 7 * M.k;
+  ctx.beginPath();
+  ctx.arc(bx, knobY, (hot ? 4.6 : 3.2) * M.k, 0, Math.PI * 2);
+  ctx.fill();
+  if (hot) {
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(bx, knobY, 8 * M.k, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(bx, y - M.barHalf);
+    ctx.lineTo(bx, y + M.barHalf);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 interface LinePaint {
   selectedIds: ReadonlySet<string> | undefined;
   caret: { x: number; y: number } | null;
@@ -311,6 +371,14 @@ interface LinePaint {
   focusId: string | null;
   /** 播放指示方式：head = 跟着音符跳的色块 + 竖线；band = 从行首生长的高亮条 */
   playStyle: 'head' | 'band';
+  /** 小节号开关（缺省显示） */
+  showMeasureNumbers: boolean;
+  /** 对轨配对中：小节线画成绑定靶标 */
+  pairing: boolean;
+  /** 配对中鼠标压着的那根线 */
+  pairingHoverId: string | null;
+  /** 配对中且**谱面开头没有小节线**：在最左端补一个「开头」靶标（第 0 拍） */
+  pairingStart: boolean;
 }
 
 function paintLine(
@@ -374,6 +442,18 @@ function paintLine(
     }
   }
 
+  // 配对时谱面开头的「第 0 拍」靶标：画在第一行最左端，与小节线同一套画法
+  if (o.pairing && o.pairingStart && line.index === 0) {
+    const first = line.items[0];
+    paintBindTarget(ctx, (first?.x ?? 0) - 6, y, theme, o.pairingHoverId === SCORE_START_ID);
+    ctx.save();
+    ctx.font = M.badgeFont;
+    ctx.fillStyle = theme.accent;
+    ctx.textAlign = 'center';
+    ctx.fillText('开头', (first?.x ?? 0) - 6, y - M.barHalf - 18 * M.k);
+    ctx.restore();
+  }
+
   // ── 记号层 ──
   // 小节线
   for (const it of line.items) {
@@ -393,6 +473,89 @@ function paintLine(
       ctx.lineTo(bx - 4, y + M.barHalf);
       ctx.stroke();
     }
+
+    // 对轨配对：小节线变成「绑定靶标」
+    if (o.pairing) {
+      paintBindTarget(ctx, bx, y, theme, o.pairingHoverId === it.eventId);
+    }
+
+    // 小节号：小字画在小节线下方。口径与报错「第 N 小节」一致——
+    // 这条线结束的是第几小节。纵向落在小节线底端与力度层之间，
+    // 横向贴着线走，不会压到音符的力度记号
+    if (it.measure && o.showMeasureNumbers) {
+      ctx.save();
+      ctx.font = M.badgeFont;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(it.measure), bx, y + M.barHalf + 9);
+      ctx.restore();
+    }
+
+    // 反复记号：粗线 + 细线 + 两点，粗线总在**外侧**（远离反复的音乐）——
+    // |: 是粗、细、点（点在右）；:| 是点、细、粗（点在左）
+    if (it.repeat) {
+      const dir = it.repeat === 'start' ? 1 : -1;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(bx - dir * 4 * M.k, y - M.barHalf);
+      ctx.lineTo(bx - dir * 4 * M.k, y + M.barHalf);
+      ctx.stroke();
+      ctx.fillStyle = it.final ? theme.barFinal : theme.bar;
+      for (const dy of [-6, 6]) {
+        ctx.beginPath();
+        ctx.arc(bx + dir * 5 * M.k, y + dy * M.k, 2.2 * M.k, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // `:|3`：遍数写在点的上方，写成 ×3
+      if (it.repeat === 'end' && it.repeatTimes && it.repeatTimes > 2) {
+        ctx.save();
+        ctx.font = M.badgeFont;
+        ctx.fillStyle = theme.muted;
+        ctx.textAlign = 'center';
+        ctx.fillText(`×${it.repeatTimes}`, bx - 9 * M.k, y - M.barHalf - 4);
+        ctx.restore();
+      }
+    }
+  }
+
+  // 跳房子的括线：画在标记层之上（惯例里它是最高的那一层）
+  if (line.voltas.length > 0) {
+    ctx.save();
+    ctx.strokeStyle = theme.ink;
+    ctx.lineWidth = 1.2;
+    ctx.font = M.badgeFont;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    for (const v of line.voltas) {
+      // 括线贴着小节线顶端（barHalf 上方 5px），遍数数字画在线上方——
+      // 简谱里房子是贴着小节线走的，不是吊在换气标记那层
+      const vy = y - M.barHalf - 5;
+      ctx.beginPath();
+      // 跨行延续段没有左墙，不画左钩
+      if (!v.cont) {
+        ctx.moveTo(v.x0, vy + 7);
+        ctx.lineTo(v.x0, vy);
+      } else {
+        ctx.moveTo(v.x0, vy);
+      }
+      ctx.lineTo(v.x1, vy);
+      // 右端开放（简谱惯例：长房 / 跨行房）不画右钩——横线拉到收口处为止，
+      // 表示「一直演奏到 :|」；短房才两头都带钩
+      if (!v.open) ctx.lineTo(v.x1, vy + 7);
+      ctx.stroke();
+      ctx.fillStyle = theme.ink;
+      ctx.fillText(v.numbers.join(','), (v.x0 + v.x1) / 2, vy - 5);
+      // 非末遍房子的段尾：明确提示「唱完这里跳回反复起点」——
+      // 印刷谱靠 [1] 房末尾的 :| 传达这个信息，本应用的反复段里没有它
+      if (v.jump) {
+        ctx.save();
+        ctx.font = M.badgeFont;
+        ctx.fillStyle = theme.muted;
+        ctx.fillText('↩跳回', v.x1 + 3, vy - 4);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
   }
 
   // 减时线（下方连线）
@@ -426,6 +589,28 @@ function paintLine(
   for (const it of line.items) {
     if (it.kind !== 'note' && it.kind !== 'rest') continue;
     drawGlyph(ctx, it, y, theme);
+  }
+
+  // 跳转记号（L2）：𝄋（画成 $ 样）/ ⊕ / To ⊕ / D.S. / D.C. / Fine —— 画在谱行上方。
+  // 与换气 / 吐音同层但横向落在小节线附近，实际很少打架
+  ctx.font = M.markFont;
+  ctx.textAlign = 'center';
+  for (const it of line.items) {
+    if (it.kind !== 'jump') continue;
+    const label =
+      it.mark === 'segno'
+        ? '$'
+        : it.mark === 'coda'
+          ? '⊕'
+          : it.mark === 'tocoda'
+            ? 'To ⊕'
+            : it.mark === 'ds'
+              ? 'D.S.'
+              : it.mark === 'dc'
+                ? 'D.C.'
+                : 'Fine';
+    ctx.fillStyle = theme.ink;
+    ctx.fillText(label, it.x + it.w / 2, y - M.markTop);
   }
 
   // 播放头竖线：走完高亮框的宽度（进度条模式不需要——条的右缘就是位置）
@@ -611,7 +796,9 @@ function drawGlyph(
   const ink = it.graceInk ?? 0;
   if (it.accidental && accW > 0) {
     ctx.font = M.accFont;
-    ctx.fillText(ACCIDENTAL_GLYPH[it.accidental], it.x + M.glyphPad + ink, y + 1);
+    // 变音记号画在数字**左上角**：基线比数字抬高 5px（13px 的小字
+    // 正好落在数字上半格），与数字同基线会画成平行的两个主体
+    ctx.fillText(ACCIDENTAL_GLYPH[it.accidental], it.x + M.glyphPad + ink, y - 5 * M.k);
     ctx.font = M.font;
   }
 
@@ -706,6 +893,15 @@ function drawGraces(
         ctx.fill();
       }
     }
+    if (g.octave < 0) {
+      // 低八度点画在减时线（gy+5 / gy+8）下方，间距与高音点一致（6px）。
+      // 此前漏了这一支——低音倚音（如低音 6）的下加点从来没画出来过
+      for (let k = 0; k < -g.octave; k += 1) {
+        ctx.beginPath();
+        ctx.arc(cx, gy + 13 + k * 6, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   });
 
   // 两条减时线：贴在数字下方、与数字之间留净空（数字底约 gy+1，横线从 gy+5 起）
@@ -727,7 +923,9 @@ function drawGraces(
   // 弧的顶端（切向竖直那一端）对准**倚音组的横向中心**，减时线紧贴它——
   // 数字、减时线、弧三者一条线，看着才是一体的装饰音。
   const sx = x0 + (list.length * w) / 2;
-  const sy = y - 12; // 起笔高度：减时线（y-19 / y-16）下方留出 4px 净空，不与横线叠
+  // 起笔高度：减时线（y-19 / y-16）下方留出 4px 净空，不与横线叠；
+  // 组里有低音点（gy+13 起）时起笔再往下让，弧线从点的下方过，不压点
+  const sy = y - (list.some((g) => g.octave < 0) ? 8 : 12);
   const ey = y - 3; // 收笔高度：主音左下 / 右下（抬得比数字底高一点，弧更紧凑）
   const rx = Math.abs(mainEdgeX - sx);
   const ry = ey - sy;

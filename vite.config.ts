@@ -1,8 +1,20 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import pkg from './package.json';
+
+/**
+ * 版本号以 package.json 为唯一来源：HTML 里写 %APP_VERSION%，构建 / 预览时替换。
+ * 界面不硬编码版本号，改一处就够（递增见 npm run version）。
+ */
+function versionInject(): Plugin {
+  return {
+    name: 'windscore-version',
+    transformIndexHtml: (html) => html.replace(/%APP_VERSION%/g, pkg.version),
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), versionInject()],
   clearScreen: false,
   server: {
     port: 5173,

@@ -111,6 +111,18 @@ npx tauri build     # 打包 exe / 安装包（产物在 src-tauri/target/releas
 npm run build:skill # 重新打包 skill 里的独立校验器（改了 dsl/validate/layout 后要跑）
 ```
 
+### 版本号
+
+当前 **0.1.0**，显示在落地页页脚。版本以 `package.json` 为唯一来源，改一处即可：
+
+```bash
+npm run version              # 递增修订号 0.1.0 → 0.1.1
+node scripts/bump-version.mjs minor   # 0.1.1 → 0.2.0
+node scripts/bump-version.mjs major   # 0.2.0 → 1.0.0
+```
+
+脚本会同步 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 三处（安装包文件名里的版本来自它们）。落地页的显示由 Vite 把 `%APP_VERSION%` 注入，不需要手改 HTML。递增后记得重新打包 exe。
+
 浏览器版没有原生文件对话框：保存 = 下载 `.jps`，打开 = 用文件选择框。桌面版走系统对话框，能拿到真实路径。
 
 ## 键盘

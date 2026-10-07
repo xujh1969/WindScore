@@ -170,6 +170,15 @@ body.ws-home {
   color: rgba(226, 230, 240, 0.55);
 }
 
+/* 版本号：等宽、更淡一档，是给人核对用的，不抢署名 */
+.ws-home-version {
+  margin: 4px 0 0;
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: rgba(226, 230, 240, 0.38);
+}
+
 /* ── 入场：只做一次的淡入上移，四层各差一拍 ──
    动机的说明：启动页只有一次「开门」的时刻，入场序列就是全部动效 */
 @media (prefers-reduced-motion: no-preference) {

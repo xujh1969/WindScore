@@ -40,6 +40,8 @@ let rootDir: DirHandleLike | null = null; // folder 模式的根句柄
 let tauriRoot = ''; // tauri 模式的数据目录
 /** 存过文件夹但这次会话还没拿到授权：点一下「重新连接」就能续上 */
 let pendingPerm = false;
+/** 曲库位置还没配置过（探测后没有可用文件夹 / 自选目录）：界面据此弹引导窗 */
+let unconfigured = false;
 /** 已连接的文件夹名（界面展示用） */
 export let folderName = '';
 
@@ -61,6 +63,36 @@ export function currentBackend(): StoreBackend {
 /** 存过文件夹但这次会话还没授权（浏览器重启后）：给「重新连接」按钮用 */
 export function isPending(): boolean {
   return pendingPerm;
+}
+
+/**
+ * 是否还没有配置过曲库位置（本次启动的探测结果）。
+ * 触发条件：exe 没自选过目录且默认数据目录里没有曲库；
+ * Web 没选过文件夹（或句柄授权失效）。
+ */
+export function isUnconfigured(): boolean {
+  return unconfigured;
+}
+
+/** exe：用户在弹窗里确认后选定的曲库目录（记下来，下次启动直接用） */
+const LIB_DIR_KEY = 'ws-library-dir';
+
+export function connectTauriDir(dir: string): void {
+  if (!dir) throw new Error('目录为空');
+  localStorage.setItem(LIB_DIR_KEY, dir);
+  tauriRoot = dir;
+  unconfigured = false;
+  backend = 'tauri';
+  notify();
+}
+
+/**
+ * 曲库位置是否已经配置好。
+ *   tauri / folder = 已配置（数据落在磁盘上的一个真实文件夹里）
+ *   local          = 兜底浏览器存储，还没配置 → 首页 / 曲库页该弹窗引导
+ */
+export function isLibraryConfigured(): boolean {
+  return backend === 'tauri' || backend === 'folder';
 }
 
 /** 文件夹句柄的持久化（IndexedDB 存 handle，刷新后还能续） */
@@ -162,7 +194,21 @@ export async function detectBackend(): Promise<void> {
   if (isTauri()) {
     try {
       const path = await import('@tauri-apps/api/path');
-      tauriRoot = await path.dataDir();
+      // exe 也让用户自选曲库目录（选过就记住）：迁移 = 拷贝文件夹，与 Web 版一致。
+      // 没选过且默认数据目录里还没有曲库 → 视为「未配置」，首页 / 曲库页弹窗引导。
+      const chosen = localStorage.getItem(LIB_DIR_KEY);
+      tauriRoot = chosen ?? (await path.dataDir());
+      if (!chosen) {
+        const fs = await import('@tauri-apps/api/fs');
+        const hasLibrary = await fs
+          .exists(await path.join(tauriRoot, 'library.json'))
+          .catch(() => false);
+        if (!hasLibrary) {
+          unconfigured = true;
+          backend = 'local';
+          return;
+        }
+      }
       backend = 'tauri';
     } catch {
       backend = 'local';

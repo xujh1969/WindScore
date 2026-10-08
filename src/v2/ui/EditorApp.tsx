@@ -92,7 +92,9 @@ import { isTimed } from '../types';
 import { validateGroups } from '../validate';
 import { ScoreCanvas, type ScorePick } from './ScoreCanvas';
 import { LibraryScreen } from './LibraryScreen';
+import { LibrarySetupDialog } from './LibrarySetupDialog';
 import { initStore } from './storeInit';
+import { isLibraryConfigured, onStoreBackendChange } from './storeBackend';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
 import { buildPack, packFileName } from './packBundle';
@@ -402,6 +404,31 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, [playFont, playGap]);
   /** 工具栏正中的谱面校验明细是否展开 */
   const [checkOpen, setCheckOpen] = useState(false);
+  /**
+   * 「先配置曲库位置」引导窗：进入曲库管理或动态谱演奏首页时，
+   * 若曲库位置还没配置（exe 首次运行没选目录且数据目录为空 / Web 没选过文件夹）就弹。
+   * storeReady = 存储探测完成，在此之前不弹（exe 启动瞬间探测还没回来，别闪窗）。
+   */
+  const [storeReady, setStoreReady] = useState(false);
+  const storeReadyRef = useRef(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  useEffect(() => {
+    void initStore().then(() => {
+      storeReadyRef.current = true;
+      setStoreReady(true);
+      setSetupOpen(!isLibraryConfigured());
+    });
+    const recheck = (): void => {
+      if (storeReadyRef.current) setSetupOpen(!isLibraryConfigured());
+    };
+    return onStoreBackendChange(recheck);
+  }, []);
+  useEffect(() => {
+    // 进曲库管理 / 演奏首页时再查一次（配置好之前每次进入都提醒）
+    if ((mode === 'discover' || mode === 'library') && storeReadyRef.current) {
+      setSetupOpen(!isLibraryConfigured());
+    }
+  }, [mode, storeReady]);
   /**
    * 倚音录入：`graceSide` = 前 / 后（互斥，null = 都不勾），
    * `graceSlot` = 正在输入的那一格（null = 输入框收起）。
@@ -2453,6 +2480,17 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         导出弹窗：导出的是 `viewScore`——播放界面开着「展开反复」时，
         PDF 与视频拿到的就是拉平后的线性谱，所见即所得。
       */}
+      {/* 曲库位置未配置时的引导窗：进演奏首页 / 曲库管理页时触发（见 setupOpen） */}
+      {setupOpen ? (
+        <LibrarySetupDialog
+          onDone={() => {
+            setSetupOpen(false);
+            setMsg('曲库位置已配置，你选的文件夹就是曲库——迁移时拷贝它即可');
+          }}
+          onSkip={() => setSetupOpen(false)}
+        />
+      ) : null}
+
       {exportOpen ? (
         <ExportDialog
           songName={score.meta.title || active}

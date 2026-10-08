@@ -1,14 +1,21 @@
 /**
  * 曲库存储的启动与连接编排：
  *
- *   initStore()            App 挂载时调用一次（幂等）：探测后端 → 水合曲库与标定
- *   pickAndConnectFolder() 曲库页的「把曲库放进文件夹」：选目录 → 水合
- *                          （文件夹里还没有库时，libraryStore 会自动把
- *                           localStorage 里的歌迁进去，升级不丢数据）
- *   reconnectFolder()      浏览器重启后的授权续接（必须由用户手势触发）
+ *   initStore()               App 挂载时调用一次（幂等）：探测后端 → 水合曲库与标定
+ *   configureLibraryLocation() 引导窗的「确定」：选一个本地目录当曲库（exe 系统对话框
+ *                              / Web 文件夹选择），选完水合并自动迁移兜底里的旧数据
+ *   pickAndConnectFolder()    Web 专用的文件夹选择（与上面同一路径的 Web 分支别名）
+ *   reconnectFolder()         浏览器重启后的授权续接（必须由用户手势触发）
  */
 
-import { armAutoReconnect, detectBackend, pickLibraryFolder, reconnectFolder } from './storeBackend';
+import { isTauri } from '../io';
+import {
+  armAutoReconnect,
+  connectTauriDir,
+  detectBackend,
+  pickLibraryFolder,
+  reconnectFolder,
+} from './storeBackend';
 import { hydrateLibrary } from './libraryStore';
 import { hydrateAlign } from './alignStore';
 
@@ -29,6 +36,20 @@ async function doInit(): Promise<void> {
 export function initStore(): Promise<void> {
   if (!started) started = doInit();
   return started;
+}
+
+/** 引导窗「确定」后的统一入口：按运行环境选目录 → 水合（旧数据自动迁移） */
+export async function configureLibraryLocation(): Promise<void> {
+  if (isTauri()) {
+    const dialog = await import('@tauri-apps/api/dialog');
+    const dir = await dialog.open({ directory: true, title: '选择曲库文件夹' });
+    if (typeof dir !== 'string' || !dir) throw new Error('未选择文件夹');
+    connectTauriDir(dir);
+  } else {
+    await pickLibraryFolder();
+  }
+  await hydrateLibrary();
+  await hydrateAlign();
 }
 
 export async function pickAndConnectFolder(): Promise<void> {

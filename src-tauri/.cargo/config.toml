@@ -1,0 +1,5 @@
+# 静态链接 CRT：exe 不再依赖目标机器上的 VC++ 运行库（VCRUNTIME140.dll），
+# 单文件拷到任何 Win10/11（自带 WebView2）都能直接跑——分发就是拷一个文件。
+# 代价：体积大 1-2MB。若要给 Microsoft Store 重新动态链接，删掉本文件即可。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

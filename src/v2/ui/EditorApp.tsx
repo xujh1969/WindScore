@@ -76,6 +76,7 @@ import {
   type AlignPersist,
 } from './alignStore';
 import { ensureMp3 } from '../mp3';
+import { shouldWaitForAudio } from './playGate';
 import {
   buildTimeline,
   playOrderMeasures,
@@ -623,6 +624,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         const durs = [...new Set(decoded.map((d) => d.buffer.duration.toFixed(2)))].join(' / ');
         // 用最长那条 stem（通常是完整伴奏）；鼓点最清楚的那条更准，但这里无从知道哪条是鼓
         const grid = decoded.reduce((a, b) => (b.buffer.duration > a.buffer.duration ? b : a));
+        // 先让波形画出来再开跑分析：自动对齐是重活（几十 MB 音频找节拍），
+        // 不让出主线程的话，setStems 触发的渲染要等它跑完才轮得到——
+        // exe 上就表现为「载入了却半天不见波形」
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
         await runAutoAlign(
           `已载入 ${decoded.length} 条 stem（${durs}s）：${decoded.map((d) => d.name).join('、')}。`,
           grid.buffer,
@@ -642,37 +647,42 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 于是伴奏读不回来（从曲库点开刚导进来的那首就会这样）
     const runKey = `${active}#${restoreToken}`;
     if (restoreKeyRef.current === runKey) return;
-    restoreKeyRef.current = runKey;
-    restoredRef.current = active; // 保存 effect 的闸门：本谱已开始恢复
-    setStems([]);
-    setAnchors([]);
-    setTempoOverride(null);
-    setTempoEst(null);
-    setVocalSec(null);
-    setPlaySource('synth');
-    setTempoDraft({ ...DEFAULT_TEMPO_DRAFT }); // 不留上一首的三参数
-    stemKeysRef.current = [];
-    // 显式的「正在恢复」标志：只在真的有伴奏要恢复时置上，
-    // 由下面的 finally 负责落地。此前是推导出来的（stems 空 + 存档说有伴奏），
-    // 一旦伴奏没恢复成功就永远停在「正在恢复…」上（导入打包后卡住就是这个）
-    setRestoring(false);
     const token = runKey;
-    const saved = loadAlign(active);
-    if (!saved) return;
-    if (saved.audio.length > 0) setRestoring(true);
-    setTempoDraft(saved.tempoDraft);
-    setAnchors(saved.anchors);
-    setPlaySource(saved.playSource);
-    if (saved.override) {
-      try {
-        setTempoOverride(tempoFromAlign(saved.override as never));
-      } catch {
-        /* 存档里的曲线坏了就当没有 */
-      }
-    }
     void (async () => {
-      // 并行读盘 + 解码：串行时三条 stem 就要等三趟（大文件解码很吃 CPU），
-      // 表现就是「点开歌半天没反应」
+      // 等存储后端就绪再恢复：exe 要读磁盘（数据目录里的 library.json / align.json /
+      // audio/*），不等就会读到空库、恢复出「没有伴奏」的结果。
+      // 放在这里等（而不是事后补跑一次）是关键：事后补跑会落在用户操作之后，
+      // 把刚载入的伴奏与刚对好的标定冲掉，还重复解码一遍分轨。
+      await initStore();
+      // 等待期间又切了谱 / 又点了一次打开：这一轮作废
+      if (restoreKeyRef.current === token) return;
+      restoreKeyRef.current = token;
+      restoredRef.current = active; // 保存 effect 的闸门：本谱已开始恢复
+      setStems([]);
+      setAnchors([]);
+      setTempoOverride(null);
+      setTempoEst(null);
+      setVocalSec(null);
+      setPlaySource('synth');
+      setTempoDraft({ ...DEFAULT_TEMPO_DRAFT }); // 不留上一首的三参数
+      stemKeysRef.current = [];
+      // 显式的「正在恢复」标志：只在真的有伴奏要恢复时置上，
+      // 由下面的 finally 负责落地。此前是推导出来的（stems 空 + 存档说有伴奏），
+      // 一旦伴奏没恢复成功就永远停在「正在恢复…」上（导入打包后卡住就是这个）
+      setRestoring(false);
+      const saved = loadAlign(active);
+      if (!saved) return;
+      if (saved.audio.length > 0) setRestoring(true);
+      setTempoDraft(saved.tempoDraft);
+      setAnchors(saved.anchors);
+      setPlaySource(saved.playSource);
+      if (saved.override) {
+        try {
+          setTempoOverride(tempoFromAlign(saved.override as never));
+        } catch {
+          /* 存档里的曲线坏了就当没有 */
+        }
+      }
       try {
         const host = new OfflineAudioContext(2, 1, 44100);
         const files = await Promise.all(saved.audio.map((ref) => getAudio(ref.key)));
@@ -825,12 +835,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     load(BUILTIN[0].name, BUILTIN[0].text);
   }, [load]);
 
-  // 曲库存储：探测后端（exe=应用数据目录 / Web=文件夹 / 兜底）并水合。
-  // 水合是异步的——完成后补一拍「打开令牌」，让恢复 effect 重跑一次，
-  // 首屏就能从文件夹里把标定与伴奏接回来（之前那一拍读到的还是空库）
-  useEffect(() => {
-    void initStore().then(() => setRestoreToken((t) => t + 1));
-  }, []);
+  // 曲库存储的启动探测放在**恢复流程内部**（见 restore effect 里的 await initStore()），
+  // 不再在这里「水合完再补一拍恢复」——那一拍会落在用户操作之后：
+  // 把刚载入的伴奏 / 刚对好的标定与锚点又冲掉一次（exe 读盘慢，必踩），
+  // 还会把分轨重复解码一遍（表现为载入音频后长时间卡住才见波形）。
 
   const adopt = useCallback(
     (res: OpenResult) => {
@@ -1205,7 +1213,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     return from >= total ? 0 : from;
   }, [timeline, playScore, score, expansion, snap.mode, snap.cursor]);
 
-  const startPlay = useCallback(() => {
+  const startPlayNow = useCallback(() => {
     if (timeline.length === 0) return;
     previewRef.current.stop(); // 试听与谱面播放互斥
     setPreviewing(false);
@@ -1235,6 +1243,50 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.playAfter(lead);
     setPlaying(true);
   }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode]);
+
+  // 恢复中的等待机制：restoring 由恢复流程的 finally 落地，这里把等待者叫醒
+  const restoringRef = useRef(restoring);
+  const restoreWaiters = useRef<(() => void)[]>([]);
+  useEffect(() => {
+    restoringRef.current = restoring;
+    if (!restoring) {
+      const ws = restoreWaiters.current;
+      restoreWaiters.current = [];
+      for (const w of ws) w();
+    }
+  }, [restoring]);
+
+  /** 等伴奏恢复完（带 10 秒兜底，绝不让播放按钮永久卡住） */
+  const waitRestore = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        if (!restoringRef.current) {
+          resolve();
+          return;
+        }
+        restoreWaiters.current.push(resolve);
+        setTimeout(resolve, 10_000);
+      }),
+    [],
+  );
+
+  /**
+   * 播放入口。选了伴奏但伴奏还在读盘 / 解码时**先等它**：
+   * 之前不等就直接落进合成音分支，界面显示「伴奏」而耳朵听到 MIDI
+   * （exe 走磁盘比 Web 慢，这个窗口大到用户必踩）。
+   * 等完再调 startPlayNow —— 走 ref 取**最新**那份闭包，
+   * 否则会拿等之前的 audioReady（那时还是 false）又播成合成音。
+   */
+  const startPlayRef = useRef(startPlayNow);
+  startPlayRef.current = startPlayNow;
+  const startPlay = useCallback(() => {
+    if (!shouldWaitForAudio(playSource, restoring)) {
+      startPlayRef.current();
+      return;
+    }
+    setAudioMsg('伴奏正在从本地恢复，稍等一下就按伴奏放…');
+    void waitRestore().then(() => startPlayRef.current());
+  }, [playSource, restoring, waitRestore]);
 
   /**
    * 播放 tick 的唯一出口：音频模式反查 secToTick（变速下唯一正确的做法），
@@ -2221,7 +2273,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             <div className="v2-view-switch" title="跟着伴奏放（用对好的标定），或用合成音">
               <button
                 className={playSource === 'audio' ? 'v2-seg is-on' : 'v2-seg'}
-                disabled={!audioReady}
+                disabled={!audioReady || restoring}
+                title={
+                  restoring
+                    ? '伴奏正在从本地恢复，好了就能按伴奏放'
+                    : '跟着伴奏放（用对好的标定）'
+                }
                 onClick={() => setPlaySource('audio')}
               >
                 伴奏

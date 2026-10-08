@@ -1,7 +1,7 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "tauri:dev": "tauri dev",
     "icon": "node scripts/gen-icon.cjs",
     "version": "node scripts/bump-version.mjs",
-    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs",
+    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-play-test.mjs --log-level=error && node .tmp-play-test.mjs",
     "build:skill": "esbuild scripts/build-skill-validator.ts --bundle --platform=node --format=esm --outfile=skills/windscore-jps/validate.mjs --log-level=error"
   },
   "dependencies": {

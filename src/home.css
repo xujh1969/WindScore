@@ -17,6 +17,16 @@ body.ws-home {
   background: #080c22;
 }
 
+/*
+ * 启动页是单屏页：所有盒子的 padding 必须算进尺寸里。
+ * 全局没设 box-sizing（content-box），不锁这条的话 min-height:100dvh + padding
+ * 会凭空高出 padding 那么多，右侧就多出一条滚动条（exe 的 WebView 里尤其显眼）。
+ */
+body.ws-home,
+body.ws-home * {
+  box-sizing: border-box;
+}
+
 /* 背景图铺满固定：五线谱剪影 + 暗角，任何屏幕上文字对比度都够（WCAG AA） */
 .ws-home-bg {
   position: fixed;

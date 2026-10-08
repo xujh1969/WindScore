@@ -94,7 +94,8 @@ import { ScoreCanvas, type ScorePick } from './ScoreCanvas';
 import { LibraryScreen } from './LibraryScreen';
 import { LibrarySetupDialog } from './LibrarySetupDialog';
 import { initStore } from './storeInit';
-import { isLibraryConfigured, onStoreBackendChange } from './storeBackend';
+import { defaultLibraryPath, isLibraryConfigured, onStoreBackendChange } from './storeBackend';
+import { isTauri } from '../io';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
 import { buildPack, packFileName } from './packBundle';
@@ -2483,6 +2484,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       {/* 曲库位置未配置时的引导窗：进演奏首页 / 曲库管理页时触发（见 setupOpen） */}
       {setupOpen ? (
         <LibrarySetupDialog
+          isExe={isTauri()}
+          defaultPath={defaultLibraryPath()}
           onDone={() => {
             setSetupOpen(false);
             setMsg('曲库位置已配置，你选的文件夹就是曲库——迁移时拷贝它即可');

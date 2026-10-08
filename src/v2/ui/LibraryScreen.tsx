@@ -26,7 +26,13 @@ import {
   useLibraryItems,
   type LibraryItem,
 } from './libraryStore';
-import { currentBackend, folderName, isPending, onStoreBackendChange } from './storeBackend';
+import {
+  currentBackend,
+  folderName,
+  isPending,
+  libraryRootPath,
+  onStoreBackendChange,
+} from './storeBackend';
 import { pickAndConnectFolder, reconnectFolder } from './storeInit';
 
 interface Props {
@@ -174,14 +180,33 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackH
           整库迁移 = 拷走它。local 兜底时给一个升级入口；
           文件夹待授权（浏览器重启后）给「重新连接」。
         */}
+        {/*
+          曲库存储位置：文件后端（exe / Web 文件夹）下曲库 = 一个文件夹，
+          整库迁移 = 拷走它。位置要**亮出来**（exe 显示完整路径 + 一键打开），
+          别让人猜「到底存哪了」；local 兜底时给升级入口；
+          文件夹待授权（浏览器重启后）给「重新连接」。
+        */}
         {readOnly ? null : currentBackend() === 'folder' ? (
           <span className="v2-lib-store" title="曲库在这个文件夹里，拷贝它 = 迁移整个曲库">
             📁 {folderName || '曲库文件夹'}
           </span>
         ) : currentBackend() === 'tauri' ? (
-          <span className="v2-lib-store" title="曲库在应用数据目录（%APPDATA%/WindScore）">
-            📁 应用数据目录
-          </span>
+          <>
+            <span className="v2-lib-store" title={libraryRootPath() ?? '曲库所在目录'}>
+              📁 {libraryRootPath() ?? '应用数据目录'}
+            </span>
+            <button
+              className="v2-btn"
+              title="在资源管理器里打开曲库文件夹"
+              onClick={() => {
+                void import('@tauri-apps/api/shell')
+                  .then((s) => s.open(libraryRootPath() ?? '.'))
+                  .catch((e) => onNotify(`打不开文件夹：${(e as Error).message}`));
+              }}
+            >
+              打开文件夹
+            </button>
+          </>
         ) : storePending ? (
           <button className="v2-btn" onClick={() => void reconnectFolder()}>
             重新连接曲库文件夹

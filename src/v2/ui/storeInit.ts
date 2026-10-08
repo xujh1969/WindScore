@@ -15,6 +15,7 @@ import {
   detectBackend,
   pickLibraryFolder,
   reconnectFolder,
+  useDefaultTauriDir,
 } from './storeBackend';
 import { hydrateLibrary } from './libraryStore';
 import { hydrateAlign } from './alignStore';
@@ -54,6 +55,13 @@ export async function configureLibraryLocation(): Promise<void> {
 
 export async function pickAndConnectFolder(): Promise<void> {
   await pickLibraryFolder();
+  await hydrateLibrary();
+  await hydrateAlign();
+}
+
+/** 引导窗「使用默认位置」：曲库存进应用数据目录（路径在弹窗里亮出来） */
+export async function useDefaultLocation(): Promise<void> {
+  useDefaultTauriDir();
   await hydrateLibrary();
   await hydrateAlign();
 }

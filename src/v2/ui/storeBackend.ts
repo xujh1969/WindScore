@@ -189,13 +189,36 @@ export function armAutoReconnect(onConnected: () => void): void {
   document.addEventListener('keydown', tryGrant);
 }
 
+/**
+ * 曲库根目录的**完整路径**（exe 下有；Web 文件夹模式浏览器不暴露完整路径，
+ * 只有 folderName）。曲库页徽标显示它 + 「打开文件夹」按钮，位置不再成谜。
+ */
+export function libraryRootPath(): string | null {
+  return backend === 'tauri' ? tauriRoot : null;
+}
+
+/**
+ * exe 首次配置时的**默认**曲库位置（数据目录）。
+ * 未配置状态下也返回它：引导窗把路径亮出来，用户点「使用默认位置」即可。
+ */
+export function defaultLibraryPath(): string | null {
+  return isTauri() ? tauriRoot || null : null;
+}
+
+/** exe：采用默认数据目录作为曲库位置（引导窗「使用默认位置」） */
+export function useDefaultTauriDir(): void {
+  if (!tauriRoot) throw new Error('默认目录还没探测出来');
+  connectTauriDir(tauriRoot);
+}
+
 /** 启动探测：能接上文件夹 / Tauri 目录就接上（数据水合在 storeInit 里做） */
 export async function detectBackend(): Promise<void> {
   if (isTauri()) {
     try {
       const path = await import('@tauri-apps/api/path');
       // exe 也让用户自选曲库目录（选过就记住）：迁移 = 拷贝文件夹，与 Web 版一致。
-      // 没选过且默认数据目录里还没有曲库 → 视为「未配置」，首页 / 曲库页弹窗引导。
+      // 没选过且默认数据目录里还没有曲库 → 视为「未配置」，首页 / 曲库页弹窗引导
+      // （tauriRoot 先照常指向默认目录：引导窗要把默认路径亮给用户看）。
       const chosen = localStorage.getItem(LIB_DIR_KEY);
       tauriRoot = chosen ?? (await path.dataDir());
       if (!chosen) {

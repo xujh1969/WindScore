@@ -33,6 +33,7 @@ import {
   libraryRootPath,
   onStoreBackendChange,
 } from './storeBackend';
+import { configureLibraryLocation } from './storeInit';
 import { pickAndConnectFolder, reconnectFolder } from './storeInit';
 
 interface Props {
@@ -205,6 +206,17 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackH
               }}
             >
               打开文件夹
+            </button>
+            <button
+              className="v2-btn"
+              title="换一个文件夹存放曲库（原曲库自动迁过去）"
+              onClick={() => {
+                configureLibraryLocation()
+                  .then(() => onNotify('曲库位置已更改，原曲库已迁到新位置'))
+                  .catch((e) => onNotify(`没能更改位置：${(e as Error).message}`));
+              }}
+            >
+              更改位置…
             </button>
           </>
         ) : storePending ? (

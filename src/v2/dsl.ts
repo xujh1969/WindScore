@@ -163,6 +163,14 @@ export function parseDsl(text: string): ParseResult {
         case 'patchname':
           meta.patchName = v;
           break;
+        case 'sub':
+          // 标题下的居中说明行
+          meta.sub = v;
+          break;
+        case 'note':
+          // 谱头右侧说明行，最多 4 行（写多了截断，不静默吞掉整条指令）
+          meta.notes = [...(meta.notes ?? []), v].slice(0, 4);
+          break;
         case 'size': {
           // 谱面字号（px）。合法范围 12–56，越界报错而不是吞掉
           const n = Number(v);
@@ -449,6 +457,20 @@ export function parseDsl(text: string): ParseResult {
     // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
     const tokens = line.replace(/~/g, '~ ').split(/\s+/).filter(Boolean);
     for (let raw of tokens) {
+      /*
+       * (文字) 装饰记号：括号里是**非音符内容**（中文 / 字母，如 (前奏)）时，
+       * 整块按文字显示——不占时值、演奏忽略，只用来标注段落（前奏 / 间奏 / 尾奏）。
+       * 括号必须成对写在同一个记号里；括号里是音符语法（数字开头，如 (5 6 5)）
+       * 时仍走连音线解析，两者互不影响。
+       */
+      const deco = /^\(([^()]+)\)$/.exec(raw);
+      if (deco && /[^\d\s/^~.vVtT<>|#\-]/.test(deco[1])) {
+        const id = nextId();
+        const ev: Event = { id, kind: 'directive', type: 'text', value: deco[1] };
+        events.push(ev);
+        byId.set(id, ev);
+        continue;
+      }
       // 前缀只可能是 ( 或 <，按文本顺序入栈（外层在前）
       const opens: ('slur' | 'group')[] = [];
       while (raw.startsWith('(') || raw.startsWith('<')) {
@@ -551,6 +573,13 @@ export function parseDsl(text: string): ParseResult {
         } else if (raw.startsWith('$')) {
           errors.push(
             `跳转记号无法识别：${raw}（可用 $s=𝄋 · $x=⊕ · $t=To⊕ · $f=Fine · $ds=D.S. · $dc=D.C.）`,
+          );
+        } else if (/[()\u4e00-\u9fff]/.test(raw)) {
+          // token 里有括号或中文但没走任何已知分支：多半是装饰文字没写成对，
+          // 或括号里混了音符和文字。给出「成对」指引，别只丢一句无法识别。
+          errors.push(
+            `( ) 需要成对写在同一个记号里：标注段落用 (前奏) 这种纯文字；` +
+              `连音线要包住音符，如 (5 6 5)。收到的是：${raw}`,
           );
         } else {
           pushTimed(raw, graceBefore, graceAfter);
@@ -693,6 +722,11 @@ export function serializeDsl(score: Score): string {
     `@patch ${score.meta.patch}`,
   ];
   if (score.meta.patchName) head.push(`@patchName ${score.meta.patchName}`);
+  // 谱头说明：居中说明行 + 右侧说明（最多 4 行）。没写过的不写，老文件字节不变
+  if (score.meta.sub) head.push(`@sub ${score.meta.sub}`);
+  for (const line of score.meta.notes ?? []) {
+    if (line) head.push(`@note ${line}`);
+  }
   // 版式参数只在用户改过时写出（缺省值不写，老文件保持原样）
   if (score.meta.fontSize !== undefined) head.push(`@size ${score.meta.fontSize}`);
   if (score.meta.letterSpacing !== undefined) head.push(`@space ${score.meta.letterSpacing}`);
@@ -822,7 +856,8 @@ export function serializeDsl(score: Score): string {
         break;
       }
       case 'directive':
-        out.push(ev.value);
+        // 文字装饰记号（(前奏) 之类）回写时把括号带上，round-trip 无损
+        out.push(ev.type === 'text' ? `(${ev.value})` : ev.value);
         emitted.add(ev.id);
         break;
       default:

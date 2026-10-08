@@ -135,18 +135,42 @@ export interface LayoutLine {
   voltas: PlacedVolta[];
 }
 
-/** 谱面开头的标题块（简谱惯例：标题居中，下方一行调号 / 拍号 / 速度） */
+/**
+ * 谱面开头的谱头块（简谱惯例的「左中右」三区）：
+ *   中 = 标题（大字）+ 说明行；左 = 调号、拍号（叠写）、速度；右 = 说明行（最多 4 行，右对齐）
+ */
 export interface LayoutTitle {
   title: string;
-  subtitle: string;
+  /** 标题下的居中说明行（meta.sub），空串则不画 */
+  sub: string;
+  /** 左列：调号（1=G）、拍号（4/4，绘制时叠成分数）、速度（♩=76） */
+  key: string;
+  beat: string;
+  tempo: string;
+  /** 右列说明行（meta.notes，最多 4 行，右对齐） */
+  rightLines: string[];
+  /** 标题基线 / 说明行基线 */
   y: number;
   subY: number;
+  /** 左右两列第一行的基线与行距（右列各行 = colY + 4 + i * rowH） */
+  colY: number;
+  rowH: number;
+  /**
+   * 左列第二行（速度）的基线。与右列行距解耦：拍号叠写占高比一行字高，
+   * 速度行要额外让开，否则紧贴分母
+   */
+  tempoY: number;
+  /** 左列左缘 / 右列右缘（右对齐） */
+  leftX: number;
+  rightX: number;
   centerX: number;
   /**
    * 标题右侧的小铅笔按钮（打开曲目信息编辑）。
    * 尺寸与位置都在 layout 里定，paint 只照着画、命中测试只照着比。
    */
   edit: { cx: number; cy: number; size: number };
+  /** 谱头块总高（排版用它把第一行谱行往下推） */
+  height: number;
 }
 
 /** 铅笔按钮的边长 */
@@ -436,23 +460,50 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const title: LayoutTitle | null =
     opts.showTitle === false
       ? null
-      : {
-          title: meta.title,
-          subtitle: [meta.key, meta.beat, `♩=${meta.bpm}`, `音色 ${meta.patch}`].join('   '),
-          y: padTop + 16,
-          subY: padTop + 44,
-          centerX: opts.contentWidth / 2,
-          edit: {
-            // 28 = 标题字号；+20 给图标留出与歌名的间距，别贴着字
-            cx: opts.contentWidth / 2 + estimateWidth(meta.title, 28) / 2 + 20,
-            cy: padTop + 16,
-            size: PENCIL_SIZE,
-          },
-        };
-  // 标题块占高 = 副标题底边再留 30px 净空。
-  // 谱面首行的标记层（吐音 / 换气）最高到中线上方 50px，
-  // 这里留不够，副标题就会被压在那些标记上。
-  const titleHeight = title ? 96 : 0;
+      : (() => {
+          // 谱头三区的纵向节奏：标题基线 → 说明行 → 左右两列。
+          // rowH 是右列的行距；左列速度行不跟它走——拍号叠写比一行字高，
+          // 速度行由 tempoY 单独给出（见下）
+          const y = padTop + 16;
+          const subY = y + 28;
+          const colY = subY + 10;
+          const rowH = 18;
+          const tempoY = colY + 32;
+          const rightLines = (meta.notes ?? []).slice(0, 4);
+          return {
+            title: meta.title,
+            sub: meta.sub ?? '',
+            key: meta.key,
+            beat: meta.beat,
+            tempo: `♩=${meta.bpm}`,
+            rightLines,
+            y,
+            subY,
+            colY,
+            rowH,
+            tempoY,
+            // 左右两列对齐谱面音符的实际边缘：谱行从 padding 起画、
+            // 行尾锚点在 contentWidth - padding（见下方 maxX / barX 的算法），
+            // 谱头贴 0 / contentWidth 就会悬在音符外面
+            leftX: padding,
+            rightX: opts.contentWidth - padding,
+            centerX: opts.contentWidth / 2,
+            edit: {
+              // 28 = 标题字号；+20 给图标留出与歌名的间距，别贴着字
+              cx: opts.contentWidth / 2 + estimateWidth(meta.title, 28) / 2 + 20,
+              cy: y,
+              size: PENCIL_SIZE,
+            },
+            // 谱头总高：两列谁伸得更低取谁，底边再留 20px 净空
+            //（首行标记最高到中线上方 50px，别压住）
+            height:
+              Math.max(
+                tempoY + 6,
+                rightLines.length > 0 ? colY + 4 + (rightLines.length - 1) * rowH + 6 : 0,
+              ) + 20,
+          };
+        })();
+  const titleHeight = title ? title.height : 0;
 
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
   const groupById = new Map(score.groups.map((g) => [g.id, g]));
@@ -754,7 +805,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         // 这条线结束的是第 measureNo 小节，下一根线就是下一小节（开头那根不算）
         if (anyTimed) measureNo += 1;
       } else if (ev.kind === 'directive') {
-        items.push({ eventId: ev.id, kind: 'directive', eventIndex: i, x: cx, w, value: ev.value });
+        // 文字装饰记号（(前奏) 之类）把括号画出来，和力度记号区分开
+        const value = ev.type === 'text' ? `(${ev.value})` : ev.value;
+        items.push({ eventId: ev.id, kind: 'directive', eventIndex: i, x: cx, w, value });
       } else if (ev.kind === 'jump') {
         items.push({ eventId: ev.id, kind: 'jump', eventIndex: i, x: cx, w, mark: ev.mark });
       }

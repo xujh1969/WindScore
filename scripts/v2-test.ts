@@ -344,15 +344,17 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const withTitle = layoutScore(score!, { contentWidth: 1000 });
   const noTitle = layoutScore(score!, { contentWidth: 1000, showTitle: false });
   check('默认画标题块', withTitle.title?.title === '茉莉花');
-  const sub = withTitle.title!.subtitle;
+  const t = withTitle.title!;
+  // 谱头三区：左列调号 / 拍号 / 速度（音色不再上谱头）
   check(
-    '副标题含调号/拍号/速度/音色',
-    sub.includes('1=G') && sub.includes('2/4') && sub.includes('♩=48') && sub.includes('音色 73'),
-    sub,
+    '左列含调号 / 拍号 / 速度',
+    t.key.includes('1=G') && t.beat === '2/4' && t.tempo.includes('♩=48'),
+    `${t.key} ${t.beat} ${t.tempo}`,
   );
+  check('右列说明缺省为空', t.rightLines.length === 0);
   check('showTitle:false 时无标题块', noTitle.title === null);
   check('标题块把谱面整体下移', withTitle.lines[0].y > noTitle.lines[0].y);
-  check('标题块计入总高', withTitle.height - noTitle.height === 96);
+  check('标题块计入总高', withTitle.height - noTitle.height === t.height);
   check('标题水平居中', withTitle.title!.centerX === 500);
 
   // 净空守卫：标题副行与首行谱面的标记层（吐音 / 换气，中线上方 50px）不能贴在一起。
@@ -913,7 +915,10 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   // 改了就要在谱面上看得见：标题块吃的是同一份 meta
   const L = layoutScore(edited, { contentWidth: 800 });
   check('标题块跟着改', L.title?.title === '新名');
-  check('副标题跟着改', !!L.title && L.title.subtitle.includes('1=G') && L.title.subtitle.includes('120'));
+  check(
+    '左列跟着改（调号 / 速度）',
+    !!L.title && L.title.key.includes('1=G') && L.title.tempo.includes('120'),
+  );
 }
 
 {
@@ -2939,6 +2944,75 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
     bad = (e as Error).message;
   }
   check('别的格式的包报错', bad.includes('WindScore'), bad);
+}
+
+console.log('\n[(文字) 装饰记号：前奏 / 间奏标注]');
+{
+  // 回归：括号里的**非音符内容**按文字显示——不占时值、演奏忽略；
+  // 括号里是音符（(5 6 5)）时仍是连音线，互不影响。
+  const deco = parseDsl('@beat 4/4\n\n(前奏) 1 2 3 4 ||');
+  const dScore = deco.score!;
+  check('(前奏) 解析无错误', deco.errors.length === 0, deco.errors.join('；'));
+  const dir = dScore.events.find((e) => e.kind === 'directive');
+  check(
+    '解析成 text directive，值为 前奏',
+    !!dir && dir.kind === 'directive' && dir.type === 'text' && dir.value === '前奏',
+    dir ? JSON.stringify(dir) : '没找到',
+  );
+  // 演奏忽略：整首只有 4 个音符的时值，(前奏) 不占拍
+  check(
+    '不占时值（总 tick = 4 拍）',
+    dScore.events.reduce((a, e) => a + ('ticks' in e ? (e as { ticks: number }).ticks : 0), 0) ===
+      4 * TICKS_PER_BEAT,
+  );
+  // 回写：保存再打开还是 (前奏)，round-trip 无损
+  const back = serializeDsl(dScore);
+  check('回写带括号 (前奏)', back.includes('(前奏)'), back);
+  const reopen = parseDsl(back);
+  check('重新打开仍是 text directive', reopen.errors.length === 0 && !!reopen.score!.events.find((e) => e.kind === 'directive' && (e as { type?: string }).type === 'text'));
+
+  // 连音线不受伤：(5 6 5) 里的括号还是连音线
+  const slur = parseDsl('@beat 4/4\n\n(5 6 5) 6 6 ||');
+  check('(5 6 5) 仍是连音线（不变成文字）', slur.errors.length === 0 && !slur.score!.events.some((e) => e.kind === 'directive' && (e as { type?: string }).type === 'text'), slur.errors.join('；'));
+
+  // 成对检查：只有半个括号 → 明确报错并提示成对写法
+  const unpaired = parseDsl('@beat 4/4\n\n(前奏 1 2 3 4 ||');
+  check(
+    '只有 ( 没成对 → 报错并提示成对写法',
+    unpaired.errors.some((m) => m.includes('成对')),
+    unpaired.errors.join('；'),
+  );
+}
+
+console.log('\n[谱头说明 @sub / @note（左中右三区谱头）]');
+{
+  const src =
+    '@title 红旗颂\n@key 1=C\n@beat 4/4\n@bpm 76\n@patch 73\n@sub 锣钹C20 管弦乐三重奏技法谱\n@note 流行小号(*和声常开)\n@note 长号(下八度和声) 圆号(下三度和声)\n@note 弦乐齐奏(*和声常开)\n@note 程序员老许制谱\n\n1 2 3 4 ||';
+  const r = parseDsl(src);
+  const s = r.score!;
+  check('解析无错误', r.errors.length === 0, r.errors.join('；'));
+  check('居中说明行进 meta', s.meta.sub === '锣钹C20 管弦乐三重奏技法谱');
+  check('右侧说明 4 行进 meta', (s.meta.notes ?? []).length === 4 && s.meta.notes![0] === '流行小号(*和声常开)');
+  // 谱头排版：右列 4 行、总高按右列算
+  const L = layoutScore(s, { contentWidth: 1000 });
+  check('右列 4 行进排版', L.title!.rightLines.length === 4);
+  check(
+    '左右两列对齐谱面音符边缘（padding 内缩）',
+    L.title!.leftX === 40 && L.title!.rightX === 960,
+    `left=${L.title!.leftX} right=${L.title!.rightX}`,
+  );
+  // 回写：@sub / @note 原样保留，再打开不丢
+  const back = serializeDsl(s);
+  check('回写 @sub', back.includes('@sub 锣钹C20 管弦乐三重奏技法谱'));
+  check('回写 4 条 @note', (back.match(/@note /g) ?? []).length === 4);
+  const reopen = parseDsl(back);
+  check('重新打开不丢', reopen.score!.meta.sub === s.meta.sub && (reopen.score!.meta.notes ?? []).length === 4);
+  // 没写过的不回写：老文件字节不变
+  const plain = serializeDsl(parseDsl('@title 无\n@key 1=C\n@beat 4/4\n@bpm 76\n@patch 1\n\n1 2 3 4 ||').score!);
+  check('未写说明的老文件不产生 @sub/@note', !plain.includes('@sub') && !plain.includes('@note'));
+  // @note 超过 4 行截断到 4（不静默吞掉整条指令）
+  const many = parseDsl(src.replace('1 2 3 4 ||', '') + '@note 第五行\n\n1 2 3 4 ||');
+  check('@note 超过 4 行截断为 4', (many.score!.meta.notes ?? []).length === 4);
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

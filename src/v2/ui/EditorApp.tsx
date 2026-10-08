@@ -2836,6 +2836,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 max={127}
                 onCommit={(v) => setScore(setMeta(score, { patch: Number(v) }))}
               />
+              {/* 谱头说明：居中一行 + 右侧最多 4 行（@sub / @note），打印排版与图示简谱一致 */}
+              <MetaInput
+                label="说明行"
+                value={score.meta.sub ?? ''}
+                placeholder="标题下的一行说明，如：锣钹C20 管弦乐三重奏技法谱"
+                onCommit={(v) => setScore(setMeta(score, { sub: v }))}
+              />
+              <MetaTextarea
+                label="右侧说明"
+                rows={4}
+                value={(score.meta.notes ?? []).join('\n')}
+                placeholder={'每行一条，最多 4 行\n如：流行小号(*和声常开)\n程序员老许制谱'}
+                onCommit={(v) =>
+                  setScore(
+                    setMeta(score, {
+                      notes: v
+                        .split(/\r?\n/)
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                        .slice(0, 4),
+                    }),
+                  )
+                }
+              />
               {/* 版式：字号 / 字间距，记进 jps（@size / @space），打开即还原 */}
               <MetaInput
                 label="字号"
@@ -3964,6 +3988,51 @@ function MetaInput({
         onChange={(e) => {
           setDraft(e.target.value);
           tryCommit(e.target.value);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          setDraft(external);
+        }}
+      />
+    </label>
+  );
+}
+
+/**
+ * 多行版的曲目信息项（右侧说明，每行一条）。
+ * 提交时机同 MetaInput：输入即提交，失焦把草稿对齐回外部值。
+ */
+function MetaTextarea({
+  label,
+  value,
+  onCommit,
+  rows = 3,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onCommit: (v: string) => void;
+  rows?: number;
+  placeholder?: string;
+}) {
+  const external = String(value);
+  const [focused, setFocused] = useState(false);
+  const [draft, setDraft] = useState(external);
+  return (
+    <label className="v2-meta-row">
+      <span className="v2-meta-label">{label}</span>
+      <textarea
+        className="v2-meta-input"
+        rows={rows}
+        placeholder={placeholder}
+        value={focused ? draft : external}
+        onFocus={() => {
+          setFocused(true);
+          setDraft(external);
+        }}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          onCommit(e.target.value);
         }}
         onBlur={() => {
           setFocused(false);

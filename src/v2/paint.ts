@@ -134,8 +134,14 @@ const M = {
   accFont: '600 13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
   /** 谱面标题：比谱面字号大一档，层级靠字重而非花活 */
   titleFont: '700 28px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 标题下的调号 / 拍号 / 速度，数字走等宽 */
-  titleSubFont: '12px ui-monospace, SFMono-Regular, Menlo, monospace',
+  /** 标题下的居中说明行（@sub） */
+  titleSubFont: '15px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱头左列：调号（1=C），加粗像印刷谱 */
+  titleKeyFont: '700 17px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱头左列：拍号叠写的分子 / 分母 */
+  titleBeatFont: '700 15px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱头左列速度与右列说明行 */
+  titleInfoFont: '13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
 };
 
 /**
@@ -275,13 +281,44 @@ export function paintLayout(
 }
 
 function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme): void {
+  ctx.fillStyle = theme.ink;
+  // 中：标题（大字居中）+ 说明行
   ctx.textAlign = 'center';
   ctx.font = M.titleFont;
-  ctx.fillStyle = theme.ink;
   ctx.fillText(t.title, t.centerX, t.y);
-  ctx.font = M.titleSubFont;
-  ctx.fillStyle = theme.muted;
-  ctx.fillText(t.subtitle, t.centerX, t.subY);
+  if (t.sub) {
+    ctx.font = M.titleSubFont;
+    ctx.fillText(t.sub, t.centerX, t.subY);
+  }
+  // 左：调号 + 拍号（叠成分数）+ 速度，两行
+  ctx.textAlign = 'left';
+  ctx.font = M.titleKeyFont;
+  ctx.fillText(t.key, t.leftX, t.colY + 6);
+  const [num, den] = t.beat.split('/');
+  if (num && den) {
+    // 拍号叠写：分子在上、分母在下（简谱惯例，如图示 4/4）。
+    // 分数线显式画并与数字同色（靠两数字自然贴近会出字体伪影）；
+    // 位置按实测字形边界取正中——不同字体的数字上伸/下延不一样，
+    // 拿基线硬算会贴住其中一个数字
+    const bx = t.leftX + ctx.measureText(t.key).width + 10;
+    ctx.font = M.titleBeatFont;
+    const nm = ctx.measureText(num);
+    const dm = ctx.measureText(den);
+    const numY = t.colY - 4;
+    const denY = t.colY + 16;
+    ctx.fillText(num, bx, numY);
+    // 分子字形底边（= 其基线）到分母字形顶边的中点
+    const barY = (numY + denY - dm.actualBoundingBoxAscent) / 2;
+    ctx.fillRect(bx, barY - 0.75, Math.max(nm.width, dm.width), 1.5);
+    ctx.fillText(den, bx, denY);
+  }
+  ctx.font = M.titleInfoFont;
+  ctx.fillText(t.tempo, t.leftX, t.tempoY);
+  // 右：说明行，右对齐（最多 4 行）
+  ctx.textAlign = 'right';
+  t.rightLines.forEach((line, i) => {
+    ctx.fillText(line, t.rightX, t.colY + 4 + i * t.rowH);
+  });
   // 齿轮用强调色而不是灰：它是个可点的按钮（打开曲目信息，字号 / 字间距在里面），
   // 灰色看起来像装饰，用户找不到谱面字号在哪改
   paintGear(ctx, t.edit.cx, t.edit.cy, t.edit.size, theme.accent);

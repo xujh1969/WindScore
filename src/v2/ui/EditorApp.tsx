@@ -2040,6 +2040,19 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           if (r.ok) commit({ score: r.score });
           return;
         }
+        case '/': {
+          // 减时线档位：四分 → 八分 → 十六分 → 三十二分 → 回四分。
+          // 附点是独立开关不掉点（附点四分减半 = 附点八分）；增时线长音先回到一拍
+          e.preventDefault();
+          const k = prevTimed(score, cur);
+          if (k < 0) return;
+          const prev = score.events[k];
+          if (prev.kind !== 'note' && prev.kind !== 'rest') return;
+          const dot = prev.dot ?? 0;
+          const base = undotTicks(prev.ticks, dot);
+          commit({ score: setTicks(score, prev.id, base > 6 ? base / 2 : TICKS_PER_BEAT) });
+          return;
+        }
         case '^':
         case 'v':
         case '.':

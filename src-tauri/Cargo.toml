@@ -1,6 +1,6 @@
 [package]
 name = "windscore"
-version = "0.2.17"
+version = "0.2.18"
 description = "WindScore · 电吹管动态谱"
 authors = ["AYOU"]
 edition = "2021"

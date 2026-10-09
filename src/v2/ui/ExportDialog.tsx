@@ -29,6 +29,8 @@ export interface ExportDialogProps {
   visibleLayout?: LayoutResult;
   visibleOptions?: LayoutOptions;
   initialPartId?: string;
+  /** 是否允许导出视频（曲库播放 / 动态谱播放 = true；简谱编辑 = false，视频只在演奏页有意义） */
+  allowVideo?: boolean;
   /** 视频配色跟随界面 */
   dark: boolean;
   onClose: () => void;
@@ -68,7 +70,7 @@ function zoomedGeo(geo: PageGeometry, z: number): PageGeometry {
   };
 }
 
-export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
+export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', allowVideo = true, dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
   const [partId, setPartId] = useState(initialPartId);
   const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
   const video = useMemo(() => partId ? { ...fullVideo, timeline: fullVideo.timeline.filter((e) => e.partId === partId), displayTimeline: fullVideo.displayTimeline.filter((e) => e.partId === partId) } : fullVideo, [fullVideo, partId]);
@@ -242,6 +244,9 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       const res = await exportScoreVideoToFile({
         score,
         name: exportName,
+        // 视频用页面当前显示的排版：换行与简谱编辑 / PDF 完全一致，
+        // 不再按视频画布宽度重新排版（画面随宽度等比缩放 + 纵向滚动）
+        layout: showTitle ? pdfLayout : { ...pdfLayout, title: null },
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,
@@ -285,13 +290,15 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             >
               PDF
             </button>
-            <button
-              className={tab === 'video' ? 'v2-seg is-on' : 'v2-seg'}
-              onClick={() => setTab('video')}
-              disabled={busy}
-            >
-              视频
-            </button>
+            {allowVideo ? (
+              <button
+                className={tab === 'video' ? 'v2-seg is-on' : 'v2-seg'}
+                onClick={() => setTab('video')}
+                disabled={busy}
+              >
+                视频
+              </button>
+            ) : null}
             <button className={tab === 'image' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setTab('image')} disabled={busy}>图片</button>
           </div>
           <span className="v2-exp-song" title={songName}>

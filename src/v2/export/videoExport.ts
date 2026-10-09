@@ -6,6 +6,7 @@
  */
 
 import type { Score } from "../types";
+import type { LayoutResult } from "../layout";
 import type { AudioStem } from "../audio";
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
 import { activeHeadsAt, activeMainAt, type TimelineEntry } from "../timeline";
@@ -23,6 +24,11 @@ const MIX_RATE = 44100;
 export interface VideoExportOptions {
   score: Score;
   name: string;
+  /**
+   * 直接使用的排版（= 页面当前显示的那份）：给了就不再按视频画布宽度重新排版，
+   * 换行与简谱编辑 / PDF 完全一致；画面按帧宽等比缩放并纵向滚动
+   */
+  layout?: LayoutResult;
   timeline: TimelineEntry[];
   /** 显示用时间线（画原谱时传映射回原谱 id 的那份） */
   displayTimeline?: TimelineEntry[];
@@ -104,7 +110,7 @@ export async function exportScoreVideoToFile(
   opts: VideoExportOptions,
 ): Promise<SaveResult & { seconds: number; ext: string; sizeMB: number; codec: string }> {
   const { canvasW, canvasH, geo } = videoGeometry(opts.ratio, opts.shortSide);
-  const layout = exportLayoutFor(opts.score, geo, opts.showTitle ?? true);
+  const layout = opts.layout ?? exportLayoutFor(opts.score, geo, opts.showTitle ?? true);
   const showTl = opts.displayTimeline ?? opts.timeline;
   const ranges = lineTickRanges(layout, showTl);
   const theme = exportTheme(opts.dark);

@@ -2576,6 +2576,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           visibleLayout={mode === 'play' || view === 'score' ? visibleLayout.current?.layout : undefined}
           visibleOptions={visibleLayout.current?.options}
           initialPartId={!totalView && documentScore.part ? activePartId : ''}
+          // 视频只在演奏场景（曲库播放 / 动态谱播放）导出；简谱编辑页不出现该页签
+          allowVideo={entry === 'align' || entry === 'play'}
           dark={dark}
           onClose={() => setExportOpen(false)}
           onBegin={() => {

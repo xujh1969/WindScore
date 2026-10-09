@@ -141,23 +141,29 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 放大时按倍率重渲染画布（不是拉伸位图），细节才经得起看
   const [pdfZoom, setPdfZoom] = useState<number | null>(null);
   const pdfSheetRef = useRef<HTMLDivElement>(null);
-  /** 适应窗口的显示比例：预览框可用宽 ÷ 页面像素宽 */
-  const fitScale = (): number => {
-    const w = pdfSheetRef.current?.clientWidth;
+  /**
+   * 适应窗口的真实显示比例。**必须在适应模式下量画布元素本身**——
+   * A4 是竖长条，适应受 50vh 高度约束而非宽度；只量宽度会高估一倍，
+   * 第一步就跳到 68%。适应模式下量完缓存，供放大起点与缩小回退判断用
+   * （放大后画布元素变成缩放后的尺寸，不能再量它）。
+   */
+  const fitScaleRef = useRef(0.25);
+  useEffect(() => {
+    if (pdfZoom !== null) return;
+    const el = pdfCanvas.current;
     const pageW = preview.pdfPlan?.geo.pageW;
-    if (!w || !pageW) return 1;
-    return Math.max(0.05, (w - 24) / pageW); // -24 = 容器左右 padding
-  };
+    if (el && pageW) fitScaleRef.current = Math.max(0.05, el.getBoundingClientRect().width / pageW);
+  }, [pdfZoom, preview.pdfPlan]);
   /**
    * 步进缩放：从「适应窗口」出发每步 ×1.25 / ÷1.25，而不是一步跳到固定档位——
-   * 适应比例随窗口宽窄变化（可能只有页面的四成），固定 125% 起步会猛跳。
+   * 适应比例随窗口宽窄变化，固定 125% 起步会猛跳。
    * 缩到接近适应比例时直接回「适应窗口」。
    */
   const zoomStep = (dir: 1 | -1): void =>
     setPdfZoom((z) => {
-      if (z === null) return dir === 1 ? Math.min(3, Math.round(fitScale() * 1.25 * 100) / 100) : null;
+      if (z === null) return dir === 1 ? Math.min(3, Math.round(fitScaleRef.current * 1.25 * 100) / 100) : null;
       const next = Math.round(z * (dir === 1 ? 1.25 : 0.8) * 100) / 100;
-      if (dir === -1 && next <= fitScale() * 1.02) return null;
+      if (dir === -1 && next <= fitScaleRef.current * 1.02) return null;
       return Math.min(3, Math.max(0.2, next));
     });
   useEffect(() => {

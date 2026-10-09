@@ -464,8 +464,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 与音符属性互斥：改音符是改音符，改曲目信息是改曲目信息，不混在一个面板里。
    */
   const [songInfoOpen, setSongInfoOpen] = useState(false);
-  /** 字间距：每 tick 像素宽，直接喂给 layoutScore 的 unit。默认 0.70（用户定的密度） */
-  const [spacing, setSpacing] = useState(0.7);
+  /**
+   * 编辑视图的横向密度（每 tick 像素宽）。曾经是界面滑杆「音符间距」，因与
+   * 曲目信息里跟谱保存的「字间距」（@space）语义重叠、且不随文件走，已按
+   * 用户要求移除控件——密度固定为 0.70（沿用原默认值，视觉不变）。
+   * 想调谱面本身的间距请用曲目信息面板的「字间距」。
+   */
+  const EDITOR_UNIT = 0.7;
   /** 源码面板默认只读。主编辑路径是点选 + 键盘 + 属性面板。 */
 
   const [msg, setMsg] = useState('');
@@ -2525,7 +2530,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             <ScoreCanvas
               score={viewScore}
               dark={dark}
-              unit={spacing}
+              unit={EDITOR_UNIT}
               fontSize={effFont}
               letterSpacing={effGap}
               selectedIds={EMPTY_SELECTED}
@@ -2654,26 +2659,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </span>
             </div>
 
-            <div className="v2-spacing v2-hide-align">
-              {/* 这条只影响编辑视图的横向密度（每拍多少像素），不写入文件；
-                  与曲目信息里记进 jps 的「字间距」是两回事，名字必须分开 */}
-              <label htmlFor="v2-spacing" title="编辑视图的音符横向密度（每拍像素），不随文件保存。要改谱面本身的字间距请到曲目信息面板">
-                音符间距
-              </label>
-              <input
-                id="v2-spacing"
-                type="range"
-                min={0.5}
-                max={2.4}
-                step={0.05}
-                value={spacing}
-                onChange={(e) => setSpacing(Number(e.target.value))}
-              />
-              <output className="v2-spacing-val" htmlFor="v2-spacing">
-                {spacing.toFixed(2)}×
-              </output>
-            </div>
-
             {/* 播放指示方式：两种指示各有偏好，交给用户选 */}
             <div className="v2-spacing">
               <span className="v2-playstyle-label">播放指示</span>
@@ -2796,7 +2781,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 score={totalView ? documentScore : score}
                 activePartId={activePartId}
                 dark={dark}
-                unit={spacing}
+                unit={EDITOR_UNIT}
                 selectedIds={selectedIds}
                 cursor={snap.cursor}
                 /* 记谱页永远画原谱 → 用原谱口径的时间线（展开视图是播放页的事） */

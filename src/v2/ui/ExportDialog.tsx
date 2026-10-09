@@ -140,8 +140,26 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // PDF 预览缩放：null = 适应窗口（CSS 缩到面板内）；数字 = 相对页面原始像素的倍率。
   // 放大时按倍率重渲染画布（不是拉伸位图），细节才经得起看
   const [pdfZoom, setPdfZoom] = useState<number | null>(null);
+  const pdfSheetRef = useRef<HTMLDivElement>(null);
+  /** 适应窗口的显示比例：预览框可用宽 ÷ 页面像素宽 */
+  const fitScale = (): number => {
+    const w = pdfSheetRef.current?.clientWidth;
+    const pageW = preview.pdfPlan?.geo.pageW;
+    if (!w || !pageW) return 1;
+    return Math.max(0.05, (w - 24) / pageW); // -24 = 容器左右 padding
+  };
+  /**
+   * 步进缩放：从「适应窗口」出发每步 ×1.25 / ÷1.25，而不是一步跳到固定档位——
+   * 适应比例随窗口宽窄变化（可能只有页面的四成），固定 125% 起步会猛跳。
+   * 缩到接近适应比例时直接回「适应窗口」。
+   */
   const zoomStep = (dir: 1 | -1): void =>
-    setPdfZoom((z) => Math.min(3, Math.max(0.5, Math.round(((z ?? 1) + dir * 0.25) * 100) / 100)));
+    setPdfZoom((z) => {
+      if (z === null) return dir === 1 ? Math.min(3, Math.round(fitScale() * 1.25 * 100) / 100) : null;
+      const next = Math.round(z * (dir === 1 ? 1.25 : 0.8) * 100) / 100;
+      if (dir === -1 && next <= fitScale() * 1.02) return null;
+      return Math.min(3, Math.max(0.2, next));
+    });
   useEffect(() => {
     const canvas = pdfCanvas.current;
     const plan = preview.pdfPlan;
@@ -349,7 +367,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               <button className="v2-btn" disabled={busy || pdfZoom === 1} onClick={() => setPdfZoom(1)}>100%</button>
               <button className="v2-btn" disabled={busy || pdfZoom === null} onClick={() => setPdfZoom(null)}>适应窗口</button>
             </div>
-            <div className="v2-pdf-sheet" data-zoom={pdfZoom ? 'in' : 'fit'}>
+            <div className="v2-pdf-sheet" data-zoom={pdfZoom ? 'in' : 'fit'} ref={pdfSheetRef}>
               <canvas
                 ref={pdfCanvas}
                 aria-label={`PDF 第 ${pageIndex + 1} 页预览`}

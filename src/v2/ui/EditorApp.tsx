@@ -12,6 +12,7 @@ import quartetDemo from '../../scores/quartet-demo.jps?raw';
 import { meterAt } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput } from '../lyrics';
+import { setTextAnnotation, textAnnotationOf } from '../edit';
 import { HelpDialog } from './HelpCenter';
 import {
   applyTier as applyTierOp,
@@ -3255,6 +3256,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                       </button>
                     ))}
                   </div>
+                </div>
+                <div className="v2-field">
+                  <span className="v2-field-label">标注（段落文字）</span>
+                  <input
+                    className="v2-meta-input"
+                    value={textAnnotationOf(score, focus.id) ?? ''}
+                    placeholder="如：前奏（清空即删除）"
+                    title="写在音符前的段落标注，谱面上显示为 (文字)"
+                    onChange={(e) => setScore(setTextAnnotation(score, focus.id, e.target.value))}
+                  />
                 </div>
                 <div className="v2-field">
                   <span className="v2-field-label">八度</span>

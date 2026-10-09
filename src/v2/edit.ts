@@ -798,6 +798,57 @@ export function deleteDynamic(score: Score, at: number): Score {
   return existing ? removeEvent(score, existing.id) : score;
 }
 
+// ── 文字标注（段落标注）：紧贴音符前的 (文字) 指令 ──────────────────
+
+/**
+ * 找紧贴某音符/休止符**前面**的文字标注文本；没有返回 null。
+ * 「紧贴」= 往前扫只会经过其他指令（力度 mf 之类可以夹在中间），
+ * 遇到音符 / 休止 / 小节线就停——隔了结构的标注不属于这个音。
+ */
+export function textAnnotationOf(score: Score, noteId: string): string | null {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return null;
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const e = score.events[i];
+    if (e.kind !== 'directive') break;
+    if (e.type === 'text') return e.value;
+  }
+  return null;
+}
+
+/**
+ * 设置 / 修改 / 删除音符前的文字标注（脚本里的 `(前奏)` 段落标记）。
+ * text 为空串 = 删除；已有标注 = 改文字；都没有 = 在音符前插入新指令。
+ */
+export function setTextAnnotation(score: Score, noteId: string, text: string): Score {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return score;
+  if (score.events[idx].kind !== 'note' && score.events[idx].kind !== 'rest') return score;
+  let di = -1;
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const e = score.events[i];
+    if (e.kind !== 'directive') break;
+    if (e.type === 'text') {
+      di = i;
+      break;
+    }
+  }
+  const trimmed = text.trim();
+  const events = [...score.events];
+  if (!trimmed) {
+    if (di >= 0) events.splice(di, 1);
+    return { ...score, events };
+  }
+  if (di >= 0) {
+    events[di] = { ...events[di], value: trimmed } as Event;
+  } else {
+    const ns = score.part ? `p${score.part.id}:` : '';
+    const id = `${ns}e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`;
+    events.splice(idx, 0, { id, kind: 'directive', type: 'text', value: trimmed });
+  }
+  return { ...score, events };
+}
+
 /** 附点 .：0 -> 1 -> 2 -> 0 循环，时值随附点数重算 */
 export function cycleDot(score: Score, id: string): Score {
   return {

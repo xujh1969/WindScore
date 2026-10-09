@@ -45,6 +45,8 @@ import {
   setBarlineRepeat,
   setBarlineVolta,
   setBarlineVoltaOpen,
+  setTextAnnotation,
+  textAnnotationOf,
   setVoltaFromSelection,
   toggleJumpAfterBarline,
   setAccidental,
@@ -3054,6 +3056,30 @@ console.log('\n[隐藏休止 8 与隐藏小节线 |*（混排占位）]');
   // 0 休止不受影响
   const normal = parseDsl('@beat 4/4\n\n0 0 0 0 ||').score!;
   check('普通 0 休止不带 hidden', normal.events.filter((e): e is RestEvent => e.kind === 'rest').every((x) => !x.hidden));
+}
+
+console.log('\n[文字标注（段落 (文字) 的编辑器操作）]');
+{
+  const { score } = parseDsl('@title 标\n@key 1=C\n@beat 4/4\n@bpm 90\n\n1 2 3 4 ||');
+  const n1 = score.events.find((e) => e.kind === 'note')!;
+  check('初始无标注', textAnnotationOf(score, n1.id) === null);
+  const withAnn = setTextAnnotation(score, n1.id, '前奏');
+  check('插入标注', textAnnotationOf(withAnn, n1.id) === '前奏');
+  const ann = withAnn.events[withAnn.events.findIndex((e) => e.id === n1.id) - 1];
+  check('标注紧贴音符之前且是 text 指令', ann.kind === 'directive' && ann.type === 'text' && ann.value === '前奏');
+  const edited = setTextAnnotation(withAnn, n1.id, '引子');
+  check('改文字', textAnnotationOf(edited, n1.id) === '引子');
+  const removed = setTextAnnotation(edited, n1.id, '  ');
+  check('清空即删除', textAnnotationOf(removed, n1.id) === null && !removed.events.some((e) => e.kind === 'directive' && e.type === 'text'));
+  // 中间隔着结构：标注不属于下一个音
+  const cross = setTextAnnotation(withAnn, withAnn.events[withAnn.events.length - 2].id, 'X');
+  check('隔着小节线不算「贴着」', textAnnotationOf(cross, withAnn.events[withAnn.events.length - 2].id) === 'X' && cross.events.filter((e) => e.kind === 'directive' && e.type === 'text').length === 2);
+  // 回写：序列化成 (文字)，重新解析不丢
+  const back = serializeDsl(setTextAnnotation(score, n1.id, '前奏'));
+  check('回写 (前奏)', back.includes('(前奏)'));
+  const reopen = parseDsl(back);
+  const r1 = reopen.score!.events.find((e) => e.kind === 'note')!;
+  check('重新解析不丢', textAnnotationOf(reopen.score!, r1.id) === '前奏');
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

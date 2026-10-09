@@ -184,8 +184,10 @@ export function ScoreCanvas({
       if (!layout) return;
       headRef.current = head;
       const dpr = window.devicePixelRatio || 1;
-      // 宽度钳到 clientWidth：竖滚动条出现时别让画布伸到它底下（否则横滚动条也来）
-      const w = layout.systems ? Math.max(layout.width, Math.min(boxWidth(), Math.max(1, wrap.clientWidth))) : Math.min(boxWidth(), Math.max(1, wrap.clientWidth));
+      // 宽度钳到 clientWidth：竖滚动条出现时别让画布伸到它底下（否则横滚动条也来）。
+      // layout.width 恒等于 contentWidth（= boxWidth），画布永远不比可视区宽——
+      // 简谱自动适应宽度，只允许纵向滚动（这里曾是 Math.max，横滚动条回归的根源）
+      const w = Math.min(boxWidth(), Math.max(1, wrap.clientWidth));
       const h = Math.max(boxHeight(), layout.height + 32);
       const cw = Math.max(1, Math.floor(w * dpr));
       const ch = Math.max(1, Math.floor(h * dpr));

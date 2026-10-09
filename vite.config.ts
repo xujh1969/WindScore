@@ -16,10 +16,6 @@ function versionInject(): Plugin {
 export default defineConfig({
   plugins: [react(), versionInject()],
   clearScreen: false,
-  // 识别 Worker 里动态 import TFJS（代码分割），iife 格式不支持，必须 es
-  worker: {
-    format: 'es',
-  },
   server: {
     port: 5173,
     strictPort: true,
@@ -36,7 +32,6 @@ export default defineConfig({
         align: 'align.html',
         library: 'library.html',
         play: 'play.html',
-        lab: 'lab.html',
         help: 'help.html',
       },
     },

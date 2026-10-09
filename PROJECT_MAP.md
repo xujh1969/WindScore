@@ -5,7 +5,7 @@
 ## 产品与运行入口
 
 - 项目是离线优先的简谱动态谱工具：浏览器版与 Tauri 桌面版共用 React/TypeScript 应用和同一套本地数据格式。
-- Vite 多页面入口：`index.html`（四个主入口）、`editor.html`（简谱编辑）、`align.html`（动态谱生成/对轨）、`library.html`（曲库管理）、`play.html`（只读曲库查询/播放）、`lab.html`（隐藏的实验性听音成谱）、`help.html`（分类帮助）。各页通过 `body[data-entry]` 进入 `src/main.tsx`，再选择 `EditorApp` 或独立页面。简谱编辑与对轨共用内核、会话及伴奏标定存储，但使用独立页面；曲库的对轨操作保存选中曲目会话并跳到 `align.html`。
+- Vite 多页面入口：`index.html`（四个主入口）、`editor.html`（简谱编辑）、`align.html`（动态谱生成/对轨）、`library.html`（曲库管理）、`play.html`（只读曲库查询/播放）、`help.html`（分类帮助）。各页通过 `body[data-entry]` 进入 `src/main.tsx`，再选择 `EditorApp` 或独立页面。简谱编辑与对轨共用内核、会话及伴奏标定存储，但使用独立页面；曲库的对轨操作保存选中曲目会话并跳到 `align.html`。
 - `src-tauri/` 提供桌面壳、系统文件对话框和安装包配置；业务逻辑仍在 `src/v2/`。
 - `vite.config.ts` 配置页面入口、版本注入和转录 Worker 的 ES 输出。
 
@@ -44,19 +44,9 @@
 - `image.ts` 输出 PNG 长图与 SVG；`svg.ts` 把共用绘制器的文字和路径指令记录为矢量元素。
 - `video.ts` 管画面比例、滚动与时长计算；`mix.ts` 离线混音/合成；`encode.ts` 选 WebCodecs 编码器；`videoExport.ts` 串起逐帧视频导出。
 
-### 实验性听音成谱：`src/v2/lab/`
+### 实验性听音成谱：已移除
 
-此功能当前存在于工作区的暂存改动中，后续开发应先核对相关 Git 状态，不要假设它已发布或与基线相同。
-
-- `transcribe.ts` 将浏览器解码的人声重采样为 22050Hz 单声道 WAV，调用本机 GAME 服务；支持轮询与取消。
-- `scripts/lab_server.py` 仅监听 `127.0.0.1:8766`，串行启动 GAME 官方 CLI，读取音符 CSV，清理临时音频。`scripts/lab-runtime.mjs` 安装官方 v1.0.3 源码与 medium 模型到 `.lab-runtime/`；权重有非商业许可限制。
-- `rhythm.ts` / `rhythm.worker.ts` 复用 `beat.ts`：鼓 → 完整伴奏 → 贝斯 → 其他 → 人声，估计固定 BPM；相位不能直接当作小节首拍。
-- `quantize.ts` 保留音符先后与休止，按固定 BPM/起点吸附至十六分网格，精确分拍并跨小节延音；`toDsl.ts` 输出可往返解析的 `.jps` 草稿。
-- `LabScreen.tsx` / `lab.css` 管理两/四分轨上传、参数、服务状态、草稿谱面与合成试听。仅在人声输入时识别歌唱旋律；伴奏不冒充歌唱旋律。明确确认后通过现有 Store 入库，也可导出或交给编辑器修谱。
-- 草稿支持整体 ±12 半音、选中音符起播、逐颗播放高亮、主音/前倚音半音校正；校正回溯原始识别音符，长音的所有分片一起更新。短倚音整理默认关闭，只整理紧邻长主音的短级进音，不自动消除变化音，真实识别效果仍需歌曲样本确认。
-- `paint.ts` 的 `curve` 统一延音线、圆滑线、连音符弧线与倚音弧线，深色 `#d9b23c`、浅色 `#8a6a12`，编辑/播放/PDF/视频共用。
-- 《青花瓷》真实人声的诊断见 `docs/qinghuaci-transcription-analysis.md`：确认真实错音、半音舍入问题、原谱与人声的八度差和末段升调；独立 pYIN 未表现出直接替换优势。对照数字不是标准识别准确率，后续应考虑分段调性与低置信标记。
-- 第一阶段不识别乐器主奏、复调伴奏、三连音和变速谱；也不自动保存分轨到对轨 Store。独立 Python 服务尚未嵌入 MSI。
+听音成谱（`src/v2/lab/`、`lab.html`、本机 GAME Python 服务）经测试后于 2026-10-09 整体移除；实现保留在 Git 历史（`6a72815` 前后），恢复时从历史取回。`docs/qinghuaci-transcription-analysis.md` 保留当时的识别质量诊断结论。
 
 ## 数据流速查
 
@@ -81,14 +71,13 @@
 
 伴奏文件 + 锚点/TempoMap → alignStore → 播放 / 混音 / 视频导出
 曲谱 + 对轨 + 音频 → packBundle → .wspack → 曲库导入
-音频 → lab/transcribe → quantize → toDsl → 普通 .jps 草稿
 ```
 
 ## 开发与验证入口
 
 - `npm run typecheck`：TypeScript 类型检查。
 - `npm run build`：类型检查 + Vite 多页面生产构建。
-- `npm test`：运行 `scripts/` 中 DSL/内核、展开、节拍、发现、导出、存储、MP3、播放和 Lab 的 Node 回归测试。
+- `npm test`：运行 `scripts/` 中 DSL/内核、展开、节拍、发现、导出、存储、MP3 和播放的 Node 回归测试。
 - `npm run build:skill`：将应用 DSL/校验逻辑打包到 `skills/windscore-jps/validate.mjs`。
 - `npm run tauri:dev`：Tauri 桌面开发运行。
 

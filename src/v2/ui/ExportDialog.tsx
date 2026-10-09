@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Score } from '../types';
 import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
-import { exportTheme, footerText, paintExportPage } from '../export/render';
+import { exportTheme, footerText, paintExportPage, type PageGeometry } from '../export/render';
 import type { AudioStem } from '../audio';
 import type { TempoMap } from '../tempo';
 import type { TimelineEntry } from '../timeline';
@@ -55,6 +55,18 @@ export interface ExportDialogProps {
 const DPIS = [150, 300] as const;
 const SIDES = [720, 1080, 1440] as const;
 const FPS = [25, 30, 60] as const;
+
+/** 预览缩放：整套页面几何等比缩，页面比 / 页脚 / 边距保持一致 */
+function zoomedGeo(geo: PageGeometry, z: number): PageGeometry {
+  return {
+    pageW: geo.pageW * z,
+    pageH: geo.pageH * z,
+    scale: geo.scale * z,
+    marginX: geo.marginX * z,
+    marginTop: geo.marginTop * z,
+    marginBottom: geo.marginBottom * z,
+  };
+}
 
 export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
   const [partId, setPartId] = useState(initialPartId);
@@ -125,15 +137,26 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   }, [score, pdfLayout, landscape, dpi, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
 
   const pageIndex = Math.min(pdfPage, Math.max(0, preview.pages - 1));
+  // PDF 预览缩放：null = 适应窗口（CSS 缩到面板内）；数字 = 相对页面原始像素的倍率。
+  // 放大时按倍率重渲染画布（不是拉伸位图），细节才经得起看
+  const [pdfZoom, setPdfZoom] = useState<number | null>(null);
+  const zoomStep = (dir: 1 | -1): void =>
+    setPdfZoom((z) => Math.min(3, Math.max(0.5, Math.round(((z ?? 1) + dir * 0.25) * 100) / 100)));
   useEffect(() => {
     const canvas = pdfCanvas.current;
     const plan = preview.pdfPlan;
     if (tab !== 'pdf' || !canvas || !plan?.plans.length) return;
-    canvas.width = plan.geo.pageW;
-    canvas.height = plan.geo.pageH;
+    const z = pdfZoom ?? 1;
+    canvas.width = Math.round(plan.geo.pageW * z);
+    canvas.height = Math.round(plan.geo.pageH * z);
     const ctx = canvas.getContext('2d');
-    if (ctx) paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], plan.geo, { footer: footerText(exportName, pageIndex + 1, plan.plans.length), showMeasureNumbers: showBars });
-  }, [preview.pdfPlan, pageIndex, tab, exportName, showBars]);
+    if (ctx) {
+      // 缩放必须走 geo：paintExportPage 内部会 setTransform 重置矩阵，
+      // 在外面 pre-scale 会被抹掉（放大后内容不变大的根源）。
+      // 整套几何等比缩，页面比、页脚、页边距全部一致
+      paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], zoomedGeo(plan.geo, z), { footer: footerText(exportName, pageIndex + 1, plan.plans.length), showMeasureNumbers: showBars });
+    }
+  }, [preview.pdfPlan, pageIndex, tab, exportName, showBars, pdfZoom]);
 
   const run = async (task: () => Promise<string>): Promise<void> => {
     setBusy(true);
@@ -319,7 +342,29 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             </p>
           </div>
           <section className="v2-pdf-preview" aria-label="PDF 页面预览">
-            <div className="v2-pdf-sheet"><canvas ref={pdfCanvas} aria-label={`PDF 第 ${pageIndex + 1} 页预览`} /></div>
+            <div className="v2-pdf-zoom" role="group" aria-label="预览缩放">
+              <button className="v2-btn" disabled={busy || (pdfZoom ?? 1) <= 0.5} onClick={() => zoomStep(-1)} title="缩小">－</button>
+              <span className="v2-pdf-zoom-label">{pdfZoom === null ? '适应窗口' : `${Math.round(pdfZoom * 100)}%`}</span>
+              <button className="v2-btn" disabled={busy || (pdfZoom ?? 1) >= 3} onClick={() => zoomStep(1)} title="放大">＋</button>
+              <button className="v2-btn" disabled={busy || pdfZoom === 1} onClick={() => setPdfZoom(1)}>100%</button>
+              <button className="v2-btn" disabled={busy || pdfZoom === null} onClick={() => setPdfZoom(null)}>适应窗口</button>
+            </div>
+            <div className="v2-pdf-sheet" data-zoom={pdfZoom ? 'in' : 'fit'}>
+              <canvas
+                ref={pdfCanvas}
+                aria-label={`PDF 第 ${pageIndex + 1} 页预览`}
+                style={
+                  pdfZoom && preview.pdfPlan
+                    ? {
+                        // 宽高都按同一倍率显式给定：宽高比只由页面几何决定，
+                        // 不依赖 height:auto 的等比推断（flex + 滚动容器下会被压扁）
+                        width: Math.round(preview.pdfPlan.geo.pageW * pdfZoom),
+                        height: Math.round(preview.pdfPlan.geo.pageH * pdfZoom),
+                      }
+                    : undefined
+                }
+              />
+            </div>
             <div className="v2-pdf-pages">
               <button className="v2-btn" disabled={busy || pageIndex === 0} onClick={() => setPdfPage(pageIndex - 1)}>上一页</button>
               <span>第 {preview.pages ? pageIndex + 1 : 0} / {preview.pages} 页</span>

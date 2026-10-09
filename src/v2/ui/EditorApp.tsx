@@ -346,7 +346,7 @@ function beatsPerMeasure(beat: string): number {
  *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
  * 编辑、生成与曲库单功能页显示左上角「返回首页」。
  */
-export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'lab';
+export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play';
 
 export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   /** 深浅主题。初始值跟系统，之后由工具栏手动切换，不再随系统变 */

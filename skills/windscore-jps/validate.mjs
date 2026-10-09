@@ -452,7 +452,11 @@ function parseDsl(text2) {
   if (errors.length || parsed.some((p) => !p.result.score)) return { score: null, errors };
   return { score: assembleParts(parsed[0].result.score, parsed.map(({ block, result }) => {
     const { lines: _lines, ...info } = block;
-    return namespacePart(autoGroupBeats(result.score), info);
+    return namespacePart(autoGroupBeats(result.score), {
+      ...info,
+      muted: info.muted ?? false,
+      solo: info.solo ?? false
+    });
   })), errors };
 }
 function normalizeModern(text2) {
@@ -563,7 +567,7 @@ function parseSingle(text2, modern = false) {
     if (!from || from.kind !== "note") return;
     from.ties = [...from.ties ?? [], { to: toId, kind }];
   };
-  const pushTimed = (core, gBefore, gAfter) => {
+  const pushTimed = (core, gBefore, gAfter, hiddenRest = false) => {
     const m = NOTE_RE.exec(core);
     if (!m) {
       errors.push(`\u65E0\u6CD5\u89E3\u6790\u7684\u8BB0\u53F7\uFF1A${core}`);
@@ -593,6 +597,7 @@ function parseSingle(text2, modern = false) {
       const rest = { id, kind: "rest", ticks };
       if (dotCount) rest.dot = dotCount;
       ev = rest;
+      if (hiddenRest) rest.hidden = true;
     } else {
       const note = {
         id,
@@ -690,13 +695,14 @@ function parseSingle(text2, modern = false) {
     }
     currentGroup = null;
   };
-  const pushBarline = (style, partial = false) => {
+  const pushBarline = (style, partial = false, hidden = false) => {
     if (currentGroup) {
       errors.push("\u62CD\u5185\u7EC4\u4E0D\u5F97\u8DE8\u5C0F\u8282\uFF0C\u8BF7\u5148\u7528 > \u6536\u5C3E");
       currentGroup = null;
     }
     const id = nextId();
     const ev = partial ? { id, kind: "barline", style, partial: true } : { id, kind: "barline", style };
+    if (hidden) ev.hidden = true;
     events.push(ev);
     byId.set(id, ev);
     if (!pendingTie || style === "final") lastNoteId = null;
@@ -824,7 +830,8 @@ function parseSingle(text2, modern = false) {
             }
             hairpinStart = null;
           }
-        } else if (raw === "|") pushBarline("single");
+        } else if (raw === "|*") pushBarline("single", false, true);
+        else if (raw === "|") pushBarline("single");
         else if (raw === "||") pushBarline("final");
         else if (raw === "|{partial}") pushBarline("single", true);
         else if (raw === "'") {
@@ -861,6 +868,11 @@ function parseSingle(text2, modern = false) {
           errors.push(
             `( ) \u9700\u8981\u6210\u5BF9\u5199\u5728\u540C\u4E00\u4E2A\u8BB0\u53F7\u91CC\uFF1A\u6807\u6CE8\u6BB5\u843D\u7528 (\u524D\u594F) \u8FD9\u79CD\u7EAF\u6587\u5B57\uFF1B\u8FDE\u97F3\u7EBF\u8981\u5305\u4F4F\u97F3\u7B26\uFF0C\u5982 (5 6 5)\u3002\u6536\u5230\u7684\u662F\uFF1A${raw}`
           );
+        } else if (/^8(?:[.\-/]|$)/.test(raw)) {
+          const at = events.length;
+          pushTimed(`0${raw.slice(1)}`, graceBefore, graceAfter, true);
+          const last = events[at];
+          if (last?.kind !== "rest") errors.push(`\u9690\u85CF\u4F11\u6B62\u5199\u6CD5\u65E0\u6CD5\u8BC6\u522B\uFF1A${raw}`);
         } else {
           pushTimed(raw, graceBefore, graceAfter);
         }
@@ -940,7 +952,7 @@ function renderDuration(ticks, dot) {
 function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? "/1" : "");
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n2) => "/".repeat(Math.log2(Number(n2)))) : duration;
-  if (ev.kind === "rest") return `0${short}`;
+  if (ev.kind === "rest") return `${ev.hidden ? "8" : "0"}${short}`;
   const n = ev;
   const marks = n.octave > 0 ? "^".repeat(n.octave) : "v".repeat(-n.octave);
   const acc = n.accidental ?? "";
@@ -1074,7 +1086,8 @@ function serializeSingle(score2) {
       }
       case "barline": {
         let tok;
-        if (ev.repeat === "start") tok = "|:";
+        if (ev.hidden && ev.style === "single" && !ev.repeat) tok = "|*";
+        else if (ev.repeat === "start") tok = "|:";
         else if (ev.repeat === "end") tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ":|";
         else if (ev.style === "final") tok = "||";
         else if (ev.partial) tok = "|{partial}";
@@ -1563,6 +1576,7 @@ function layoutScore(score2, opts) {
           ticks: ev.ticks,
           dashXs: opts.positions?.get(ev.id)?.dashXs
         };
+        if (ev.kind === "rest" && ev.hidden) item.hidden = true;
         if (ev.kind === "note") {
           const n = ev;
           item.degree = n.degree;
@@ -1611,6 +1625,7 @@ function layoutScore(score2, opts) {
           // 谱面开头那根线是第 1 小节的左边界，不编号也不推进计数——否则所有
           // 小节号会偏一位（|: 开头的谱实测踩到）
           measure: anyTimed ? measureNo : void 0,
+          ...bar.hidden ? { hidden: true } : {},
           ...bar.partial ? { partial: true } : {},
           ...bar.beatAfter ? { beatAfter: bar.beatAfter } : {},
           ...bar.breakAfter ? { breakAfter: bar.breakAfter } : {},

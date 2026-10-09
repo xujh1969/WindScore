@@ -87,6 +87,8 @@ export interface PlacedItem {
   partial?: boolean;
   beatAfter?: string;
   breakAfter?: 'line' | 'page';
+  /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
+  hidden?: boolean;
 }
 
 export interface PlacedBeam {
@@ -774,6 +776,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           ticks: ev.ticks,
           dashXs: opts.positions?.get(ev.id)?.dashXs,
         };
+        // 隐藏休止（8）：占位宽度照算，字形由绘制层跳过
+        if (ev.kind === 'rest' && ev.hidden) item.hidden = true;
         if (ev.kind === 'note') {
           const n = ev as NoteEvent;
           item.degree = n.degree;
@@ -833,6 +837,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           // 谱面开头那根线是第 1 小节的左边界，不编号也不推进计数——否则所有
           // 小节号会偏一位（|: 开头的谱实测踩到）
           measure: anyTimed ? measureNo : undefined,
+          ...(bar.hidden ? { hidden: true } : {}),
           ...(bar.partial ? { partial: true } : {}),
           ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
           ...(bar.breakAfter ? { breakAfter: bar.breakAfter } : {}),
@@ -856,7 +861,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
 
     // 小节拍数校验徽标（§7.2）：挂在每条小节线上。
     // 只校验完整落在本行的小节：万一某个小节比整行还宽被迫劈开，
-    // 前半段不能当成“少拍”来报假警告。
+    // 前半段不能当成"少拍"来报假警告。
     // 未满与超出都报（未满 ⚠ 超出 ✗）——但两种情况例外：
     //   弱起小节本身就不满；弱起曲的最后一个小节与弱起互补，也允许不满。
     const badges: PlacedBadge[] = [];

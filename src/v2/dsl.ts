@@ -326,7 +326,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     from.ties = [...(from.ties ?? []), { to: toId, kind }];
   };
 
-  const pushTimed = (core: string, gBefore?: GraceNote[], gAfter?: GraceNote[]) => {
+  const pushTimed = (core: string, gBefore?: GraceNote[], gAfter?: GraceNote[], hiddenRest = false) => {
     const m = NOTE_RE.exec(core);
     if (!m) {
       errors.push(`无法解析的记号：${core}`);
@@ -360,6 +360,8 @@ function parseSingle(text: string, modern = false): ParseResult {
       // 休止符与音符一样可带附点（0. = 1.5 拍）
       if (dotCount) rest.dot = dotCount;
       ev = rest;
+      // 隐藏休止（番茄写法 8）：走 0 的完整时值语法，只是不画字形
+      if (hiddenRest) rest.hidden = true;
     } else {
       const note: NoteEvent = {
         id,
@@ -469,7 +471,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     currentGroup = null;
   };
 
-  const pushBarline = (style: 'single' | 'final', partial = false) => {
+  const pushBarline = (style: 'single' | 'final', partial = false, hidden = false) => {
     if (currentGroup) {
       errors.push('拍内组不得跨小节，请先用 > 收尾');
       currentGroup = null;
@@ -478,6 +480,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     const ev: Event = partial
       ? { id, kind: 'barline', style, partial: true }
       : { id, kind: 'barline', style };
+    if (hidden) (ev as BarlineEvent).hidden = true;
     events.push(ev);
     byId.set(id, ev);
     if (!pendingTie || style === 'final') lastNoteId = null;
@@ -641,7 +644,8 @@ function parseSingle(text: string, modern = false): ParseResult {
             else { notes[0].hairpin = hairpinStart.kind; notes[0].hairpinTo = notes[notes.length - 1].id; }
             hairpinStart = null;
           }
-        } else if (raw === '|') pushBarline('single');
+        } else if (raw === '|*') pushBarline('single', false, true);
+        else if (raw === '|') pushBarline('single');
         else if (raw === '||') pushBarline('final');
         else if (raw === '|{partial}') pushBarline('single', true);
         else if (raw === "'") {
@@ -689,6 +693,13 @@ function parseSingle(text: string, modern = false): ParseResult {
             `( ) 需要成对写在同一个记号里：标注段落用 (前奏) 这种纯文字；` +
               `连音线要包住音符，如 (5 6 5)。收到的是：${raw}`,
           );
+        } else if (/^8(?:[.\-/]|$)/.test(raw)) {
+          // 隐藏休止（番茄写法 8）：时值 / 附点 / 增时线语法与 0 完全一致，
+          // 只是占位不画字形——行中混排时给还没进来的声部留空拍
+          const at = events.length;
+          pushTimed(`0${raw.slice(1)}`, graceBefore, graceAfter, true);
+          const last = events[at];
+          if (last?.kind !== 'rest') errors.push(`隐藏休止写法无法识别：${raw}`);
         } else {
           pushTimed(raw, graceBefore, graceAfter);
         }
@@ -811,7 +822,7 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
-  if (ev.kind === 'rest') return `0${short}`;
+  if (ev.kind === 'rest') return `${ev.hidden ? '8' : '0'}${short}`;
   const n = ev;
   const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
   // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致
@@ -978,7 +989,8 @@ function serializeSingle(score: Score): string {
       case 'barline': {
         // 反复记号是这条线的属性，不是另一个记号——所以只有**一个** token
         let tok: string;
-        if (ev.repeat === 'start') tok = '|:';
+        if (ev.hidden && ev.style === 'single' && !ev.repeat) tok = '|*';
+        else if (ev.repeat === 'start') tok = '|:';
         else if (ev.repeat === 'end') tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ':|';
         else if (ev.style === 'final') tok = '||';
         else if (ev.partial) tok = '|{partial}';

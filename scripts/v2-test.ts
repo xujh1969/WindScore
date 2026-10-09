@@ -11,6 +11,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { BeatClock } from '../src/v2/clock';
 import { parseDsl, renderNoteToken, serializeDsl } from '../src/v2/dsl';
+import type { BarlineEvent, RestEvent } from '../src/v2/types';
+import { TICKS_PER_BEAT } from '../src/v2/types';
 import {
   caretAt,
   clusterSpan,
@@ -3013,6 +3015,45 @@ console.log('\n[谱头说明 @sub / @note（左中右三区谱头）]');
   // @note 超过 4 行截断到 4（不静默吞掉整条指令）
   const many = parseDsl(src.replace('1 2 3 4 ||', '') + '@note 第五行\n\n1 2 3 4 ||');
   check('@note 超过 4 行截断为 4', (many.score!.meta.notes ?? []).length === 4);
+}
+
+console.log('\n[隐藏休止 8 与隐藏小节线 |*（混排占位）]');
+{
+  const src = '@title 藏\n@key 1=C\n@beat 4/4\n@bpm 90\n\n1 2 8 4 || 1 2 3 |* 4 5 6 7 ||';
+  const r = parseDsl(src);
+  const s = r.score!;
+  check('解析无错误', r.errors.length === 0, r.errors.join('；'));
+  const rests = s.events.filter((e): e is RestEvent => e.kind === 'rest');
+  check('8 解析为隐藏休止（1 拍）', rests.length === 1 && rests[0].hidden === true && rests[0].ticks === TICKS_PER_BEAT);
+  const bars = s.events.filter((e): e is BarlineEvent => e.kind === 'barline');
+  check('|* 解析为隐藏小节线', bars.some((b) => b.hidden === true));
+  check('隐藏小节线仍是 final 之外的 single', bars.find((b) => b.hidden)?.style === 'single');
+  // 带时值语法的隐藏休止
+  const rich = parseDsl('@beat 4/4\n\n8/2 8. 8-- ||').score!;
+  const rr = rich.events.filter((e): e is RestEvent => e.kind === 'rest');
+  check(
+    '8 支持完整时值语法（/2 附点 增时线）',
+    rr.length === 3 && rr[0].ticks === 24 && rr[1].ticks === 72 && rr[2].ticks === 144,
+    JSON.stringify(rr.map((x) => x.ticks)),
+  );
+  // 排版：占位宽度照算、hidden 传给 item、小节计数不受影响
+  const L = layoutScore(s, { contentWidth: 800 });
+  const hiddenRest = L.lines.flatMap((ln) => ln.items).find((it) => it.kind === 'rest' && it.hidden);
+  check('隐藏休止进排版且带 hidden 标记', !!hiddenRest && hiddenRest.w > 0);
+  const hiddenBar = L.lines.flatMap((ln) => ln.items).find((it) => it.kind === 'barline' && it.hidden);
+  check('隐藏小节线进排版且带 hidden 标记', !!hiddenBar && hiddenBar.w > 0);
+  check('隐藏小节线的小节号照常计数', (hiddenBar?.measure ?? 0) === 2, `measure=${hiddenBar?.measure}`);
+  // 回写：8 / |* 原样保留
+  const back = serializeDsl(s);
+  check('回写 8', /(^|\s)8(\s|\||$)/.test(back), back.split('\n').slice(-2).join(' / '));
+  check('回写 |*', back.includes('|*'));
+  const reopen = parseDsl(back);
+  check('重新打开不丢 hidden', reopen.errors.length === 0 &&
+    (reopen.score!.events.filter((e): e is RestEvent => e.kind === 'rest').every((x) => x.hidden === true)) &&
+    (reopen.score!.events.filter((e): e is BarlineEvent => e.kind === 'barline').some((b) => b.hidden === true)));
+  // 0 休止不受影响
+  const normal = parseDsl('@beat 4/4\n\n0 0 0 0 ||').score!;
+  check('普通 0 休止不带 hidden', normal.events.filter((e): e is RestEvent => e.kind === 'rest').every((x) => !x.hidden));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

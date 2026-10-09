@@ -105,6 +105,8 @@ export interface RestEvent extends BaseEvent {
   /** 附点：休止符与音符一样可带 1–2 个附点 */
   dot?: 0 | 1 | 2;
   groupId?: string;
+  /** 隐藏休止（DSL `8`）：占位但不画字形，用于行中混排前的空拍占位 */
+  hidden?: boolean;
 }
 
 /**
@@ -137,6 +139,8 @@ export interface BarlineEvent extends BaseEvent {
    * （「一直演奏直到 :|」），只有两三个小节的短房才画右钩。缺省闭合。
    */
   voltaOpen?: boolean;
+  /** 隐藏小节线（DSL `|*`）：保留占位宽度、小节计数照常，但不画线 */
+  hidden?: boolean;
 }
 
 export type JumpMark = 'segno' | 'coda' | 'fine' | 'dc' | 'ds' | 'tocoda';

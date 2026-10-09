@@ -541,7 +541,8 @@ function paintLine(
   // ── 记号层 ──
   // 小节线
   for (const it of line.items) {
-    if (it.kind !== 'barline') continue;
+    // 隐藏小节线（|*）：占位宽度照算、小节号计数照常，线与小节号都不画
+    if (it.kind !== 'barline' || it.hidden) continue;
     const bx = it.x + it.w / 2;
     ctx.strokeStyle = it.final ? theme.barFinal : theme.bar;
     ctx.lineWidth = it.final ? 2.5 : 1.5;
@@ -920,6 +921,8 @@ function drawGlyph(
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.ink;
 
+  // 隐藏休止（8）：占位宽度照算，一切字形（数字 / 附点 / 八度点 / 减时线）都不画
+  if (it.hidden) return;
   // 变音记号占住数字左边那一格。宽度由 layout 给（it.accW）——
   // 这里不自带常量，两处各写一个数字迟早漂移，数字就压到记号上了。
   const accW = it.accW ?? 0;

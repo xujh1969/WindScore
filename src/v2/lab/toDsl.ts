@@ -1,9 +1,7 @@
 /**
  * 网格音符 → 完整 .jps 文本。
  *
- * v1 产出两个独立谱（人声主旋律谱 / 伴奏主奏谱）：各自是标准单声部谱，
- * 解析 / 排版 / 播放 / 打包全部走现有引擎，可独立编辑修错、进曲库、打包分享。
- * 同小节上下对齐的双声部排版是下一步的引擎升级（需要排版与播放支持声部维度）。
+ * 专用人声模型输出单声部草稿，复用现有解析 / 排版 / 播放内核。
  */
 
 import { measuresToLines, type GridNote } from './quantize';
@@ -22,7 +20,9 @@ export interface DslBuild {
 
 export function buildDsl(b: DslBuild): string {
   const beats = Number(b.beat.split('/')[0]) || 4;
-  const lines = measuresToLines(b.notes, beats, b.key);
+  // 全部时间线以内核四分拍为单位；6/8 的小节长为 3 个四分拍。
+  const denominator = Number(b.beat.split('/')[1]) || 4;
+  const lines = measuresToLines(b.notes, beats * 4 / denominator, b.key);
   const per = b.measuresPerLine ?? 4;
   const body: string[] = [];
   for (let i = 0; i < lines.length; i += per) {
@@ -35,7 +35,7 @@ export function buildDsl(b: DslBuild): string {
     `@bpm ${b.bpm}`,
     `@patch 73`,
     b.note ? `@note ${b.note}` : '',
-    `@note AI 听音成谱草稿——错音 / 连音线请人工修正`,
+    `@note 听音成谱草稿，请试听后确认`,
   ].filter(Boolean);
   return `${head.join('\n')}\n\n${body.join('\n')}`;
 }

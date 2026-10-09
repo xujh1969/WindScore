@@ -25,6 +25,7 @@ interface Props {
   onOpen: (item: LibraryItem) => void;
   /** 回落地首页的链接（index.html）；不传则不显示这个入口 */
   homeHref?: string;
+  onHelp?: () => void;
   msg?: string;
 }
 
@@ -81,7 +82,7 @@ function SongRow({ item, onOpen, onToggleFav }: RowProps) {
     </div>
   );
 }
-export function DiscoverScreen({ onOpen, homeHref, msg }: Props) {
+export function DiscoverScreen({ onOpen, homeHref, onHelp, msg }: Props) {
   /** 订阅式曲库：文件夹后端水合完成、或别处收藏/改名后，这里自动重读 */
   const items = useLibraryItems();
   const [recents, setRecents] = useState<string[]>([]);
@@ -157,6 +158,7 @@ export function DiscoverScreen({ onOpen, homeHref, msg }: Props) {
             搜索
           </button>
         </div>
+        {onHelp ? <button className="v2-btn" aria-haspopup="dialog" onClick={onHelp}>帮助</button> : null}
       </header>
 
       {msg ? <p className="v2-dc-msg">{msg}</p> : null}

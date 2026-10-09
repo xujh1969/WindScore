@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import { parseDsl, serializeDsl } from '../src/v2/dsl';
 import { layoutScore } from '../src/v2/layout';
 import { validateGroups } from '../src/v2/validate';
+import { ensembleIssues, scoreParts } from '../src/v2/parts';
+import type { Score } from '../src/v2/types';
 
 const file = process.argv[2];
 if (!file) {
@@ -61,10 +63,38 @@ for (const v of validateGroups(score)) {
   failed = true;
   console.log(`[${v.code}] ${v.message}`);
 }
+for (const issue of ensembleIssues(score)) {
+  failed = true;
+  console.log(`[声部对齐] ${issue}`);
+}
+
+// 新版读写会重新分配声部内 ID；比较实际事件和连线、分组关系。
+function musicalContent(s: Score): unknown {
+  return { meta: s.meta, parts: scoreParts(s).map((p) => {
+    const eventIndex = new Map(p.events.map((e, i) => [e.id, i]));
+    const groups = [...p.groups].sort((a, b) =>
+      (eventIndex.get(a.memberIds[0]) ?? 0) - (eventIndex.get(b.memberIds[0]) ?? 0));
+    const groupIndex = new Map(groups.map((g, i) => [g.id, i]));
+    return { id: p.id, name: p.name, gain: p.gain, muted: !!p.muted, solo: !!p.solo,
+      events: p.events.map((e) => {
+        const { id: _id, originId: _origin, ...rest } = e;
+        return { ...rest,
+          ...('groupId' in e ? { groupId: e.groupId ? groupIndex.get(e.groupId) : undefined } : {}),
+          ...(e.kind === 'note' && e.ties ? { ties: e.ties.map((t) => ({ ...t, to: eventIndex.get(t.to) })) } : {}),
+          ...(e.kind === 'note' && e.hairpinTo ? { hairpinTo: eventIndex.get(e.hairpinTo) } : {}),
+        };
+      }),
+      groups: groups.map(({ id: _id, auto: _auto, memberIds, ...g }) =>
+        ({ ...g, memberIds: memberIds.map((id) => eventIndex.get(id)) })),
+    };
+  }) };
+}
 
 // round-trip：程序保存时会序列化成这个文本，回读必须完全一致
 const rt = parseDsl(serializeDsl(score));
-if (JSON.stringify(rt.score) !== JSON.stringify(score) || rt.errors.length > 0) {
+const original = score.format === 3 ? musicalContent(score) : score;
+const reopened = score.format === 3 && rt.score ? musicalContent(rt.score) : rt.score;
+if (JSON.stringify(reopened) !== JSON.stringify(original) || rt.errors.length > 0) {
   failed = true;
   console.log('[round-trip] 序列化回读不一致，文件保存后再打开会变形');
 }

@@ -1,8 +1,8 @@
 /**
  * 音频转录 → 简谱的纯逻辑层（实验功能「听音成谱」的核心）。
  *
- * 链路：Basic Pitch 输出的原始音符（秒 + MIDI 音高）
- *   1. reduceToMelody  多音轨 → 单旋律（按音量贪心占据时间轴）
+ * 链路：GAME 输出的原始音符（秒 + MIDI 音高）
+ *   1. 读取专用人声模型输出的单声部音符，不按音量重新挑旋律
  *   2. quantizeNotes   按用户标定的 BPM 量化到 1/16 网格（确定性算法，节奏不靠猜）
  *   3. midiToSyllable  MIDI 绝对音高 → 首调唱名（1=X 的相对音级 + 八度点 + 变化音）
  *   4. measuresToText  网格音符 → 每小节 DSL 文本（减时线 / 附点 / 增时线 / 拍组）
@@ -18,8 +18,12 @@ export interface RawNote {
   end: number;
   /** MIDI 音高（60 = 中央 C） */
   midi: number;
-  /** 0-1，识别模型给出的强度 */
+  /** 兼容旧转录数据的强度字段；GAME 不提供此值，固定为 1 */
   amp: number;
+  /** 草稿校音时回溯原始音符，不写入谱面 */
+  sourceIndex?: number;
+  graceBefore?: number[];
+  graceSourceIndices?: number[];
 }
 
 export interface GridNote {
@@ -27,6 +31,31 @@ export interface GridNote {
   startTick: number;
   durTicks: number;
   midi: number;
+  sourceIndex?: number;
+  graceBefore?: number[];
+  graceSourceIndices?: number[];
+}
+
+/** 保守整理前倚音：只收紧邻长主音的短级进音，保留半音与原音高。 */
+export function collectGraceNotes(raw: RawNote[], bpm: number): RawNote[] {
+  const sorted = [...raw].sort((a, b) => a.start - b.start);
+  const out: RawNote[] = [];
+  const limit = Math.min(0.12, 60 / bpm / 4);
+  for (let i = 0; i < sorted.length; i += 1) {
+    const n = sorted[i];
+    const next = sorted[i + 1];
+    const duration = n.end - n.start;
+    const interval = next ? Math.abs(Math.round(next.midi) - Math.round(n.midi)) : 0;
+    if (next && duration > 0 && duration <= limit && next.start >= n.start
+      && next.start - n.end >= -0.02 && next.start - n.end <= 0.04
+      && next.end - next.start >= Math.max(duration * 3, 0.18)
+      && interval >= 1 && interval <= 2) {
+      out.push({ ...next, start: n.start, graceBefore: [n.midi],
+        graceSourceIndices: n.sourceIndex === undefined ? undefined : [n.sourceIndex] });
+      i += 1;
+    } else out.push({ ...n });
+  }
+  return out;
 }
 
 /** 多 → 单：音量大的音先占据时间轴，后来的音只能落在空隙里（剩太短就丢） */
@@ -56,14 +85,28 @@ export function reduceToMelody(raw: RawNote[]): RawNote[] {
 
 /** 量化到 1/16 网格。offsetSec = 第一个正拍在音频里的位置（秒），对不齐整谱节奏都会歪 */
 export function quantizeNotes(raw: RawNote[], bpm: number, offsetSec: number): GridNote[] {
+  if (!Number.isFinite(bpm) || bpm < 20 || bpm > 300 || !Number.isFinite(offsetSec)) {
+    throw new Error('速度或首拍位置无效');
+  }
   const ticksPerSec = (bpm / 60) * TICKS_PER_BEAT;
   const sixteenth = TICKS_PER_BEAT / 4;
   const snap = (sec: number): number => Math.round((sec * ticksPerSec) / sixteenth) * sixteenth;
-  return reduceToMelody(raw).map((n) => {
+  const out: GridNote[] = [];
+  for (const n of [...raw].sort((a, b) => a.start - b.start)) {
+    if (![n.start, n.end, n.midi].every(Number.isFinite) || n.end <= n.start || n.end <= offsetSec) continue;
     const startTick = Math.max(0, snap(n.start - offsetSec));
     const endTick = Math.max(startTick + sixteenth, snap(n.end - offsetSec));
-    return { startTick, durTicks: endTick - startTick, midi: n.midi };
-  });
+    const prev = out[out.length - 1];
+    // 量化不能制造复音；后一个起音保留，前一个音在起音处结束。
+    if (prev && prev.startTick + prev.durTicks > startTick) {
+      prev.durTicks = startTick - prev.startTick;
+      if (prev.durTicks <= 0) out.pop();
+    }
+    out.push({ startTick, durTicks: endTick - startTick, midi: Math.round(n.midi),
+      ...(n.sourceIndex === undefined ? {} : { sourceIndex: n.sourceIndex }),
+      ...(n.graceBefore ? { graceBefore: n.graceBefore.map(Math.round), graceSourceIndices: n.graceSourceIndices } : {}) });
+  }
+  return out;
 }
 
 /** '1=A' / '1=bB' → 主音的音高类（C=0） */
@@ -79,12 +122,15 @@ const MAJOR = [0, 2, 4, 5, 7, 9, 11];
 
 /**
  * 自动调号检测（Krumhansl-Kessler）：时长加权的音高类分布与自然大调
- * 剖面做相关，取最匹配的主音。纯统计、无 AI，消除用户填错调号这个
- * 最大的错误源。
+ * 剖面做相关，建议最匹配的大调记谱调号；短片段、转调等仍需人工确认。
  */
 export function detectKey(raw: RawNote[]): string {
   const pc = new Array<number>(12).fill(0);
-  for (const n of raw) pc[((n.midi % 12) + 12) % 12] += Math.max(0.01, n.end - n.start);
+  for (const n of raw) {
+    if ([n.midi, n.start, n.end].every(Number.isFinite) && n.end > n.start) {
+      pc[((Math.round(n.midi) % 12) + 12) % 12] += n.end - n.start;
+    }
+  }
   if (pc.reduce((a, b) => a + b, 0) === 0) return '1=C';
   const MY = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
   const corr = (shift: number): number => {
@@ -140,59 +186,59 @@ export function midiToSyllable(midi: number, key: string): Syllable {
   return { deg: String(i + 1), oct, acc: 'b' };
 }
 
-/** 单个音符 → DSL 记号（时值就近吸附到简谱能表达的档位，误差交给人工修） */
+/** 单个音符 → 精确 DSL 时值；不将三十六 tick 等附点时值取整。 */
 export function noteToken(midi: number, durTicks: number, key: string): string {
   const { deg, oct, acc } = midiToSyllable(midi, key);
   let base = deg;
   if (acc) base = acc + base;
   if (oct > 0) base += '^'.repeat(oct);
   if (oct < 0) base += 'v'.repeat(-oct);
-  const b = durTicks / TICKS_PER_BEAT;
-  if (b <= 0.375) return `${base}/4`; // 十六分
-  if (b <= 0.71) return `${base}/2`; // 八分
-  if (b <= 1.25) return base; // 四分
-  if (b <= 1.75) return `${base}.`; // 附点四分
-  const beats = Math.max(2, Math.round(b));
-  return base + '-'.repeat(beats - 1); // 增时线
+  return base + durationSuffix(durTicks);
 }
 
-/**
- * 网格音符 → 每小节一行 DSL 文本。
- * 一拍内 ≥2 个音的包成 <...> 拍组；跨小节的音在小节线处截断（v1 取舍，人工接续音线）；
- * 空拍 / 空小节补 0 休止。
- */
+function durationSuffix(ticks: number): string {
+  for (const [base, suffix] of [[48, ''], [24, '/2'], [12, '/4'], [6, '/8']] as const) {
+    if (ticks === base) return suffix;
+    if (ticks === base * 1.5) return `.${suffix}`;
+    if (ticks === base * 1.75) return `..${suffix}`;
+  }
+  if (ticks > 48 && ticks % 48 === 0) return '-'.repeat(ticks / 48 - 1);
+  throw new Error(`无法表达的音符时值：${ticks}`);
+}
+
+/** 网格覆盖整个小节；长音在拍/小节边界分片并用延音线连接，空隙补真实休止。 */
 export function measuresToLines(
   notes: GridNote[],
   beatsPerMeasure: number,
   key: string,
 ): string[] {
   const measureTicks = beatsPerMeasure * TICKS_PER_BEAT;
+  if (!Number.isInteger(beatsPerMeasure) || beatsPerMeasure < 1 || beatsPerMeasure > 12) {
+    throw new Error('不支持的每小节拍数');
+  }
   const lastEnd = notes.reduce((a, n) => Math.max(a, n.startTick + n.durTicks), 0);
   const count = Math.max(1, Math.ceil(lastEnd / measureTicks));
   const lines: string[] = [];
   for (let m = 0; m < count; m += 1) {
     const from = m * measureTicks;
-    const inM = notes
-      .filter((n) => n.startTick >= from && n.startTick < from + measureTicks)
-      .map((n) => ({ ...n, durTicks: Math.min(n.durTicks, from + measureTicks - n.startTick) }));
-    if (inM.length === 0) {
-      lines.push(Array(beatsPerMeasure).fill('0').join(' '));
-      continue;
-    }
-    const beats: GridNote[][] = Array.from({ length: beatsPerMeasure }, () => []);
-    for (const n of inM) {
-      const bi = Math.min(beatsPerMeasure - 1, Math.floor((n.startTick - from) / TICKS_PER_BEAT));
-      beats[bi].push(n);
-    }
     const toks: string[] = [];
-    for (const group of beats) {
-      if (group.length === 0) {
-        toks.push('0');
-      } else if (group.length === 1) {
-        toks.push(noteToken(group[0].midi, group[0].durTicks, key));
-      } else {
-        toks.push(`<${group.map((n) => noteToken(n.midi, n.durTicks, key)).join(' ')}>`);
+    for (let b = 0; b < beatsPerMeasure; b += 1) {
+      let at = from + b * TICKS_PER_BEAT;
+      const end = at + TICKS_PER_BEAT;
+      const group: string[] = [];
+      while (at < end) {
+        const note = notes.find((n) => n.startTick <= at && n.startTick + n.durTicks > at);
+        const next = notes.find((n) => n.startTick > at);
+        const until = Math.min(end, note ? note.startTick + note.durTicks : (next?.startTick ?? end));
+        // 12/24/36/48 都有精确写法；外部输入也必须落在十六分网格。
+        const ticks = until - at;
+        const grace = note?.graceBefore?.length && at === note.startTick
+          ? `{${note.graceBefore.map((midi) => noteToken(midi, 48, key)).join('')}}` : '';
+        const token = note ? grace + noteToken(note.midi, ticks, key) : `0${durationSuffix(ticks)}`;
+        group.push(token + (note && until < note.startTick + note.durTicks ? '~' : ''));
+        at = until;
       }
+      toks.push(group.length > 1 ? `<${group.join(' ')}>` : group[0]);
     }
     lines.push(toks.join(' '));
   }

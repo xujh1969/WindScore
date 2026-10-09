@@ -30,7 +30,7 @@ export interface SaveResult {
  * 调用方不要假设浏览器返回的那个名字是路径——它只是建议文件名。
  */
 export async function saveScore(score: Score, suggested: string): Promise<SaveResult> {
-  if (score.events.length === 0) return { ok: false, path: null };
+  if (score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
   return saveTextAsFile(serializeDsl(score), suggested);
 }
 

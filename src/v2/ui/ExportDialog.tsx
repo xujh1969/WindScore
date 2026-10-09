@@ -7,6 +7,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Score } from '../types';
+import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
+import { exportTheme, footerText, paintExportPage } from '../export/render';
 import type { AudioStem } from '../audio';
 import type { TempoMap } from '../tempo';
 import type { TimelineEntry } from '../timeline';
@@ -16,12 +18,17 @@ import {
   planExport,
 } from '../export/tasks';
 import { exportScoreVideoToFile } from '../export/videoExport';
+import { exportScoreImageToFile } from '../export/image';
 import { VIDEO_RATIOS, recordSeconds, videoGeometry, type VideoRatio } from '../export/video';
+import { ensembleIssues, partScore, scoreParts } from '../parts';
 
 export interface ExportDialogProps {
   songName: string;
   /** 要导出的谱面（= 当前显示的那份） */
   score: Score;
+  visibleLayout?: LayoutResult;
+  visibleOptions?: LayoutOptions;
+  initialPartId?: string;
   /** 视频配色跟随界面 */
   dark: boolean;
   onClose: () => void;
@@ -49,8 +56,14 @@ const DPIS = [150, 300] as const;
 const SIDES = [720, 1080, 1440] as const;
 const FPS = [25, 30, 60] as const;
 
-export function ExportDialog({ songName, score, dark, onClose, video }: ExportDialogProps) {
-  const [tab, setTab] = useState<'pdf' | 'video'>('pdf');
+export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
+  const [partId, setPartId] = useState(initialPartId);
+  const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
+  const video = useMemo(() => partId ? { ...fullVideo, timeline: fullVideo.timeline.filter((e) => e.partId === partId), displayTimeline: fullVideo.displayTimeline.filter((e) => e.partId === partId) } : fullVideo, [fullVideo, partId]);
+  const exportName = partId ? `${songName}-${score.part?.name ?? partId}` : songName;
+  const [tab, setTab] = useState<'pdf' | 'video' | 'image'>('pdf');
+  const [imageFormat, setImageFormat] = useState<'png' | 'svg'>('png');
+  const [imageWidth, setImageWidth] = useState(1080);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [progress, setProgress] = useState(0);
@@ -60,9 +73,11 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
   // PDF 选项
   const [landscape, setLandscape] = useState(false);
   const [dpi, setDpi] = useState<number>(150);
-  const [scale, setScale] = useState(1.55);
+  const pdfLayout = useMemo(() => partId === initialPartId && visibleLayout ? visibleLayout : layoutScore(score, visibleOptions ?? { contentWidth: 900 }), [score, partId, initialPartId, visibleLayout, visibleOptions]);
   const [showTitle, setShowTitle] = useState(true);
-  const [showBars, setShowBars] = useState(true);
+  const [showBars, setShowBars] = useState(fullScore.meta.showMeasureNumbers !== false);
+  const [pdfPage, setPdfPage] = useState(0);
+  const pdfCanvas = useRef<HTMLCanvasElement>(null);
 
   // 视频选项
   const [ratio, setRatio] = useState<VideoRatio>('r9x16');
@@ -86,7 +101,11 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
 
   /** 页数 / 画面尺寸 / 时长都是纯计算，选项一动就能报出来（不用等真导出） */
   const preview = useMemo(() => {
-    const pages = planExport(score, a4Geometry(landscape, dpi, scale), showTitle).plans.length;
+    let pages = 0;
+    let layoutError = '';
+    let pdfPlan: ReturnType<typeof planExport> | null = null;
+    try { pdfPlan = planExport(score, a4Geometry(landscape, dpi, 1), showTitle, pdfLayout); pages = pdfPlan.plans.length; }
+    catch (e) { layoutError = e instanceof Error ? e.message : String(e); }
     const vg = videoGeometry(ratio, shortSide);
     const total = Math.max(1, video.measureTicks.length);
     const from = Math.min(Math.max(1, mFrom), total);
@@ -102,8 +121,19 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
       stems: video.stems,
       audio: useAudio,
     });
-    return { pages, canvasW: vg.canvasW, canvasH: vg.canvasH, seconds, from, to, total };
-  }, [score, landscape, dpi, scale, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
+    return { pages, pdfPlan, layoutError, canvasW: vg.canvasW, canvasH: vg.canvasH, seconds, from, to, total };
+  }, [score, pdfLayout, landscape, dpi, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
+
+  const pageIndex = Math.min(pdfPage, Math.max(0, preview.pages - 1));
+  useEffect(() => {
+    const canvas = pdfCanvas.current;
+    const plan = preview.pdfPlan;
+    if (tab !== 'pdf' || !canvas || !plan?.plans.length) return;
+    canvas.width = plan.geo.pageW;
+    canvas.height = plan.geo.pageH;
+    const ctx = canvas.getContext('2d');
+    if (ctx) paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], plan.geo, { footer: footerText(exportName, pageIndex + 1, plan.plans.length), showMeasureNumbers: showBars });
+  }, [preview.pdfPlan, pageIndex, tab, exportName, showBars]);
 
   const run = async (task: () => Promise<string>): Promise<void> => {
     setBusy(true);
@@ -112,6 +142,7 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
     setNote('准备中…');
     cancelRef.current = false;
     try {
+      onBegin?.();
       setNote(await task());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -126,10 +157,10 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
 
       const res = await exportScorePdfToFile({
         score,
-        name: songName,
+        name: exportName,
         landscape,
         dpi,
-        scale,
+        layout: pdfLayout,
         showTitle,
         showMeasureNumbers: showBars,
         dark: false,
@@ -142,12 +173,19 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
       return `已导出 ${res.pageCount} 页 PDF，页脚格式 ${songName}-1/${res.pageCount}`;
     });
 
+  const doImage = (): Promise<void> => run(async () => {
+    const res = await exportScoreImageToFile({ score, name: exportName, format: imageFormat, width: imageWidth, dark: videoDark, showTitle, showMeasureNumbers: showBars });
+    return res.ok ? `已导出 ${imageFormat.toUpperCase()} 图片` : '已取消保存';
+  });
+
   const doVideo = (): Promise<void> =>
     run(async () => {
+      const mismatch = ensembleIssues(fullScore);
+      if (mismatch.length) throw new Error(mismatch[0]);
 
       const res = await exportScoreVideoToFile({
         score,
-        name: songName,
+        name: exportName,
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,
@@ -181,7 +219,7 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
-      <div className="v2-exp" role="dialog" aria-label="导出">
+      <div className={`v2-exp${tab === 'pdf' ? ' v2-exp--pdf' : ''}`} role="dialog" aria-label="导出">
         <div className="v2-exp-head">
           <div className="v2-view-switch">
             <button
@@ -198,6 +236,7 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
             >
               视频
             </button>
+            <button className={tab === 'image' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setTab('image')} disabled={busy}>图片</button>
           </div>
           <span className="v2-exp-song" title={songName}>
             {songName}
@@ -207,7 +246,17 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
           </button>
         </div>
 
+        {fullScore.part ? <label className="v2-exp-row v2-exp-part">
+          <span>导出内容</span>
+          <select aria-label="导出声部" value={partId} disabled={busy} onChange={(e) => setPartId(e.target.value)}>
+            <option value="">全部声部 · 总谱</option>
+            {scoreParts(fullScore).map((p) => <option key={p.id} value={p.id}>{p.name} · 分谱</option>)}
+          </select>
+        </label> : null}
+        {tab === 'pdf' && preview.layoutError ? <p className="v2-exp-err" role="alert">{preview.layoutError}</p> : null}
+
         {tab === 'pdf' ? (
+          <div className="v2-exp-pdf">
           <div className="v2-exp-body">
             <div className="v2-exp-row">
               <span>纸张</span>
@@ -244,19 +293,7 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
                 ))}
               </div>
             </div>
-            <label className="v2-exp-row">
-              <span>字号</span>
-              <input
-                type="range"
-                min={1.1}
-                max={2.4}
-                step={0.05}
-                value={scale}
-                disabled={busy}
-                onChange={(e) => setScale(Number(e.target.value))}
-              />
-              <output className="v2-spacing-val">{scale.toFixed(2)}×</output>
-            </label>
+            <p className="v2-exp-hint">沿用当前谱面的字号、字间距、音符间距和每行小节布局，整行等比适配纸张。清晰度只影响图像质量。</p>
             <div className="v2-exp-row">
               <label className="v2-grace-check">
                 <input
@@ -280,6 +317,23 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
             <p className="v2-exp-hint">
               共 <b>{preview.pages}</b> 页。页脚每页都写「{songName}-页号/总页数」。
             </p>
+          </div>
+          <section className="v2-pdf-preview" aria-label="PDF 页面预览">
+            <div className="v2-pdf-sheet"><canvas ref={pdfCanvas} aria-label={`PDF 第 ${pageIndex + 1} 页预览`} /></div>
+            <div className="v2-pdf-pages">
+              <button className="v2-btn" disabled={busy || pageIndex === 0} onClick={() => setPdfPage(pageIndex - 1)}>上一页</button>
+              <span>第 {preview.pages ? pageIndex + 1 : 0} / {preview.pages} 页</span>
+              <button className="v2-btn" disabled={busy || pageIndex + 1 >= preview.pages} onClick={() => setPdfPage(pageIndex + 1)}>下一页</button>
+            </div>
+          </section>
+          </div>
+        ) : tab === 'image' ? (
+          <div className="v2-exp-body">
+            <label className="v2-exp-row"><span>格式</span><select value={imageFormat} disabled={busy} onChange={(e) => setImageFormat(e.target.value as 'png' | 'svg')}><option value="png">PNG · 清晰长图</option><option value="svg">SVG · 矢量图片</option></select></label>
+            <label className="v2-exp-row"><span>宽度</span><select value={imageWidth} disabled={busy} onChange={(e) => setImageWidth(Number(e.target.value))}>{SIDES.map((w) => <option key={w} value={w}>{w} px</option>)}</select></label>
+            <div className="v2-exp-row"><span>外观</span><div className="v2-view-switch"><button className={!videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(false)}>浅色</button><button className={videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(true)}>深色</button></div></div>
+            <div className="v2-exp-row"><label className="v2-grace-check"><input type="checkbox" checked={showTitle} disabled={busy} onChange={(e) => setShowTitle(e.target.checked)} />包含标题</label><label className="v2-grace-check"><input type="checkbox" checked={showBars} disabled={busy} onChange={(e) => setShowBars(e.target.checked)} />显示小节号</label></div>
+            <p className="v2-exp-hint">整首导出为一张长图，保留换行；分页标记不产生空白页。SVG 放大不失真，文字显示使用打开设备上的字体。</p>
           </div>
         ) : (
           <div className="v2-exp-body">
@@ -441,6 +495,7 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
               {note ||
                 (tab === 'pdf'
                   ? `将导出 ${preview.pages} 页 A4，文件名取歌名`
+                  : tab === 'image' ? `将导出 ${imageFormat.toUpperCase()} 长图，包含当前所选声部`
                   : `将录一段 ${preview.canvasW}×${preview.canvasH} 的${
                       videoDark ? '深色' : '浅色'
                     }视频，约 ${Math.floor(preview.seconds / 60)}:${String(
@@ -449,9 +504,11 @@ export function ExportDialog({ songName, score, dark, onClose, video }: ExportDi
             </span>
           )}
           {tab === 'pdf' ? (
-            <button className="v2-btn v2-btn--primary" onClick={doPdf} disabled={busy}>
+            <button className="v2-btn v2-btn--primary" onClick={doPdf} disabled={busy || !!preview.layoutError}>
               导出 PDF
             </button>
+          ) : tab === 'image' ? (
+            <button className="v2-btn v2-btn--primary" onClick={doImage} disabled={busy}>导出 {imageFormat.toUpperCase()}</button>
           ) : (
             <button className="v2-btn v2-btn--primary" onClick={doVideo} disabled={busy}>
               导出视频

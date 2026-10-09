@@ -17,6 +17,8 @@
  * 每遍把源事件复制一份、赋新 id、写 originId；再统一修 ties 与拍内组。
  */
 import type { BarlineEvent, BeatGroup, Event, JumpMark, Score, TimedEvent } from './types';
+import { assembleParts, ensembleIssues, scoreParts, withConductor } from './parts';
+import { meterAt } from './meter';
 
 export interface ExpandResult {
   /** 线性谱；结构有错时为 null（错误在 errors 里） */
@@ -58,6 +60,17 @@ interface Ctx {
 }
 
 export function expandScore(score: Score): ExpandResult {
+  if (score.parts?.length) {
+    const parts = scoreParts(score);
+    const results = parts.map((part) => expandScore(withConductor(score, part.id)));
+    const errors = [...ensembleIssues(score), ...results.flatMap((r, i) => r.errors.map((e) => `${parts[i].name}：${e}`))];
+    const firstIndex = new Map(results.flatMap((r) => [...r.firstIndex]));
+    return {
+      score: errors.length || results.some((r) => !r.score) ? null : assembleParts(score, results.map((r, i) => ({ ...parts[i], events: r.score!.events, groups: r.score!.groups }))),
+      errors, warnings: results.flatMap((r, i) => r.warnings.map((e) => `${parts[i].name}：${e}`)), firstIndex,
+      repeatedSections: results[0]?.repeatedSections ?? 0,
+    };
+  }
   const errors: string[] = [];
   const warnings: string[] = [];
   const events = score.events;
@@ -401,6 +414,42 @@ export function expandScore(score: Score): ExpandResult {
   }
 
   // ── ③ 收尾：终止线、ties、组总时值 ──
+  // 回跳后恢复源小节的拍号，不能沿用刚演奏完的尾段拍号。
+  const sourceIndex = new Map(events.map((e, i) => [e.id, i]));
+  let currentBeat = score.meta.beat;
+  for (let i = 0; i < out.length; i++) {
+    const ev = out[i];
+    if (ev.kind === 'barline') { if (ev.beatAfter) currentBeat = ev.beatAfter; continue; }
+    if (ev.kind !== 'note' && ev.kind !== 'rest') continue;
+    const source = sourceIndex.get(ev.originId ?? ev.id);
+    if (source === undefined) continue;
+    const beat = meterAt(score, source);
+    if (beat === currentBeat) continue;
+    let boundary = i - 1;
+    while (boundary >= 0 && out[boundary].kind !== 'barline' && !('ticks' in out[boundary])) boundary--;
+    const bar = out[boundary];
+    if (bar?.kind === 'barline') bar.beatAfter = beat;
+    else { out.splice(i, 0, { id: `${ev.id}:meter`, kind: 'barline', style: 'single', beatAfter: beat }); i++; }
+    currentBeat = beat;
+  }
+  firstIndex.clear();
+  out.forEach((e, i) => { if (e.originId && !firstIndex.has(e.originId)) firstIndex.set(e.originId, i); });
+  for (let i = 0; i < out.length; i++) {
+    const ev = out[i];
+    if (ev.kind !== 'note' || !ev.hairpinTo) continue;
+    let target: Event | undefined;
+    let previous = sourceIndex.get(ev.originId ?? ev.id) ?? -1;
+    for (let j = i + 1; j < out.length; j++) {
+      const next = out[j];
+      if (next.kind !== 'note' && next.kind !== 'rest') continue;
+      const at = sourceIndex.get(next.originId ?? next.id) ?? -1;
+      if (at <= previous) break;
+      if (next.kind === 'note' && next.originId === ev.hairpinTo) { target = next; break; }
+      previous = at;
+    }
+    if (target) ev.hairpinTo = target.id;
+    else { delete ev.hairpinTo; delete ev.hairpin; warnings.push('渐强/渐弱范围跨过反复或跳转边界，展开时已移除该范围'); }
+  }
 
   // 展开谱的最后要有终止线：源谱末尾是 :| 时它顶替了终止线
   const last = out[out.length - 1];

@@ -74,7 +74,7 @@ export function mixStems(opts: {
  * 而且逐样本可测。startSec / endSec 相对视频 0 点。
  */
 export function synthNotes(opts: {
-  notes: readonly { startSec: number; endSec: number; midi: number }[];
+  notes: readonly { startSec: number; endSec: number; midi: number; gain?: number }[];
   durationSec: number;
   sampleRate: number;
   gain?: number;
@@ -87,6 +87,7 @@ export function synthNotes(opts: {
   const attack = Math.max(1, Math.round(0.02 * sr));
 
   for (const note of opts.notes) {
+    const notePeak = peak * (note.gain ?? 1);
     const t0 = Math.round(note.startSec * sr);
     const t1 = Math.max(t0 + Math.round(0.06 * sr), Math.round(note.endSec * sr));
     const rel = Math.max(t0 + Math.round(0.03 * sr), t1 - Math.round(0.05 * sr));
@@ -97,9 +98,9 @@ export function synthNotes(opts: {
     for (let i = from; i < to; i += 1) {
       const at = i - t0;
       // 包络：淡入 → 保持 → 淡出
-      let env = peak;
-      if (at < attack) env = (peak * at) / attack;
-      else if (i > rel) env = (peak * (t1 - i)) / Math.max(1, t1 - rel);
+      let env = notePeak;
+      if (at < attack) env = (notePeak * at) / attack;
+      else if (i > rel) env = (notePeak * (t1 - i)) / Math.max(1, t1 - rel);
       // 三角波：0 → 1 → 0
       const tri = 1 - 4 * Math.abs(((at * step) % 1) - 0.5);
       const v = env * tri;

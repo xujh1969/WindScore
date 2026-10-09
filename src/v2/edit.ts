@@ -8,11 +8,13 @@
 
 import { distribute } from './reseat';
 import { normalizeKey } from './timeline';
+import { groupTicks } from './meter';
 import {
   durationTiers,
   isLegalTick,
   TICKS_PER_BEAT,
   withDots,
+  undotTicks,
   type DurationTier,
 } from './ticks';
 import { isTimed, type JumpEvent, type JumpMark } from './types';
@@ -52,16 +54,18 @@ const QUARTER = TICKS_PER_BEAT;
 function maxSeq(ids: string[], prefix: string): number {
   let m = 0;
   for (const id of ids) {
-    const n = Number(id.startsWith(prefix) ? id.slice(prefix.length) : NaN);
+    const local = id.split(':').pop()!;
+    const n = Number(local.startsWith(prefix) ? local.slice(prefix.length) : NaN);
     if (Number.isFinite(n) && n > m) m = n;
   }
   return m;
 }
 
 function newIds(score: Score): { ev: string; grp: string } {
+  const ns = score.part ? `p${score.part.id}:` : '';
   return {
-    ev: `e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`,
-    grp: `g${maxSeq(score.groups.map((g) => g.id), 'g') + 1}`,
+    ev: `${ns}e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`,
+    grp: `${ns}g${maxSeq(score.groups.map((g) => g.id), 'g') + 1}`,
   };
 }
 
@@ -116,30 +120,36 @@ export function pasteEvents(
   score: Score,
   at: number,
   clip: Event[],
+  clipGroups: BeatGroup[] = score.groups,
 ): { score: Score; cursor: number } | null {
   if (clip.length === 0) return null;
 
   let seq = maxSeq(score.events.map((e) => e.id), 'e');
   let gseq = maxSeq(score.groups.map((g) => g.id), 'g');
+  const ns = score.part ? `p${score.part.id}:` : '';
 
   const idMap = new Map<string, string>();
   const fresh = clip.map((e) => {
-    const id = `e${++seq}`;
+    const id = `${ns}e${++seq}`;
     idMap.set(e.id, id);
     return { ...e, id };
   });
 
   const clipIds = new Set(clip.map((e) => e.id));
   const groupMap = new Map<string, string>();
-  for (const g of score.groups) {
+  for (const g of clipGroups) {
     if (g.memberIds.length > 0 && g.memberIds.every((id) => clipIds.has(id))) {
-      groupMap.set(g.id, `g${++gseq}`);
+      groupMap.set(g.id, `${ns}g${++gseq}`);
     }
   }
 
   const cloned = fresh.map((e, i) => {
     const next = { ...e } as Event & { ties?: unknown; groupId?: string };
     const orig = clip[i];
+    if (next.kind === 'note' && orig.kind === 'note' && orig.hairpinTo) {
+      next.hairpinTo = idMap.get(orig.hairpinTo);
+      if (!next.hairpinTo) { delete next.hairpinTo; delete next.hairpin; }
+    }
     if (orig.kind === 'note' && orig.ties?.length) {
       const ties = orig.ties
         .filter((t) => idMap.has(t.to))
@@ -153,7 +163,7 @@ export function pasteEvents(
     return next as Event;
   });
 
-  const newGroups: BeatGroup[] = score.groups
+  const newGroups: BeatGroup[] = clipGroups
     .filter((g) => groupMap.has(g.id))
     .map((g) => {
       const newId = groupMap.get(g.id)!;
@@ -718,6 +728,27 @@ export function setNoteDynamic(score: Score, id: string, v?: string): Score {
 }
 
 /** 渐强 / 渐弱，跟音符绑定：再点一次同一项 = 去掉 */
+export function setHairpinRange(score: Score, ids: string[], kind?: 'cresc' | 'dim'): Score {
+  const positions = score.events.flatMap((e, i) => e.kind === 'note' && ids.includes(e.id) ? [i] : []);
+  if (positions.length < 2) return score;
+  const lo = positions[0];
+  const hi = positions[positions.length - 1];
+  const events = score.events.map((e, i) => {
+    if (e.kind !== 'note') return e;
+    const end = score.events.findIndex((item) => item.id === e.hairpinTo);
+    const clean = (i >= lo && i <= hi) || (e.hairpinTo && i <= hi && end >= lo);
+    const copy = { ...e };
+    if (clean) { delete copy.hairpin; delete copy.hairpinTo; }
+    if (i === lo && kind) { copy.hairpin = kind; copy.hairpinTo = score.events[hi].id; }
+    return copy;
+  });
+  return { ...score, format: 3, events };
+}
+
+export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter'>): Score {
+  return { ...score, format: 3, events: score.events.map((e) => e.id === id && e.kind === 'barline' ? { ...e, ...change } : e) };
+}
+
 export function setHairpin(score: Score, id: string, v?: 'cresc' | 'dim'): Score {
   return {
     ...score,
@@ -726,6 +757,7 @@ export function setHairpin(score: Score, id: string, v?: 'cresc' | 'dim'): Score
       const copy = { ...e };
       if (v && v !== e.hairpin) copy.hairpin = v;
       else delete copy.hairpin;
+      delete copy.hairpinTo;
       return copy;
     }),
   };
@@ -787,7 +819,11 @@ export function removeEvent(score: Score, id: string): Score {
   const target = score.events.find((e) => e.id === id);
   if (!target) return score;
 
-  const events = score.events.filter((e) => e.id !== id);
+  const events = score.events.filter((e) => e.id !== id).map((e) => {
+    if (e.kind !== 'note' || e.hairpinTo !== id) return e;
+    const { hairpinTo: _to, hairpin: _kind, ...rest } = e;
+    return rest;
+  });
 
   let groups = score.groups;
   const gid = (target as { groupId?: string }).groupId;
@@ -947,6 +983,7 @@ export function applyTier(
       g.id === gid
         ? {
             ...g,
+            auto: undefined,
             totalTicks: sum,
             memberIds: members.map((m) => m.id),
             ...(tuplet ? { tuplet } : {}),
@@ -1015,6 +1052,26 @@ export function setTicks(score: Score, id: string, ticks: number): Score {
  *     所以反复调用是幂等的，也不会把用户的意图拆掉
  */
 export function autoGroupBeats(score: Score): Score {
+  const noteIds = new Set(score.events.filter((e) => e.kind === 'note').map((e) => e.id));
+  if (score.events.some((e) => e.kind === 'note' && e.hairpinTo && !noteIds.has(e.hairpinTo))) {
+    score = { ...score, events: score.events.map((e) => {
+      if (e.kind !== 'note' || !e.hairpinTo || noteIds.has(e.hairpinTo)) return e;
+      const { hairpinTo: _to, hairpin: _kind, ...rest } = e;
+      return rest;
+    }) };
+  }
+  if (score.format === 3 && score.groups.some((g) => g.auto)) {
+    const keep = score.groups.filter((g) => !g.auto);
+    const keptIds = new Set(keep.map((g) => g.id));
+    score = { ...score, groups: keep, events: score.events.map((e) => {
+      if ('groupId' in e && e.groupId && !keptIds.has(e.groupId)) {
+        const { groupId: _g, ...rest } = e;
+        return rest;
+      }
+      return e;
+    }) };
+  }
+  let beatTicks = score.format === 3 ? groupTicks(score.meta.beat) : TICKS_PER_BEAT;
   const grouped = new Set<string>();
   for (const g of score.groups) for (const id of g.memberIds) grouped.add(id);
   const existing = new Set(score.groups.map((g) => g.memberIds.join(',')));
@@ -1026,9 +1083,13 @@ export function autoGroupBeats(score: Score): Score {
   let sum = 0;
 
   const flush = (): void => {
-    if (run.length >= 2 && sum === TICKS_PER_BEAT && !existing.has(run.join(','))) {
+    const shortOnly = run.every((id) => {
+      const e = score.events.find((event) => event.id === id);
+      return e && isTimed(e) && undotTicks(e.ticks, e.dot ?? 0) < TICKS_PER_BEAT;
+    });
+    if (run.length >= 2 && sum === beatTicks && shortOnly && !existing.has(run.join(','))) {
       seq += 1;
-      added.push({ id: `g${seq}`, totalTicks: TICKS_PER_BEAT, memberIds: [...run] });
+      added.push({ id: `${score.part ? `p${score.part.id}:` : ''}g${seq}`, totalTicks: beatTicks, memberIds: [...run], ...(score.format === 3 ? { auto: true } : {}) });
     }
     run = [];
     sum = 0;
@@ -1037,6 +1098,8 @@ export function autoGroupBeats(score: Score): Score {
   for (const ev of score.events) {
     if (ev.kind === 'barline') {
       flush();
+      if (score.format === 3) tick = 0;
+      if (score.format === 3 && ev.beatAfter) beatTicks = groupTicks(ev.beatAfter);
       continue;
     }
     if (ev.kind !== 'note' && ev.kind !== 'rest') continue; // 换气 / 力度不打断
@@ -1046,7 +1109,7 @@ export function autoGroupBeats(score: Score): Score {
       tick += ev.ticks;
       continue;
     }
-    if (tick % TICKS_PER_BEAT === 0) {
+    if (tick % beatTicks === 0) {
       run = [ev.id];
       sum = ev.ticks;
     } else if (run.length > 0) {
@@ -1054,7 +1117,7 @@ export function autoGroupBeats(score: Score): Score {
       sum += ev.ticks;
     }
     tick += ev.ticks;
-    if (sum >= TICKS_PER_BEAT) flush();
+    if (sum >= beatTicks) flush();
   }
   flush();
 

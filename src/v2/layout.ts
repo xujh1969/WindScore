@@ -10,6 +10,8 @@
  */
 
 import { beamCount, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
+import { layoutEnsemble } from './ensembleLayout';
+import { meterAt } from './meter';
 import type {
   Accidental,
   BarlineEvent,
@@ -49,6 +51,8 @@ export interface PlacedItem {
   beams?: number;
   dot?: 0 | 1 | 2;
   dashes?: number;
+  /** 重奏增时线中心的绝对横坐标，由共享拍位网格提供。 */
+  dashXs?: number[];
   /** 吐音标记，在音符上方画 T / K */
   tongue?: 'T' | 'K';
   /** 电吹管技法记号，可多选，在音符上方横向排列 */
@@ -78,8 +82,11 @@ export interface PlacedItem {
   dynamic?: string;
   /** 渐强 / 渐弱，画在音符下方力度记号旁边 */
   hairpin?: 'cresc' | 'dim';
+  lyrics?: string[];
   final?: boolean;
   partial?: boolean;
+  beatAfter?: string;
+  breakAfter?: 'line' | 'page';
 }
 
 export interface PlacedBeam {
@@ -133,6 +140,11 @@ export interface LayoutLine {
   badges: PlacedBadge[];
   tuplets: PlacedTuplet[];
   voltas: PlacedVolta[];
+  partId?: string;
+  partName?: string;
+  system?: number;
+  pageBreakBefore?: boolean;
+  hairpins?: { x0: number; x1: number; kind: 'cresc' | 'dim'; startOpen: number; endOpen: number }[];
 }
 
 /**
@@ -208,6 +220,7 @@ export interface LayoutResult {
   title: LayoutTitle | null;
   width: number;
   height: number;
+  systems?: { from: number; to: number; top: number; bottom: number; bracketX: number }[];
 }
 
 export interface LayoutOptions {
@@ -223,6 +236,8 @@ export interface LayoutOptions {
   padding?: number;
   /** 是否在谱面开头画标题块，默认 true */
   showTitle?: boolean;
+  /** 总谱预先计算的共同横向坐标，不改变单声部排版规则。 */
+  positions?: ReadonlyMap<string, { x: number; w: number; line: number; dashXs?: number[] }>;
 }
 
 /**
@@ -405,7 +420,9 @@ export function clusterSpan(
 ): { x: number; w: number } {
   const ink = inkExtent(glyphWidth, it.dot ?? 0, it.dashes ?? 0, g);
   const shift = (it.accW ?? 0) + (it.graceInk ?? 0);
-  return { x: it.x + ink.from + shift, w: ink.to - ink.from };
+  const x = it.x + ink.from + shift;
+  const right = it.dashXs?.length ? it.dashXs[it.dashXs.length - 1] + g.dashW / 2 : it.x + ink.to + shift;
+  return { x, w: Math.max(it.x + ink.to + shift, right) - x };
 }
 
 /**
@@ -437,6 +454,7 @@ function dashCountOf(ticks: number, dot: 0 | 1 | 2): number {
 }
 
 export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
+  if (score.parts?.length) return layoutEnsemble(score, opts, layoutScore);
   const unit = opts.unit ?? 1.3;
   // 版式度量随谱面字号派生（缺省 21px = 基准值，尺寸与老文件完全一致）；
   // opts.fontSize / opts.letterSpacing 是播放页的观看偏好覆盖，谱面本身不变
@@ -448,7 +466,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   // 行高要容得下自下而上的四层：减时线 → 音符 → 连音线 → 换气 / 吐音标记。
   // 房子括线贴着小节线顶端画（y − barHalf − 5，遍数数字最高到基线上方约 39px），
   // 行高 86 的上半行（43px）装得下，不用为它加高
-  const lineHeight = opts.lineHeight ?? glyph.lineHeight;
+  const verses = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? e.lyrics?.length ?? 0 : 0));
+  const lyricBottom = (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 64 : 44) + verses * 24;
+  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0), verses ? (lyricBottom + 8) * 2 * k : 0);
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
   const padTop = 20;
@@ -575,16 +595,16 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     else if (isBarrier(ev)) {
       const bar = ev as BarlineEvent;
       const base = bar.style === 'final' ? 26 : bar.repeat ? 24 : 20;
-      w = base * k + spacing;
+      w = (base + (bar.beatAfter ? 30 : 0)) * k + spacing;
     } else if (ev.kind === 'directive' || ev.kind === 'jump') w = 26 * k + spacing;
-    return { ev, w };
+    return { ev, w: opts.positions?.get(ev.id)?.w ?? w };
   });
 
   // ── breakFlow：只在安全点断行（§7.3）──
   // 主断点 = 小节线之后；次断点 = 拍内组结束。
   // 两者必须分开记：若让组结束点覆盖小节线断点，断行会落到小节中间，
   // 把小节劈成两半，小节拍数校验还会误报。
-  const starts: number[] = [0];
+  let starts: number[] = [0];
   let x = 0;
   let lastBar = -1;
   let lastBarAny = -1;
@@ -604,6 +624,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       lastGroupEnd = -1;
     }
     const ev = widths[i].ev;
+    if (ev.kind === 'barline' && ev.breakAfter && i + 1 < widths.length) {
+      if (starts[starts.length - 1] !== i + 1) starts.push(i + 1);
+      start = i + 1;
+      x = 0;
+      lastBar = lastBarAny = lastGroupEnd = -1;
+      continue;
+    }
     if (isBarrier(ev)) {
       const bar = ev as BarlineEvent;
       // 房子开头那条线**不把断点留在它后面**：房子必须和它的内容在同一行，
@@ -623,8 +650,14 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }
   }
 
+  if (opts.positions) {
+    starts = [0];
+    for (let i = 1; i < widths.length; i++) {
+      if (opts.positions.get(widths[i].ev.id)?.line !== opts.positions.get(widths[i - 1].ev.id)?.line) starts.push(i);
+    }
+  }
+
   // ── place：落位 ──
-  const expected = Math.round(beatsPerMeasureOf(score.meta.beat) * TICKS_PER_BEAT);
   const lines: LayoutLine[] = [];
   const hitIndex: HitBox[] = [];
 
@@ -725,10 +758,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 末行不对齐：内容少时硬拉会把音符间距拉得离谱，允许右边自然留白
     const isLast = li === starts.length - 1;
     const stretch =
-      isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - usedBars) / usedRest);
+      opts.positions || isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - usedBars) / usedRest);
 
     for (let i = from; i < to; i += 1) {
       const { ev, w } = widths[i];
+      if (opts.positions) cx = opts.positions.get(ev.id)?.x ?? cx;
 
       if (ev.kind === 'note' || ev.kind === 'rest') {
         const item: PlacedItem = {
@@ -738,6 +772,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           x: cx,
           w,
           ticks: ev.ticks,
+          dashXs: opts.positions?.get(ev.id)?.dashXs,
         };
         if (ev.kind === 'note') {
           const n = ev as NoteEvent;
@@ -769,7 +804,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if (n.articulations?.includes('staccato')) item.staccato = true;
           if (n.techniques?.length) item.techniques = n.techniques;
           if (n.dynamic) item.dynamic = n.dynamic;
-          if (n.hairpin) item.hairpin = n.hairpin;
+          if (n.hairpin && !n.hairpinTo) item.hairpin = n.hairpin;
+          if (n.lyrics?.length) item.lyrics = n.lyrics;
         } else {
           // 休止符与音符一样带时值记号：减时线 / 增时线 / 附点（线数同音符按去点基准算）
           const gid = groupOfEvent.get(ev.id);
@@ -798,6 +834,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           // 小节号会偏一位（|: 开头的谱实测踩到）
           measure: anyTimed ? measureNo : undefined,
           ...(bar.partial ? { partial: true } : {}),
+          ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
+          ...(bar.breakAfter ? { breakAfter: bar.breakAfter } : {}),
           ...(bar.repeat ? { repeat: bar.repeat } : {}),
           ...(bar.repeat === 'end' && bar.times ? { repeatTimes: bar.times } : {}),
           ...(bar.volta ? { volta: bar.volta, ...(bar.voltaOpen ? { voltaOpen: true } : {}) } : {}),
@@ -833,6 +871,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       /** 全曲第一小节是否弱起：弱起曲的结尾小节允许不满 */
       let firstPartial = false;
       let seenFirst = false;
+      let expected = Math.round(beatsPerMeasureOf(meterAt(score, from)) * TICKS_PER_BEAT);
       for (const it of items) {
         if (it.kind === 'note' || it.kind === 'rest') {
           acc += it.ticks ?? 0;
@@ -864,6 +903,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
             firstPartial = !!it.partial;
           }
           barX = it.x;
+          if (it.beatAfter) expected = Math.round(beatsPerMeasureOf(it.beatAfter) * TICKS_PER_BEAT);
         }
       }
     }
@@ -885,6 +925,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           const x1 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
           beams.push({ x0: it.x + 2, x1, level: 1 });
           if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1, level: 2 });
+          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1, level: 3 });
         }
         continue;
       }
@@ -905,7 +946,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       // 连音组（三连音 / 六连音）：一定画一条线 + 一个标号。
       // 连音成员的 beamCount 都是 0，不能靠它判断要不要画线。
       if (g.tuplet) {
-        beams.push({ x0, x1, level: 1 });
+        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level });
         tuplets.push({ x0, x1, text: String(g.tuplet) });
         continue;
       }
@@ -913,18 +954,16 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       if (members.every((m) => (m.beams ?? 0) < 1)) continue;
       beams.push({ x0, x1, level: 1 });
 
-      // 第二级：连续的 beamCount ≥ 2 成员
-      let s = 0;
-      while (s < members.length) {
-        if ((members[s].beams ?? 0) < 2) {
-          s += 1;
-          continue;
+      // 更深的减时线：每一级只连接实际具有该级线数的连续成员。
+      for (let level = 2; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
+        let s = 0;
+        while (s < members.length) {
+          if ((members[s].beams ?? 0) < level) { s++; continue; }
+          let end = s;
+          while (end < members.length && (members[end].beams ?? 0) >= level) end++;
+          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level });
+          s = end;
         }
-        let e2 = s;
-        while (e2 < members.length && (members[e2].beams ?? 0) >= 2) e2 += 1;
-        const seg = members.slice(s, e2);
-        beams.push({ x0: seg[0].x + 2, x1: rightOf(seg[seg.length - 1]), level: 2 });
-        s = e2;
       }
     }
 
@@ -1021,8 +1060,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       );
     }
     for (let k = 0; k < chain.length; k += 1) {
-      const left = k === 0 ? -1e4 : (anchors[k - 1] + anchors[k]) / 2;
-      const right = k === chain.length - 1 ? 1e4 : (anchors[k] + anchors[k + 1]) / 2;
+      const prevDashes = chain[k - 1]?.dashXs;
+      const dashes = chain[k].dashXs;
+      const left = k === 0 ? -1e4 : ((prevDashes?.length ? prevDashes[prevDashes.length - 1] : anchors[k - 1]) + anchors[k]) / 2;
+      const right = k === chain.length - 1 ? 1e4 : ((dashes?.length ? dashes[dashes.length - 1] : anchors[k]) + anchors[k + 1]) / 2;
       hitIndex.push({
         eventId: chain[k].eventId,
         x: left,
@@ -1036,7 +1077,32 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       hitIndex.push({ eventId: it.eventId, x: it.x, y: y + 14, w: it.w, h: 30 });
     }
 
-    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas: [] });
+    const previous = score.events[from - 1];
+    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas: [], pageBreakBefore: previous?.kind === 'barline' && previous.breakAfter === 'page' });
+  }
+
+  // 跨音力度范围在每一行分段，楔形开口沿全跨度连续变化。
+  const position = new Map(lines.flatMap((line, li) => line.items.map((it) => [it.eventId, { li, it }] as const)));
+  for (const e of score.events) {
+    if (e.kind !== 'note' || !e.hairpin || !e.hairpinTo) continue;
+    const a = position.get(e.id);
+    const b = position.get(e.hairpinTo);
+    if (!a || !b || b.li < a.li) continue;
+    const segments = [];
+    for (let li = a.li; li <= b.li; li++) {
+      const line = lines[li];
+      const x0 = li === a.li ? a.it.x + 10 * k + (a.it.graceInk ?? 0) : line.items[0]?.x ?? padding;
+      const x1 = li === b.li ? b.it.x + 20 * k + (b.it.graceInk ?? 0) : Math.max(x0, ...line.items.map((it) => it.x + it.w));
+      segments.push({ li, x0, x1 });
+    }
+    const length = segments.reduce((sum, s) => sum + Math.max(1, s.x1 - s.x0), 0);
+    let done = 0;
+    const opening = (fraction: number) => 4 * k * (e.hairpin === 'cresc' ? fraction : 1 - fraction);
+    for (const s of segments) {
+      const span = Math.max(1, s.x1 - s.x0);
+      (lines[s.li].hairpins ??= []).push({ x0: s.x0, x1: s.x1, kind: e.hairpin, startOpen: opening(done / length), endOpen: opening((done + span) / length) });
+      done += span;
+    }
   }
 
   /*
@@ -1201,6 +1267,7 @@ function neighborInBand(
 /** 一次命中的结果 */
 export interface LayoutPick {
   index: number;
+  partId?: string;
   /** over = 点在字形上（方块，输入替换）；insert = 点在空隙里（I 形，输入插入） */
   mode: 'over' | 'insert';
   /** 缝隙下标；over 模式下 events[cursor-1] 就是被选中的音 */
@@ -1239,6 +1306,23 @@ export function hitScoreStart(layout: LayoutResult, x: number, y: number): boole
  * 感知区只覆盖字形墨迹，剩下的空白全部让给插入，音符之间的缝才点得进去。
  */
 export function pickAt(layout: LayoutResult, x: number, y: number): LayoutPick | null {
+  const pick = pickSingleAt(layout, x, y);
+  if (!pick) return null;
+  const id = hitTest(layout, x, y);
+  const partId = layout.lines.find((line) => line.items.some((it) => it.eventId === id))?.partId;
+  return partId ? { ...pick, partId } : pick;
+}
+
+function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | null {
+  // 变拍号与所属小节线共用编辑设置，数字墨迹也可直接选中。
+  const k = layout.glyph.fontSize / 21;
+  for (const line of layout.lines) for (const it of line.items) {
+    if (it.kind !== 'barline' || !it.beatAfter) continue;
+    const meterX = it.x + it.w / 2 + 14 * k;
+    if (Math.abs(x - meterX) <= 10 * k && Math.abs(y - line.y) <= 20 * k) {
+      return { index: it.eventIndex, mode: 'over', cursor: it.eventIndex + 1 };
+    }
+  }
   const id = hitTest(layout, x, y);
   if (!id) return null;
 
@@ -1270,10 +1354,9 @@ export function pickAt(layout: LayoutResult, x: number, y: number): LayoutPick |
     }
 
     // 墨迹范围同样要加上变音记号与前倚音的位移（绘制层就是这么摆的）
-    const shift = (it.accW ?? 0) + (it.graceInk ?? 0);
-    const ink = nominalInk(it.dot ?? 0, it.dashes ?? 0, layout.glyph);
-    const x0 = it.x + ink.from + shift;
-    const x1 = it.x + ink.to + shift;
+    const span = clusterSpan(it, layout.glyph.nominalWidth, layout.glyph);
+    const x0 = span.x;
+    const x1 = span.x + span.w;
     if (x >= x0 && x <= x1) {
       return { index: it.eventIndex, mode: 'over', cursor: it.eventIndex + 1 };
     }

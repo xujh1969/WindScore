@@ -10,3 +10,5 @@ dist
 # 本机数据：曲库文件夹（谱面 + 伴奏音频，个人数据不上传）与原始歌曲
 Score/
 music/
+.lab-runtime/
+__pycache__/

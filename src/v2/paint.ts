@@ -45,6 +45,8 @@ export interface PaintTheme {
   ink: string;
   muted: string;
   accent: string;
+  /** 所有连音弧线；浅色用赭金，深色用金黄。 */
+  curve: string;
   warn: string;
   error: string;
   /** 电吹管技法记号（花舌 / 波音 / 滑音 / 弯音），惯例用红色与普通记号区分 */
@@ -63,6 +65,7 @@ export const LIGHT_THEME: PaintTheme = {
   ink: '#27272a',
   muted: '#a1a1aa',
   accent: '#a8811a',
+  curve: '#8a6a12',
   warn: '#b45309',
   error: '#b91c1c',
   tech: '#c22525',
@@ -81,6 +84,7 @@ export const DARK_THEME: PaintTheme = {
   ink: '#e4e4e7',
   muted: '#71717a',
   accent: '#d9b23c',
+  curve: '#d9b23c',
   warn: '#fbbf24',
   error: '#f87171',
   tech: '#f87171',
@@ -224,12 +228,17 @@ export interface PaintOptions {
   caret?: { x: number; y: number } | null;
   /** 播放头：当前发声的事件 + 其内部进度 0..1 */
   playhead?: { eventId: string; frac: number } | null;
+  playheads?: { eventId: string; frac: number }[];
   /** 属性检查器正在编辑的事件，整块点亮（含附点 / 增时线 / 八度点） */
   focusId?: string | null;
   /** 播放指示方式，默认 head（跳动的色块 + 竖线）；band = 行进度条 */
   playStyle?: 'head' | 'band';
   /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
   showMeasureNumbers?: boolean;
+  /** 编辑时显示强制换行/分页标记。 */
+  showBreaks?: boolean;
+  /** 导出时隐藏曲目信息设置按钮。 */
+  showTitleEdit?: boolean;
   /**
    * **对轨配对中**：波形上已点好节奏线，等你点一根小节线。
    * 此时每根小节线都画上金色的绑定靶标（顶端圆钮 + 加粗的一小截），
@@ -263,16 +272,53 @@ export function paintLayout(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
 
-  if (layout.title) paintTitle(ctx, layout.title, theme);
+  if (layout.title) paintTitle(ctx, layout.title, theme, opts.showTitleEdit !== false);
+
+  for (const system of layout.systems ?? []) {
+    if (!layout.lines.some((line) => line.index >= system.from && line.index < system.to)) continue;
+    const top = system.top + layout.lineHeight / 2 - M.barHalf;
+    const bottom = system.bottom - layout.lineHeight / 2 + M.barHalf;
+    const x = system.bracketX;
+    const k = M.k;
+    ctx.fillStyle = theme.ink;
+    // 重奏连谱号：粗竖线的两端向右弯出尖钩，右侧另配一条细竖线。
+    ctx.beginPath();
+    ctx.moveTo(x + 8 * k, top - 5 * k);
+    ctx.bezierCurveTo(x + 5 * k, top, x - 1.5 * k, top, x - 1.5 * k, top + 5 * k);
+    ctx.lineTo(x - 1.5 * k, bottom - 5 * k);
+    ctx.bezierCurveTo(x - 1.5 * k, bottom, x + 5 * k, bottom, x + 8 * k, bottom + 5 * k);
+    ctx.bezierCurveTo(x + 6 * k, bottom - 1 * k, x + 1.5 * k, bottom - 2 * k, x + 1.5 * k, bottom - 6 * k);
+    ctx.lineTo(x + 1.5 * k, top + 6 * k);
+    ctx.bezierCurveTo(x + 1.5 * k, top + 2 * k, x + 6 * k, top + 1 * k, x + 8 * k, top - 5 * k);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = theme.ink;
+    ctx.lineWidth = k;
+    ctx.beginPath();
+    ctx.moveTo(x + 4 * k, top);
+    ctx.lineTo(x + 4 * k, bottom);
+    ctx.stroke();
+  }
 
   for (const line of layout.lines) {
+    if (line.partName) {
+      ctx.font = M.titleInfoFont;
+      ctx.fillStyle = theme.ink;
+      ctx.textAlign = 'right';
+      const bracket = layout.systems?.find((s) => line.index >= s.from && line.index < s.to)?.bracketX;
+      ctx.fillText(line.partName, (bracket ?? line.items[0]?.x ?? 70) - 10 * M.k, line.y, 108 * M.k);
+      ctx.textAlign = 'left';
+    }
+    const head = opts.playheads?.find((h) => line.items.some((it) => it.eventId === h.eventId));
+    ctx.font = M.font;
     paintLine(ctx, line, theme, {
       selectedIds: opts.selectedIds,
       caret: opts.caret ?? null,
-      playhead: opts.playhead ?? null,
+      playhead: head ?? opts.playhead ?? null,
       focusId: opts.focusId ?? null,
       playStyle: opts.playStyle ?? 'head',
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
+      showBreaks: opts.showBreaks ?? false,
       pairing: opts.pairing ?? false,
       pairingHoverId: opts.pairingHoverId ?? null,
       pairingStart: opts.pairingStart ?? false,
@@ -280,7 +326,7 @@ export function paintLayout(
   }
 }
 
-function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme): void {
+function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme, showEdit: boolean): void {
   ctx.fillStyle = theme.ink;
   // 中：标题（大字居中）+ 说明行
   ctx.textAlign = 'center';
@@ -321,7 +367,7 @@ function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintT
   });
   // 齿轮用强调色而不是灰：它是个可点的按钮（打开曲目信息，字号 / 字间距在里面），
   // 灰色看起来像装饰，用户找不到谱面字号在哪改
-  paintGear(ctx, t.edit.cx, t.edit.cy, t.edit.size, theme.accent);
+  if (showEdit) paintGear(ctx, t.edit.cx, t.edit.cy, t.edit.size, theme.accent);
   // 复位：ctx 是本行共享的，别把居中对齐泄漏给谱面
   ctx.font = M.font;
   ctx.textAlign = 'left';
@@ -410,6 +456,7 @@ interface LinePaint {
   playStyle: 'head' | 'band';
   /** 小节号开关（缺省显示） */
   showMeasureNumbers: boolean;
+  showBreaks: boolean;
   /** 对轨配对中：小节线画成绑定靶标 */
   pairing: boolean;
   /** 配对中鼠标压着的那根线 */
@@ -710,6 +757,29 @@ function paintLine(
   ctx.fillStyle = theme.muted;
 
   // 力度记号：谱行下方。绑定在音符上的画在音符正下方，独立事件画在自己的格子里
+  for (const it of line.items) if (it.kind === 'barline' && it.beatAfter) {
+    const [num, den] = it.beatAfter.split('/');
+    const x = it.x + it.w / 2 + 14 * M.k;
+    ctx.font = M.markFont;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = theme.ink;
+    ctx.fillText(num, x, y - 8 * M.k);
+    ctx.fillText(den, x, y + 8 * M.k);
+    ctx.strokeStyle = theme.ink;
+    ctx.lineWidth = Math.max(1, M.k);
+    const half = Math.max(ctx.measureText(num).width, ctx.measureText(den).width) / 2 + 2 * M.k;
+    ctx.beginPath(); ctx.moveTo(x - half, y); ctx.lineTo(x + half, y); ctx.stroke();
+    ctx.textAlign = 'left';
+  }
+  if (o.showBreaks) for (const it of line.items) {
+    if (it.kind !== 'barline' || !it.breakAfter) continue;
+    ctx.font = M.markFont.replace('12px', `${16 * M.k}px`);
+    ctx.fillStyle = theme.accent;
+    ctx.textAlign = 'center';
+    ctx.fillText(it.breakAfter === 'page' ? '↵页' : '↵', it.x + it.w / 2 + (it.beatAfter ? 14 * M.k : 0), y - 34 * M.k);
+    ctx.textAlign = 'left';
+  }
+  ctx.fillStyle = theme.muted;
   ctx.font = M.markFont;
   for (const it of line.items) {
     if (it.kind === 'directive' && it.value) {
@@ -740,10 +810,34 @@ function paintLine(
   }
   ctx.font = M.font;
 
+  // 范围楔形放在力度文字下方，跨行时保留连续的开口大小。
+  for (const span of line.hairpins ?? []) {
+    const cy = y + M.markBottom + 14 * M.k;
+    ctx.strokeStyle = theme.muted;
+    ctx.lineWidth = 1.2 * M.k;
+    ctx.beginPath();
+    ctx.moveTo(span.x0, cy - span.startOpen);
+    ctx.lineTo(span.x1, cy - span.endOpen);
+    ctx.moveTo(span.x0, cy + span.startOpen);
+    ctx.lineTo(span.x1, cy + span.endOpen);
+    ctx.stroke();
+  }
+
+  // 歌词在每个主音正下方，休止符和倚音不占歌词位置。
+  ctx.font = M.markFont.replace('12px', `${16 * M.k}px`);
+  ctx.fillStyle = theme.ink;
+  const lyricY = y + (line.hairpins?.length ? 64 : 44) * M.k;
+  for (const it of line.items) if (it.kind === 'note' && it.lyrics) {
+    const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
+    // 单字中心对齐数字；词组从同一字位展开，在本音的格宽内压缩，避免覆盖下一音。
+    it.lyrics.forEach((word, verse) => { if (word) ctx.fillText(word, it.x + 4 * M.k + shift, lyricY + (verse + 1) * 24 * M.k, Math.max(16 * M.k, it.w - shift - 8 * M.k)); });
+  }
+  ctx.font = M.font;
+
   // 连线（上方弧线）
   ctx.lineWidth = 1.5;
   for (const a of line.arcs) {
-    ctx.strokeStyle = a.kind === 'tie' ? theme.accent : theme.ink;
+    ctx.strokeStyle = theme.curve;
     const base = a.kind === 'tie' ? M.arcTieBase : M.arcBase;
     const ay = y - base - a.octaveUp * M.octaveStep;
     ctx.beginPath();
@@ -755,7 +849,7 @@ function paintLine(
   // 连音标号：组上方一条向下弯的弧线，**中间断开**、断口里写数字（3 / 6 …）——
   // 这才是简谱/五线谱的标准画法，数字悬在整条弧外面的画法没人这么记
   ctx.font = M.badgeFont;
-  ctx.strokeStyle = theme.ink;
+  ctx.strokeStyle = theme.curve;
   ctx.lineWidth = 1.2;
   ctx.textAlign = 'center';
   for (const t of line.tuplets) {
@@ -872,7 +966,7 @@ function drawGlyph(
     ctx.strokeStyle = theme.ink;
     ctx.lineWidth = M.beamLine;
     for (let i = 0; i < it.dashes; i += 1) {
-      const x0 = gx + gw + 5 + i * M.dashGap;
+      const x0 = it.dashXs?.[i] !== undefined ? it.dashXs[i] - M.dashW / 2 : gx + gw + 5 + i * M.dashGap;
       ctx.beginPath();
       ctx.moveTo(x0, y);
       ctx.lineTo(x0 + M.dashW, y);
@@ -967,6 +1061,7 @@ function drawGraces(
   const rx = Math.abs(mainEdgeX - sx);
   const ry = ey - sy;
   if (rx > 1.5 && ry > 0) {
+    ctx.strokeStyle = theme.curve;
     ctx.beginPath();
     if (flip) {
       // 圆的右下角：从下面的点（水平切向）转到右边的点（竖直切向）

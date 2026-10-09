@@ -10,6 +10,7 @@
 import { tickToSec, secToTick, type TempoMap } from './tempo';
 import { TICKS_PER_BEAT } from './ticks';
 import type { TimelineEntry } from './timeline';
+import { timelineTicks } from './timeline';
 
 /** 排一次音的提前量（秒）：建 AudioContext 与解算要时间，太紧会切掉开头 */
 const START_LEAD = 0.1;
@@ -59,6 +60,7 @@ export class Player {
   private audioEndSec = Infinity;
   private sources: AudioBufferSourceNode[] = [];
   private stemGains: GainNode[] = [];
+  private partBuses = new Map<string, GainNode>();
   private endedCb: (() => void) | null = null;
   private tempo: TempoMap | null = null;
 
@@ -67,6 +69,14 @@ export class Player {
     const g = this.stemGains[index];
     if (!g || !this.ctx) return;
     g.gain.setTargetAtTime(Math.max(0, Math.min(1, value)), this.ctx.currentTime, 0.03);
+  }
+
+  /** 声部混音设置热更新，不重新起播或移动播放头。 */
+  setPartGains(timeline: TimelineEntry[]): void {
+    const gains = new Map(timeline.filter((e) => e.partId).map((e) => [e.partId!, e.gain ?? 1]));
+    this.timeline = this.timeline.map((e) => e.partId && gains.has(e.partId) ? { ...e, gain: gains.get(e.partId) } : e);
+    if (!this.ctx) return;
+    for (const [id, bus] of this.partBuses) bus.gain.setTargetAtTime(gains.get(id) ?? 0, this.ctx.currentTime, 0.03);
   }
 
   get isPlaying(): boolean {
@@ -117,10 +127,10 @@ export class Player {
         const at = this.startedAt + (from - this.fromTick) / this.ticksPerSec;
         if (at > until) break;
         const endAt = this.startedAt + (e.endTick - this.fromTick) / this.ticksPerSec;
-        if (e.midi !== null) this.tone(ctx, e.midi, at, endAt);
+        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) this.tone(ctx, e.midi, at, endAt, e.gain, e.partId);
         this.index += 1;
       }
-      const lastEnd = this.timeline[this.timeline.length - 1]?.endTick ?? 0;
+      const lastEnd = timelineTicks(this.timeline);
       const finishAt = this.startedAt + (lastEnd - this.fromTick) / this.ticksPerSec;
       if (this.index >= this.timeline.length && this.ctx.currentTime > finishAt + 0.3) this.stop();
     }, TIMER_MS);
@@ -190,8 +200,8 @@ export class Player {
         const t0 = at(from);
         if (t0 > until) break;
         const t1 = at(e.endTick);
-        if (e.midi !== null && t1 > this.ctx.currentTime) {
-          this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1);
+        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0) && t1 > this.ctx.currentTime) {
+          this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1, e.gain, e.partId);
         }
         this.index += 1;
       }
@@ -217,6 +227,7 @@ export class Player {
     }
     this.sources = [];
     this.stemGains = [];
+    this.partBuses.clear();
     this.endedCb = null;
     if (this.ctx) {
       const ctx = this.ctx;
@@ -229,7 +240,7 @@ export class Player {
   }
 
   /** 一个音：三角波 + 20ms 淡入 / 末尾 50ms 淡出 */
-  private tone(ctx: AudioContext, midi: number, t0: number, t1: number): void {
+  private tone(ctx: AudioContext, midi: number, t0: number, t1: number, gain = 1, partId?: string): void {
     const freq = 440 * 2 ** ((midi - 69) / 12);
     const end = Math.max(t1, t0 + 0.06);
     const rel = Math.max(t0 + 0.03, end - 0.05);
@@ -239,13 +250,18 @@ export class Player {
     osc.frequency.value = freq;
 
     const g = ctx.createGain();
+    const envelopeGain = partId ? 1 : gain;
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(this.gain, t0 + 0.02);
-    g.gain.setValueAtTime(this.gain, rel);
+    g.gain.linearRampToValueAtTime(this.gain * envelopeGain, t0 + 0.02);
+    g.gain.setValueAtTime(this.gain * envelopeGain, rel);
     g.gain.linearRampToValueAtTime(0, end);
 
     osc.connect(g);
-    g.connect(ctx.destination);
+    if (partId) {
+      let bus = this.partBuses.get(partId);
+      if (!bus) { bus = ctx.createGain(); bus.gain.value = gain; bus.connect(ctx.destination); this.partBuses.set(partId, bus); }
+      g.connect(bus);
+    } else g.connect(ctx.destination);
     osc.start(t0);
     osc.stop(end + 0.02);
   }

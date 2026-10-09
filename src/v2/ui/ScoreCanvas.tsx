@@ -9,17 +9,22 @@ import {
   pickAt,
   type LayoutPick,
   type LayoutResult,
+  type LayoutOptions,
 } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout } from '../paint';
 import { TICKS_PER_BEAT } from '../ticks';
-import { activeMainAt, timelineTicks, type TimelineEntry } from '../timeline';
+import { activeHeadsAt, activeMainAt, timelineTicks, type TimelineEntry } from '../timeline';
 import type { Score } from '../types';
+import { partScore } from '../parts';
+import { LyricCell } from './LyricCell';
+import { lyricTrackNames } from '../lyrics';
 
 /** 一次命中的结果，判定逻辑在 layout.pickAt（纯几何，可单测） */
 export type ScorePick = LayoutPick;
 
 interface Props {
   score: Score;
+  activePartId?: string;
   dark: boolean;
   /** 每 tick 像素宽，即字间距倍率 */
   unit?: number;
@@ -35,6 +40,8 @@ interface Props {
   focusId?: string | null;
   /** 是否画 I 形插入符。over 模式下只画方块，不画竖线 */
   showCaret?: boolean;
+  showBreaks?: boolean;
+  onLayout?: (layout: LayoutResult, options: LayoutOptions) => void;
   /** 播放指示方式：head = 跳动的色块 + 竖线；band = 从行首生长的高亮条 */
   playStyle?: 'head' | 'band';
   playing: boolean;
@@ -55,6 +62,7 @@ interface Props {
   onEditTitle?: () => void;
   /**点在谱面空白处（没命中任何音符 / 小节线）：用来退出曲目信息编辑 */
   onBlankClick?: () => void;
+  lyricEdit?: { partId: string; verse: number; startId?: string | null; session: number; onCommit: (id: string, word: string) => boolean; onInsertGap: (id: string) => boolean; onDelete: (id: string, offset: number) => boolean; onExit: () => void };
 }
 
 type Playhead = { eventId: string; frac: number } | null;
@@ -66,6 +74,7 @@ type Playhead = { eventId: string; frac: number } | null;
  */
 export function ScoreCanvas({
   score,
+  activePartId,
   dark,
   unit,
   fontSize,
@@ -75,6 +84,8 @@ export function ScoreCanvas({
   timeline,
   focusId,
   showCaret,
+  showBreaks = false,
+  onLayout,
   pairing = false,
   onPickStart,
   playStyle = 'head',
@@ -85,11 +96,16 @@ export function ScoreCanvas({
   onEnded,
   onEditTitle,
   onBlankClick,
+  lyricEdit,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const layoutRef = useRef<LayoutResult | null>(null);
+  const [lyricLayout, setLyricLayout] = useState<LayoutResult | null>(null);
+  const lyricInputs = useRef(new Map<string, HTMLInputElement>());
+  const lyricFocusKey = useRef('');
   const paintRef = useRef<(head: Playhead) => void>(() => {});
+  const headsRef = useRef<{ eventId: string; frac: number }[]>([]);
   const [dragFrom, setDragFrom] = useState<ScorePick | null>(null);
   /** Shift 扩选的锚点：记住上一次普通点击的位置，Shift+点击选中两者之间 */
   const anchorRef = useRef<ScorePick | null>(null);
@@ -169,7 +185,7 @@ export function ScoreCanvas({
       headRef.current = head;
       const dpr = window.devicePixelRatio || 1;
       // 宽度钳到 clientWidth：竖滚动条出现时别让画布伸到它底下（否则横滚动条也来）
-      const w = Math.min(boxWidth(), Math.max(1, wrap.clientWidth));
+      const w = layout.systems ? Math.max(layout.width, Math.min(boxWidth(), Math.max(1, wrap.clientWidth))) : Math.min(boxWidth(), Math.max(1, wrap.clientWidth));
       const h = Math.max(boxHeight(), layout.height + 32);
       const cw = Math.max(1, Math.floor(w * dpr));
       const ch = Math.max(1, Math.floor(h * dpr));
@@ -182,11 +198,13 @@ export function ScoreCanvas({
       }
       paintLayout(ctx, layout, theme, {
         selectedIds,
-        caret: showCaret === false ? null : caretAt(layout, cursor),
+        caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
         playhead: head,
+        playheads: head ? headsRef.current : [],
         focusId,
         playStyle,
         showMeasureNumbers: score.meta.showMeasureNumbers !== false,
+        showBreaks,
         height: h,
         ...(pairingRef.current
           ? {
@@ -200,7 +218,10 @@ export function ScoreCanvas({
     };
 
     const relayout = () => {
-      layoutRef.current = layoutScore(score, { contentWidth: boxWidth(), unit, fontSize, letterSpacing });
+      const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing };
+      layoutRef.current = layoutScore(score, options);
+      onLayout?.(layoutRef.current, options);
+      setLyricLayout(layoutRef.current);
       paint(null);
     };
 
@@ -212,7 +233,44 @@ export function ScoreCanvas({
     return () => ro.disconnect();
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, selectedIds, cursor, focusId, showCaret, playStyle]);
+  }, [score, dark, unit, fontSize, letterSpacing, selectedIds, cursor, focusId, showCaret, showBreaks, playStyle, activePartId, onLayout]);
+
+  const lastEditPosition = useRef('');
+  useEffect(() => {
+    if (!showBreaks || playing || lyricEdit || dragFrom) return;
+    if (document.activeElement !== canvasRef.current) return;
+    const key = `${activePartId}:${cursor}:${focusId ?? ''}`;
+    if (lastEditPosition.current === key) return;
+    lastEditPosition.current = key;
+    const wrap = wrapRef.current;
+    const canvas = canvasRef.current;
+    const layout = layoutRef.current;
+    if (!wrap || !canvas || !layout) return;
+    const editable = activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout;
+    const focusedLine = focusId ? editable.lines.find((line) => line.items.some((it) => it.eventId === focusId)) : undefined;
+    const focused = focusedLine?.items.find((it) => it.eventId === focusId);
+    const point = focused && focusedLine ? { x: focused.x + focused.w / 2, y: focusedLine.y } : caretAt(editable, cursor);
+    if (!point) return;
+    const canvasBox = canvas.getBoundingClientRect();
+    const wrapBox = wrap.getBoundingClientRect();
+    const x = point.x + canvasBox.left - wrapBox.left + wrap.scrollLeft;
+    const y = point.y + canvasBox.top - wrapBox.top + wrap.scrollTop;
+    const pad = 48;
+    if (y - pad < wrap.scrollTop) wrap.scrollTop = Math.max(0, y - pad);
+    else if (y + pad > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = y + pad - wrap.clientHeight;
+    if (x - pad < wrap.scrollLeft) wrap.scrollLeft = Math.max(0, x - pad);
+    else if (x + pad > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = x + pad - wrap.clientWidth;
+  }, [cursor, focusId, activePartId, score, showBreaks, playing, lyricEdit, dragFrom]);
+
+  useEffect(() => {
+    if (!lyricEdit) { lyricFocusKey.current = ''; return; }
+    const key = `${lyricEdit.partId}:${lyricEdit.verse}:${lyricEdit.startId ?? ''}:${lyricEdit.session}`;
+    if (lyricFocusKey.current === key) return;
+    const input = (lyricEdit.startId ? lyricInputs.current.get(lyricEdit.startId) : undefined) ?? lyricInputs.current.values().next().value;
+    if (!input) return;
+    lyricFocusKey.current = key;
+    input.focus(); input.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [lyricEdit, lyricLayout]);
 
   // 配对态切换 → 只重绘（靶标要立刻出现 / 消失），不重排。
   // 退出配对时把悬停线一并清掉，免得下次进来还亮着上一根
@@ -293,6 +351,7 @@ export function ScoreCanvas({
       // 用 activeMainAt 而非 activeAt：倚音是独立时间线条目且 eventId 与主音相同，
       // 直接取会让指示条在每个倚音上从 0 重新扫一次（闪烁来回抖）
       const act = activeMainAt(timeline, tick);
+      headsRef.current = activeHeadsAt(timeline, tick);
       paintRef.current(act ? { eventId: act.entry.eventId, frac: act.progress } : null);
 
       // 平滑滚动：目标 = 正在播的那一行保持在视口中部；
@@ -302,11 +361,13 @@ export function ScoreCanvas({
       const layout = layoutRef.current;
       const wrap = wrapRef.current;
       if (act && layout && wrap) {
+        const followId = headsRef.current.find((h) => layout.lines.some((line) => line.items.some((it) => it.eventId === h.eventId)))?.eventId ?? act.entry.eventId;
         const li = layout.lines.findIndex((ln) =>
-          ln.items.some((it) => it.eventId === act.entry.eventId),
+          ln.items.some((it) => it.eventId === followId),
         );
         if (li >= 0) {
-          const target = Math.max(0, layout.lines[li].y - wrap.clientHeight / 2);
+          const system = layout.systems?.find((s) => li >= s.from && li < s.to);
+          const target = Math.max(0, system ? (system.top + system.bottom) / 2 - wrap.clientHeight / 2 : layout.lines[li].y - wrap.clientHeight / 2);
           if (followRef.current) {
             // 起播第一帧直接到位（从文档顶端滑过去太远），之后每帧缓动
             wrap.scrollTop = snapped
@@ -340,6 +401,8 @@ export function ScoreCanvas({
     >
       <canvas
         ref={canvasRef}
+        tabIndex={0}
+        aria-label="简谱谱面"
         onMouseMove={(e) => {
           const canvas = canvasRef.current;
           if (pairing) {
@@ -352,7 +415,7 @@ export function ScoreCanvas({
             if (loc && layout && hitScoreStart(layout, loc.x, loc.y)) id = SCORE_START_ID;
             else {
               const p = pickPointer(e.clientX, e.clientY);
-              const ev = p ? score.events[p.index] : undefined;
+              const ev = p ? (p.partId ? partScore(score, p.partId) : score).events[p.index] : undefined;
               id = ev && ev.kind === 'barline' ? ev.id : null;
             }
             if (id !== hoverBarRef.current) {
@@ -367,6 +430,10 @@ export function ScoreCanvas({
         onMouseDown={(e) => {
           if (overPencil(e.clientX, e.clientY)) {
             e.preventDefault();
+            if (lyricEdit) {
+              if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+              lyricEdit.onExit();
+            }
             onEditTitle?.();
             return; // 铅笔优先，别再去选音符
           }
@@ -382,6 +449,16 @@ export function ScoreCanvas({
             }
           }
           const p = pickPointer(e.clientX, e.clientY);
+          if (lyricEdit) {
+            e.preventDefault();
+            const pickedScore = p?.partId ? partScore(score, p.partId) : score;
+            const ev = p ? pickedScore.events[p.index] : undefined;
+            const input = ev ? lyricInputs.current.get(ev.id) : undefined;
+            if (input) { input.focus(); input.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+            return;
+          }
+          // 点击谱面后把键盘焦点从滑杆或属性输入框交回画布。
+          e.currentTarget.focus({ preventScroll: true });
           if (!p) {
             // 空白处也是一次有意义的点击：退出曲目信息编辑
             onBlankClick?.();
@@ -399,6 +476,30 @@ export function ScoreCanvas({
           onPick(p, null);
         }}
       />
+      {lyricEdit && lyricLayout ? <div className="v2-lyric-overlay" aria-label="谱面歌词输入" key={`${lyricEdit.partId}:${lyricEdit.verse}`}>
+        {(() => {
+          const current = partScore(score, lyricEdit.partId);
+          const notes = current.events.filter((e) => e.kind === 'note');
+          const indices = new Map(notes.map((e, i) => [e.id, i]));
+          const name = lyricTrackNames(current)[lyricEdit.verse];
+          const k = lyricLayout.glyph.fontSize / 21;
+          return lyricLayout.lines.filter((line) => !line.partId || line.partId === lyricEdit.partId).flatMap((line) => line.items.filter((it) => it.kind === 'note').map((it) => {
+            const index = indices.get(it.eventId) ?? -1;
+            const note = notes[index];
+            if (!note) return null;
+            const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
+            const y = line.y + ((line.hairpins?.length ? 64 : 44) + (lyricEdit.verse + 1) * 24) * k;
+            return <LyricCell key={it.eventId} value={note.lyrics?.[lyricEdit.verse] ?? ''} label={`${name} · 第 ${index + 1} 个音`} style={{ left: it.x + 4 * k + shift, top: y - 15 * k, width: Math.max(22 * k, it.w - shift - 8 * k), height: 30 * k, fontSize: 16 * k }}
+              register={(input) => { if (input) lyricInputs.current.set(it.eventId, input); else lyricInputs.current.delete(it.eventId); }}
+              onCommit={(word) => lyricEdit.onCommit(it.eventId, word)} onInsertGap={() => lyricEdit.onInsertGap(it.eventId)} onDelete={(offset) => index + offset >= 0 && lyricEdit.onDelete(it.eventId, offset)} onExit={lyricEdit.onExit}
+              onMove={(offset, atStart) => {
+                const next = notes[Math.max(0, Math.min(notes.length - 1, index + offset))];
+                const input = next ? lyricInputs.current.get(next.id) : undefined;
+                if (input) { input.focus(); if (atStart) input.setSelectionRange(0, 0); input.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+              }} />;
+          }));
+        })()}
+      </div> : null}
     </div>
   );
 }

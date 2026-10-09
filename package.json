@@ -1,10 +1,12 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "lab:setup": "node scripts/lab-runtime.mjs setup",
+    "lab:serve": "node scripts/lab-runtime.mjs serve",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -17,13 +19,7 @@
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
-    "@spotify/basic-pitch": "^1.0.1",
     "@tauri-apps/api": "^1.6.0",
-    "@tensorflow/tfjs-backend-cpu": "^4.22.0",
-    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
-    "@tensorflow/tfjs-converter": "^4.22.0",
-    "@tensorflow/tfjs-core": "^4.22.0",
-    "@tensorflow/tfjs-layers": "^4.22.0",
     "mediabunny": "^1.61.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

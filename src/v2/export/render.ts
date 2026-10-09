@@ -75,7 +75,43 @@ export function planScorePages(
   const lineY = layout.lines.map((l) => l.y);
   const tTop = showTitle ? titleTop(layout) : null;
   const firstOffset = tTop === null ? 0 : Math.max(0, tTop - bands.first.top);
-  return planPages(lineY, layout.lineHeight, bands.first, bands.rest, firstOffset);
+  if (layout.systems?.length) {
+    if (layout.width > (geo.pageW - geo.marginX * 2) / geo.scale + 1) throw new Error('某个小节超出纸张宽度，请在谱面中减小字号或字间距');
+    const pages: PagePlan[] = [];
+    let from = 0;
+    let offset = firstOffset;
+    let band = bands.first;
+    for (const system of layout.systems) {
+      if (system.from > from && (system.bottom - offset > band.bottom || layout.lines[system.from].pageBreakBefore)) {
+        pages.push({ from, to: system.from, offset });
+        from = system.from;
+        band = bands.rest;
+        offset = system.top - band.top;
+      }
+      if (system.from === from && system.bottom - system.top > band.bottom - band.top) {
+        throw new Error('整组声部超出纸张高度，请在谱面中减小字号、增加每行小节数，或导出分谱');
+      }
+    }
+    pages.push({ from, to: layout.lines.length, offset });
+    return pages;
+  }
+  if (!layout.lines.some((line) => line.pageBreakBefore)) return planPages(lineY, layout.lineHeight, bands.first, bands.rest, firstOffset);
+  const pages: PagePlan[] = [];
+  let from = 0;
+  let offset = firstOffset;
+  let band = bands.first;
+  for (let i = 0; i < layout.lines.length; i++) {
+    const top = lineY[i] - layout.lineHeight / 2;
+    const bottom = lineY[i] + layout.lineHeight / 2;
+    if (i > from && (bottom - offset > band.bottom || layout.lines[i].pageBreakBefore)) {
+      pages.push({ from, to: i, offset });
+      from = i;
+      band = bands.rest;
+      offset = top - band.top;
+    }
+  }
+  pages.push({ from, to: layout.lines.length, offset });
+  return pages;
 }
 
 /** 页脚文字：`歌名-页号/总页数`（用户要的格式） */
@@ -121,6 +157,7 @@ export function paintExportPage(
     {
       height: (pageH - marginTop - marginBottom) / scale + lineSlack(layout),
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
+      showTitleEdit: false,
     },
   );
 
@@ -153,6 +190,7 @@ export function paintVideoFrame(
     /** 版面横向偏移；不给就横向居中 */
     offsetX?: number;
     playhead?: { eventId: string; frac: number } | null;
+    playheads?: { eventId: string; frac: number }[];
     /** 播放指示样式，与界面上「光标 / 高亮条」的设置一致 */
     playStyle?: 'head' | 'band';
     showMeasureNumbers?: boolean;
@@ -171,6 +209,7 @@ export function paintVideoFrame(
     // 底色填充要盖满整屏：paintLayout 只填 layout.width 宽
     height: (canvasH + scrollY) / scale,
     playhead: opts.playhead ?? null,
+    playheads: opts.playheads,
     playStyle: opts.playStyle ?? 'head',
     showMeasureNumbers: opts.showMeasureNumbers ?? true,
   });

@@ -62,10 +62,10 @@ export function a4Geometry(
     ptW,
     ptH,
     scale,
-    marginX: Math.round(pageW * 0.075),
-    marginTop: Math.round(pageH * 0.055),
+    marginX: pageW * 0.075,
+    marginTop: pageH * 0.055,
     // 底部留出页脚（歌名-页号/总页数）
-    marginBottom: Math.round(pageH * 0.085),
+    marginBottom: pageH * 0.085,
   };
 }
 
@@ -85,13 +85,17 @@ export function planExport(
   score: Score,
   geo: PageGeometry,
   showTitle: boolean,
-): { layout: LayoutResult; plans: PagePlan[] } {
-  const layout = exportLayoutFor(score, geo, showTitle);
-  return { layout, plans: planScorePages(layout, geo, showTitle) };
+  visibleLayout?: LayoutResult,
+): { layout: LayoutResult; plans: PagePlan[]; geo: PageGeometry } {
+  const layout = visibleLayout ? { ...visibleLayout, title: showTitle ? visibleLayout.title : null } : exportLayoutFor(score, geo, showTitle);
+  const fitted = visibleLayout ? { ...geo, scale: (geo.pageW - geo.marginX * 2) / layout.width } : geo;
+  return { layout, plans: planScorePages(layout, fitted, showTitle), geo: fitted };
 }
 
 export interface PdfExportOptions {
   score: Score;
+  /** 页面已经排好的谱面，保持每行内容与字形比例，仅适配纸张并分页。 */
+  layout?: LayoutResult;
   /** 用在页脚与文档标题上的歌名 */
   name: string;
   landscape?: boolean;
@@ -113,9 +117,9 @@ export interface PdfExportResult {
 
 /** 导出 PDF：A4 分页 + 每页页脚「歌名-页号/总页数」 */
 export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportResult> {
-  const geo = a4Geometry(opts.landscape ?? false, opts.dpi ?? 150, opts.scale ?? 1.55);
+  const paper = a4Geometry(opts.landscape ?? false, opts.dpi ?? 150, opts.scale ?? 1.55);
   const showTitle = opts.showTitle ?? true;
-  const { layout, plans } = planExport(opts.score, geo, showTitle);
+  const { layout, plans, geo } = planExport(opts.score, paper, showTitle, opts.layout);
   if (plans.length === 0) throw new Error('谱面是空的，没什么可导出的');
 
   const theme = exportTheme(opts.dark ?? false);
@@ -143,7 +147,7 @@ export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportR
   }
   opts.onProgress?.(1, '正在生成 PDF 文件');
   return {
-    bytes: buildPdf(pages, geo.ptW, geo.ptH, { title: opts.name }),
+    bytes: buildPdf(pages, paper.ptW, paper.ptH, { title: opts.name }),
     pageCount: plans.length,
   };
 }

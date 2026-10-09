@@ -11,6 +11,7 @@
 
 import { isLegalTick, LEGAL_TICKS } from './ticks';
 import { isTimed, TICKS_PER_BEAT, type Event, type Score } from './types';
+import { groupTicks, meterAt, validMeter } from './meter';
 
 export type InvariantCode = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'E1' | 'E2';
 
@@ -22,9 +23,20 @@ export interface Violation {
 }
 
 export function validateGroups(score: Score): Violation[] {
+  if (score.parts?.length) {
+    return [{ ...score, parts: undefined }, ...score.parts.map((p) => ({ ...score, events: p.events, groups: p.groups, part: p, parts: undefined }))]
+      .flatMap((s) => validateGroups(s).map((v) => ({ ...v, message: `${s.part?.name ?? '声部 1'}：${v.message}` })));
+  }
   const out: Violation[] = [];
   const index = new Map<string, number>();
   score.events.forEach((e, i) => index.set(e.id, i));
+  for (const [i, e] of score.events.entries()) {
+    if (e.kind === 'barline' && e.beatAfter && !validMeter(e.beatAfter)) out.push({ code: 'E2', message: `拍号不合法：${e.beatAfter}` });
+    if (e.kind === 'note' && e.hairpinTo) {
+      const target = index.get(e.hairpinTo) ?? -1;
+      if (!e.hairpin || target <= i || score.events[target]?.kind !== 'note') out.push({ code: 'I5', message: '渐强/渐弱终点必须是同声部的后续音符' });
+    }
+  }
 
   for (const g of score.groups) {
     if (g.id === '' || g === undefined) continue;
@@ -51,11 +63,12 @@ export function validateGroups(score: Score): Violation[] {
     }
 
     // I2 组不跨拍
-    if (g.totalTicks > TICKS_PER_BEAT) {
+    const maxGroup = score.format === 3 && !g.tuplet ? groupTicks(meterAt(score, index.get(g.memberIds[0]) ?? 0)) : TICKS_PER_BEAT;
+    if (g.totalTicks > maxGroup) {
       out.push({
         code: 'I2',
         groupId: g.id,
-        message: `组总时值 ${g.totalTicks} 超过 1 拍（${TICKS_PER_BEAT} tick）`,
+        message: `组总时值 ${g.totalTicks} 超过拍组上限（${maxGroup} tick）`,
       });
     }
 

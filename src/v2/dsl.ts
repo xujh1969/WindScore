@@ -27,6 +27,10 @@ import {
   withDots,
 } from './ticks';
 import { normalizeKey } from './timeline';
+import { autoGroupBeats } from './edit';
+import { groupTicks, validMeter } from './meter';
+import { applyLyrics, lyricRows } from './lyrics';
+import { assembleParts, namespacePart, partScore, scoreParts } from './parts';
 import type {
   Accidental,
   Articulation,
@@ -125,14 +129,91 @@ export function renderGraceNote(g: GraceNote): string {
 }
 
 export function parseDsl(text: string): ParseResult {
+  const version = /^@format\s+(\S+)\s*$/mi.exec(text)?.[1];
+  if (version && version !== '3') return { score: null, errors: [`不支持的 JPS 语法版本：${version}`] };
+  const modern = version === '3';
+  if (!modern && /^@part\b/mi.test(text)) return { score: null, errors: ['多声部文件需要在谱头写 @format 3'] };
+  if (!modern) return parseSingle(text);
+  const header: string[] = [];
+  const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; lyricNames?: string[]; lines: string[] }[] = [];
+  const errors: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^@part\b/i.test(line)) {
+      const match = /^@part\s+([1-9]\d*)\s+("(?:[^"\\]|\\.)*")\s*$/i.exec(line);
+      if (!match) { errors.push('声部声明应为 @part 1 "主旋律"'); continue; }
+      if (blocks.some((b) => b.id === match[1])) { errors.push(`声部编号 ${match[1]} 重复`); continue; }
+      try { blocks.push({ id: match[1], name: JSON.parse(match[2]) as string, gain: 1, lines: [] }); }
+      catch { errors.push(`声部 ${match[1]} 的名称引号或转义不正确`); }
+    } else if (/^@mix\b/i.test(line)) {
+      const m = /^@mix\s+(0(?:\.\d+)?|1(?:\.0+)?)\s+(on|off)\s+(solo|all)\s*$/i.exec(line);
+      const block = blocks[blocks.length - 1];
+      if (!block || !m) errors.push('声部试听设置应为 @mix 0.8 on all，并放在声部声明之后');
+      else { block.gain = Number(m[1]); block.muted = m[2].toLowerCase() === 'off'; block.solo = m[3].toLowerCase() === 'solo'; }
+    } else if (/^@lyricnames\b/i.test(line)) {
+      const block = blocks[blocks.length - 1];
+      try {
+        const names: unknown = JSON.parse(line.replace(/^@lyricnames\s*/i, ''));
+        if (!block || !Array.isArray(names) || names.length > 6 || names.some((n) => typeof n !== 'string' || !n.trim())) throw new Error();
+        block.lyricNames = names;
+      } catch { errors.push('歌词行名称应为 @lyricNames ["第一段", "第二段"]，放在关联声部声明之后，最多六条'); }
+    } else if (line.startsWith('@')) header.push(raw);
+    else if (blocks.length) blocks[blocks.length - 1].lines.push(raw);
+    else if (line && !line.startsWith('//') && line !== '---') header.push(raw);
+  }
+  if (errors.length) return { score: null, errors };
+  if (!blocks.length) {
+    const result = parseSingle(normalizeModern(text), true);
+    return { ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null };
+  }
+  if (header.some((l) => l.trim() && !l.trim().startsWith('@') && !l.trim().startsWith('//'))) return { score: null, errors: ['多声部文件的音符必须写在 @part 声部声明之后'] };
+  const parsed = blocks.map((b) => ({ block: b, result: parseSingle(normalizeModern([...header, ...b.lines].join('\n')), true) }));
+  for (const { block, result } of parsed) errors.push(...result.errors.map((e) => `${block.name}：${e}`));
+  if (errors.length || parsed.some((p) => !p.result.score)) return { score: null, errors };
+  return { score: assembleParts(parsed[0].result.score!, parsed.map(({ block, result }) => {
+    const { lines: _lines, ...info } = block;
+    // 序列化器对每个声部都写 @mix（on/solo 等），手写文件却常省略这一行——
+    // 在解析端补齐默认值，保证「解析产物结构完整」，round-trip 才能稳定
+    return namespacePart(autoGroupBeats(result.score!), {
+      ...info,
+      muted: info.muted ?? false,
+      solo: info.solo ?? false,
+    });
+  })), errors };
+}
+
+function normalizeModern(text: string): string {
+  return text.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词[1-6]:[^\n]*$)/m).map((segment) => {
+    if (segment.trim().startsWith('@') || segment.trim().startsWith('//') || /^歌词[1-6]:/.test(segment.trim())) return segment;
+    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before: string, note: string, slashes: string) => `${before}${note}/${2 ** slashes.length}`)
+      .replace(/<3:\s*([^<>]+)>/g, (full, body: string) => {
+        const tokens = body.trim().split(/\s+/);
+        if (tokens.length !== 3 || !tokens.every((t) => /^[#b♯♭♮]?[0-7][v^]*[!=>@tkVrfdmwsxqh]*$/.test(t))) return full;
+        return `<3: ${tokens.map((t) => t.replace(/^([#b♯♭♮]?[0-7][v^]*)/, '$1/3')).join(' ')}>`;
+      });
+  }).join('');
+}
+
+function parseSingle(text: string, modern = false): ParseResult {
   const errors: string[] = [];
   const meta: ScoreMeta = { ...DEFAULT_META };
   const body: string[] = [];
+  const lyrics: string[] = [];
+  const lyricNumbers = new Set<number>();
 
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line === '---') continue;
     if (line.startsWith('//')) continue;
+    const lyric = /^歌词([1-6]):\s*(.*)$/.exec(line);
+    if (lyric) {
+      if (!modern) errors.push('歌词需要 @format 3');
+      const verse = Number(lyric[1]) - 1;
+      if (lyricNumbers.has(verse)) errors.push(`歌词 ${verse + 1} 重复`);
+      lyricNumbers.add(verse);
+      lyrics[verse] = lyric[2];
+      continue;
+    }
 
     if (line.startsWith('@')) {
       const sp = line.indexOf(' ');
@@ -211,6 +292,8 @@ export function parseDsl(text: string): ParseResult {
   let pendingTie = false;
   /** 待生效的转调记号（`转1=G`）：绑到它后面的第一个音符上 */
   let pendingKey: string | undefined;
+  let currentBeat = meta.beat;
+  let hairpinStart: { kind: 'cresc' | 'dim'; from: number } | null = null;
 
   /**
    * ( ) 连音线与 < > 拍内组是**两条互不相关的记号**：
@@ -378,6 +461,11 @@ export function parseDsl(text: string): ParseResult {
       if (m && (m.kind === 'note' || m.kind === 'rest')) sum += m.ticks;
     }
     currentGroup.totalTicks = sum;
+    if (modern) {
+      const maxTicks = !currentGroup.tuplet ? groupTicks(currentBeat) : TICKS_PER_BEAT;
+      if (sum > maxTicks) errors.push(`拍组时值超过 ${maxTicks / TICKS_PER_BEAT} 拍；三连音省写必须是 <3: 1 2 3>，其他情况请明确每音时值`);
+      if (currentGroup.tuplet && currentGroup.memberIds.length !== currentGroup.tuplet) errors.push(`${currentGroup.tuplet} 连音需要 ${currentGroup.tuplet} 个成员`);
+    }
     currentGroup = null;
   };
 
@@ -392,7 +480,7 @@ export function parseDsl(text: string): ParseResult {
       : { id, kind: 'barline', style };
     events.push(ev);
     byId.set(id, ev);
-    lastNoteId = null;
+    if (!pendingTie || style === 'final') lastNoteId = null;
   };
 
   /** 反复记号也是小节线：拍内组不得跨过它，延音线也不接续 */
@@ -533,7 +621,27 @@ export function parseDsl(text: string): ParseResult {
       }
 
       if (raw !== '') {
-        if (raw === '|') pushBarline('single');
+        if (/^拍/.test(raw) || raw === '换行' || raw === '分页') {
+          const bar = events[events.length - 1];
+          if (!modern || bar?.kind !== 'barline') errors.push(`${raw} 需要 @format 3，并紧接小节线书写`);
+          else if (raw.startsWith('拍')) {
+            const beat = raw.slice(1);
+            if (!validMeter(beat)) errors.push(`拍号不合法：${beat}`);
+            else { bar.beatAfter = beat; currentBeat = beat; }
+          } else bar.breakAfter = raw === '分页' ? 'page' : 'line';
+        } else if (raw === 'cresc[' || raw === 'dim[') {
+          if (!modern) errors.push('跨音力度范围需要 @format 3');
+          else if (hairpinStart) errors.push('渐强/渐弱范围不能嵌套');
+          else hairpinStart = { kind: raw === 'cresc[' ? 'cresc' : 'dim', from: events.length };
+        } else if (raw === ']hairpin') {
+          if (!hairpinStart) errors.push('力度范围缺少 cresc[ 或 dim[');
+          else {
+            const notes = events.slice(hairpinStart.from).filter((e): e is NoteEvent => e.kind === 'note');
+            if (notes.length < 2) errors.push('跨音力度范围至少需要两个音符');
+            else { notes[0].hairpin = hairpinStart.kind; notes[0].hairpinTo = notes[notes.length - 1].id; }
+            hairpinStart = null;
+          }
+        } else if (raw === '|') pushBarline('single');
         else if (raw === '||') pushBarline('final');
         else if (raw === '|{partial}') pushBarline('single', true);
         else if (raw === "'") {
@@ -602,6 +710,7 @@ export function parseDsl(text: string): ParseResult {
     errors.push('谱面结束时 < 未闭合');
     closeGroup();
   }
+  if (hairpinStart) errors.push('渐强/渐弱范围缺少 ]hairpin 收尾');
   // 房子没有收尾记号：范围由「下一条带房子的线 / 所在反复段的 :|」决定，
   // 展开器会据此判断它是否在反复段内、属于第几遍。
   if (events.length === 0) errors.push('谱面为空');
@@ -642,8 +751,14 @@ export function parseDsl(text: string): ParseResult {
     events.push(...kept);
   }
 
+  let score: Score | null = events.length || modern ? { version: 2, meta, events, groups, ...(modern ? { format: 3 as const } : {}) } : null;
+  if (score && lyricNumbers.size) {
+    const applied = applyLyrics(score, Array.from({ length: lyrics.length }, (_, i) => lyrics[i] ?? ''));
+    score = applied.score;
+    errors.push(...applied.errors);
+  }
   return {
-    score: events.length ? { version: 2, meta, events, groups } : null,
+    score,
     errors,
   };
 }
@@ -692,13 +807,16 @@ export function renderNoteToken(
   }
 }
 
-function renderTimed(ev: TimedEvent, tieOut: boolean): string {
-  if (ev.kind === 'rest') return `0${renderDuration(ev.ticks, ev.dot ?? 0)}`;
+function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDuration = false): string {
+  // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
+  const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
+  const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
+  if (ev.kind === 'rest') return `0${short}`;
   const n = ev;
   const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
   // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致
   const acc = n.accidental ?? '';
-  const body = `${acc}${n.degree}${marks}${renderDuration(n.ticks, n.dot ?? 0)}`;
+  const body = `${acc}${n.degree}${marks}${short}`;
   const arts = (n.articulations ?? [])
     .map((a) =>
       a === 'staccato' ? '!' : a === 'tenuto' ? '=' : a === 'accent' ? '>' : '',
@@ -714,6 +832,19 @@ function renderTimed(ev: TimedEvent, tieOut: boolean): string {
 }
 
 export function serializeDsl(score: Score): string {
+  if (score.part || score.parts?.length) {
+    const parts = scoreParts(score);
+    const header = serializeSingle(partScore(score, parts[0].id)).split('\n\n')[0];
+    return `${header}\n\n${parts.map((part) => {
+      const body = serializeSingle(partScore(score, part.id)).split('\n\n').slice(1).join('\n\n');
+      const names = part.lyricNames?.length ? `\n@lyricNames ${JSON.stringify(part.lyricNames)}` : '';
+      return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${names}\n${body}`;
+    }).join('\n\n')}`;
+  }
+  return serializeSingle(score);
+}
+
+function serializeSingle(score: Score): string {
   const head = [
     `@title ${score.meta.title}`,
     `@key ${score.meta.key}`,
@@ -721,6 +852,7 @@ export function serializeDsl(score: Score): string {
     `@bpm ${score.meta.bpm}`,
     `@patch ${score.meta.patch}`,
   ];
+  if (score.format === 3) head.unshift('@format 3');
   if (score.meta.patchName) head.push(`@patchName ${score.meta.patchName}`);
   // 谱头说明：居中说明行 + 右侧说明（最多 4 行）。没写过的不写，老文件字节不变
   if (score.meta.sub) head.push(`@sub ${score.meta.sub}`);
@@ -735,11 +867,17 @@ export function serializeDsl(score: Score): string {
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
   const nextOf = new Map<string, Event>();
   score.events.forEach((e, i) => {
-    if (i + 1 < score.events.length) nextOf.set(e.id, score.events[i + 1]);
+    let j = i + 1;
+    while (score.events[j]?.kind === 'barline') {
+      const bar = score.events[j] as BarlineEvent;
+      if (bar.style === 'final' || bar.repeat || bar.volta) break;
+      j += 1;
+    }
+    if (j < score.events.length) nextOf.set(e.id, score.events[j]);
   });
 
   /**
-   * 延音线只可能连紧邻的两个音，所以按「下一个事件」判定。
+   * 延音线连接相邻音符，允许中间有小节线（跨小节长音）。
    * 圆滑线可以跨小节线、跨换气记号，因此只看连线本身是否存在，不看是否紧邻。
    */
   const tieOut = (from: Event): boolean => {
@@ -783,12 +921,16 @@ export function serializeDsl(score: Score): string {
 
   const out: string[] = [];
   const emitted = new Set<string>();
+  const hairpinEnds = new Map<string, number>();
+  for (const e of score.events) if (e.kind === 'note' && e.hairpinTo) hairpinEnds.set(e.hairpinTo, (hairpinEnds.get(e.hairpinTo) ?? 0) + 1);
+  const rangeStart = (e: TimedEvent) => e.kind === 'note' && e.hairpin && e.hairpinTo ? `${e.hairpin}[ ` : '';
+  const rangeEnd = (e: TimedEvent) => ' ]hairpin'.repeat(hairpinEnds.get(e.id) ?? 0);
 
   for (const ev of score.events) {
     if (emitted.has(ev.id)) continue;
 
     if ((ev.kind === 'note' || ev.kind === 'rest') && ev.groupId) {
-      const g = score.groups.find((x) => x.id === ev.groupId);
+      const g = score.groups.find((x) => x.id === ev.groupId && !x.auto);
       if (g && g.memberIds[0] === ev.id) {
         const members = g.memberIds
           .map((id) => byId.get(id))
@@ -803,10 +945,10 @@ export function serializeDsl(score: Score): string {
             // 组内成员的力度 / 渐变 / 转调写在成员前面，解析时会绑回那个音
             const dyn =
               m.kind === 'note'
-                ? [m.dynamic, m.hairpin].filter(Boolean).join(' ')
+                ? [m.dynamic, m.hairpinTo ? undefined : m.hairpin].filter(Boolean).join(' ')
                 : '';
             const kc = m.kind === 'note' && m.keyChange ? `转${m.keyChange} ` : '';
-            return `${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m))}${post}`;
+            return `${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet === 3)}${post}${rangeEnd(m)}`;
           })
           .join(' ');
 
@@ -814,7 +956,7 @@ export function serializeDsl(score: Score): string {
         members.forEach((m) => emitted.add(m.id));
         continue;
       }
-      continue; // 非首成员，已随组输出
+      if (g) continue; // 显式组的非首成员已随组输出；自动组仍逐音回写。
     }
 
     switch (ev.kind) {
@@ -826,10 +968,10 @@ export function serializeDsl(score: Score): string {
         // 跟音符绑定的力度 / 渐变 / 转调写在音符前面，解析时绑回那个音
         const dyn =
           ev.kind === 'note'
-            ? [ev.dynamic, ev.hairpin].filter(Boolean).join(' ')
+            ? [ev.dynamic, ev.hairpinTo ? undefined : ev.hairpin].filter(Boolean).join(' ')
             : '';
         const kc = ev.kind === 'note' && ev.keyChange ? `转${ev.keyChange} ` : '';
-        out.push(`${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev))}${post}`);
+        out.push(`${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev), score.format === 3)}${post}${rangeEnd(ev)}`);
         emitted.add(ev.id);
         break;
       }
@@ -842,6 +984,8 @@ export function serializeDsl(score: Score): string {
         else if (ev.partial) tok = '|{partial}';
         else tok = '|';
         out.push(tok);
+        if (ev.beatAfter) out.push(`拍${ev.beatAfter}`);
+        if (ev.breakAfter) out.push(ev.breakAfter === 'page' ? '分页' : '换行');
         // 房子写在这条线后面：`| [1] 3 3 | [2] 4 4 :|`；开放右端写不闭合的 `[1`
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(',')}` : `[${ev.volta.join(',')}]`);
         emitted.add(ev.id);
@@ -865,5 +1009,6 @@ export function serializeDsl(score: Score): string {
     }
   }
 
-  return `${head.join('\n')}\n\n${out.join(' ')}\n`;
+  const rows = lyricRows(score).map((row, i) => `歌词${i + 1}: ${row}`);
+  return `${head.join('\n')}\n\n${out.join(' ')}\n${rows.length ? `${rows.join('\n')}\n` : ''}`;
 }

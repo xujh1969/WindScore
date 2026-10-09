@@ -7,6 +7,7 @@
 
 import { TICKS_PER_BEAT } from './ticks';
 import { measureAt } from './expand';
+import { partScore, scoreParts } from './parts';
 import type { Accidental, Event as ScoreEvent, NoteEvent, Score } from './types';
 
 /** 音级 1..7 相对主音的半音数（自然大调音阶） */
@@ -22,6 +23,8 @@ export interface TimelineEntry {
   midi: number | null;
   /** 这条是倚音（挂在主音上的装饰音），不是主音本身 */
   grace?: boolean;
+  partId?: string;
+  gain?: number;
 }
 
 /**
@@ -90,6 +93,16 @@ export function toMidi(
 export type TimelineIdFlavor = 'source' | 'own';
 
 export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {}): TimelineEntry[] {
+  if (score.part || score.parts?.length) {
+    const parts = scoreParts(score);
+    const solo = parts.some((p) => p.solo);
+    return parts.flatMap((part) => {
+      const single = partScore(score, part.id);
+      const { part: _part, ...plain } = single;
+      const gain = part.muted || (solo && !part.solo) ? 0 : part.gain / Math.max(1, Math.sqrt(parts.length));
+      return buildTimeline(plain, opts).map((e) => ({ ...e, partId: part.id, gain }));
+    }).sort((a, b) => a.startTick - b.startTick || a.endTick - b.endTick);
+  }
   const out: TimelineEntry[] = [];
   const byId = new Map(score.events.map((e) => [e.id, e]));
   /** 条目 id：口径由 opts.ids 决定 */
@@ -191,11 +204,11 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
     tick += ev.ticks;
   }
 
-  return out;
+  return out.sort((a, b) => a.startTick - b.startTick);
 }
 
 export function timelineTicks(tl: TimelineEntry[]): number {
-  return tl.length ? tl[tl.length - 1].endTick : 0;
+  return tl.reduce((end, e) => Math.max(end, e.endTick), 0);
 }
 
 /**
@@ -291,5 +304,14 @@ export function activeMainAt(
   const span = main.endTick - main.startTick;
   const p = span > 0 ? (tick - main.startTick) / span : 0;
   return { entry: main, progress: Math.max(0, Math.min(1, p)) };
+}
+
+/** 同时发声的声部各自拥有一个播放头，静音不会隐藏其谱面进度。 */
+export function activeHeadsAt(tl: TimelineEntry[], tick: number): { eventId: string; frac: number }[] {
+  const ids = new Set(tl.map((e) => e.partId ?? ''));
+  return [...ids].flatMap((id) => {
+    const active = activeMainAt(tl.filter((e) => (e.partId ?? '') === id), tick);
+    return active ? [{ eventId: active.entry.eventId, frac: active.progress }] : [];
+  });
 }
 

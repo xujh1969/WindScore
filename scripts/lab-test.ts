@@ -6,6 +6,11 @@
 
 import { detectKey, keyToTonic, measuresToLines, midiToSyllable, noteToken, quantizeNotes, reduceToMelody, type RawNote } from '../src/v2/lab/quantize';
 import { buildDsl } from '../src/v2/lab/toDsl';
+import { parseDsl, serializeDsl } from '../src/v2/dsl';
+import { buildTimeline } from '../src/v2/timeline';
+import { validateGroups } from '../src/v2/validate';
+import { rhythmSource } from '../src/v2/lab/rhythm';
+import { pcmWav } from '../src/v2/lab/transcribe';
 
 let failed = 0;
 let total = 0;
@@ -123,6 +128,47 @@ console.log('[听音成谱 · 小节与整谱]');
   check('头部含 @sub/@note', text.includes('@bpm 120') && text.includes('@note 人声主旋律（AI 转录）'));
   check('正文按 4 小节一行', !text.split('\n\n')[1].includes('\n'));
   // 生成的谱必须能被自家解析器吃回去（往返闭环交给 v2-test 的 parseDsl 套件）
+}
+
+console.log('[听音成谱 · 时值守恒与跨小节]');
+{
+  const cases = [
+    { name: '长音不追加假休止', notes: [{ startTick: 0, durTicks: 96, midi: 60 }], end: 96 },
+    { name: '拍中起音保留前半拍休止', notes: [{ startTick: 24, durTicks: 24, midi: 62 }], end: 48 },
+    { name: '跨小节长音延续', notes: [{ startTick: 168, durTicks: 72, midi: 64 }], end: 240 },
+    { name: '附点八分精确保留', notes: [{ startTick: 0, durTicks: 36, midi: 65 }], end: 36 },
+    { name: '唱名八度与原始 MIDI 一致', notes: [{ startTick: 0, durTicks: 48, midi: 66 }], end: 48 },
+  ];
+  for (const c of cases) {
+    const text = buildDsl({ title: c.name, key: '1=G', beat: '4/4', bpm: 120, notes: c.notes });
+    const parsed = parseDsl(text);
+    check(`${c.name}：DSL 可解析`, !!parsed.score && parsed.errors.length === 0, parsed.errors.join(';'));
+    if (!parsed.score) continue;
+    check(`${c.name}：拍组合法`, validateGroups(parsed.score).length === 0);
+    const tl = buildTimeline(parsed.score);
+    const sounded = tl.filter((n) => n.midi !== null);
+    check(`${c.name}：音高与时间准确`, sounded.length === 1 && sounded[0].midi === c.notes[0].midi && sounded[0].startTick === c.notes[0].startTick && sounded[0].endTick === c.end, JSON.stringify(sounded));
+    const roundtrip = parseDsl(serializeDsl(parsed.score));
+    check(`${c.name}：再次保存仍保留长音`, !!roundtrip.score && JSON.stringify(buildTimeline(roundtrip.score).map((n) => [n.startTick, n.endTick, n.midi])) === JSON.stringify(tl.map((n) => [n.startTick, n.endTick, n.midi])));
+    let ticks = 0;
+    for (const e of parsed.score.events) {
+      if (e.kind === 'note' || e.kind === 'rest') ticks += e.ticks;
+      if (e.kind === 'barline') { check(`${c.name}：小节满拍`, ticks === 192, String(ticks)); ticks = 0; }
+    }
+  }
+  const compound = parseDsl(buildDsl({ title: '6/8', key: '1=C', beat: '6/8', bpm: 120, notes: [{ startTick: 0, durTicks: 144, midi: 60 }] }));
+  check('6/8 小节长为 144 tick', !!compound.score && compound.score.events.reduce((sum, e) => sum + ('ticks' in e ? e.ticks : 0), 0) === 144);
+  const clipped = quantizeNotes([{ start: 0, end: .1, midi: 60, amp: 1 }, { start: .25, end: .75, midi: 62, amp: 1 }], 120, .25);
+  check('小节起点之前已结束的音被移除', clipped.length === 1 && clipped[0].midi === 62);
+  const overlapping = quantizeNotes([{ start: 0, end: 1, midi: 60, amp: .1 }, { start: .5, end: 1, midi: 62, amp: 1 }], 120, 0);
+  check('不按音量抢占音符；后起音截断前音', overlapping.length === 2 && overlapping[0].durTicks === 48);
+  const files = { vocal: {} as File, music: {} as File, drums: {} as File };
+  check('独立鼓轨优先分析节奏', rhythmSource(files) === 'drums');
+  check('两分轨使用完整伴奏作节奏参考', rhythmSource({ vocal: files.vocal, music: files.music }) === 'music');
+  check('仅人声也能提供节奏参考', rhythmSource({ vocal: files.vocal }) === 'vocal');
+  check('没有音频不分析', rhythmSource({}) === null);
+  const bytes = new DataView(await pcmWav(new Float32Array([-1, 0, 1])).arrayBuffer());
+  check('PCM WAV 采样率与采样数据正确', bytes.getUint32(24, true) === 22050 && bytes.getInt16(44, true) === -32768 && bytes.getInt16(48, true) === 32767);
 }
 
 console.log(failed === 0 ? `\n听音成谱测试全部通过（${total} 项）` : `\n听音成谱测试失败 ${failed}/${total} 项`);

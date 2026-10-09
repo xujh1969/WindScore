@@ -84,7 +84,8 @@ export function lineTickRanges(
     endOf.set(e.eventId, Math.max(endOf.get(e.eventId) ?? 0, e.endTick));
   }
   const out: LineTickRange[] = [];
-  for (const ln of layout.lines) {
+  const rows = layout.systems?.map((system) => ({ y: system.top + layout.lineHeight / 2, items: layout.lines.slice(system.from, system.to).flatMap((line) => line.items) })) ?? layout.lines;
+  for (const ln of rows) {
     let from = Infinity;
     let to = -Infinity;
     for (const it of ln.items) {

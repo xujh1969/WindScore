@@ -5,6 +5,14 @@ import songbie from '../../scores/songbie.jps?raw';
 import huanlesong from '../../scores/huanlesong.jps?raw';
 import qinghuaci from '../../scores/qinghuaci.jps?raw';
 import xiaoxingxing from '../../scores/xiaoxingxing.jps?raw';
+import ensembleDemo from '../../scores/ensemble-demo.jps?raw';
+import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
+import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
+import quartetDemo from '../../scores/quartet-demo.jps?raw';
+import { meterAt } from '../meter';
+import type { LayoutOptions, LayoutResult } from '../layout';
+import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput } from '../lyrics';
+import { HelpDialog } from './HelpCenter';
 import {
   applyTier as applyTierOp,
   autoGroupBeats,
@@ -18,6 +26,8 @@ import {
   setGraceSlot as setGraceSlotOp,
   setKeyChange,
   setHairpin,
+  setHairpinRange,
+  setBarNotation,
   extendPrev,
   insertNote,
   insertRest,
@@ -83,7 +93,7 @@ import {
   tickAtEvent,
   timelineTicks,
 } from '../timeline';
-import type { Accidental, BarlineEvent, Degree, Event, GraceNote, JumpMark, Score } from '../types';
+import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, GraceNote, JumpMark, Score } from '../types';
 import { constantTempo, curveFromAnchors, tempoFromAlign, tickToSec, type TempoMap } from '../tempo';
 import { detectVocalEntry, estimateTempoOfBuffer, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { AudioPreview } from '../audio';
@@ -100,6 +110,8 @@ import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
 import { buildPack, packFileName } from './packBundle';
 import type { LibraryItem } from './libraryStore';
+import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
+import { PartsPanel } from './PartsPanel';
 
 /** 变音记号按钮：本位（无记号）在前，其余按升降序 */
 const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'b', '♮'];
@@ -248,6 +260,10 @@ const BUILTIN: { name: string; text: string }[] = [
   { name: '欢乐颂', text: huanlesong },
   { name: '小星星', text: xiaoxingxing },
   { name: '青花瓷', text: qinghuaci },
+  { name: '欢乐颂（二重奏示例）', text: ensembleDemo },
+  { name: '拍号与力度范围（重奏示例）', text: notationPhase2Demo },
+  { name: '多段歌词（重奏示例）', text: lyricsDemo },
+  { name: '小星星（四声部示例）', text: quartetDemo },
 ];
 
 /** 播放页观看偏好的本地存取（字号 / 字距；null = 跟随谱面） */
@@ -281,6 +297,7 @@ type CursorMode = 'over' | 'insert';
 
 interface Snap {
   score: Score;
+  partId?: string;
   /** 缝隙下标：0 .. events.length */
   cursor: number;
   /** 选区锚点，null 表示无选区 */
@@ -323,12 +340,13 @@ function beatsPerMeasure(beat: string): number {
 /*
  * 应用入口（HTML 的 body[data-entry]）：
  *   app     — 内嵌模式（各段切换都在）
- *   editor  — 动态谱编辑：记谱 + 对轨（页内切换）
+ *   editor  — 简谱编辑：记谱
+ *   align   — 动态谱生成：配伴奏与对齐
  *   library — 曲库管理单功能页（可编辑曲库）
  *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
- * 单功能页都显示左上角「返回首页」；对轨不再单独成页，它是编辑页的一个模式。
+ * 编辑、生成与曲库单功能页显示左上角「返回首页」。
  */
-export type Entry = 'app' | 'editor' | 'library' | 'play' | 'lab';
+export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'lab';
 
 export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   /** 深浅主题。初始值跟系统，之后由工具栏手动切换，不再随系统变 */
@@ -355,6 +373,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [draft, setDraft] = useState('');
   /** 整体视图：要么看简谱，要么看源码。源码不再塞在属性栏里。 */
   const [view, setView] = useState<'score' | 'source'>('score');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [lyricSelection, setLyricSelection] = useState<{ partId: string; verse: number; session: number } | null>(null);
+  const [totalView, setTotalView] = useState(true);
   /**
    * 顶层模式：
    *   「记谱」写谱（新建 / 打开 / 保存）
@@ -368,7 +389,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [mode, setMode] = useState<'score' | 'align' | 'library' | 'play' | 'discover'>(() => {
     if (entry === 'play') return 'discover'; // 独立入口：首屏是动态谱首页，点歌才进播放
     if (entry !== 'app') {
-      return entry === 'library' ? 'library' : 'score';
+      return entry === 'library' ? 'library' : entry === 'align' ? 'align' : 'score';
     }
     const saved = localStorage.getItem('ws-mode');
     return saved === 'align' || saved === 'library' || saved === 'play' ? saved : 'score';
@@ -385,6 +406,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, [mode, view]);
   /** 复制粘贴的剪贴板：选区事件的深拷贝（粘贴时由 pasteEvents 重新生成 id） */
   const [clip, setClip] = useState<Event[]>([]);
+  const [clipGroups, setClipGroups] = useState<BeatGroup[]>([]);
   /**
    * 播放指示方式：
    *   head = 跟着当前音跳的色块 + 平滑横移的竖线（旧方式）
@@ -811,15 +833,20 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 调用点不用重复抄 cursor / anchor / mode，也就不容易把光标状态写丢。
    */
   const commit = useCallback(
-    (next: Partial<Snap>) => {
+    (next: Partial<Snap>, whole = false) => {
       setPast((p) => [...p, snap].slice(-200));
       setFuture([]);
       setSnap((s) => {
         const merged = { ...s, ...next };
+        if (merged.score !== s.score && merged.score.format !== 3) merged.score = { ...merged.score, format: 3 };
         // 时值一变就重新推导拍内组：连续音加起来正好 1 拍时自动拉通减时线。
         // autoGroupBeats 只增不减且幂等，所以每次提交都跑是安全的。
-        const score =
-          merged.score === s.score ? merged.score : autoGroupBeats(merged.score);
+        const score = merged.score === s.score ? s.score : whole
+          ? merged.score.part ? assembleParts(merged.score, scoreParts(merged.score).map((p) => {
+              const projected = autoGroupBeats(partScore(merged.score, p.id));
+              return { ...p, events: projected.events, groups: projected.groups };
+            })) : autoGroupBeats(merged.score)
+          : replacePart(s.score, autoGroupBeats(merged.score));
         return { ...merged, score, rev: s.rev + 1 };
       });
     },
@@ -831,8 +858,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     (name: string, text: string, file: string | null = null) => {
       const res = parseDsl(text);
       if (!res.score) return;
+      setLyricSelection(null);
       setSnap({
-        score: res.score,
+        score: { ...res.score, format: 3 },
         cursor: res.score.events.length,
         anchor: null,
         mode: 'insert',
@@ -874,8 +902,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         setMsg(res.errors.length ? `打开失败：${res.errors[0]}` : '解析失败');
         return;
       }
+      setLyricSelection(null);
       setSnap({
-        score: res.score,
+        score: { ...res.score, format: 3 },
         cursor: res.score.events.length,
         anchor: null,
         mode: 'insert',
@@ -904,6 +933,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   );
 
   const onNew = useCallback(() => {
+    setLyricSelection(null);
     setSnap({ score: emptyScore(), cursor: 0, anchor: null, mode: 'insert', rev: 0 });
     setPast([]);
     setFuture([]);
@@ -965,7 +995,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const packCurrent = useCallback(async () => {
     const cur = snap.score;
-    const text = cur.events.length ? serializeDsl(cur) : '';
+    const text = scoreParts(cur).some((p) => p.events.length) ? serializeDsl(cur) : '';
     if (!text) {
       setMsg('打包：当前没有谱面内容');
       return;
@@ -1020,19 +1050,27 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   );
   const editLibraryItem = useCallback(
     (item: LibraryItem) => {
-      loadLibraryItem(item, 'align');
+      if (entry === 'app') { loadLibraryItem(item, 'align'); return; }
+      const res = fromText(item.text, item.name);
+      if (!res.score) { setMsg(`${item.name} 解析失败，请先修正谱面`); return; }
+      saveSession({ text: item.text, name: res.name, path: null });
+      window.location.href = './align.html';
     },
-    [loadLibraryItem],
+    [entry, loadLibraryItem],
   );
 
-  const score = snap.score;
+  const documentScore = snap.score;
+  const activePartId = scoreParts(documentScore).find((p) => p.id === snap.partId)?.id ?? scoreParts(documentScore)[0].id;
+  const score = useMemo(() => partScore(documentScore, activePartId), [documentScore, activePartId]);
+  const lyricVerse = lyricSelection?.partId === activePartId && lyricSelection.verse < lyricTrackNames(score).length ? lyricSelection.verse : null;
+  const canEditConductor = !documentScore.part || activePartId === documentScore.part.id;
   /** 播放页生效的字号 / 字距：观看偏好优先，没设过就跟随谱面自带设置 */
   const effFont = playFont ?? (score.meta.fontSize ?? 21);
   const effGap = playGap ?? (score.meta.letterSpacing ?? 0);
   /** 有未保存的改动 */
   const dirty = snap.rev !== savedRev;
-  const serialized = useMemo(() => (score.events.length ? serializeDsl(score) : ''), [score]);
-  const violations = useMemo(() => validateGroups(score), [score]);
+  const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
+  const violations = useMemo(() => validateGroups(documentScore), [documentScore]);
 
   const audioTempo = useMemo<TempoMap | null>(() => {
     // ≥2 个锚点 → 分段线性变速曲线（前奏长度不一致就靠它拉伸对齐）
@@ -1147,7 +1185,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const alignHere = useCallback(() => {
     if (wavePos === null || !stems.length) return;
-    const onsets = scoreNoteOnsets(snap.score);
+    const onsets = scoreNoteOnsets(score);
     if (onsets.length < 6) {
       setAudioMsg('谱面音符太少（<6），请展开「高级参数」用锚点对齐。');
       return;
@@ -1155,9 +1193,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 参照音符：谱面里选中的那颗；没选就是第一颗音（此处自行计算，
     // 因为 focusScoreBeat 声明在本函数之后）
     const selIdx = snap.mode === 'over' ? snap.cursor - 1 : -1;
-    const selEv = selIdx >= 0 ? snap.score.events[selIdx] : undefined;
+    const selEv = selIdx >= 0 ? score.events[selIdx] : undefined;
     const usedSelection = !!selEv && isTimed(selEv);
-    const refBeat = usedSelection ? tickAtEvent(snap.score, selIdx) / TICKS_PER_BEAT : onsets[0];
+    const refBeat = usedSelection ? tickAtEvent(score, selIdx) / TICKS_PER_BEAT : onsets[0];
     const clickedBeat = (wavePos - tempoDraft.phaseSec) / (60 / tempoDraft.bpm);
     const origin = Math.round((clickedBeat - refBeat) * 100) / 100;
     setPivotBeat(refBeat);
@@ -1169,7 +1207,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         (usedSelection ? '' : '（没选音符，默认对了谱面第一颗音）') +
         '这颗音之前的部分自动反推；之后跟不跟得住看速度档。锚点已清空。',
     );
-  }, [wavePos, stems, snap, tempoDraft]);
+  }, [wavePos, stems, snap, tempoDraft, score]);
 
   const applyImpliedBpm = useCallback(() => {
     if (impliedBpm === null) return;
@@ -1201,8 +1239,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 编辑永远作用在带反复记号的原谱上；展开产物是派生的、只读的。
    * 结构有错（配对不上 / 房子越界）或谱面本来没有反复记号时，退回原谱。
    */
-  const expansion = useMemo(() => expandScore(score), [score]);
-  const playScore = expansion.score ?? score;
+  const expansion = useMemo(() => expandScore(documentScore), [documentScore]);
+  const playScore = expansion.score ?? documentScore;
   const timeline = useMemo(() => buildTimeline(playScore), [playScore]);
 
   /**
@@ -1213,6 +1251,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const [expandViewPick, setExpandViewPick] = useState<boolean | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const visibleLayout = useRef<{ layout: LayoutResult; options: LayoutOptions } | null>(null);
+  const rememberLayout = useCallback((layout: LayoutResult, options: LayoutOptions) => { visibleLayout.current = { layout, options }; }, []);
 
   /** 反复相关的诊断：阻断错误与提示一并挂到工具栏的「谱面校验」里 */
   const repeatDiag = useMemo(
@@ -1237,11 +1277,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     let src = Math.max(0, Math.min(at, score.events.length));
     while (src < score.events.length && !isTimed(score.events[src])) src += 1;
     const srcId = score.events[src]?.id;
-    const from = tickAtEvent(playScore, srcId ? (expansion.firstIndex.get(srcId) ?? 0) : 0);
+    const from = tickAtEvent(partScore(playScore, activePartId), srcId ? (expansion.firstIndex.get(srcId) ?? src) : 0);
     return from >= total ? 0 : from;
-  }, [timeline, playScore, score, expansion, snap.mode, snap.cursor]);
+  }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId]);
 
   const startPlayNow = useCallback(() => {
+    if (documentScore.parts?.length && expansion.errors.length) { setMsg(`重奏暂不能播放：${expansion.errors[0]}`); return; }
     if (timeline.length === 0) return;
     previewRef.current.stop(); // 试听与谱面播放互斥
     setPreviewing(false);
@@ -1270,7 +1311,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.seek(playFromTick / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors]);
 
   // 恢复中的等待机制：restoring 由恢复流程的 finally 落地，这里把等待者叫醒
   const restoringRef = useRef(restoring);
@@ -1360,7 +1401,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     setPlaying(false);
   }, []);
 
-  const beatTicks = Math.round(beatsPerMeasure(score.meta.beat) * TICKS_PER_BEAT);
+  const beatTicks = Math.round(beatsPerMeasure(meterAt(score, snap.cursor)) * TICKS_PER_BEAT);
   /** 单选：档位就是「这个音的时值」，长音（3/4 拍）也要能改回去 */
   const tiers = useMemo(() => durationTiers(beatTicks), [beatTicks]);
 
@@ -1637,20 +1678,21 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // 改音符和改曲目信息互斥，见 songInfoOpen 的注释
       setSongInfoOpen(false);
       // 绑完就退出配对：否则你后面只是想看看别的线，点一下就又绑一个
-      if (!b && wavePos !== null && bindPick(a.index)) {
+      if (!b && (!a.partId || a.partId === activePartId) && wavePos !== null && bindPick(a.index)) {
         setWavePos(null);
         setWaveBeat(null);
       }
       setSnap((s) => {
+        if (a.partId && b?.partId && a.partId !== b.partId) return s;
         if (b && b.index !== a.index) {
           const lo = Math.min(a.index, b.index);
           const hi = Math.max(a.index, b.index);
-          return { ...s, cursor: hi + 1, anchor: lo, mode: 'insert' };
+          return { ...s, partId: a.partId ?? activePartId, cursor: hi + 1, anchor: lo, mode: 'insert' };
         }
-        return { ...s, cursor: a.cursor, anchor: null, mode: a.mode };
+        return { ...s, partId: a.partId ?? activePartId, cursor: a.cursor, anchor: null, mode: a.mode };
       });
     },
-    [bindPick, wavePos],
+    [bindPick, wavePos, activePartId],
   );
 
   /**
@@ -1783,8 +1825,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 只在谱里有反复 / 跳转时才提示。
    */
   const playOrder = useMemo(
-    () => playOrderMeasures(score.events, playScore.events),
-    [playScore, score],
+    () => playOrderMeasures(documentScore.events, playScore.events),
+    [playScore, documentScore],
   );
 
   /** 这首有没有反复 / 跳转结构——没有的话「展开反复」是空开关，直接置灰 */
@@ -1792,7 +1834,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const expandView = expandViewPick ?? canExpandView;
   const setExpandView = setExpandViewPick;
   /** 屏幕上是哪一份谱：展开 = 拉平后的线性谱，原谱 = 带记号的原样 */
-  const viewScore = expandView ? playScore : score;
+  const fullViewScore = expandView ? playScore : documentScore;
+  const viewScore = totalView ? fullViewScore : partScore(fullViewScore, activePartId);
 
   /**
    * **显示用**的时间线：id 口径必须和屏幕上的谱面一致。
@@ -1807,6 +1850,26 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     () => (expandView ? buildTimeline(playScore, { ids: 'own' }) : timeline),
     [playScore, timeline, expandView],
   );
+  const selectPart = (id: string) => {
+    setLyricSelection(null);
+    setPending(null);
+    setSnap((s) => ({ ...s, partId: id, cursor: 0, anchor: null, mode: 'insert' }));
+  };
+  const changeParts = (next: Score, id?: string, liveMix = false) => {
+    if (!liveMix) stopPlay();
+    setPending(null);
+    commit({ score: next, partId: id ?? activePartId, ...(id ? { cursor: 0, anchor: null, mode: 'insert' as const } : {}) }, true);
+    if (liveMix) {
+      const expanded = expandScore(next);
+      playerRef.current.setPartGains(buildTimeline(expanded.score ?? next));
+    }
+  };
+  const selectLyrics = (partId: string, verse: number | null) => {
+    stopPlay();
+    setPending(null);
+    setSnap((s) => ({ ...s, partId, anchor: null, ...(partId !== activePartId ? { cursor: 0, mode: 'insert' as const } : {}) }));
+    setLyricSelection((previous) => verse === null ? null : { partId, verse, session: (previous?.session ?? 0) + 1 });
+  };
 
   /** 演奏顺序里每一小节的起始 tick（`[小节1, 小节2, …]`）：录片段时按小节号换 tick */
   const measureTicks = useMemo(() => {
@@ -1863,6 +1926,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (lyricVerse !== null) {
+        if (e.key === 'Escape') setLyricSelection(null);
+        if (!(e.ctrlKey || e.metaKey) || !['z', 'y', 's'].includes(e.key.toLowerCase())) return;
+      }
       // Esc 退出「对轨配对」（波形上定过点、等你点小节线）：
       // 定点错了不想绑就按它，光标与靶标立刻收掉，试听也一并停
       // （绑定成功时同样会停，见 commitAnchor）。放在 align 的早退之前——
@@ -1900,12 +1967,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           if (range) {
             e.preventDefault();
             setClip(JSON.parse(JSON.stringify(score.events.slice(range[0], range[1]))) as Event[]);
+            setClipGroups(JSON.parse(JSON.stringify(score.groups)) as BeatGroup[]);
             setMsg(`已复制 ${range[1] - range[0]} 个事件`);
           }
         } else if (k === 'v') {
           if (clip.length > 0) {
             e.preventDefault();
-            const r = pasteEvents(score, snap.cursor, clip);
+            const r = pasteEvents(score, snap.cursor, clip, clipGroups);
             if (r) {
               // 粘贴后**选中刚贴上的段落**：贴进来的内容和原音符一模一样，
               // 不高亮的话用户根本发现不了它贴在了哪
@@ -2065,7 +2133,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, mode, wavePos]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
@@ -2096,7 +2164,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 播放中改谱必须先停：播放循环每帧重绘 + 强制滚动，
     // 谱面在它底下被换掉，新旧两套布局来回拉扯就是「画面一直抖」
     stopPlay();
-    commit({ score: res.score, cursor: res.score.events.length, anchor: null });
+    commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
   };
 
   /**
@@ -2110,7 +2178,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         const res = parseDsl(draft);
         if (res.score) {
           stopPlay();
-          commit({ score: res.score, cursor: res.score.events.length, anchor: null });
+          commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
         } else {
           setMsg(res.errors.length ? res.errors[0] : '解析失败');
           return;
@@ -2142,23 +2210,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 在里面写 mode === 'library' 会被当成永远不成立（也就点不回曲库）。
    * 单功能页不显示它：这一屏只干一件事，跳去别的屏反而是干扰。
    */
-  /*
-    模式开关：动态谱编辑页（editor.html）只在**记谱 / 对轨**之间切。
-    曲库不在这里——它有独立页面（library.html，首页的「曲库编辑」进），
-    两个地方都放会把「管一批谱」和「写一首谱」搅在一起。
-  */
-  const modeSwitch =
-    entry === 'editor' ? (
-      <div className="v2-view-switch" title="记谱：写谱 · 对轨：配伴奏并对齐节奏">
-        <button className={mode === 'score' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setMode('score')}>
-          记谱
-        </button>
-        <button className={mode === 'align' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setMode('align')}>
-          对轨
-        </button>
-      </div>
-    ) : null;
-
   return (
     <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry={entry}>
       {/* play.html 是独立入口：整行顶栏（含返回首页、品牌、文件状态、校验、深色）不显示，播放页有自己的工具条。要切深浅色去记谱页，那里切过一次这里就沿用。 */}
@@ -2170,18 +2221,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             play.html 的顶栏整行不显示（独立入口，播放页自带工具条），
             它的返回入口做在播放界面里，见 DiscoverScreen.homeHref 与播放工具条。
           */}
-          {entry === 'editor' || entry === 'library' ? (
+          {entry === 'editor' || entry === 'align' || entry === 'library' ? (
             <a className="v2-home-btn" href="./index.html" title="回到首页">
               ← 返回首页
             </a>
           ) : null}
           <span className="v2-brand-name">
-            WindScore <span className="v2-brand-tag">写谱器</span>
+            WindScore <span className="v2-brand-tag">{entry === 'align' ? '动态谱生成' : entry === 'editor' ? '简谱编辑' : '写谱器'}</span>
           </span>
         </div>
-        {/* 模式开关放顶栏：曲库 / 播放模式下编辑器整块不渲染，开关必须常驻可见，
-            否则进了曲库就找不到回记谱 / 对轨的路（单功能页不显示） */}
-        {modeSwitch}
         {/* 曲目信息只在谱面标题块 + 曲目信息面板出现，工具栏不再重复一遍 */}
         <div className="v2-file" title={path ?? '当前内容还没落到文件里'}>
           <span className={dirty ? 'v2-file-badge is-dirty' : 'v2-file-badge'}>
@@ -2232,6 +2280,24 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <button className="v2-btn" onClick={onSave} disabled={score.events.length === 0}>
                 保存
               </button>
+              <button
+                className="v2-btn"
+                title="导出当前曲谱为 PDF，可选择总谱或分谱"
+                onClick={() => {
+                  if (view === 'source' && draft !== serialized) {
+                    const res = parseDsl(draft);
+                    if (!res.score || res.errors.length) {
+                      setMsg(res.errors[0] || '解析失败，请先修正源码再导出');
+                      return;
+                    }
+                    stopPlay();
+                    commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
+                  }
+                  setExportOpen(true);
+                }}
+              >
+                导出 PDF
+              </button>
               <button className="v2-btn" onClick={undo} disabled={!past.length}>
                 撤销
               </button>
@@ -2255,6 +2321,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </button>
             </>
           ) : null}
+          {mode !== 'play' && mode !== 'discover' ? <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button> : null}
           {/* 文件选择框两种模式共用（浏览器预览时没有 Tauri 对话框，靠它兜底） */}
           <input ref={fileRef} type="file" accept=".jps,.txt" hidden onChange={onFilePicked} />
         </div>
@@ -2418,6 +2485,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             >
               导出
             </button>
+            <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button>
           </div>
           {/*
             分轨开关：打包进去几条就能挑几条放。人声常常已经录在伴奏里，
@@ -2452,6 +2520,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             </div>
           ) : null}
 
+          {documentScore.part ? <PartsPanel score={documentScore} activeId={activePartId} total={totalView} readOnly onSelect={selectPart} onTotal={setTotalView} onChange={changeParts} /> : null}
           <div className="v2-play-stage">
             <ScoreCanvas
               score={viewScore}
@@ -2472,6 +2541,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               onEnded={onPlayEnded}
               showCaret={false}
               focusId={null}
+              onLayout={rememberLayout}
             />
           </div>
         </div>
@@ -2497,7 +2567,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       {exportOpen ? (
         <ExportDialog
           songName={score.meta.title || active}
-          score={viewScore}
+          score={mode === 'play' ? fullViewScore : documentScore}
+          visibleLayout={mode === 'play' || view === 'score' ? visibleLayout.current?.layout : undefined}
+          visibleOptions={visibleLayout.current?.options}
+          initialPartId={!totalView && documentScore.part ? activePartId : ''}
           dark={dark}
           onClose={() => setExportOpen(false)}
           onBegin={() => {
@@ -2516,6 +2589,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           }}
         />
       ) : null}
+
+      {helpOpen ? <HelpDialog dark={dark} initialTopic={mode === 'score' ? view === 'source' ? 'jps' : 'editing' : mode === 'align' ? 'alignment' : mode === 'library' ? 'library' : 'playback'} onClose={() => setHelpOpen(false)} /> : null}
 
       {/*
         编辑器主体只在「记谱 / 对轨」两屏渲染。
@@ -2667,6 +2742,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
           {view === 'score' ? (
             <>
+              <PartsPanel score={documentScore} activeId={activePartId} total={totalView} lyricVerse={lyricVerse} onSelectLyrics={selectLyrics} onSelect={selectPart} onTotal={setTotalView} onChange={changeParts} />
+              {lyricVerse !== null ? <div className="v2-lyric-tools">
+                <strong>{lyricTrackNames(score)[lyricVerse]} · {score.part?.name ?? '声部 1'}</strong>
+                <span>{notes ? '中文词句自动分格 · 空格确认 / 补空位 · ← → 移动' : '当前声部没有音符，请结束歌词输入后先写旋律'}</span>
+                <button className="v2-btn" onClick={() => setLyricSelection(null)}>结束歌词输入</button>
+              </div> : null}
               {mode === 'align' && stems.length > 0 && audioTempo ? (
                 <div className="v2-wave-wrap v2-wave-wrap--big">
                   <span className="v2-wave-hover">
@@ -2680,7 +2761,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     dark={dark}
                     gridBpm={tempoDraft.bpm}
                     gridPhase={tempoDraft.phaseSec}
-                    beatsPerMeasure={beatsPerMeasure(score.meta.beat)}
+                    beatsPerMeasure={beatsPerMeasure(meterAt(score, snap.cursor))}
                     markerSec={wavePos}
                     markerBeat={waveBeat}
                     snap={waveSnap}
@@ -2712,7 +2793,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 </div>
               ) : null}
               <ScoreCanvas
-                score={score}
+                score={totalView ? documentScore : score}
+                activePartId={activePartId}
                 dark={dark}
                 unit={spacing}
                 selectedIds={selectedIds}
@@ -2724,14 +2806,31 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 getPlayTick={getPlayTick}
                 onEnded={onPlayEnded}
                 onPick={handlePick}
-                focusId={overId}
-                showCaret={snap.mode === 'insert'}
+                onLayout={rememberLayout}
+                showBreaks={mode === 'score'}
+                focusId={overEvent?.id ?? null}
+                showCaret={lyricVerse === null && snap.mode === 'insert'}
                 playStyle={playStyle}
                 onEditTitle={() => setSongInfoOpen((v) => !v)}
                 onBlankClick={() => setSongInfoOpen(false)}
+                lyricEdit={lyricVerse !== null && !playing ? {
+                  partId: activePartId, verse: lyricVerse, startId: overId, session: lyricSelection!.session,
+                  onCommit: (id, word) => {
+                    const result = writeLyricInput(score, id, lyricVerse, word);
+                    if (result.error) { setMsg(result.error); return false; }
+                    setMsg(''); setScore(result.score); return true;
+                  },
+                  onInsertGap: (id) => {
+                    const result = insertLyricGap(score, id, lyricVerse);
+                    if (result.error) { setMsg(result.error); return false; }
+                    setMsg(''); setScore(result.score); return true;
+                  },
+                  onDelete: (id, offset) => { setMsg(''); setScore(deleteLyricPosition(score, id, lyricVerse, offset)); return true; },
+                  onExit: () => setLyricSelection(null),
+                } : undefined}
                 /* 波形上点过节奏线 = 配对中：光标变绑定样式 + 小节线画靶标，
                    点了小节线（绑定完成）就自动退出，光标恢复 */
-                pairing={mode === 'align' && wavePos !== null}
+                pairing={lyricVerse === null && mode === 'align' && wavePos !== null}
                 onPickStart={() => {
                   bindScoreStart();
                 }}
@@ -2747,11 +2846,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   {range ? `已选 ${range[1] - range[0]} 个` : overId ? '已选中 1 个音' : '未选中'}
                 </span>
                 {msg ? <span className="v2-msg">{msg}</span> : null}
-                <span className="v2-keys">
-                  1-7 音 · 0 休止 · | 小节线（连按两次=终止线） · 拖拉建选区（拖到边缘自动滚动） ·
-                  Shift+点击 选中到此处 · Ctrl+C/V 复制 / 粘贴 ·
-                  - ^ v . t 修改紧挨着光标左边的那一个音 · 例：输入 5 后连按 --，得到 5--（三拍）
-                </span>
               </div>
             </>
           ) : (
@@ -2795,6 +2889,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         </main>
 
         <aside className="v2-side" data-mode={mode}>
+          {lyricVerse !== null ? <div className="v2-side-block">
+            <div className="v2-side-title">歌词输入</div>
+            <p className="v2-hint">当前行：{lyricTrackNames(score)[lyricVerse]}<br />关联声部：{score.part?.name ?? '声部 1'}</p>
+            <p className="v2-hint">点击任一歌词格或对应音符即可从那里开始，前奏与间奏无需逐个跳过。</p>
+            <p className="v2-hint">一次输入中文词句会逐字分到连续音符；新输入单字后按空格确认。回到已有歌词格按空格，会在该字前补一个空位，后续歌词顺延；空白格按空格跳过一音。</p>
+            <p className="v2-hint">Tab / Enter / → 前进，Shift+Tab / ← 后退。音符位置不足时会提示，不会截断后续歌词。</p>
+            <p className="v2-hint">退格删除选中的字；空白格或字前的光标按退格，删除前一位置（包括空位），后续歌词向前补齐。可以连续退格，也可撤销恢复。</p>
+            <p className="v2-hint">输入法选字期间不会跳音。离开输入格写入歌词，点击「结束歌词输入」或按 Esc 回到写谱。</p>
+          </div> : <>
           {/*
             曲目信息（对应 DSL 的 @title @key @beat @bpm @patch）。
             只在点了谱面标题旁的铅笔时出现，和音符属性互斥：
@@ -2908,8 +3011,24 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 </span>
               ) : null}
             </div>
-            {barlineFocus ? (
+            {barlineFocus && canEditConductor ? (
               <>
+                <div className="v2-field">
+                  <span className="v2-field-label">此线之后的拍号</span>
+                  <select className="v2-meta-input" aria-label="此线之后的拍号" value={barlineFocus.beatAfter ?? ''} onChange={(e) => setScore(setBarNotation(score, barlineFocus.id, { beatAfter: e.target.value || undefined }))}>
+                    <option value="">沿用之前的拍号</option>
+                    {['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8'].map((beat) => <option key={beat} value={beat}>{beat}</option>)}
+                    {barlineFocus.beatAfter && !['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8'].includes(barlineFocus.beatAfter) ? <option value={barlineFocus.beatAfter}>{barlineFocus.beatAfter}</option> : null}
+                  </select>
+                </div>
+                <div className="v2-field">
+                  <span className="v2-field-label">此线之后的排版</span>
+                  <div className="v2-grid">
+                    <button className={`v2-btn ${!barlineFocus.breakAfter ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: undefined }))}>自动</button>
+                    <button className={`v2-btn ${barlineFocus.breakAfter === 'line' ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: 'line' }))}>换行</button>
+                    <button className={`v2-btn ${barlineFocus.breakAfter === 'page' ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: 'page' }))}>分页</button>
+                  </div>
+                </div>
                 <div className="v2-grid v2-grid-4">
                   <button
                     className={`v2-btn ${barlineFocus.repeat === 'start' ? 'is-on' : ''}`}
@@ -3008,6 +3127,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   播放会自动展开成顺序演奏。
                 </p>
               </>
+            ) : !canEditConductor ? (
+              <p className="v2-hint">全谱的反复、跳房子与跳转由首声部控制。切换到「{documentScore.part?.name}」编辑，对应记号会同步到各声部。</p>
             ) : (
               <p className="v2-hint">
                 点谱面里那条<b>竖线</b>选中它，就能把它改成 <b>|:</b> / <b>:|</b>，或给它挂上跳房子{' '}
@@ -3079,6 +3200,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     </button>
                   </div>
                 </div>
+                <div className="v2-field">
+                  <span className="v2-field-label">跨音力度范围（首音至末音）</span>
+                  <div className="v2-grid">
+                    <button className="v2-btn" disabled={selectedTimedIds.filter((id) => score.events.find((e) => e.id === id)?.kind === 'note').length < 2} onClick={() => setScore(setHairpinRange(score, selectedTimedIds, 'cresc'))}>渐强</button>
+                    <button className="v2-btn" disabled={selectedTimedIds.filter((id) => score.events.find((e) => e.id === id)?.kind === 'note').length < 2} onClick={() => setScore(setHairpinRange(score, selectedTimedIds, 'dim'))}>渐弱</button>
+                    <button className="v2-btn" onClick={() => setScore(setHairpinRange(score, selectedTimedIds))}>清除范围</button>
+                  </div>
+                </div>
                 {/*
                   跳房子走选区：选中一整个（或几个）小节直接设为第 n 房——
                   比逐根点小节线、脑补「房子从哪根线开始」直观得多。
@@ -3091,7 +3220,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                       <button
                         key={nv}
                         className="v2-btn"
-                        disabled={!selectionVolta.score}
+                        disabled={!selectionVolta.score || !canEditConductor}
                         title="选区头前那根线挂上房子（左墙），选区尾的小节线自动变成 :|"
                         onClick={() => doSelectionVolta(nv)}
                       >
@@ -3492,7 +3621,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             {/* 对轨页直接进来时可能还没有谱面（没有上次会话）：先给一句去哪拿谱 */}
             {score.events.length === 0 ? (
               <p className="v2-hint">
-                还没有谱面。点左上角<b>「打开」</b>选一首 .jps，或回首页进「曲库查询」点一首歌再播放。
+                还没有谱面。点左上角<b>「打开」</b>选一首 .jps，或回首页进入「曲库管理」，点击曲目的「对轨」。
               </p>
             ) : null}
             <div className="v2-field">
@@ -3834,6 +3963,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             </details>
             {audioMsg ? <p className="v2-hint">{audioMsg}</p> : null}
           </div>
+          </>}
         </aside>
       </div>
       ) : null}
@@ -3843,6 +3973,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         <DiscoverScreen
           onOpen={playLibraryItem}
           homeHref="./index.html"
+          onHelp={() => setHelpOpen(true)}
           msg={msg}
         />
       ) : null}
@@ -4279,6 +4410,7 @@ function trimTick(tick: number): string {
 function emptyScore(): Score {
   return {
     version: 2,
+    format: 3,
     meta: { title: '未命名曲谱', key: '1=C', beat: '4/4', bpm: 90, patch: 73 },
     events: [],
     groups: [],

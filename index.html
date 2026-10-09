@@ -10,6 +10,15 @@
   </head>
   <body class="ws-home">
     <div class="ws-home-bg" aria-hidden="true"></div>
+    <nav class="ws-home-menu" aria-label="顶部菜单">
+      <a class="ws-btn ws-btn-ghost" href="./help.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <circle cx="10" cy="10" r="8" />
+          <path d="M7.5 7.3a2.5 2.5 0 0 1 5 .2c0 1.6-2.5 1.8-2.5 3.4M10 14h.01" />
+        </svg>
+        帮助
+      </a>
+    </nav>
 
     <main class="ws-home-main">
       <!-- LOGO：金色记谱标记 + WindScore 字标（矢量，随页面缩放） -->
@@ -47,20 +56,24 @@
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12.8 3.9l3.3 3.3L7 16.3l-4 1 1-4z" />
           </svg>
-          动态谱编辑
+          简谱编辑
+        </a>
+        <a class="ws-btn ws-btn-ghost" href="./align.html">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M3 8v4M6.5 5v10M10 2v16M13.5 6v8M17 8v4" />
+          </svg>
+          动态谱生成
         </a>
         <!-- 曲库管理是独立页面（library.html）：不进记谱，直接管一批谱 -->
         <a class="ws-btn ws-btn-ghost" href="./library.html">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 4h4v12H3zM8.5 4h4v12h-4zM14 3.6h3.1l-1 12.8H14z" />
           </svg>
-          曲库编辑
+          曲库管理
         </a>
       </nav>
 
       <footer class="ws-home-foot">
-        <!-- 实验功能入口：刻意低调（小字弱色），点击进听音成谱页 -->
-        <a class="ws-home-lab" href="./lab.html" title="导入音频自动转简谱草稿，效果因曲而异">实验：听音成谱</a>
         <p class="ws-home-author">软件作者：程序员老许，VX：da-han</p>
         <!-- 版本号由 package.json 注入（vite.config.ts 的 versionInject），别手改 -->
         <p class="ws-home-version">版本 %APP_VERSION%</p>

@@ -91,6 +91,10 @@ export interface NoteEvent extends BaseEvent {
   dynamic?: string;
   /** 渐强 / 渐弱记号（〈 >），画在音符下方力度记号旁边 */
   hairpin?: 'cresc' | 'dim';
+  /** 渐强/渐弱的终音；缺省仍是原有单音记号。 */
+  hairpinTo?: string;
+  /** 逐音歌词，每个数组位置对应一段歌词；空串表示该段此音不唱字。 */
+  lyrics?: string[];
   /** 单音音色覆盖，MIDI program 0-127 */
   patch?: number;
 }
@@ -112,6 +116,10 @@ export interface RestEvent extends BaseEvent {
 export interface BarlineEvent extends BaseEvent {
   kind: 'barline';
   style: 'single' | 'final';
+  /** 从这条小节线之后起使用的新拍号。 */
+  beatAfter?: string;
+  /** 此小节线后强制换行，page 同时要求 PDF 换页。 */
+  breakAfter?: 'line' | 'page';
   /** 弱起 / 不完全小节开关（§8.2） */
   partial?: boolean;
   /** `|:` 反复开始 / `:|` 反复结束 */
@@ -167,6 +175,8 @@ export type TimedEvent = NoteEvent | RestEvent;
  */
 export interface BeatGroup {
   id: string;
+  /** 自动生成的普通拍组，编辑时可重新推导。 */
+  auto?: boolean;
   /** 守恒量 */
   totalTicks: number;
   /** 顺序即谱面顺序 */
@@ -214,6 +224,26 @@ export interface Score {
   version: 2;
   meta: ScoreMeta;
   /** 唯一真源，线性有序 */
+  events: Event[];
+  groups: BeatGroup[];
+  /** JPS 文本语法版本；缺省是旧版，不能改变旧谱的默认时值。 */
+  format?: 3;
+  /** events/groups 是第一声部，parts 只保存其余声部，避免重复真源。 */
+  part?: PartInfo;
+  parts?: ScorePart[];
+}
+
+export interface PartInfo {
+  id: string;
+  name: string;
+  gain: number;
+  muted?: boolean;
+  solo?: boolean;
+  /** 关联此演奏声部的歌词行名称；数组位置与音符 lyrics 段号一致。 */
+  lyricNames?: string[];
+}
+
+export interface ScorePart extends PartInfo {
   events: Event[];
   groups: BeatGroup[];
 }

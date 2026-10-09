@@ -8,7 +8,7 @@
 import type { Score } from "../types";
 import type { AudioStem } from "../audio";
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
-import { activeMainAt, type TimelineEntry } from "../timeline";
+import { activeHeadsAt, activeMainAt, type TimelineEntry } from "../timeline";
 import { TICKS_PER_BEAT } from "../ticks";
 import { saveBytesAsFile, type SaveResult } from "../io";
 import { exportLayoutFor, safeFileName } from "./tasks";
@@ -93,6 +93,7 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
       startSec: clock.secondsOf(e.startTick),
       endSec: clock.secondsOf(e.endTick),
       midi: e.midi as number,
+      gain: e.gain,
     }))
     .filter((n) => n.endSec > 0 && n.startSec < seconds);
   return synthNotes({ notes, durationSec: seconds, sampleRate: MIX_RATE });
@@ -148,6 +149,7 @@ export async function exportScoreVideoToFile(
         scrollY: scrollTargetY(ranges, tick, scale, canvasH, layout.lineHeight),
         playStyle: opts.playStyle ?? "head",
         playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
+        playheads: activeHeadsAt(showTl, tick),
         showMeasureNumbers: opts.showMeasureNumbers ?? true,
         progress: (i + 1) / frameCount,
       });
@@ -168,4 +170,3 @@ export async function exportScoreVideoToFile(
     sizeMB: Math.round((res.bytes.length / 1024 / 1024) * 10) / 10,
   };
 }
-

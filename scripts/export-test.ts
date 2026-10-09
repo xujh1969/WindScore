@@ -431,6 +431,14 @@ console.log('\n[视频 · 横向长条（strip）]');
   const ranges = stripTickRanges(strip.layout, tl);
   check('时间线条目都能映射到长条 x', ranges.length >= 8, String(ranges.length));
   check('x 随音乐单调不减', ranges.every((r, i) => i === 0 || r.x >= ranges[i - 1].x));
+  // 等宽拼接：相邻两行首项 x 的差恒定（= layout.width + 间隔）
+  const starts = strip.layout.lines.map((ln) => ln.items[0]?.x ?? 0);
+  const deltas = starts.slice(1).map((x, i) => x - starts[i]);
+  check(
+    '系统间隔严格恒定',
+    deltas.every((d) => Math.abs(d - deltas[0]) < 0.5),
+    deltas.map((d) => Math.round(d)).join(','),
+  );
   const x0 = scrollTargetX(ranges, 0, 2, 800, strip.width);
   const xEnd = scrollTargetX(ranges, timelineTicks(tl), 2, 800, strip.width);
   check('起点滚动为 0', x0 === 0, String(x0));

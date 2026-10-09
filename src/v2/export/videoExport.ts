@@ -6,6 +6,7 @@
  */
 
 import type { Score } from "../types";
+import type { LayoutResult } from "../layout";
 import type { AudioStem } from "../audio";
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
 import { activeHeadsAt, activeMainAt, type TimelineEntry } from "../timeline";
@@ -15,7 +16,15 @@ import { exportLayoutFor, safeFileName } from "./tasks";
 import { exportVideoFast } from "./encode";
 import { mixStems, synthNotes, type Mix } from "./mix";
 import { exportTheme, paintVideoFrame } from "./render";
-import { lineTickRanges, recordSeconds, scrollTargetY, videoGeometry, type VideoRatio } from "./video";
+import {
+  lineTickRanges,
+  recordSeconds,
+  scrollTargetY,
+  stripCanvasSize,
+  videoGeometry,
+  type VideoRatio,
+} from "./video";
+import { buildStrip, scrollTargetX, stripTickRanges } from "./strip";
 
 /** 导出音轨的采样率（伴奏解码出来是多少就用多少，避免二次重采样） */
 const MIX_RATE = 44100;
@@ -35,9 +44,13 @@ export interface VideoExportOptions {
   stems: AudioStem[];
   dark: boolean;
   ratio: VideoRatio;
-  /** 短边像素（720 / 1080 / 1440） */
+  /** 短边像素（720 / 1080 / 1440）。横向长条模式下这个数值直接作为**宽度** */
   shortSide: number;
   fps: number;
+  /** 'page' = 纵向整页滚动（默认）；'strip' = 横向长条（绿幕抠像用） */
+  mode?: 'page' | 'strip';
+  /** 长条模式的页面排版输入（对话框传页面当前显示的那份） */
+  layout?: LayoutResult;
   audio: "stems" | "synth" | "none";
   showTitle?: boolean;
   showMeasureNumbers?: boolean;
@@ -103,11 +116,21 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
 export async function exportScoreVideoToFile(
   opts: VideoExportOptions,
 ): Promise<SaveResult & { seconds: number; ext: string; sizeMB: number; codec: string }> {
-  const { canvasW, canvasH, geo } = videoGeometry(opts.ratio, opts.shortSide);
-  const layout = exportLayoutFor(opts.score, geo, opts.showTitle ?? true);
+  const { canvasW: pageW, canvasH: pageH, geo } = videoGeometry(opts.ratio, opts.shortSide);
+  const layout = opts.layout ?? exportLayoutFor(opts.score, geo, opts.showTitle ?? true);
   const showTl = opts.displayTimeline ?? opts.timeline;
-  const ranges = lineTickRanges(layout, showTl);
   const theme = exportTheme(opts.dark);
+
+  // 横向长条模式：把整份排版拉平成一条横带（忽略换行 / 分页），
+  // 宽度 = 界面设定的数值，高度 = 一行谱（多声部一组）× 缩放
+  const strip = opts.mode === 'strip' ? buildStrip(layout) : null;
+  const STRIP_SCALE = 2;
+  const stripSize = strip ? stripCanvasSize(opts.shortSide, strip.height, STRIP_SCALE) : null;
+  const canvasW = stripSize ? stripSize.w : pageW;
+  const canvasH = stripSize ? stripSize.h : pageH;
+  const stripTheme = strip && !opts.dark ? { ...theme, bg: '#00b140' } : theme;
+  const stripRanges = strip ? stripTickRanges(strip.layout, showTl) : null;
+  const lineRanges = strip ? null : lineTickRanges(layout, showTl);
   const clock = tickClock(opts);
   // 时长沿用统一口径：音频模式以音频放完为准，合成音按谱长
   const seconds = recordSeconds({
@@ -127,7 +150,7 @@ export async function exportScoreVideoToFile(
   canvas.height = canvasH;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("拿不到 2D 画布");
-  const scale = Math.max(0.2, Math.min(canvasW / layout.width, 2.4));
+  const scale = strip ? STRIP_SCALE : Math.max(0.2, Math.min(canvasW / layout.width, 2.4));
   const xOff = Math.max(0, (canvasW - layout.width * scale) / 2);
 
   const res = await exportVideoFast({
@@ -141,12 +164,26 @@ export async function exportScoreVideoToFile(
       // 离线渲染：滚动位置是 tick 的纯函数，不需要逐帧去「追」目标
       const tick = clock.tickAt(i / opts.fps);
       const act = activeMainAt(showTl, tick);
+      if (strip && stripSize && stripRanges) {
+        paintVideoFrame(ctx, strip.layout, stripTheme, {
+          canvasW,
+          canvasH,
+          scale,
+          scrollX: scrollTargetX(stripRanges, tick, scale, canvasW, strip.width),
+          playStyle: opts.playStyle ?? "head",
+          playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
+          playheads: activeHeadsAt(showTl, tick),
+          showMeasureNumbers: opts.showMeasureNumbers ?? true,
+          progress: (i + 1) / frameCount,
+        });
+        return;
+      }
       paintVideoFrame(ctx, layout, theme, {
         canvasW,
         canvasH,
         scale,
         offsetX: xOff,
-        scrollY: scrollTargetY(ranges, tick, scale, canvasH, layout.lineHeight),
+        scrollY: scrollTargetY(lineRanges ?? [], tick, scale, canvasH, layout.lineHeight),
         playStyle: opts.playStyle ?? "head",
         playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
         playheads: activeHeadsAt(showTl, tick),

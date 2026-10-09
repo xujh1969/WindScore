@@ -192,8 +192,12 @@ export function paintVideoFrame(
     canvasW: number;
     canvasH: number;
     scale: number;
-    /** 版面纵向滚动量（像素，正数向下） */
-    scrollY: number;
+    /** 版面纵向滚动量（像素，正数向下）。给了 scrollX 就忽略它 */
+    scrollY?: number;
+    /** 版面横向滚动量（像素，正数向左看）：横向长条模式用，给了就忽略 scrollY */
+    scrollX?: number;
+    /** 底色覆盖（横向长条的绿幕底色等）；不给用 theme.bg */
+    bg?: string;
     /** 版面横向偏移；不给就横向居中 */
     offsetX?: number;
     playhead?: { eventId: string; frac: number } | null;
@@ -204,22 +208,35 @@ export function paintVideoFrame(
     progress?: number;
   },
 ): void {
-  const { canvasW, canvasH, scale, scrollY } = opts;
+  const { canvasW, canvasH, scale } = opts;
+  const scrollY = opts.scrollY ?? 0;
   const xOff = opts.offsetX ?? Math.max(0, (canvasW - layout.width * scale) / 2);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = theme.bg;
+  ctx.fillStyle = opts.bg ?? theme.bg;
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  ctx.setTransform(scale, 0, 0, scale, xOff, -scrollY);
-  paintLayout(ctx, layout, theme, {
-    // 底色填充要盖满整屏：paintLayout 只填 layout.width 宽
-    height: (canvasH + scrollY) / scale,
-    playhead: opts.playhead ?? null,
-    playheads: opts.playheads,
-    playStyle: opts.playStyle ?? 'head',
-    showMeasureNumbers: opts.showMeasureNumbers ?? true,
-  });
+  if (opts.scrollX !== undefined) {
+    // 横向长条：长条高就是画面高，纵向不需要滚动
+    ctx.setTransform(scale, 0, 0, scale, -opts.scrollX, 0);
+    paintLayout(ctx, layout, theme, {
+      height: canvasH / scale,
+      playhead: opts.playhead ?? null,
+      playheads: opts.playheads,
+      playStyle: opts.playStyle ?? 'head',
+      showMeasureNumbers: opts.showMeasureNumbers ?? true,
+    });
+  } else {
+    ctx.setTransform(scale, 0, 0, scale, xOff, -scrollY);
+    paintLayout(ctx, layout, theme, {
+      // 底色填充要盖满整屏：paintLayout 只填 layout.width 宽
+      height: (canvasH + scrollY) / scale,
+      playhead: opts.playhead ?? null,
+      playheads: opts.playheads,
+      playStyle: opts.playStyle ?? 'head',
+      showMeasureNumbers: opts.showMeasureNumbers ?? true,
+    });
+  }
 
   if (opts.progress !== undefined) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);

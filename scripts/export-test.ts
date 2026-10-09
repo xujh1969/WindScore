@@ -11,6 +11,9 @@ import { buildTimeline, timelineTicks } from '../src/v2/timeline';
 import { constantTempo } from '../src/v2/tempo';
 import type { LayoutResult } from '../src/v2/layout';
 import { lineTickRanges, recordSeconds, scrollTargetY, type VideoRatio } from '../src/v2/export/video';
+import { buildStrip, scrollTargetX, stripTickRanges } from '../src/v2/export/strip';
+import { layoutScore } from '../src/v2/layout';
+import { TICKS_PER_BEAT } from '../src/v2/types';
 
 let failed = 0;
 function check(name: string, ok: boolean, extra = ''): void {
@@ -400,6 +403,40 @@ console.log('[导出 · 离线混音]');
     sampleRate: 8000,
   });
   check('同刻两个音叠加（和声不会被覆盖）', peakOf(two) > 0.15, String(peakOf(two)));
+}
+
+console.log('\n[视频 · 横向长条（strip）]');
+{
+  const { score } = parseDsl('@title 条\n@key 1=C\n@beat 4/4\n@bpm 96\n\n1 2 3 4 | 5 6 7 1^ | 2 3 4 5 | 6 6 5 4 ||');
+  const layout = layoutScore(score, { contentWidth: 600 });
+  const strip = buildStrip(layout);
+  check('单声部长条行数不变（每行横向接续）', strip.layout.lines.length === layout.lines.length);
+  check('长条宽 = 各行拼接（≥ 原行宽）', strip.width >= layout.width, `${strip.width} vs ${layout.width}`);
+  check('长条高约等于一行高', Math.abs(strip.height - layout.lineHeight * 2) < layout.lineHeight, `${strip.height} vs ${layout.lineHeight}`);
+  check('title 清空（不重复画标题）', strip.layout.title === null);
+  // 多声部：构造 systems 把两行并成一个系统
+  const ensLayout: LayoutResult = {
+    ...layout,
+    lines: [layout.lines[0], { ...layout.lines[1], y: layout.lines[0].y + layout.lineHeight }],
+    systems: [{ from: 0, to: 2, top: 0, bottom: 0, bracketX: 0 }],
+  };
+  const ens = buildStrip(ensLayout);
+  check('两行同系统 → 拼成一组', ens.layout.lines.length === 2);
+  check(
+    '组内上下相对位置保留',
+    Math.abs((ens.layout.lines[1].y - ens.layout.lines[0].y) - layout.lineHeight) < 1,
+  );
+  // tick → x 映射与滚动
+  const tl = buildTimeline(score, constantTempo(96, 0, 0));
+  const ranges = stripTickRanges(strip.layout, tl);
+  check('时间线条目都能映射到长条 x', ranges.length >= 8, String(ranges.length));
+  check('x 随音乐单调不减', ranges.every((r, i) => i === 0 || r.x >= ranges[i - 1].x));
+  const x0 = scrollTargetX(ranges, 0, 2, 800, strip.width);
+  const xEnd = scrollTargetX(ranges, timelineTicks(tl), 2, 800, strip.width);
+  check('起点滚动为 0', x0 === 0, String(x0));
+  check('终点钳到长条末端', xEnd <= strip.width * 2 - 800 + 1, `${xEnd} vs max ${strip.width * 2 - 800}`);
+  const xMid = scrollTargetX(ranges, timelineTicks(tl) / 2, 2, 800, strip.width);
+  check('中段滚动位置在起点与终点之间', xMid >= x0 && xMid <= xEnd, String(xMid));
 }
 
 console.log(failed === 0 ? '\n导出测试全部通过' : `\n导出测试失败 ${failed} 项`);

@@ -183,3 +183,16 @@ export function videoGeometry(
     },
   };
 }
+
+/**
+ * 横向长条模式的画布：**宽度 = 界面设定的数值**，
+ * 高度 = 长条高（一行谱 / 多声部一组）× 缩放。缩放决定一屏能看到几拍。
+ */
+export function stripCanvasSize(
+  stripWidth: number,
+  stripHeight: number,
+  scale: number,
+): { w: number; h: number; scale: number } {
+  const even = (n: number): number => Math.max(2, Math.round(n / 2) * 2);
+  return { w: even(stripWidth), h: even(stripHeight * scale), scale };
+}

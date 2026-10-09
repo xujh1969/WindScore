@@ -95,6 +95,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 视频选项
   const [ratio, setRatio] = useState<VideoRatio>('r9x16');
   const [shortSide, setShortSide] = useState<number>(1080);
+  const [videoMode, setVideoMode] = useState<'page' | 'strip'>('page');
   const [fps, setFps] = useState<number>(30);
   // 声音：默认跟着伴奏（`auto` = 有伴奏就录伴奏，没有才退回合成音）。
   // 用户显式选「合成音」时才不听伴奏。
@@ -244,6 +245,8 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       const res = await exportScoreVideoToFile({
         score,
         name: exportName,
+        mode: videoMode,
+        ...(videoMode === 'strip' ? { layout: pdfLayout } : {}),
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,
@@ -421,6 +424,14 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         ) : (
           <div className="v2-exp-body">
             <div className="v2-exp-row">
+              <span>模式</span>
+              <div className="v2-view-switch">
+                <button className={videoMode === 'page' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('page')} title="整页纵向滚动，跟随换行换页">整页滚动</button>
+                <button className={videoMode === 'strip' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('strip')} title="拉平成横向长条从右向左移动；绿幕底色便于 OBS 抠像叠加">横向长条</button>
+              </div>
+            </div>
+            {videoMode === 'page' ? (
+            <div className="v2-exp-row">
               <span>画面比例</span>
               <div className="v2-exp-ratios">
                 {VIDEO_RATIOS.map((r) => (
@@ -436,6 +447,13 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 ))}
               </div>
             </div>
+            ) : (
+            <p className="v2-exp-hint">
+              横向长条：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
+              宽度 = 下方「短边」数值；高度 = 一行谱（多声部为一组）。
+              底色默认绿幕（#00B140），切「深色」外观可换深底。适合 OBS 抠像叠加到演奏画面。
+            </p>
+            )}
             <div className="v2-exp-row">
               <span>段落</span>
               <span className="v2-exp-mrange">
@@ -480,7 +498,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                     onClick={() => setShortSide(s)}
                     disabled={busy}
                   >
-                    短边 {s}
+                    {videoMode === 'strip' ? '宽' : '短边'} {s}
                   </button>
                 ))}
               </div>

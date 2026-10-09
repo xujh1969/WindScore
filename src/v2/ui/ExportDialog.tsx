@@ -75,7 +75,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   const exportName = partId ? `${songName}-${score.part?.name ?? partId}` : songName;
   const [tab, setTab] = useState<'pdf' | 'video' | 'image'>('pdf');
   const [imageFormat, setImageFormat] = useState<'png' | 'svg'>('png');
-  const [imageWidth, setImageWidth] = useState(1080);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [progress, setProgress] = useState(0);
@@ -221,8 +220,18 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     });
 
   const doImage = (): Promise<void> => run(async () => {
-    const res = await exportScoreImageToFile({ score, name: exportName, format: imageFormat, width: imageWidth, dark: videoDark, showTitle, showMeasureNumbers: showBars });
-    return res.ok ? `已导出 ${imageFormat.toUpperCase()} 图片` : '已取消保存';
+    const plan = preview.pdfPlan;
+    if (!plan?.plans.length) throw new Error('谱面排版失败，无法导出图片');
+    const res = await exportScoreImageToFile({
+      name: exportName,
+      format: imageFormat,
+      dark: videoDark,
+      showMeasureNumbers: showBars,
+      layout: plan.layout,
+      plans: plan.plans,
+      geo: plan.geo,
+    });
+    return res.ok ? `已导出 ${imageFormat.toUpperCase()}（${plan.plans.length} 页，与 PDF 同版式）` : '已取消保存';
   });
 
   const doVideo = (): Promise<void> =>
@@ -398,11 +407,12 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
           </div>
         ) : tab === 'image' ? (
           <div className="v2-exp-body">
-            <label className="v2-exp-row"><span>格式</span><select value={imageFormat} disabled={busy} onChange={(e) => setImageFormat(e.target.value as 'png' | 'svg')}><option value="png">PNG · 清晰长图</option><option value="svg">SVG · 矢量图片</option></select></label>
-            <label className="v2-exp-row"><span>宽度</span><select value={imageWidth} disabled={busy} onChange={(e) => setImageWidth(Number(e.target.value))}>{SIDES.map((w) => <option key={w} value={w}>{w} px</option>)}</select></label>
+            <label className="v2-exp-row"><span>格式</span><select value={imageFormat} disabled={busy} onChange={(e) => setImageFormat(e.target.value as 'png' | 'svg')}><option value="png">PNG · 多页拼接长图</option><option value="svg">SVG · 矢量图片</option></select></label>
+            <div className="v2-exp-row"><span>纸向</span><div className="v2-view-switch"><button className={!landscape ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setLandscape(false)}>纵向</button><button className={landscape ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setLandscape(true)}>横向</button></div></div>
+            <div className="v2-exp-row"><span>精度</span><div className="v2-view-switch">{[150, 300].map((d) => <button key={d} className={dpi === d ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setDpi(d)}>{d} dpi</button>)}</div></div>
             <div className="v2-exp-row"><span>外观</span><div className="v2-view-switch"><button className={!videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(false)}>浅色</button><button className={videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(true)}>深色</button></div></div>
             <div className="v2-exp-row"><label className="v2-grace-check"><input type="checkbox" checked={showTitle} disabled={busy} onChange={(e) => setShowTitle(e.target.checked)} />包含标题</label><label className="v2-grace-check"><input type="checkbox" checked={showBars} disabled={busy} onChange={(e) => setShowBars(e.target.checked)} />显示小节号</label></div>
-            <p className="v2-exp-hint">整首导出为一张长图，保留换行；分页标记不产生空白页。SVG 放大不失真，文字显示使用打开设备上的字体。</p>
+            <p className="v2-exp-hint">与 PDF 完全同一套分页排版：每页和 PDF 预览逐像素一致（含页脚），多页纵向拼接成一张。SVG 放大不失真，文字显示使用打开设备上的字体。</p>
           </div>
         ) : (
           <div className="v2-exp-body">
@@ -564,7 +574,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               {note ||
                 (tab === 'pdf'
                   ? `将导出 ${preview.pages} 页 A4，文件名取歌名`
-                  : tab === 'image' ? `将导出 ${imageFormat.toUpperCase()} 长图，包含当前所选声部`
+                  : tab === 'image' ? `将按 PDF 版式导出 ${imageFormat.toUpperCase()}（多页纵向拼接）`
                   : `将录一段 ${preview.canvasW}×${preview.canvasH} 的${
                       videoDark ? '深色' : '浅色'
                     }视频，约 ${Math.floor(preview.seconds / 60)}:${String(

@@ -23,6 +23,10 @@ export class SvgCanvas {
   restore(): void { const state = this.stack.pop(); if (state) Object.assign(this, state); }
   translate(x: number, y: number): void { this.transform += ` translate(${x} ${y})`; }
   scale(x: number, y: number): void { this.transform += ` scale(${x} ${y})`; }
+  /** 绝对矩阵（SVG matrix 与 canvas setTransform 同序）；paintExportPage 依赖它定位页面 */
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void {
+    this.transform = `matrix(${a} ${b} ${c} ${d} ${e} ${f})`;
+  }
   private emit(element: string): void {
     this.elements.push(this.transform ? `<g transform="${this.transform.trim()}">${element}</g>` : element);
   }

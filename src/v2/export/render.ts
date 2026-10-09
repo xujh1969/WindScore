@@ -123,6 +123,12 @@ export interface PagePaintOptions {
   /** 页脚文字；不给就不画（导出视频时不要页脚） */
   footer?: string;
   showMeasureNumbers?: boolean;
+  /**
+   * 页面原点的纵向位移（像素）：多页拼接成一张图时，第 n 页偏移 n ×（页高 + 间隔）。
+   * 必须在这里实现而不能靠调用方 translate——本函数内部的 setTransform 是绝对矩阵，
+   * 会把外面的位移抹掉
+   */
+  originY?: number;
 }
 
 /**
@@ -138,13 +144,14 @@ export function paintExportPage(
   opts: PagePaintOptions = {},
 ): void {
   const { pageW, pageH, scale, marginX, marginTop, marginBottom } = geo;
+  const originY = opts.originY ?? 0;
 
   // 底色按整页铺（paintLayout 内部那次填充只盖版面范围，右边留白会露白）
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, originY);
   ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, pageW, pageH);
 
-  ctx.setTransform(scale, 0, 0, scale, marginX, marginTop - plan.offset * scale);
+  ctx.setTransform(scale, 0, 0, scale, marginX, originY + marginTop - plan.offset * scale);
   paintLayout(
     ctx,
     {
@@ -162,7 +169,7 @@ export function paintExportPage(
   );
 
   if (opts.footer) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, originY);
     ctx.font = `13px ${EXPORT_FONT}`;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'center';

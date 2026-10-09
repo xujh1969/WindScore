@@ -427,7 +427,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               <span>模式</span>
               <div className="v2-view-switch">
                 <button className={videoMode === 'page' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('page')} title="整页纵向滚动，跟随换行换页">整页滚动</button>
-                <button className={videoMode === 'strip' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('strip')} title="拉平成横向长条从右向左移动；绿幕底色便于 OBS 抠像叠加">绿幕横条</button>
+                <button className={videoMode === 'strip' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('strip')} title="拉平成横向长条从右向左移动；绿幕底色便于 OBS 抠像叠加">横向长条</button>
               </div>
             </div>
             {videoMode === 'page' ? (
@@ -449,9 +449,9 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             </div>
             ) : (
             <p className="v2-exp-hint">
-              绿幕横条：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
-              宽度 = 下方数值；高度 = 一行谱（多声部为一组）。
-              底色固定绿幕 #00B140，音符白色、播放指示红色，便于 OBS 抠像叠加到演奏画面。
+              横向长条：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
+              宽度 = 下方「短边」数值；高度 = 一行谱（多声部为一组）。
+              底色默认绿幕（#00B140），切「深色」外观可换深底。适合 OBS 抠像叠加到演奏画面。
             </p>
             )}
             <div className="v2-exp-row">
@@ -506,7 +506,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 {preview.canvasW}×{preview.canvasH}
               </output>
             </div>
-            {videoMode === 'page' ? (
             <div className="v2-exp-row">
               <span>外观</span>
               <div className="v2-view-switch">
@@ -528,7 +527,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 </button>
               </div>
             </div>
-            ) : null}
             <div className="v2-exp-row">
               <span>帧率</span>
               <div className="v2-view-switch">

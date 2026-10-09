@@ -244,9 +244,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       const res = await exportScoreVideoToFile({
         score,
         name: exportName,
-        // 视频用页面当前显示的排版：换行与简谱编辑 / PDF 完全一致，
-        // 不再按视频画布宽度重新排版（画面随宽度等比缩放 + 纵向滚动）
-        layout: showTitle ? pdfLayout : { ...pdfLayout, title: null },
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,

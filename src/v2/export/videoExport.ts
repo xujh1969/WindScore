@@ -121,14 +121,18 @@ export async function exportScoreVideoToFile(
   const showTl = opts.displayTimeline ?? opts.timeline;
   const theme = exportTheme(opts.dark);
 
-  // 横向长条模式：把整份排版拉平成一条横带（忽略换行 / 分页），
-  // 宽度 = 界面设定的数值，高度 = 一行谱（多声部一组）× 缩放
-  const strip = opts.mode === 'strip' ? buildStrip(layout) : null;
+  // 滚动横幅模式：把整份排版拉平成一条横带（忽略换行 / 分页），
+  // 宽度 = 界面设定的数值，高度 = 一行谱（多声部一组）× 缩放。
+  // 底色随外观：深色 = 纯黑（配「滤色」叠加），浅色 = 纯白（配「正片叠底」叠加）
+  const isStrip = opts.ratio === 'strip';
+  const strip = isStrip ? buildStrip(layout) : null;
   const STRIP_SCALE = 2;
   const stripSize = strip ? stripCanvasSize(opts.shortSide, strip.height, STRIP_SCALE) : null;
   const canvasW = stripSize ? stripSize.w : pageW;
   const canvasH = stripSize ? stripSize.h : pageH;
-  const stripTheme = strip && !opts.dark ? { ...theme, bg: '#00b140' } : theme;
+  const stripTheme = strip
+    ? { ...theme, bg: opts.dark ? '#000000' : '#ffffff' }
+    : theme;
   const stripRanges = strip ? stripTickRanges(strip.layout, showTl) : null;
   const lineRanges = strip ? null : lineTickRanges(layout, showTl);
   const clock = tickClock(opts);

@@ -20,6 +20,7 @@ import {
 import { exportScoreVideoToFile } from '../export/videoExport';
 import { exportScoreImageToFile } from '../export/image';
 import { VIDEO_RATIOS, recordSeconds, videoGeometry, type VideoRatio } from '../export/video';
+import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
 
 export interface ExportDialogProps {
@@ -95,7 +96,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 视频选项
   const [ratio, setRatio] = useState<VideoRatio>('r9x16');
   const [shortSide, setShortSide] = useState<number>(1080);
-  const [videoMode, setVideoMode] = useState<'page' | 'strip'>('page');
   const [fps, setFps] = useState<number>(30);
   // 声音：默认跟着伴奏（`auto` = 有伴奏就录伴奏，没有才退回合成音）。
   // 用户显式选「合成音」时才不听伴奏。
@@ -121,6 +121,11 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     try { pdfPlan = planExport(score, a4Geometry(landscape, dpi, 1), showTitle, pdfLayout); pages = pdfPlan.plans.length; }
     catch (e) { layoutError = e instanceof Error ? e.message : String(e); }
     const vg = videoGeometry(ratio, shortSide);
+    // 滚动横幅：宽 = 设定数值，高 = 长条高 × 2（与导出一致）
+    const canvasW = ratio === 'strip' ? shortSide : vg.canvasW;
+    const canvasH = ratio === 'strip' && pdfPlan
+      ? Math.round(buildStrip(pdfPlan.layout).height * 2)
+      : vg.canvasH;
     const total = Math.max(1, video.measureTicks.length);
     const from = Math.min(Math.max(1, mFrom), total);
     const to = mTo > 0 ? Math.min(Math.max(from, mTo), total) : total;
@@ -135,7 +140,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       stems: video.stems,
       audio: useAudio,
     });
-    return { pages, pdfPlan, layoutError, canvasW: vg.canvasW, canvasH: vg.canvasH, seconds, from, to, total };
+    return { pages, pdfPlan, layoutError, canvasW, canvasH, seconds, from, to, total };
   }, [score, pdfLayout, landscape, dpi, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
 
   const pageIndex = Math.min(pdfPage, Math.max(0, preview.pages - 1));
@@ -245,8 +250,8 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       const res = await exportScoreVideoToFile({
         score,
         name: exportName,
-        mode: videoMode,
-        ...(videoMode === 'strip' ? { layout: pdfLayout } : {}),
+        mode: ratio === 'strip' ? 'strip' : 'page',
+        ...(ratio === 'strip' ? { layout: pdfLayout } : {}),
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,
@@ -424,14 +429,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         ) : (
           <div className="v2-exp-body">
             <div className="v2-exp-row">
-              <span>模式</span>
-              <div className="v2-view-switch">
-                <button className={videoMode === 'page' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('page')} title="整页纵向滚动，跟随换行换页">整页滚动</button>
-                <button className={videoMode === 'strip' ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoMode('strip')} title="拉平成横向长条从右向左移动；绿幕底色便于 OBS 抠像叠加">横向长条</button>
-              </div>
-            </div>
-            {videoMode === 'page' ? (
-            <div className="v2-exp-row">
               <span>画面比例</span>
               <div className="v2-exp-ratios">
                 {VIDEO_RATIOS.map((r) => (
@@ -447,13 +444,13 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 ))}
               </div>
             </div>
-            ) : (
+            {ratio === 'strip' ? (
             <p className="v2-exp-hint">
-              横向长条：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
-              宽度 = 下方「短边」数值；高度 = 一行谱（多声部为一组）。
-              底色默认绿幕（#00B140），切「深色」外观可换深底。适合 OBS 抠像叠加到演奏画面。
+              滚动横幅：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
+              宽度 = 下方数值；高度 = 一行谱（多声部为一组）。
+              与演奏视频叠加时：深色底用「滤色（Screen）」模式，浅色底用「正片叠底（Multiply）」模式。
             </p>
-            )}
+            ) : null}
             <div className="v2-exp-row">
               <span>段落</span>
               <span className="v2-exp-mrange">
@@ -498,7 +495,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                     onClick={() => setShortSide(s)}
                     disabled={busy}
                   >
-                    {videoMode === 'strip' ? '宽' : '短边'} {s}
+                    {ratio === 'strip' ? '宽' : '短边'} {s}
                   </button>
                 ))}
               </div>

@@ -13,7 +13,7 @@ import { tickToSec } from "../tempo";
 import { timelineTicks, type TimelineEntry } from "../timeline";
 import { TICKS_PER_BEAT } from "../ticks";
 
-/** 画面比例：竖屏 / 横屏 / 方形各档常见比例，id 就是 r<宽>x<高> */
+/** 画面比例：竖屏 / 横屏 / 方形各档常见比例 + 滚动横幅，id 就是 r<宽>x<高> */
 export type VideoRatio =
   | "r9x16"
   | "r16x9"
@@ -23,7 +23,8 @@ export type VideoRatio =
   | "r3x4"
   | "r3x2"
   | "r2x3"
-  | "r1x1";
+  | "r1x1"
+  | "strip";
 
 export interface VideoRatioSpec {
   id: VideoRatio;
@@ -45,6 +46,13 @@ export const VIDEO_RATIOS: readonly VideoRatioSpec[] = [
   { id: "r3x2", label: "3:2 横屏", w: 3, h: 2, hint: "相机横构图" },
   { id: "r2x3", label: "2:3 竖屏", w: 2, h: 3, hint: "相机竖构图" },
   { id: "r1x1", label: "1:1 方形", w: 1, h: 1, hint: "方形画面" },
+  {
+    id: "strip",
+    label: "滚动横幅",
+    w: 16,
+    h: 9,
+    hint: "适合用于视频中做滚动显示：忽略换行分页，整谱拉成横带随音乐移动；深色底建议用「滤色」模式叠加，浅色底建议用「正片叠底」模式叠加",
+  },
 ];
 
 /**

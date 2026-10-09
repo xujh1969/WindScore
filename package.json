@@ -1,7 +1,7 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,12 +12,18 @@
     "tauri:dev": "tauri dev",
     "icon": "node scripts/gen-icon.cjs",
     "version": "node scripts/bump-version.mjs",
-    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-play-test.mjs --log-level=error && node .tmp-play-test.mjs",
+    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-play-test.mjs --log-level=error && node .tmp-play-test.mjs && esbuild scripts/lab-test.ts --bundle --platform=node --format=esm --outfile=.tmp-lab-test.mjs --log-level=error && node .tmp-lab-test.mjs",
     "build:skill": "esbuild scripts/build-skill-validator.ts --bundle --platform=node --format=esm --outfile=skills/windscore-jps/validate.mjs --log-level=error"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
+    "@spotify/basic-pitch": "^1.0.1",
     "@tauri-apps/api": "^1.6.0",
+    "@tensorflow/tfjs-backend-cpu": "^4.22.0",
+    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
+    "@tensorflow/tfjs-converter": "^4.22.0",
+    "@tensorflow/tfjs-core": "^4.22.0",
+    "@tensorflow/tfjs-layers": "^4.22.0",
     "mediabunny": "^1.61.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

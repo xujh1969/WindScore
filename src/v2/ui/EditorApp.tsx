@@ -328,7 +328,7 @@ function beatsPerMeasure(beat: string): number {
  *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
  * 单功能页都显示左上角「返回首页」；对轨不再单独成页，它是编辑页的一个模式。
  */
-export type Entry = 'app' | 'editor' | 'library' | 'play';
+export type Entry = 'app' | 'editor' | 'library' | 'play' | 'lab';
 
 export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   /** 深浅主题。初始值跟系统，之后由工具栏手动切换，不再随系统变 */

@@ -21,7 +21,7 @@ export interface Strip {
   height: number;
 }
 
-const SYSTEM_GAP = 90;
+const SYSTEM_GAP = 40;
 
 export function buildStrip(layout: LayoutResult): Strip {
   // 分系统：ensemble 填了 systems（行下标区间），直接用；
@@ -40,7 +40,6 @@ export function buildStrip(layout: LayoutResult): Strip {
     const groupLines = group.filter((l) => l.items.length > 0);
     if (groupLines.length === 0) continue;
     const top = Math.min(...groupLines.map((l) => l.y)) - lineHeight / 2;
-    let ink = 0;
     for (const line of groupLines) {
       const out: LayoutLine = {
         ...line,
@@ -56,8 +55,6 @@ export function buildStrip(layout: LayoutResult): Strip {
           ? { hairpins: line.hairpins.map((h) => ({ ...h, x0: h.x0 + dx, x1: h.x1 + dx })) }
           : {}),
       };
-      for (const it of out.items) ink = Math.max(ink, it.x + it.w);
-      for (const b of out.beams) ink = Math.max(ink, b.x1);
       lines.push(out);
       index += 1;
     }
@@ -65,10 +62,12 @@ export function buildStrip(layout: LayoutResult): Strip {
       maxBottom,
       ...lines.slice(lines.length - groupLines.length).map((l) => l.y + lineHeight / 2),
     );
-    dx += Math.ceil(ink + SYSTEM_GAP);
+    // 每个系统占**等宽**（= layout.width，页面排版本就两端对齐到这个宽度），
+    // 系统间隔恒定——按各行实际墨迹拼接会忽大忽小（实测踩到）
+    dx += Math.ceil(layout.width + SYSTEM_GAP);
   }
 
-  const width = Math.max(1, dx);
+  const width = Math.max(1, dx - SYSTEM_GAP);
   const height = Math.ceil(maxBottom + lineHeight * 0.9);
   return {
     layout: { ...layout, lines, width, height, title: null, systems: undefined },

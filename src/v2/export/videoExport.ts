@@ -128,7 +128,21 @@ export async function exportScoreVideoToFile(
   const stripSize = strip ? stripCanvasSize(opts.shortSide, strip.height, STRIP_SCALE) : null;
   const canvasW = stripSize ? stripSize.w : pageW;
   const canvasH = stripSize ? stripSize.h : pageH;
-  const stripTheme = strip && !opts.dark ? { ...theme, bg: '#00b140' } : theme;
+  // 绿幕横条专用配色：绿底 + 白色音符 + 红色播放指示（方块 / 长条 / 竖线），
+  // 与绿底强区分且方便抠像；不跟随深浅外观
+  const stripTheme = strip
+    ? {
+        ...theme,
+        bg: '#00b140',
+        ink: '#ffffff',
+        muted: '#d8ffe2',
+        bar: '#d8ffe2',
+        barFinal: '#ffffff',
+        accent: '#ff3b30',
+        playhead: '#ff3b30',
+        playheadBg: '#e02020',
+      }
+    : theme;
   const stripRanges = strip ? stripTickRanges(strip.layout, showTl) : null;
   const lineRanges = strip ? null : lineTickRanges(layout, showTl);
   const clock = tickClock(opts);

@@ -23,6 +23,11 @@ export class BeatClock {
     return this.bps * 60;
   }
 
+  /** 每秒走多少拍：光球停止后的余跳要用真实时间外推 tick */
+  get beatsPerSec(): number {
+    return this.bps;
+  }
+
   get isRunning(): boolean {
     return this.running;
   }

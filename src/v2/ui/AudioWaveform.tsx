@@ -76,6 +76,10 @@ interface Props {
   onNudge?: (deltaSec: number) => void;
   /** 浮层标题（如「第 24 拍 · 0:42.50」） */
   markerTitle?: string;
+  /** 打拍定速进行中：已打各拍的时刻（秒），画成波形顶上的圆点 */
+  tapMarks?: number[];
+  /** 打拍定速进行中：由已打拍外推的预测网格（拍 0 时刻 + 拍距），画成粉色虚线 */
+  tapGrid?: { phase: number; interval: number } | null;
 }
 
 const BINS = 2048;
@@ -186,6 +190,8 @@ export function AudioWaveform({
   onDeleteAnchor,
   onNudge,
   markerTitle,
+  tapMarks,
+  tapGrid,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -371,6 +377,36 @@ export function AudioWaveform({
         ctx.fillStyle = wt.beatText;
         ctx.font = '10px sans-serif';
         ctx.fillText(String(a), x + 3, 11);
+      }
+    }
+
+    // 打拍辅助：已打的拍（顶部圆点）+ 由已打拍**外推的预测网格**（粉色虚线）。
+    // 打拍定速进行中才显示——不然用户听不出「该在哪里按」，照着预测线按即可
+    if (tapGrid && tapGrid.interval > 0.05) {
+      ctx.save();
+      ctx.strokeStyle = wt.marker;
+      ctx.globalAlpha = 0.55;
+      ctx.setLineDash([3, 4]);
+      ctx.lineWidth = 1;
+      const k0 = Math.ceil((start - tapGrid.phase) / tapGrid.interval);
+      const k1 = Math.floor((start + span - tapGrid.phase) / tapGrid.interval);
+      for (let k = k0; k <= k1; k += 1) {
+        const x = xOf(tapGrid.phase + k * tapGrid.interval);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (tapMarks && tapMarks.length) {
+      ctx.fillStyle = wt.marker;
+      for (const t of tapMarks) {
+        const x = xOf(t);
+        if (x < -4 || x > w + 4) continue;
+        ctx.beginPath();
+        ctx.arc(x, 7, 3, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 

@@ -425,8 +425,23 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    *   head = 跟着当前音跳的色块 + 平滑横移的竖线（旧方式）
    *   band = 从当前行行首开始、随音乐不断变宽的高亮条（更好跟）
    *   ball = 发光小球拖着渐变尾巴、按抛物线轨迹逐音跳跃（深色发光、浅色彩色点+阴影）
+   * 存 localStorage：播放页（动态谱演奏 / 曲库播放）的观众设一次就长期有效
    */
-  const [playStyle, setPlayStyle] = useState<'head' | 'band' | 'ball'>('head');
+  const [playStyle, setPlayStyle] = useState<'head' | 'band' | 'ball'>(() => {
+    try {
+      const v = localStorage.getItem('ws-playstyle');
+      return v === 'band' || v === 'ball' ? v : 'head';
+    } catch {
+      return 'head';
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('ws-playstyle', playStyle);
+    } catch {
+      /* 隐私模式等存不了就算了 */
+    }
+  }, [playStyle]);
   /** 对轨页「音轨分离工具下载」的说明弹窗 */
   const [tramaOpen, setTramaOpen] = useState(false);
   /**
@@ -2834,6 +2849,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               >
                 高亮条
               </button>
+              <button
+                className={playStyle === 'ball' ? 'v2-seg is-on' : 'v2-seg'}
+                onClick={() => setPlayStyle('ball')}
+                title="发光小球拖着渐变尾巴，按抛物线轨迹逐音跳跃"
+              >
+                光球
+              </button>
             </div>
             <span className="v2-play-note">
               {restoringAudio
@@ -3110,7 +3132,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   <span className="v2-align-dot" aria-hidden />
                   <span className="v2-align-text">
                     {tapping
-                      ? `跟着节奏按空格打拍…已打 ${taps.length} 拍${tapBpm ? ` · ≈${(Math.round(tapBpm * 10) / 10).toFixed(1)} 拍/分` : ''}，停 2 秒自动结算`
+                      ? `听到重音就按空格（不用从第一拍开始）· 已打 ${taps.length} 拍${tapBpm ? ` · ≈${(Math.round(tapBpm * 10) / 10).toFixed(1)} 拍/分` : '，再打几拍波形上就出预测线'}，照粉色虚线继续按，停 2 秒自动结算`
                       : wavePos !== null
                         ? alignTab === 'edit'
                           ? `试听中 ${fmtClock(wavePos)}——要绑成对齐点，切到右侧「伴奏对轨」页签再点谱面小节线`
@@ -3214,6 +3236,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                       setWaveBeat(null);
                     }}
                     onNudge={nudgePhase}
+                    // 打拍定速进行中：波形上画出已打拍点 + 外推的预测网格，
+                    // 用户照着粉色虚线继续按，不用靠耳朵硬抓拍点在哪
+                    tapMarks={tapping ? taps : undefined}
+                    tapGrid={
+                      tapping && taps.length >= 2
+                        ? { phase: taps[0]!, interval: tapBpm ? 60 / tapBpm : taps[1]! - taps[0]! }
+                        : null
+                    }
                   />
                   {/* 吸附：网格本身还没标准时（BPM / 相位都还是猜的）关掉它，
                       回到「人耳点的位置就是准绳」，不然会被按在错的拍上 */}

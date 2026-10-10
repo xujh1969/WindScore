@@ -29,71 +29,108 @@ interface BallDraw {
   r: number;
   /** 落地照亮强度 0..1：下落段渐强，落点附近最亮 */
   hot: number;
+  /** 透明度 0..1：曲末余跳渐隐用，正常飞行恒为 1 */
+  alpha: number;
   trail: { x: number; y: number }[];
 }
 
 /**
- * 光球位置：按当前 tick 在「上一颗音起点 → 下一颗音起点」之间定位。
- * 物理规律 = 抛物线（水平匀速、竖直先升后降，正是重力轨迹）；
- * 长音期间球**停**在正在响的音上，到下一音快响时才起跳——跳跃本身
- * 用固定时长（0.6 拍，短音则占满整个间隔），保证**正好落在**下一颗音上。
- * 弧高随水平距离与跨行高度放大；倚音不设落点（跟着主音走）。
+ * 光球轨迹的静态部分：音符落点序列 + 尺寸。
+ * 建一次、求值多次——拖尾要按固定 tick 步长补插中间点（掉帧时帧间距很大），
+ * 不能每插一个点就把整个落点表重建一遍。
  */
-function computeBall(
-  tick: number,
+interface BallTrack {
+  onsets: { tick: number; end: number; x: number; y: number }[];
+  k: number;
+  r: number;
+}
+
+/** 建轨迹：音符落点 = **数字字形**正上方（与 paint 层的数字起笔公式一致） */
+function buildBallTrack(
   layout: LayoutResult,
   timeline: TimelineEntry[],
-  trail: { x: number; y: number }[],
   followPartId: string | undefined,
-): BallDraw | null {
+): BallTrack | null {
   const k = layout.glyph.fontSize / 21;
-  /** 音符落点：eventId → 中心 x + 所在行 y（只看跟随声部的那一行） */
   const pos = new Map<string, { x: number; y: number }>();
   for (const line of layout.lines) {
     if (followPartId && line.partId && line.partId !== followPartId) continue;
     for (const it of line.items) {
       if (it.kind !== 'note' && it.kind !== 'rest') continue;
-      if (!pos.has(it.eventId)) pos.set(it.eventId, { x: it.x + it.w / 2, y: line.y });
+      if (pos.has(it.eventId)) continue;
+      // 击中点 = 数字字形正上方：数字从 x+pad 起笔（变音记号 / 前倚音再右移），
+      // 宽取标称数字宽。不能用 it.x + it.w/2——那条会落在增时线（5-- 的 -）上方
+      const cx =
+        it.x + layout.glyph.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + layout.glyph.nominalWidth / 2;
+      pos.set(it.eventId, { x: cx, y: line.y });
     }
   }
-  /** 落点序列：主音条目按 startTick 排；同一时刻只留一个（和弦 / 声部副本） */
-  const onsets: { tick: number; x: number; y: number }[] = [];
+  /** 落点序列：主音条目按 startTick 排；同一时刻只留一个（和弦 / 声部副本），尾音取最长 */
+  const onsets: { tick: number; end: number; x: number; y: number }[] = [];
   for (const e of timeline) {
     if (e.grace) continue;
     const p = pos.get(e.eventId);
     if (!p) continue;
     const last = onsets[onsets.length - 1];
-    if (last && last.tick === e.startTick) continue;
-    onsets.push({ tick: e.startTick, x: p.x, y: p.y });
+    if (last && last.tick === e.startTick) {
+      last.end = Math.max(last.end, e.endTick);
+      continue;
+    }
+    onsets.push({ tick: e.startTick, end: e.endTick, x: p.x, y: p.y });
   }
   if (onsets.length === 0) return null;
+  /**
+   * 停靠高度：球停 / 落地时悬在音符字形顶上（再抬 5px，用户实测的视觉高度）。
+   * 数字按 textBaseline='middle' 画在 line.y，墨顶 ≈ y − 0.35em；再往上一个球半径。
+   */
+  const r = 3.7 * k;
+  const rest = layout.glyph.fontSize * 0.35 + r + 5 * k;
+  for (const o of onsets) o.y -= rest;
+  return { onsets, k, r };
+}
 
+/**
+ * 求值：按当前 tick 在「上一颗音起点 → 下一颗音起点」之间定位。
+ * 物理规律 = 抛物线（水平匀速、竖直先升后降，正是重力轨迹）；
+ * **音一响球就从音顶跃起**，沿弧线飞向下一颗音，在它响起的瞬间正好落到音顶——
+ * 长音（5- / 5--）也是一整段飞行，中途不停。
+ * 曲末：先停在最后一个音上直到尾音结束，再沿一段更高更远的余跳跃起并渐渐消隐。
+ */
+function evalBallTrack(track: BallTrack, tick: number, trail: { x: number; y: number }[]): BallDraw | null {
+  const { onsets, k, r } = track;
   let i = 0;
   while (i + 1 < onsets.length && onsets[i + 1]!.tick <= tick) i += 1;
   const a = onsets[i]!;
   const b = onsets[i + 1];
-  let x = a.x;
-  let y = a.y;
-  let hot = 0.15; // 停在音上时的待机微光
   if (b && b.tick > a.tick) {
-    const interval = b.tick - a.tick;
-    const jump = Math.min(TICKS_PER_BEAT * 0.6, interval);
-    const u = Math.max(0, Math.min(1, (tick - (b.tick - jump)) / jump));
-    if (u > 0) {
-      // 抛物线：水平匀速、竖直先升后降——这正是重力下的轨迹
-      x = a.x + (b.x - a.x) * u;
-      const h =
-        Math.min(
-          90 * k,
-          (14 + Math.abs(b.x - a.x) * 0.2 + Math.abs(b.y - a.y) * 0.6) * k,
-        );
-      y = a.y + (b.y - a.y) * u - h * 4 * u * (1 - u);
-      hot = u > 0.55 ? (u - 0.55) / 0.45 : 0;
-    }
-  } else {
-    hot = 0.5; // 曲末没有下一颗音：停在最后一个音上
+    // 音一响就起跳：整个音长就是飞行时间，长音（5- / 5--）不再中途停驻
+    const u = (tick - a.tick) / (b.tick - a.tick);
+    // 抛物线：水平匀速、竖直先升后降——这正是重力下的轨迹
+    const x = a.x + (b.x - a.x) * u;
+    const h = Math.min(
+      90 * k,
+      (14 + Math.abs(b.x - a.x) * 0.2 + Math.abs(b.y - a.y) * 0.6) * k,
+    );
+    const y = a.y + (b.y - a.y) * u - h * 4 * u * (1 - u);
+    // 落地照亮强度：下落段渐强，落地瞬间最亮
+    const hot = u > 0.55 ? (u - 0.55) / 0.45 : 0;
+    return { x, y, r, hot, alpha: 1, trail };
   }
-  return { x, y, r: 5.5 * k, hot, trail };
+  // 曲末：先**停在最后一个音上**，保持到尾音（最后一颗音的声音）真正结束；
+  // 然后沿一段比常规跳跃**更高更远**的余跳跃起，同时渐渐消隐
+  if (tick <= a.end) return { x: a.x, y: a.y, r, hot: 0.5, alpha: 1, trail };
+  const prev = onsets[i - 1];
+  const span = prev ? (a.x - prev.x) * 1.5 : 50 * k;
+  const h = prev
+    ? Math.min(
+        120 * k,
+        (14 + Math.abs(a.x - prev.x) * 0.2 + Math.abs(a.y - prev.y) * 0.6) * k,
+      ) * 1.6
+    : 46 * k;
+  const vTicks = TICKS_PER_BEAT * 0.8;
+  const u = Math.min(1, (tick - a.end) / vTicks);
+  if (u >= 1) return null; // 余跳结束：球彻底消隐
+  return { x: a.x + span * u, y: a.y - h * 4 * u * (1 - u), r, hot: 0, alpha: 1 - u, trail };
 }
 
 interface Props {
@@ -184,6 +221,8 @@ export function ScoreCanvas({
   const ballRef = useRef<BallDraw | null>(null);
   const trailRef = useRef<{ x: number; y: number }[]>([]);
   const lastBallTickRef = useRef<number | null>(null);
+  /** 尾音余跳续跑的代次：effect 重跑（重新起播 / 换谱）时作废旧的续跑循环 */
+  const ballFadeGen = useRef(0);
   const [dragFrom, setDragFrom] = useState<ScorePick | null>(null);
   /** Shift 扩选的锚点：记住上一次普通点击的位置，Shift+点击选中两者之间 */
   const anchorRef = useRef<ScorePick | null>(null);
@@ -415,6 +454,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
   // 播放循环：只重绘，不触发 React 渲染
   useEffect(() => {
     if (!playing) return;
+    ++ballFadeGen.current; // 新一轮播放接管：作废可能还在跑的尾音余跳续跑循环
     let raf = 0;
     const total = timelineTicks(timeline);
     let snapped = false;
@@ -441,14 +481,27 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       if (playStyle === 'ball') {
         const layout = layoutRef.current;
         if (layout) {
+          const track = buildBallTrack(layout, timeline, activePartId);
           const trail = trailRef.current;
           const lastT = lastBallTickRef.current;
-          if (lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) trail.length = 0;
+          if (!track || lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) {
+            trail.length = 0;
+          }
+          // 掉帧（对轨页波形 + 谱面双重重绘，帧距可能跨好几拍）时按固定 tick
+          // 步长**补插中间点**：拖尾密度与帧率无关，不会被拉成一节节断影。
+          // 历史只留约 1 拍（20 点 × 0.05 拍）——拖尾是彗星尾，不是长飘带
+          if (track && lastT !== null && tick > lastT && tick - lastT <= TICKS_PER_BEAT * 4) {
+            const stepT = TICKS_PER_BEAT * 0.05;
+            for (let t = lastT + stepT; t < tick; t += stepT) {
+              const bi = evalBallTrack(track, t, trail);
+              if (bi) trail.push({ x: bi.x, y: bi.y });
+            }
+          }
           lastBallTickRef.current = tick;
-          const b = computeBall(tick, layout, timeline, trail, activePartId);
+          const b = track ? evalBallTrack(track, tick, trail) : null;
           if (b) {
             trail.push({ x: b.x, y: b.y });
-            if (trail.length > 16) trail.shift();
+            if (trail.length > 20) trail.splice(0, trail.length - 20); // 拖尾点数上限
           }
           ballRef.current = b;
         }
@@ -505,11 +558,66 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     raf = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(raf);
-      // 停止 / 依赖变化：擦掉光球再重绘一帧，别让最后一帧的球停在画面上
-      ballRef.current = null;
-      trailRef.current = [];
-      lastBallTickRef.current = null;
-      paintRef.current(headRef.current);
+      // 停止 / 依赖变化：擦掉光球再重绘一帧，别让最后一帧的球停在画面上——
+      // **除非**球正处于尾音区（最后一颗音之后）：伴奏 / 合成音恰好在谱面结束时
+      // 停下来的歌，tick 不会再前进，余跳还没开始就被掐了。此时用真实时间
+      // 把 tick 继续外推，让余跳完整跑完并消隐（有尾奏的歌不受影响——那边
+      // 播放中 tick 就已经走完余跳了）
+      const fadeLayout = layoutRef.current;
+      const fadeTick = lastBallTickRef.current;
+      const clear = (): void => {
+        ballRef.current = null;
+        trailRef.current = [];
+        lastBallTickRef.current = null;
+        paintRef.current(headRef.current);
+      };
+      if (playStyle !== 'ball' || !fadeLayout || fadeTick === null) {
+        clear();
+        return;
+      }
+      let lastOnset = -Infinity;
+      for (let i = timeline.length - 1; i >= 0; i -= 1) {
+        const e = timeline[i]!;
+        if (!e.grace) {
+          lastOnset = e.startTick;
+          break;
+        }
+      }
+      if (fadeTick < lastOnset) {
+        clear();
+        return;
+      }
+      const gen = ++ballFadeGen.current;
+      const fadeTrack = buildBallTrack(fadeLayout, timeline, activePartId);
+      if (!fadeTrack) {
+        clear();
+        return;
+      }
+      const rate = clock.beatsPerSec * TICKS_PER_BEAT; // tick / 秒
+      let prev = performance.now();
+      let t = fadeTick;
+      const step = (now: number): void => {
+        if (gen !== ballFadeGen.current) return; // 已有新的播放接管
+        const dt = (now - prev) / 1000;
+        prev = now;
+        t += dt * rate;
+        // 帧距大也补插中间点，续跑的余跳拖尾同样保持连续
+        const stepT = TICKS_PER_BEAT * 0.05;
+        for (let u = t - dt * rate + stepT; u < t; u += stepT) {
+          const bi = evalBallTrack(fadeTrack, u, trailRef.current);
+          if (bi) trailRef.current.push({ x: bi.x, y: bi.y });
+        }
+        const b = evalBallTrack(fadeTrack, t, trailRef.current);
+        if (b) {
+          trailRef.current.push({ x: b.x, y: b.y });
+          if (trailRef.current.length > 20) trailRef.current.splice(0, trailRef.current.length - 20);
+        }
+        ballRef.current = b;
+        paintRef.current(headRef.current);
+        if (b) requestAnimationFrame(step);
+        else clear(); // 余跳跑完：彻底擦掉
+      };
+      requestAnimationFrame(step);
     };
   }, [playing, timeline, clock, getPlayTick, onEnded, score, playStyle, activePartId]);
 

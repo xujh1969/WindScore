@@ -280,9 +280,12 @@ export interface PaintOptions {
   /**
    * 播放光球（playStyle = 'ball' 时由 ScoreCanvas 逐帧计算传入）：
    * x/y = 球心（抛物线轨迹上），r = 半径，hot = 落地照亮强度 0..1，
+   * alpha = 透明度 0..1（曲末余跳渐隐用，缺省 1），
    * trail = 最近若干帧的位置（渐变拖尾）。
    */
-  ball?: { x: number; y: number; r: number; hot: number; trail: { x: number; y: number }[] } | null;
+  ball?:
+    | { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] }
+    | null;
   /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
   showMeasureNumbers?: boolean;
   /** 编辑时显示强制换行/分页标记。 */
@@ -417,61 +420,73 @@ function hexA(hex: string, a: number): string {
 }
 
 /**
- * 播放光球：跟随抛物线轨迹的发光小球。
+ * 播放光球：跟随抛物线轨迹的小球，停在 / 落在音符字形顶上。
  * 深色主题 = 光晕（globalCompositeOperation 'lighter' 叠加出「照亮附近」的感觉）；
- * 浅色主题 = 彩色点 + 柔和阴影拖尾（白底下发光只会是一片白，阴影才看得见）。
+ * 浅色主题 = 彩色点 + 阴影，**没有光晕**——白底下发光只会是一片白，
+ * 光圈也会糊掉音符，阴影才既看得见又不吵。
  */
 function drawPlayBall(
   ctx: CanvasRenderingContext2D,
-  b: { x: number; y: number; r: number; hot: number; trail: { x: number; y: number }[] },
+  b: { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] },
   theme: PaintTheme,
 ): void {
   const accent = theme.accent;
-  // 拖尾：越靠近球越实、越大；深色叠加发光，浅色画阴影
-  for (let i = 0; i < b.trail.length; i += 1) {
-    const p = b.trail[i]!;
-    const f = (i + 1) / b.trail.length;
-    ctx.globalAlpha = theme.dark ? 0.04 + f * 0.3 : 0.03 + f * 0.12;
-    if (theme.dark) {
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = accent;
-    } else {
-      ctx.fillStyle = '#3f3f46';
-    }
-    ctx.beginPath();
-    ctx.arc(p.x, p.y + (theme.dark ? 0 : b.r * 0.7), b.r * (0.25 + f * 0.7), 0, Math.PI * 2);
-    ctx.fill();
+  const alpha = b.alpha ?? 1; // 曲末余跳渐隐：整球（含拖尾）按 alpha 淡出
+  // 拖尾：整条轨迹 polyline **分三遍**描（尾淡头浓）。不能逐段描——
+  // 相邻线段的圆头在接缝处叠加，深色的 'lighter' 加法混色会把接缝
+  // 亮成一串珠点（看着就是离散的点）；整条一笔内部没有任何接缝
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const n = b.trail.length;
+  if (n >= 2) {
+    if (theme.dark) ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = theme.dark ? accent : '#3f3f46';
+    const dy = theme.dark ? 0 : b.r * 0.7; // 浅色拖尾画在球的下前方，像落地影子
+    const pass = (from: number, width: number, a: number): void => {
+      if (n - from < 2) return;
+      ctx.globalAlpha = a * alpha;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(b.trail[from]!.x, b.trail[from]!.y + dy);
+      for (let i = from + 1; i < n; i += 1) ctx.lineTo(b.trail[i]!.x, b.trail[i]!.y + dy);
+      ctx.stroke();
+    };
+    pass(0, b.r * 0.9, theme.dark ? 0.1 : 0.05); // 整条淡尾
+    pass(Math.floor(n * 0.55), b.r * 1.15, theme.dark ? 0.18 : 0.09); // 近球半段
+    pass(Math.max(0, n - 5), b.r * 1.35, theme.dark ? 0.3 : 0.14); // 球边一小截
+    ctx.globalAlpha = alpha;
+    ctx.globalCompositeOperation = 'source-over';
   }
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
 
-  // 光晕 / 阴影：落地段（hot→1）照亮范围更大
-  const glowR = b.r * (theme.dark ? 2.8 + b.hot * 2.4 : 2.1);
-  const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, glowR);
   if (theme.dark) {
+    // 光晕：落地段（hot→1）照亮范围更大
+    const glowR = b.r * (2.0 + b.hot * 1.6);
+    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, glowR);
     g.addColorStop(0, 'rgba(255,255,255,0.95)');
     g.addColorStop(0.3, hexA(accent, 0.5 + b.hot * 0.4));
     g.addColorStop(1, hexA(accent, 0));
     ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2);
+    ctx.fill();
+    // 核心：白热核心
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
   } else {
-    g.addColorStop(0, hexA(accent, 0.95));
-    g.addColorStop(0.55, hexA(accent, 0.45));
-    g.addColorStop(1, hexA(accent, 0));
-    ctx.shadowColor = 'rgba(0,0,0,0.4)';
-    ctx.shadowBlur = 12;
+    // 浅色：不发光，只画一个带柔和阴影的蓝色实心点（白底下发光只会一片白）
+    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#2563eb';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
   }
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.globalCompositeOperation = 'source-over';
-
-  // 核心：深色用白热核心，浅色用实心彩色点
-  ctx.fillStyle = theme.dark ? '#ffffff' : accent;
-  ctx.beginPath();
-  ctx.arc(b.x, b.y, b.r * (theme.dark ? 0.5 : 0.55), 0, Math.PI * 2);
-  ctx.fill();
+  ctx.globalAlpha = 1; // 渐隐后还原，别污染后续绘制
 }
 
 function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme, showEdit: boolean): void {

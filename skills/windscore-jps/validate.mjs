@@ -749,6 +749,18 @@ function parseSingle(text2, modern = false) {
   for (const line of body) {
     const tokens = line.replace(/~/g, "~ ").split(/\s+/).filter(Boolean);
     for (let raw of tokens) {
+      if (raw === "\uFF08" || raw === "\uFF09") {
+        const id = nextId();
+        const ev = {
+          id,
+          kind: "directive",
+          type: "paren",
+          value: raw === "\uFF08" ? "(" : ")"
+        };
+        events.push(ev);
+        byId.set(id, ev);
+        continue;
+      }
       const deco = /^\(([^()]+)\)$/.exec(raw);
       if (deco && /[^\d\s/^~.vVtT<>|#\-]/.test(deco[1])) {
         const id = nextId();
@@ -1106,7 +1118,9 @@ function serializeSingle(score2) {
         break;
       }
       case "directive":
-        out.push(ev.type === "text" ? `(${ev.value})` : ev.value);
+        out.push(
+          ev.type === "text" ? `(${ev.value})` : ev.type === "paren" ? ev.value === "(" ? "\uFF08" : "\uFF09" : ev.value
+        );
         emitted.add(ev.id);
         break;
       default:
@@ -1192,13 +1206,19 @@ function layoutEnsemble(score2, opts, layoutSingle) {
   }
   const systemOf = [];
   const offsetOf = [];
+  const systemLead = [0];
+  const systemMeter = [];
   let system = 0;
   let used = 0;
   for (let mi = 0; mi < count; mi++) {
     const previous = mi > 0 ? singles[0].events[tables[0][mi - 1]?.to - 1] : void 0;
-    if (used > 0 && (used + widths[mi] > available || previous?.kind === "barline" && previous.breakAfter)) {
+    if (used > 0 && (used + widths[mi] > available - (systemLead[system] ?? 0) || previous?.kind === "barline" && previous.breakAfter)) {
       system++;
       used = 0;
+      const bar = previous && previous.kind === "barline" ? previous : void 0;
+      const lead = bar?.beatAfter ? METER_LEAD * k : 0;
+      systemLead[system] = lead;
+      systemMeter[system] = bar?.beatAfter ?? "";
     }
     systemOf.push(system);
     offsetOf.push(used);
@@ -1207,7 +1227,7 @@ function layoutEnsemble(score2, opts, layoutSingle) {
   const positions = /* @__PURE__ */ new Map();
   for (const list of entries) for (const e of list) {
     const p = local.get(e.item.eventId);
-    const offset = left + offsetOf[e.measure];
+    const offset = left + (systemLead[systemOf[e.measure]] ?? 0) + offsetOf[e.measure];
     positions.set(e.item.eventId, { x: offset + p.x, w: p.w, line: systemOf[e.measure], ...p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x) } : {} });
   }
   const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
@@ -1222,7 +1242,10 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     for (let pi = 0; pi < parts.length; pi++) {
       const source = placed[pi].lines.find((line2) => line2.items.some((it) => positions.get(it.eventId)?.line === si));
       const y = startY + si * systemH + pi * rowH + rowH / 2;
-      const line = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si } : {
+      const lead = systemLead[si] ?? 0;
+      const leadingMeter = lead > 0 ? { meter: systemMeter[si] ?? "", x: left + lead * 0.45 } : void 0;
+      const meterMoved = !!systemMeter[si + 1];
+      const line = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved } : {
         index: lines.length,
         y,
         items: [],
@@ -1233,7 +1256,9 @@ function layoutEnsemble(score2, opts, layoutSingle) {
         voltas: [],
         partId: parts[pi].id,
         partName: parts[pi].name,
-        system: si
+        system: si,
+        leadingMeter,
+        meterMoved
       };
       lines.push(line);
       if (source) {
@@ -1336,6 +1361,7 @@ function dashCountOf(ticks, dot) {
   }
   return dashes;
 }
+var METER_LEAD = 30;
 function layoutScore(score2, opts) {
   if (score2.parts?.length) return layoutEnsemble(score2, opts, layoutScore);
   const unit = opts.unit ?? 1.3;
@@ -1441,7 +1467,9 @@ function layoutScore(score2, opts) {
       const bar = ev;
       const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
       w = (base + (bar.beatAfter ? 30 : 0)) * k + spacing;
-    } else if (ev.kind === "directive" || ev.kind === "jump") w = 26 * k + spacing;
+    } else if (ev.kind === "directive") {
+      w = (ev.type === "paren" ? 15 : 26) * k + spacing;
+    } else if (ev.kind === "jump") w = 26 * k + spacing;
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w };
   });
   let starts = [0];
@@ -1546,8 +1574,14 @@ function layoutScore(score2, opts) {
     const from = starts[li];
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
     const y = padTop + titleHeight + li * lineHeight + lineHeight / 2;
+    const prevLineEnd = from > 0 ? score2.events[from - 1] : void 0;
+    const leadMeter = prevLineEnd && prevLineEnd.kind === "barline" ? prevLineEnd.beatAfter : void 0;
+    const lead = leadMeter ? METER_LEAD * k : 0;
+    const tailEv = to > 0 ? score2.events[to - 1] : void 0;
+    const tailMeter = tailEv && tailEv.kind === "barline" ? tailEv.beatAfter : void 0;
+    const meterMoved = !!tailMeter && li + 1 < starts.length;
     const items = [];
-    let cx = padding;
+    let cx = padding + lead;
     let measureNo = 1;
     let seenTimed = false;
     for (let k2 = 0; k2 < from; k2 += 1) {
@@ -1562,7 +1596,7 @@ function layoutScore(score2, opts) {
     const usedBars = line.reduce((a, x2) => a + (x2.ev.kind === "barline" ? x2.w : 0), 0);
     const usedRest = line.reduce((a, x2) => a + x2.w, 0) - usedBars;
     const isLast = li === starts.length - 1;
-    const stretch = opts.positions || isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - usedBars) / usedRest);
+    const stretch = opts.positions || isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - lead - usedBars) / usedRest);
     for (let i = from; i < to; i += 1) {
       const { ev, w } = widths[i];
       if (opts.positions) cx = opts.positions.get(ev.id)?.x ?? cx;
@@ -1646,7 +1680,7 @@ function layoutScore(score2, opts) {
     {
       let acc = 0;
       let open = false;
-      let barX = padding;
+      let barX = padding + lead;
       const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       let measurePartial = false;
@@ -1818,7 +1852,22 @@ function layoutScore(score2, opts) {
       hitIndex.push({ eventId: it.eventId, x: it.x, y: y + 14, w: it.w, h: 30 });
     }
     const previous = score2.events[from - 1];
-    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas: [], pageBreakBefore: previous?.kind === "barline" && previous.breakAfter === "page" });
+    lines.push({
+      index: li,
+      y,
+      items,
+      beams,
+      arcs,
+      badges,
+      tuplets,
+      voltas: [],
+      pageBreakBefore: previous?.kind === "barline" && previous.breakAfter === "page",
+      // 拍号画在让出来的那段空隙中间（右侧照旧离第一颗音有一点距离）
+      ...leadMeter ? { leadingMeter: { meter: leadMeter, x: padding + lead * 0.45 } } : {},
+      // 行前小节线（上一行行末那根）：连谱号 / 行首拍号的点击与高亮都挂在它身上
+      ...prevLineEnd && prevLineEnd.kind === "barline" ? { leadingBarlineId: prevLineEnd.id, leadingBarlineIndex: from - 1 } : {},
+      meterMoved
+    });
   }
   const position = new Map(lines.flatMap((line, li) => line.items.map((it) => [it.eventId, { li, it }])));
   for (const e of score2.events) {

@@ -1,0 +1,42 @@
+{
+  "meta": { "title": "流水线测试", "key": "1=C", "beat": "4/4", "bpm": 90 },
+  "measures": [
+    {
+      "partial": true,
+      "notes": [
+        { "d": 3, "dur": 1 }
+      ]
+    },
+    {
+      "notes": [
+        { "d": 5, "dur": 1, "slur": "open" },
+        { "d": 6, "dur": 0.5 },
+        { "d": 5, "dur": 0.5, "slur": "close" },
+        { "d": 3, "dur": 1, "graceBefore": [{ "d": 6 }], "text": "间奏" },
+        { "d": 0, "dur": 1 }
+      ]
+    },
+    {
+      "notes": [
+        { "d": 1, "dur": 4, "tie": false }
+      ]
+    },
+    {
+      "notes": [
+        { "d": 2, "dur": 1, "acc": "#" },
+        { "d": 2, "dur": 1, "acc": "#" },
+        { "d": 1, "dur": 1, "oct": 1 },
+        { "d": 5, "dur": 1, "parenOpen": true }
+      ],
+      "meterAfter": "3/4",
+      "breakAfter": "line"
+    },
+    {
+      "notes": [
+        { "d": 6, "dur": 1, "parenClose": true },
+        { "d": 5, "dur": 1, "tie": true },
+        { "d": 5, "dur": 1, "graceAfter": [{ "d": 3, "oct": -1 }] }
+      ]
+    }
+  ]
+}

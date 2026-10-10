@@ -12,7 +12,12 @@ import quartetDemo from '../../scores/quartet-demo.jps?raw';
 import { meterAt } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput } from '../lyrics';
-import { setTextAnnotation, textAnnotationOf } from '../edit';
+import {
+  annotationTextOf,
+  parenFlagsOf,
+  setTextAnnotation,
+  toggleParen,
+} from '../edit';
 import { HelpDialog } from './HelpCenter';
 import {
   applyTier as applyTierOp,
@@ -95,7 +100,7 @@ import {
   timelineTicks,
 } from '../timeline';
 import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, GraceNote, JumpMark, Score } from '../types';
-import { constantTempo, curveFromAnchors, tempoFromAlign, tickToSec, type TempoMap } from '../tempo';
+import { constantTempo, curveFromAnchors, secToTick, tempoFromAlign, tickToSec, type TempoMap } from '../tempo';
 import { detectVocalEntry, estimateTempoOfBuffer, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { AudioPreview } from '../audio';
 import AudioWaveform from './AudioWaveform';
@@ -110,7 +115,7 @@ import { isTauri } from '../io';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
 import { buildPack, packFileName } from './packBundle';
-import type { LibraryItem } from './libraryStore';
+import { upsertLibrary, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 
@@ -129,6 +134,13 @@ const DYNAMICS = ['pp', 'p', 'mp', 'mf', 'f', 'ff'];
  * 新音频估测不自信时（设计上不写入）界面显示的就是上一首的旧值
  */
 const DEFAULT_TEMPO_DRAFT = { bpm: 108, phaseSec: 0.31, originBeat: 36 };
+
+/** 秒 → m:ss.s（界面上说人话用，不暴露「相位」这类术语） */
+function fmtClock(sec: number): string {
+  const m = Math.floor(Math.max(0, sec) / 60);
+  const s = Math.max(0, sec) - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
 
 /** 校验违反的人话分类——I1/I3 这类内部代号用户看不懂，翻成是哪类问题 */
 const VIOLATION_LABEL: Record<string, string> = {
@@ -495,6 +507,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const [pivotBeat, setPivotBeat] = useState(0);
   const [playSource, setPlaySource] = useState<'synth' | 'audio'>('synth');
+  /**
+   * 从头播放时**连伴奏前奏一起放**（默认开）：谱面记的是从进唱开始，
+   * 伴奏前面那段前奏不该被跳过——跳过了就永远听不到前奏。
+   */
+  const [playIntro, setPlayIntro] = useState(true);
   // 音频对齐面板常驻可见（用户要求）——不再有开合状态
   /**
    * 锚点配对模式：波形上选中的音频拍（null = 未在配对）。
@@ -524,6 +541,45 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [previewing, setPreviewing] = useState(false);
   const previewRef = useRef<AudioPreview>(new AudioPreview());
   /**
+   * 对轨页侧栏的两个页签：伴奏对轨 / 简谱编辑。
+   * 听着伴奏改谱是刚需（缺前奏、缺间奏要当场补），所以编辑能力直接放进对轨页，
+   * 用页签分开——两边原有的内容都不动。记忆到本地，重开停在上一回的页签。
+   */
+  const [alignTab, setAlignTab] = useState<'align' | 'edit'>(() =>
+    localStorage.getItem('ws-align-tab') === 'edit' ? 'edit' : 'align',
+  );
+  /** 只有「简谱编辑」页签下谱面才吃编辑键；对轨页签下谱面只读（点小节线是绑定，不是改谱） */
+  const canEditScore = mode === 'score' || (mode === 'align' && alignTab === 'edit');
+  /**
+   * 侧栏分流（替换掉原来按 data-mode 隐藏的 CSS 规则）：
+   * 记谱屏只有编辑面板（对齐面板完全隐藏，零干扰写谱）；
+   * 对轨屏按页签二选一——伴奏对轨 / 简谱编辑。
+   */
+  const showEditBlocks = mode !== 'align' || alignTab === 'edit';
+  const showAlignBlock = mode === 'align' && alignTab === 'align';
+  /** 切到编辑页签 = 退出对轨配对：不然点小节线会去绑定，而不是选中它改 */
+  const switchAlignTab = useCallback((tab: 'align' | 'edit') => {
+    setAlignTab(tab);
+    localStorage.setItem('ws-align-tab', tab);
+    if (tab === 'edit') {
+      setWavePos(null);
+      setWaveBeat(null);
+      previewRef.current.stop();
+      setPreviewing(false);
+    }
+  }, []);
+  /**
+   * 点击波形试听时放几拍就停（默认 8 拍）：找对齐点只需要听一小段，
+   * 一直放会盖住后面的操作。顶栏可改，记忆到 localStorage。
+   */
+  const [previewBeats, setPreviewBeats] = useState(() => {
+    const v = Number(localStorage.getItem('ws-preview-beats'));
+    return Number.isFinite(v) && v >= 1 ? Math.min(64, Math.round(v)) : 8;
+  });
+  useEffect(() => {
+    localStorage.setItem('ws-preview-beats', String(previewBeats));
+  }, [previewBeats]);
+  /**
    * 快速锚定：已知「谱面第 X 拍 = 音频第 Y 拍」时直接填。
    * 两个框会**跟着操作自动填**：点波形 → 音频拍；选中音符 → 谱面拍。
    * （早期这两个框写死 19 / 43 的示例值，点波形也不动，
@@ -532,6 +588,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [quickAnchor, setQuickAnchor] = useState({ score: 0, audio: 0 });
   /** 导入伴奏时估出来的 BPM / 相位（见 src/v2/beat.ts） */
   const [tempoEst, setTempoEst] = useState<TempoEstimate | null>(null);
+  /**
+   * 跟着音乐打拍子定速度：自动测速锁错倍频（谱 8 拍对上音频 17 拍这类）时
+   * 的人工补救——armed 时每按一次空格记一拍，几拍后中位数就是真实速度
+   */
+  const [tapping, setTapping] = useState(false);
+  /** 打拍的音频时刻（秒），最多留 16 个（越靠后的间隔越稳） */
+  const [taps, setTaps] = useState<number[]>([]);
   const [waveHover, setWaveHover] = useState<{ beat: number; bar: number; sec: number } | null>(null);
   const [audioMsg, setAudioMsg] = useState('');
   /** 检测到的人声进入时刻（秒）：仅在载入了人声分轨（文件名含 vocal/人声/voice）时才有值 */
@@ -623,26 +686,20 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           syncNote = `谱面速度 @bpm 已同步 ${oldBpm} → ${wantBpm}（撤销可还原）。`;
         }
         setAudioMsg(
-          `${prefix}估测 BPM ≈ ${wantBpm}` +
-            (est.spanRatio ? `（谱面/音频 = ${est.spanRatio}，1 就是正好铺满整首）` : '') +
-            `（置信 ${est.confidence} · 残差 ${est.residualMs}ms · 落拍 ${Math.round(est.hitRatio * 100)}%）` +
-            (est.isConstant === false
-              ? `；⚠ 分段测速极差 ${est.drift} BPM，疑似变速——恒定对齐只保证大致，请用锚点微调`
-              : '') +
+          `${prefix}估测 ≈${wantBpm} 拍/分（${est.confidence >= 0.5 ? '比较可信' : est.confidence >= 0.25 ? '不太有把握' : '很不可靠'}）。` +
+            (est.isConstant === false ? `⚠ 疑似变速（极差 ${est.drift} BPM），请多绑对齐点。` : '') +
             (est.originBeat !== null
-              ? `；自动对齐：谱面第 0 拍 = 音频第 ${est.originBeat} 拍（匹配强度 ${est.originScore}）→ 三参数已填好，不用钉锚点。`
-              : '；原点没匹配上（谱面与音频可能不是同一段）：钉两个锚点，两点之间会按实测速度拉伸。') +
-            (vSec !== null
-              ? `已检测到人声约 ${vSec.toFixed(1)}s 进入（波形紫线）：选中人声第一颗音，把波形点在紫线处，再「对准这里」。`
-              : '') +
+              ? `谱面开头 = 音频第 ${est.originBeat} 拍，点播放核对；不准就拖节奏线或打拍定速。`
+              : '原点没匹配上：点节奏线 → 点谱面小节线绑一个对齐点。') +
+            (vSec !== null ? `人声约 ${vSec.toFixed(1)}s 进入（紫线）。` : '') +
             syncNote,
         );
       } else {
         setAudioMsg(
           prefix +
             (est
-              ? `估出的 BPM ${Math.round(est.bpm)} 置信只有 ${est.confidence}，不放心，没自动填——可在下方手工改。`
-              : '这段音频没估出稳定节拍（可能太安静或太自由），请在下方手工填 BPM 与相位。'),
+              ? `自动测速 ≈${Math.round(est.bpm)} 拍/分，但把握不大，没有自动采用——点「跟着音乐打拍子定速度」人工定准。`
+              : '这段音频没测出稳定节拍（可能太安静或太自由）——点「跟着音乐打拍子定速度」人工定。'),
         );
       }
       return est;
@@ -798,6 +855,25 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     };
     saveAlign(active, data);
   }, [active, stems, tempoDraft, anchors, tempoOverride, playSource]);
+
+  /**
+   * 清除本谱的音频对齐（载入的伴奏 + 锚点 + 速度标定 + 播放源）。
+   * 音频文件本体不删：键是「文件名:字节数」，多首谱共享同一份，
+   * 这里的清除只断开本谱的引用（下次再载入同名文件秒回，不用重新解码落盘）。
+   */
+  const clearAudioAlign = useCallback(() => {
+    stopPlay();
+    setStems([]);
+    setAnchors([]);
+    setTempoOverride(null);
+    setTempoEst(null);
+    setVocalSec(null);
+    setPlaySource('synth');
+    setTempoDraft({ ...DEFAULT_TEMPO_DRAFT });
+    stemKeysRef.current = [];
+    clearAlign(active);
+    setAudioMsg('已清除本谱的伴奏与标定（音频文件保留，重载同一文件秒回）。');
+  }, [active, stopPlay]);
 
   /**
    * 单独开关某条 stem。播放中就热切（Player 里做 30ms 平滑，不会「啪」）；
@@ -987,12 +1063,18 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     }
     if (r.path) setPath(r.path);
     setSavedRev(snap.rev);
+    // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
+    // 只写文件不入库的话，回曲库看到的还是改前的那份。
+    // 没连曲库文件夹时 upsertLibrary 返回 null，忽略即可。
+    const name = cur.meta.title || active || '未命名';
+    const inLibrary = upsertLibrary(name, serializeDsl(cur));
     setMsg(
-      r.path
+      (r.path
         ? `已保存到 ${nameOf(r.path)}`
-        : '已导出到浏览器下载目录（网页端拿不到文件路径）',
+        : '已导出到浏览器下载目录（网页端拿不到文件路径）') +
+        (inLibrary ? `，并更新曲库「${name}」` : ''),
     );
-  }, [snap]);
+  }, [snap, active]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -1184,8 +1266,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   /**
    * 对准这里：波形上点的这一刻 = 某颗谱面音符响起的时刻。
    * 参照音符：谱面里**选中的那颗**；没选就是第一颗音。
-   * 单锚点语义：钉住一处，整谱反推。与「绑定」的区别是它不进锚点列表
-   * （≥2 个锚点走变速曲线，会盖掉原点，两者互斥）。
+   * 两种语义（按当前对齐状态分流）：
+   *   恒定映射（无曲线）→ 单锚点语义：钉住一处，整谱反推。
+   *   变速曲线（≥2 锚点）→ **微调语义**：在选中音的拍位上加一个锚点，曲线在该处钉准。
+   *     ——绝不能清锚点：那是把 17:8 这种实测速率差打回单一 BPM，
+   *     对准点之后必然整体漂移（实测踩过：怎么对齐都「不对」就是它）。
    * 波形默认吸附到节奏线；网格本身还不准（BPM / 相位都是猜的）时先取消
    * 「吸附节奏线」，人耳点的位置才是准绳。
    */
@@ -1202,7 +1287,22 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const selEv = selIdx >= 0 ? score.events[selIdx] : undefined;
     const usedSelection = !!selEv && isTimed(selEv);
     const refBeat = usedSelection ? tickAtEvent(score, selIdx) / TICKS_PER_BEAT : onsets[0];
-    const clickedBeat = (wavePos - tempoDraft.phaseSec) / (60 / tempoDraft.bpm);
+    const clickedBeat =
+      Math.round(((wavePos - tempoDraft.phaseSec) / (60 / tempoDraft.bpm)) * 100) / 100;
+    if (anchors.length >= 2) {
+      // 微调语义：加锚点而不是清场。（commitAnchor 声明在本函数之后，内联同款逻辑）
+      setPivotBeat(refBeat);
+      setAnchors((list) => [
+        ...list.filter((x) => x.scoreBeat !== refBeat),
+        { scoreBeat: refBeat, audioBeat: clickedBeat },
+      ]);
+      setTempoOverride(null);
+      setAudioMsg(
+        `已微调：谱面第 ${refBeat} 拍 = 音频第 ${clickedBeat} 拍，` +
+          '变速曲线在此处重新钉准（之前的锚点全部保留）。',
+      );
+      return;
+    }
     const origin = Math.round((clickedBeat - refBeat) * 100) / 100;
     setPivotBeat(refBeat);
     setTempoDraft((d) => ({ ...d, originBeat: origin }));
@@ -1213,7 +1313,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         (usedSelection ? '' : '（没选音符，默认对了谱面第一颗音）') +
         '这颗音之前的部分自动反推；之后跟不跟得住看速度档。锚点已清空。',
     );
-  }, [wavePos, stems, snap, tempoDraft, score]);
+  }, [wavePos, stems, snap, tempoDraft, score, anchors]);
 
   const applyImpliedBpm = useCallback(() => {
     if (impliedBpm === null) return;
@@ -1299,10 +1399,19 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 对轨页仍放伴奏（对齐本来就要听着伴奏调）。
     // 谱尾行为（指导书 §9.3）：音频比谱长时，指示条到尾就停，音频继续放完。
     if (playSource === 'audio' && audioReady && mode !== 'score') {
+      // 前奏：谱面记的是从进唱开始，伴奏前面还整段前奏。
+      // 从头播时把起播点推到音频 0 秒（secToTick 反查，通常为负 tick = 谱面起点之前），
+      // 前奏就会照常放完再进谱面；关掉则老样子——从谱面起点直接开始
+      // playFromTick 未必正好 0（谱首有弱起 / 小节线时会落在第一拍内），
+      // 所以判据用「从开头附近起播」而不是严格等于 0
+      const introTick =
+        playIntro && playFromTick <= TICKS_PER_BEAT
+          ? Math.min(0, secToTick(audioTempo!, 0))
+          : playFromTick;
       playerRef.current.startAudio({
         timeline,
         tempo: audioTempo!,
-        fromTick: playFromTick,
+        fromTick: introTick,
         stems: stems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
         synth: false,
         onEnded: () => setPlaying(false),
@@ -1317,7 +1426,126 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.seek(playFromTick / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro]);
+
+  // ── 跟着音乐打拍子定速度 ─────────────────────────────────────
+  // 自动测速的失败模式是锁错倍频（17:8 就是 2.125 倍），数学上无法从错网格自救。
+  // 人耳不会错：跟着音乐打 4-8 拍，间隔取中位数（抗手抖）就是真实速度，
+  // 第一拍的位置就是网格起点。全程不出现「相位 / 原点」字眼。
+
+  /** 记一拍：当前音频位置（秒）。只在音频播放中有效 */
+  const recordTap = useCallback(() => {
+    const sec = playerRef.current.currentSec;
+    if (sec === null) return;
+    setTaps((list) => [...list, Math.round(sec * 1000) / 1000].slice(-16));
+  }, []);
+
+  /** 开始打拍：伴奏**从绝对 0 秒**起播（前奏也一起听，节奏从哪进就从哪打） */
+  const startTapping = useCallback(() => {
+    if (!stems.length) return;
+    previewRef.current.stop();
+    setPreviewing(false);
+    setTaps([]);
+    setTapping(true);
+    playerRef.current.startAudio({
+      timeline,
+      // 不能传现行 audioTempo：它正是要被推翻的错误标定，
+      // startSec = tickToSec(0) 会落在曲子中间（0.2.23 实测踩到）。
+      // 恒等映射让 tick 0 = 音频 0 秒，伴奏从头放；synth:false 下
+      // tempo 只影响指示条，打拍期间用不到
+      tempo: constantTempo(60, 0, 0),
+      fromTick: 0,
+      stems: stems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
+      synth: false,
+      onEnded: () => setPlaying(false),
+    });
+    setPlaying(true);
+  }, [stems, timeline]);
+
+  /**
+   * 网格起点微调（« ‹ › » 四个按钮）：整条网格**连同挂在它上面的对齐**一起平移。
+   *
+   * 为什么不用重建锚点：锚点存的是「网格拍号」，相位一变它们的绝对时刻自然跟着变
+   * ——这正是想要的效果（打拍的第一下常有几十毫秒手抖，整条一起挪就正过来了）。
+   * 只有换**网格间距**（BPM）时才需要按时刻不变重建，见 applyTaps / rescaleTempo。
+   */
+  const nudgePhase = useCallback((deltaSec: number) => {
+    setTempoDraft((d) => ({
+      ...d,
+      phaseSec: Math.round((d.phaseSec + deltaSec) * 1000) / 1000,
+    }));
+    // 变速曲线里存的是绝对时刻（beatTimes），网格动了它必须一起动，
+    // 否则会出现「网格线挪了、谱面没动」的错位
+    setTempoOverride((m) =>
+      m && m.kind === 'curve'
+        ? { ...m, beatTimes: m.beatTimes.map((t) => Math.round((t + deltaSec) * 1000) / 1000) }
+        : m,
+    );
+  }, []);
+
+  /** 打拍估速：相邻间隔的中位数 → BPM。少于 3 拍不成（2 个间隔方差太大） */
+  const tapBpm = useMemo(() => {
+    if (taps.length < 3) return null;
+    const iv = taps.slice(1).map((t, i) => t - taps[i]!);
+    const sorted = [...iv].sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)]!;
+    return med >= 0.15 ? 60 / med : null; // 间隔 <0.15s 多半是手抖双击，不采纳
+  }, [taps]);
+
+  /** 打拍模式吃掉空格：只记拍，不落谱面快捷键 */
+  useEffect(() => {
+    if (!tapping) return;
+    const h = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      recordTap();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [tapping, recordTap]);
+
+  /**
+   * 采纳打拍结果。换网格必须保时刻：旧网格第 k 拍的秒数 t = 旧起点 + k×旧拍长，
+   * 新网格拍号 = (t − 新起点)/新拍长——已钉的锚点 / 原点按同一公式换算，
+   * 换完速度后已对齐的部分依然对齐，不用重绑。
+   */
+  const applyTaps = useCallback(() => {
+    if (tapBpm === null || taps.length < 2) return;
+    const newPhase = taps[0]!;
+    const old = tempoDraft;
+    const toNewBeat = (oldBeat: number): number =>
+      Math.round(((old.phaseSec + oldBeat * (60 / old.bpm) - newPhase) / (60 / tapBpm)) * 100) / 100;
+    setTempoDraft((d) => ({
+      ...d,
+      bpm: Math.round(tapBpm * 100) / 100,
+      phaseSec: Math.round(newPhase * 1000) / 1000,
+      originBeat: toNewBeat(d.originBeat),
+    }));
+    setAnchors((list) => list.map((a) => ({ ...a, audioBeat: toNewBeat(a.audioBeat) })));
+    setTempoOverride(null);
+    setTapping(false);
+    setPlaying(false);
+    playerRef.current.stop();
+    setAudioMsg(
+      `速度已按你的打拍定为 ≈${Math.round(tapBpm * 10) / 10} 拍/分，网格线应该正好压在鼓点上了。` +
+        '下一步对准开头：波形点人声开口处 → 谱面选中那颗音 → 点「对准这里」。' +
+        (anchors.length ? '已绑的锚点已按新速度自动换算，不用重绑。' : ''),
+    );
+  }, [tapBpm, taps, tempoDraft, anchors.length]);
+
+  /**
+   * 打拍自动结算：最后一拍之后 2 秒没有新拍 → 自动采纳。
+   * 打拍本来的终点就是「打够了」，停手即结算——比找按钮顺手，也不用解释按钮。
+   */
+  const applyTapsRef = useRef(applyTaps);
+  applyTapsRef.current = applyTaps;
+  useEffect(() => {
+    if (!tapping || taps.length < 3) return;
+    const id = window.setTimeout(() => applyTapsRef.current(), 2000);
+    return () => window.clearTimeout(id);
+  }, [tapping, taps]);
 
   // 恢复中的等待机制：restoring 由恢复流程的 finally 落地，这里把等待者叫醒
   const restoringRef = useRef(restoring);
@@ -1488,6 +1716,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       commit({ ...snap, score: next });
     },
     [commit, snap],
+  );
+
+  /** 段落标注的编辑草稿（null = 没在编辑，显示谱面里的值） */
+  const [annotDraft, setAnnotDraft] = useState<string | null>(null);
+  /** 当前音左右两侧是否已加了括号（按钮点亮用） */
+  const parenFlags = useMemo(
+    () => (focus && isTimed(focus) ? parenFlagsOf(score, focus.id) : { open: false, close: false }),
+    [focus, score],
+  );
+
+  /**
+   * 提交段落标注。插入 / 删除 directive 会改变它后面所有事件的下标，
+   * 而选中的音是按下标取的（events[cursor-1]）——光标必须跟着挪，
+   * 否则提交完焦点就跑到标注自己身上，面板一换、输入框又没了。
+   */
+  const commitAnnotation = useCallback(
+    (text: string) => {
+      if (!focus || (focus.kind !== 'note' && focus.kind !== 'rest')) return;
+      const next = setTextAnnotation(score, focus.id, text);
+      if (next === score) return;
+      const shift = next.events.length - score.events.length;
+      commit({ ...snap, score: next, cursor: snap.cursor + shift });
+    },
+    [focus, score, snap, commit],
   );
 
   // ───────────────────────── 倚音录入（三格 + 前/后互斥） ─────────────────────────
@@ -1670,6 +1922,32 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, [audioBeatOfWave, commitAnchor]);
 
   /**
+   * 边播边修（对轨的核心验证循环）：播放中听到指示条与伴奏错位 →
+   * 按 N（或状态条「不对，在这对齐」）→ 就地暂停 → 当前时刻变成波形定点 →
+   * 点谱面小节线 / 音符完成绑定 → 空格继续播。
+   * 不吸附：播放头此刻的位置就是准绳，吸到错误的网格线上等于没修。
+   */
+  const markMisalign = useCallback(() => {
+    if (mode !== 'align' || !audioReady) return;
+    const sec = playerRef.current.currentSec;
+    if (sec === null) return;
+    playerRef.current.stop();
+    clockRef.current.pause();
+    setPlaying(false);
+    setWavePos(sec);
+    setWaveBeat(Math.round(((sec - tempoDraft.phaseSec) / (60 / tempoDraft.bpm)) * 100) / 100);
+  }, [mode, audioReady, tempoDraft]);
+
+  /** 删除某条节奏线上的对齐点（浮层「删除此对齐点」）；对齐回退到其余锚点 / 自动标定 */
+  const deleteAnchorAt = useCallback(
+    (audioBeat: number) => {
+      setAnchors((list) => list.filter((a) => Math.abs(a.audioBeat - audioBeat) > 0.5));
+      setAudioMsg('已删除该对齐点；对齐回退到其余锚点或自动标定。');
+    },
+    [],
+  );
+
+  /**
    * 鼠标选中。
    *   点在音上   → over 模式，方块光标，之后输入是替换
    *   点在缝隙里 → insert 模式，I 形光标，之后输入是插入
@@ -1683,8 +1961,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // 画布上任何一次非铅笔点击（音符 / 缝隙 / 空白处按最近邻回退）都离开曲目信息：
       // 改音符和改曲目信息互斥，见 songInfoOpen 的注释
       setSongInfoOpen(false);
-      // 绑完就退出配对：否则你后面只是想看看别的线，点一下就又绑一个
-      if (!b && (!a.partId || a.partId === activePartId) && wavePos !== null && bindPick(a.index)) {
+      // 绑完就退出配对：否则你后面只是想看看别的线，点一下就又绑一个。
+      // 侧栏在「简谱编辑」页签时不绑——那时点谱面是选中 / 改谱，不是绑定对齐点
+      if (
+        !b &&
+        (!a.partId || a.partId === activePartId) &&
+        wavePos !== null &&
+        alignTab === 'align' &&
+        bindPick(a.index)
+      ) {
         setWavePos(null);
         setWaveBeat(null);
       }
@@ -1712,19 +1997,21 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setWaveBeat(Math.round(beat * 100) / 100);
       // 点哪儿就把「音频第几拍」填进快速锚定：那两个框必须反映你刚点的位置
       setQuickAnchor((q) => ({ ...q, audio: Math.round(beat * 10) / 10 }));
-      if (playing) {
-        playerRef.current.stop();
-        clockRef.current.pause();
-        setPlaying(false);
-      }
+      // 无条件停谱面播放：播放标志可能与播放器实际状态脱节，
+      // 靠标志判断会漏停，试听叠上去就是两条音频（音频层另有全局互斥兜底）
+      playerRef.current.stop();
+      clockRef.current.pause();
+      setPlaying(false);
+      // 放 previewBeats 拍就停（拍长按当前网格 BPM 算）：找对齐点听一小段就够
       previewRef.current.start(
         stems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
         sec,
         () => setPreviewing(false),
+        (previewBeats * 60) / tempoDraft.bpm,
       );
       setPreviewing(true);
     },
-    [stems, playing, tempoDraft],
+    [stems, previewBeats, tempoDraft.bpm],
   );
 
   const stopPreview = useCallback(() => {
@@ -1947,11 +2234,23 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         setPreviewing(false);
         return;
       }
-      // 对轨模式：谱面只读，编辑键一律不响应（改谱回「记谱」；播放用按钮）
-      if (mode === 'align') return;
-      // 编辑键只认记谱屏：播放 / 曲库 / 动态谱首页里按 1-7、退格，
-      // 不能偷偷改那份看不见的谱子（编辑器不渲染 ≠ 状态不在）
-      if (mode !== 'score') return;
+      // 边播边修：播放中听到指示条跟不上伴奏 → N 键在此刻就地暂停并准备加对齐点
+      if (mode === 'align' && (e.key === 'n' || e.key === 'N') && playing) {
+        e.preventDefault();
+        markMisalign();
+        return;
+      }
+      // Ctrl/Cmd+S 随时可存：对轨页也能改谱，两个页签下都要能存盘
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        void onSave();
+        return;
+      }
+      // 编辑键只认记谱屏；对轨屏切到「简谱编辑」页签后同样可编辑
+      // （对着伴奏补前奏 / 间奏就是要在这一屏改）。其余屏一律不响应——
+      // 播放 / 曲库 / 动态谱首页里按 1-7、退格，不能偷偷改那份看不见的谱子
+      // （编辑器不渲染 ≠ 状态不在）
+      if (!canEditScore) return;
 
       if (e.ctrlKey || e.metaKey) {
         const k = e.key.toLowerCase();
@@ -2152,7 +2451,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
@@ -2330,6 +2629,23 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <button className="v2-btn" onClick={onOpen} title="换一首简谱来对轨">
                 打开
               </button>
+              {/* 对轨页能改谱（补前奏 / 间奏），所以要有独立的保存入口：
+                  存 .jps 文件，并同步回曲库；未保存的改动会标出来 */}
+              <button
+                className="v2-btn"
+                title={`把当前谱面存成 .jps（含在「简谱编辑」页签里的修改），并更新曲库${dirty ? '；有未保存的改动' : ''}`}
+                onClick={() => void onSave()}
+                disabled={score.events.length === 0}
+              >
+                保存{dirty ? ' •' : ''}
+              </button>
+              <button
+                className="v2-btn"
+                title="导出 PDF / 图片 / 视频——配好伴奏的视频直接带伴奏音"
+                onClick={() => setExportOpen(true)}
+              >
+                导出
+              </button>
               <button
                 className="v2-btn"
                 disabled={!serialized}
@@ -2338,6 +2654,44 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               >
                 打包
               </button>
+              <button
+                className="v2-btn"
+                title="先把整首歌分成人声 / 伴奏分轨，再把分轨载入这里对齐"
+                onClick={() => setTramaOpen(true)}
+              >
+                音轨分离
+              </button>
+              {/* 编辑页签下才给撤销 / 重做：改谱要能回头 */}
+              {alignTab === 'edit' ? (
+                <>
+                  <button className="v2-btn" onClick={undo} disabled={!past.length}>
+                    撤销
+                  </button>
+                  <button className="v2-btn" onClick={redo} disabled={!future.length}>
+                    重做
+                  </button>
+                </>
+              ) : null}
+              {/* 点击波形试听放几拍就停（找对齐点听一小段就够，不用手动掐） */}
+              <label
+                className="v2-grace-check"
+                title="点击波形试听时放几拍就自动停；拍长按当前网格速度计算"
+              >
+                试听
+                <input
+                  className="v2-num"
+                  style={{ width: 44 }}
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={previewBeats}
+                  onChange={(e) => {
+                    const v = Math.round(Number(e.target.value));
+                    if (Number.isFinite(v)) setPreviewBeats(Math.max(1, Math.min(64, v)));
+                  }}
+                />
+                拍
+              </label>
             </>
           ) : null}
           {mode !== 'play' && mode !== 'discover' ? <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button> : null}
@@ -2590,8 +2944,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           visibleLayout={mode === 'play' || view === 'score' ? visibleLayout.current?.layout : undefined}
           visibleOptions={visibleLayout.current?.options}
           initialPartId={!totalView && documentScore.part ? activePartId : ''}
-          // 视频只在演奏场景（曲库播放 / 动态谱播放）导出；简谱编辑页不出现该页签
-          allowVideo={entry === 'align' || entry === 'play'}
+          // 视频导出所有入口都有：配好伴奏录伴奏音，没配就录 MIDI 合成音（导出弹窗自动分流）
+          allowVideo
           dark={dark}
           onClose={() => setExportOpen(false)}
           onBegin={() => {
@@ -2726,20 +3080,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             </div>
           </div>
 
-          {/*
-            音轨分离工具：把整首歌拆成人声 / 伴奏分轨，是「载入分轨 → 对齐」的前置步骤。
-            放在波形上方，且不管有没有载入音频都在——最需要它的时候恰恰是还没载入。
-          */}
-          {mode === 'align' ? (
-            <div className="v2-wave-tool">
-              <button className="v2-btn" onClick={() => setTramaOpen(true)}>
-                音轨分离工具下载
-              </button>
-              <span className="v2-wave-tool-hint">
-                先用它把整首歌分成人声 / 伴奏分轨，再把分轨载入这里对齐
-              </span>
-            </div>
-          ) : null}
+          {/* 音轨分离入口已移到顶部工具条（对轨组），波形上方腾出一行竖向空间 */}
 
           {view === 'score' ? (
             <>
@@ -2749,12 +3090,71 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 <span>{notes ? '中文词句自动分格 · 空格确认 / 补空位 · ← → 移动' : '当前声部没有音符，请结束歌词输入后先写旋律'}</span>
                 <button className="v2-btn" onClick={() => setLyricSelection(null)}>结束歌词输入</button>
               </div> : null}
+              {/*
+                对轨状态条：整个对轨流程的「下一步」永远只在这一行里说。
+                四种状态（打拍 / 等待谱面点击 / 边听边校 / 空闲）各一句话，替代旧面板的全部说明文字。
+              */}
+              {mode === 'align' && stems.length > 0 ? (
+                <div
+                  className={`v2-align-status${tapping ? ' is-busy' : wavePos !== null ? ' is-active' : ''}`}
+                >
+                  <span className="v2-align-dot" aria-hidden />
+                  <span className="v2-align-text">
+                    {tapping
+                      ? `跟着节奏按空格打拍…已打 ${taps.length} 拍${tapBpm ? ` · ≈${(Math.round(tapBpm * 10) / 10).toFixed(1)} 拍/分` : ''}，停 2 秒自动结算`
+                      : wavePos !== null
+                        ? alignTab === 'edit'
+                          ? `试听中 ${fmtClock(wavePos)}——要绑成对齐点，切到右侧「伴奏对轨」页签再点谱面小节线`
+                          : `已选 ${fmtClock(wavePos)}${waveBeat !== null ? `（第 ${Math.round(waveBeat * 10) / 10} 拍）` : ''} → 点击谱面小节线完成绑定`
+                        : playing && playSource === 'audio' && audioReady
+                          ? '边听边校：指示条跟伴奏错位？按 N 在此刻加对齐点'
+                          : audioReady
+                            ? `${Math.round(tempoDraft.bpm)} 拍/分 · 已对齐 ${anchors.length} 处 · 点节奏线对齐，拖节奏线整组平移`
+                            : '载入伴奏后自动测速 · 点节奏线 → 点谱面小节线完成对齐'}
+                  </span>
+                  {tapping ? (
+                    <>
+                      <button className="v2-btn" onClick={() => setTaps([])}>
+                        重打
+                      </button>
+                      <button
+                        className="v2-btn"
+                        onClick={() => {
+                          setTapping(false);
+                          setPlaying(false);
+                          playerRef.current.stop();
+                        }}
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : null}
+                  {wavePos !== null ? (
+                    <button
+                      className="v2-btn"
+                      onClick={() => {
+                        setWavePos(null);
+                        setWaveBeat(null);
+                        previewRef.current.stop();
+                        setPreviewing(false);
+                      }}
+                    >
+                      Esc 取消
+                    </button>
+                  ) : null}
+                  {playing && playSource === 'audio' && audioReady ? (
+                    <button className="v2-btn" onClick={markMisalign}>
+                      不对，在这对齐 (N)
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               {mode === 'align' && stems.length > 0 && audioTempo ? (
                 <div className="v2-wave-wrap v2-wave-wrap--big">
                   <span className="v2-wave-hover">
                     {waveHover
                       ? `第 ${waveHover.beat} 拍 · 小节 ${waveHover.bar} · ${waveHover.sec.toFixed(2)}s`
-                      : '滚轮缩放 · 拖动平移 · 点一条节奏线 → 再点谱面的小节线即绑定'}
+                      : '滚轮缩放 · 拖空白平移 · 拖节奏线整组平移'}
                   </span>
                   <AudioWaveform
                     stems={stems}
@@ -2780,6 +3180,31 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     canBind={wavePos !== null && (focusTimed || !!barlineFocus)}
                     bindLabel={barlineFocus ? '绑定选中线' : focusTimed ? '绑定选中音符' : '绑定'}
                     onHover={setWaveHover}
+                    // 拖网格开始前停掉一切发声：试听放着时拖线，
+                    // 播放头推进会让视图自动跟随滚动，线的视觉位移
+                    // 和实际平移量对不上（用户实测「拖一半」的根源）
+                    onGridShiftStart={() => {
+                      stopPreview();
+                      playerRef.current.stop();
+                      clockRef.current.pause();
+                      setPlaying(false);
+                    }}
+                    onGridShift={nudgePhase}
+                    onGridShiftEnd={() => {}}
+                    markerTitle={
+                      wavePos !== null
+                        ? `${waveBeat !== null ? `第 ${Math.round(waveBeat * 10) / 10} 拍 · ` : ''}${fmtClock(wavePos)}`
+                        : undefined
+                    }
+                    markerIsAnchor={
+                      waveBeat !== null && anchors.some((a) => Math.abs(a.audioBeat - waveBeat) < 0.5)
+                    }
+                    onDeleteAnchor={() => {
+                      if (waveBeat !== null) deleteAnchorAt(waveBeat);
+                      setWavePos(null);
+                      setWaveBeat(null);
+                    }}
+                    onNudge={nudgePhase}
                   />
                   {/* 吸附：网格本身还没标准时（BPM / 相位都还是猜的）关掉它，
                       回到「人耳点的位置就是准绳」，不然会被按在错的拍上 */}
@@ -2830,8 +3255,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   onExit: () => setLyricSelection(null),
                 } : undefined}
                 /* 波形上点过节奏线 = 配对中：光标变绑定样式 + 小节线画靶标，
-                   点了小节线（绑定完成）就自动退出，光标恢复 */
-                pairing={lyricVerse === null && mode === 'align' && wavePos !== null}
+                   点了小节线（绑定完成）就自动退出，光标恢复。
+                   侧栏切到「简谱编辑」时不进入配对：那时点谱面是编辑 */
+                pairing={lyricVerse === null && mode === 'align' && alignTab === 'align' && wavePos !== null}
                 onPickStart={() => {
                   bindScoreStart();
                 }}
@@ -2890,7 +3316,29 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         </main>
 
         <aside className="v2-side" data-mode={mode}>
-          {lyricVerse !== null ? <div className="v2-side-block">
+          {/*
+            对轨屏的两个页签：伴奏对轨 / 简谱编辑。
+            两块内容完全沿用记谱屏的那一套，只是按任务分开摆——
+            对着伴奏补前奏 / 间奏不用再回记谱屏。记谱屏不出现页签。
+          */}
+          {mode === 'align' ? (
+            <div className="v2-view-switch v2-side-tabs">
+              <button
+                className={alignTab === 'align' ? 'v2-seg is-on' : 'v2-seg'}
+                onClick={() => switchAlignTab('align')}
+              >
+                伴奏对轨
+              </button>
+              <button
+                className={alignTab === 'edit' ? 'v2-seg is-on' : 'v2-seg'}
+                onClick={() => switchAlignTab('edit')}
+                title="改谱面：补前奏、间奏，或修正音符（与记谱屏同一套面板）"
+              >
+                简谱编辑
+              </button>
+            </div>
+          ) : null}
+          {showEditBlocks ? (lyricVerse !== null ? <div className="v2-side-block">
             <div className="v2-side-title">歌词输入</div>
             <p className="v2-hint">当前行：{lyricTrackNames(score)[lyricVerse]}<br />关联声部：{score.part?.name ?? '声部 1'}</p>
             <p className="v2-hint">点击任一歌词格或对应音符即可从那里开始，前奏与间奏无需逐个跳过。</p>
@@ -3186,6 +3634,55 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     ) : null}
                   </div>
                 </div>
+                {/*
+                  划分候选紧跟在总时值按钮下面：点「1 拍」弹出多个方案时，
+                  视线不用跳到面板底部去找（旧版渲染在整个检查器之后，隔了一整屏）。
+                */}
+                {pending ? (
+                  <div className="v2-field">
+                    <span className="v2-field-label">选择划分（{pending.ids.length} 个音）</span>
+                    {/*
+                      候选不用文字描述，直接画出选中音符的实际样子——
+                      每个方案一排记号（选中什么音就画什么音，休止符画 0），
+                      连音方案带标号。文字标签降级为悬停提示。
+                    */}
+                    <ul className="v2-diag">
+                      {pending.cands.map((c, i) => {
+                        const degrees = pending.ids.map((id) => {
+                          const e = score.events.find((x) => x.id === id);
+                          return e && e.kind === 'note' ? e.degree : 0;
+                        });
+                        return (
+                          <li key={i}>
+                            <button
+                              className="v2-btn v2-cand"
+                              title={c.label}
+                              onClick={() => {
+                                const next = applyTierOp(score, pending.ids, pending.ticks, c.ticks, c.tuplet, c.dots);
+                                if (next) commit({ ...snap, score: next });
+                                setPending(null);
+                              }}
+                            >
+                              <GroupGlyph
+                                degrees={degrees}
+                                beams={c.ticks.map((t, i) =>
+                                  c.tuplet
+                                    ? tupletBeamCount(pending.ticks, c.tuplet)
+                                    : beamCount(undotTicks(t, c.dots?.[i] ?? 0)),
+                                )}
+                                tuplet={c.tuplet}
+                                dots={c.dots}
+                              />
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <button className="v2-btn" onClick={() => setPending(null)}>
+                      取消
+                    </button>
+                  </div>
+                ) : null}
                 <div className="v2-field">
                   <span className="v2-field-label">区间操作</span>
                   <div className="v2-grid">
@@ -3258,17 +3755,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   </div>
                 </div>
                 <div className="v2-field">
-                  <span className="v2-field-label">标注（段落文字）</span>
-                  <input
-                    className="v2-meta-input"
-                    value={textAnnotationOf(score, focus.id) ?? ''}
-                    placeholder="如：前奏（清空即删除）"
-                    title="写在音符前的段落标注，谱面上显示为 (文字)"
-                    onChange={(e) => setScore(setTextAnnotation(score, focus.id, e.target.value))}
-                  />
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">八度</span>
+                  <span className="v2-field-label">
+                    八度
+                    {/* 快捷键写进标签：v 这个键位用户猜不到（大写 V 还是换气记号） */}
+                    <span className="v2-tiers-label">（键盘 ^ 升八度 / v 降八度，可叠加，上限 3 颗点）</span>
+                  </span>
                   <div className="v2-grid v2-grid-5">
                     {[2, 1, 0, -1, -2].map((o) => (
                       <button
@@ -3283,50 +3774,17 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     ))}
                   </div>
                 </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">
-                    变音记号
-                    {focus.accidental
-                      ? `，当前 ${ACCIDENTAL_NAME[focus.accidental]}`
-                      : '（跟随调号）'}
-                  </span>
-                  <div className="v2-grid v2-grid-4">
-                    {ACCIDENTAL_CHOICES.map((a) => (
-                      <button
-                        key={a ?? 'none'}
-                        className={focus.accidental === a ? 'v2-btn is-on' : 'v2-btn'}
-                        onClick={() => setScore(setAccidental(score, focus.id, a))}
-                        title={a ? `${ACCIDENTAL_NAME[a]}半音` : '去掉记号，跟随调号'}
-                      >
-                        {a ? ACCIDENTAL_GLYPH[a] : '本位'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="v2-field">
-                  {/*
-                    转调：演奏到此音起，后面的音都改用这个调。
-                    下拉框给常用调（五度圈 15 个，含升降），不用手打、也不怕写错。
-                  */}
-                  <span className="v2-field-label">转调（演奏到此音起改用新调，选第一项清除）</span>
-                  <select
-                    className="v2-meta-input"
-                    value={focus.keyChange ?? ''}
-                    onChange={(e) =>
-                      setScore(setKeyChange(score, focus.id, e.target.value || undefined))
-                    }
-                  >
-                    <option value="">（不转调）</option>
-                    {KEY_CHOICES.map((k) => (
-                      <option key={k} value={k}>
-                        转{k}
-                      </option>
-                    ))}
-                    {focus.keyChange && !KEY_CHOICES.includes(focus.keyChange) ? (
-                      <option value={focus.keyChange}>转{focus.keyChange}</option>
-                    ) : null}
-                  </select>
-                </div>
+                {/*
+                  时值 + 附点合并成一排：时值组内单选（点亮的再点一次回到 1 拍），
+                  附点组内单选（点亮的再点一次 = 无）。两组互不干预。
+                  与休止符分支共用同一个组件——休止符的时值设定和音符完全一样。
+                */}
+                <DurationDotsField
+                  focus={focus}
+                  tiers={tiers}
+                  useTier={useTier}
+                  onDot={(d) => setScore(setDot(score, focus.id, d))}
+                />
                 <div className="v2-field">
                   {/*
                     倚音：不占时值，挂在主音上。1 颗 = 单倚音，2 颗以上 = 复倚音。
@@ -3423,17 +3881,50 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     </div>
                   ) : null}
                 </div>
-                {/*
-                  时值 + 附点合并成一排：时值组内单选（点亮的再点一次回到 1 拍），
-                  附点组内单选（点亮的再点一次 = 无）。两组互不干预。
-                  与休止符分支共用同一个组件——休止符的时值设定和音符完全一样。
-                */}
-                <DurationDotsField
-                  focus={focus}
-                  tiers={tiers}
-                  useTier={useTier}
-                  onDot={(d) => setScore(setDot(score, focus.id, d))}
-                />
+                <div className="v2-field">
+                  <span className="v2-field-label">
+                    变音记号
+                    {focus.accidental
+                      ? `，当前 ${ACCIDENTAL_NAME[focus.accidental]}`
+                      : '（跟随调号）'}
+                  </span>
+                  <div className="v2-grid v2-grid-4">
+                    {ACCIDENTAL_CHOICES.map((a) => (
+                      <button
+                        key={a ?? 'none'}
+                        className={focus.accidental === a ? 'v2-btn is-on' : 'v2-btn'}
+                        onClick={() => setScore(setAccidental(score, focus.id, a))}
+                        title={a ? `${ACCIDENTAL_NAME[a]}半音` : '去掉记号，跟随调号'}
+                      >
+                        {a ? ACCIDENTAL_GLYPH[a] : '本位'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="v2-field">
+                  {/*
+                    转调：演奏到此音起，后面的音都改用这个调。
+                    下拉框给常用调（五度圈 15 个，含升降），不用手打、也不怕写错。
+                  */}
+                  <span className="v2-field-label">转调（演奏到此音起改用新调，选第一项清除）</span>
+                  <select
+                    className="v2-meta-input"
+                    value={focus.keyChange ?? ''}
+                    onChange={(e) =>
+                      setScore(setKeyChange(score, focus.id, e.target.value || undefined))
+                    }
+                  >
+                    <option value="">（不转调）</option>
+                    {KEY_CHOICES.map((k) => (
+                      <option key={k} value={k}>
+                        转{k}
+                      </option>
+                    ))}
+                    {focus.keyChange && !KEY_CHOICES.includes(focus.keyChange) ? (
+                      <option value={focus.keyChange}>转{focus.keyChange}</option>
+                    ) : null}
+                  </select>
+                </div>
                 {/*
                   吐音 + 技法合成一排。同一类内互斥：一个音同时只有一种技法、
                   一种吐音（T 与 K 也互斥）；符号在音符上方横向排列。
@@ -3535,6 +4026,56 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     </button>
                   </div>
                 </div>
+                <div className="v2-field">
+                  <span className="v2-field-label">标注（段落文字）</span>
+                  {/*
+                    草稿式输入（回车 / 点别处才提交），不能每敲一个字就写谱：
+                    写谱会在音符前插入一个 directive，而「当前选中的音」是按下标取的
+                    （events[cursor-1]）——下标一挪，焦点就落到新插入的标注上，
+                    输入框当场卸载，中文输入法直接被打断（第一个字之后再也打不进去）。
+                  */}
+                  <input
+                    className="v2-meta-input"
+                    value={annotDraft ?? annotationTextOf(score, focus.id)}
+                    placeholder="如：前奏；只打 ( 或 ) = 在音符左 / 右侧加括号"
+                    title="段落文字标注（谱面显示为 (文字)）；只输入 ( 或 ) 则是在音符左侧 / 右侧加括号。回车或点别处提交"
+                    onChange={(e) => setAnnotDraft(e.target.value)}
+                    onBlur={() => {
+                      if (annotDraft === null) return;
+                      commitAnnotation(annotDraft);
+                      setAnnotDraft(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      commitAnnotation(annotDraft ?? '');
+                      setAnnotDraft(null);
+                      (e.target as HTMLInputElement).blur();
+                    }}
+                  />
+                </div>
+                {/*
+                  括号：两个独立记号——头一个音前放左括号、末一个音后放右括号，
+                  中间隔几行都行（所以不做「选中区间加括号」那种成对操作）
+                */}
+                <div className="v2-field">
+                  <span className="v2-field-label">括号（画在音符左右两侧，可跨行）</span>
+                  <div className="v2-grace-bar">
+                    <button
+                      className={parenFlags.open ? 'v2-btn is-on' : 'v2-btn'}
+                      title="在这个音左边加左括号（再点一次去掉）"
+                      onClick={() => setScore(toggleParen(score, focus.id, 'open'))}
+                    >
+                      ( 左括号
+                    </button>
+                    <button
+                      className={parenFlags.close ? 'v2-btn is-on' : 'v2-btn'}
+                      title="在这个音右边加右括号（再点一次去掉）"
+                      onClick={() => setScore(toggleParen(score, focus.id, 'close'))}
+                    >
+                      右括号 )
+                    </button>
+                  </div>
+                </div>
               </>
             ) : focus && focus.kind === 'rest' ? (
               <>
@@ -3571,63 +4112,20 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             )}
           </div>
 
-          {pending ? (
-            <div className="v2-side-block">
-              <div className="v2-side-title">选择划分（{pending.ids.length} 个音）</div>
-              {/*
-                候选不用文字描述，直接画出选中音符的实际样子——
-                每个方案一排记号（选中什么音就画什么音，休止符画 0），
-                连音方案带标号。文字标签降级为悬停提示。
-              */}
-              <ul className="v2-diag">
-                {pending.cands.map((c, i) => {
-                  const degrees = pending.ids.map((id) => {
-                    const e = score.events.find((x) => x.id === id);
-                    return e && e.kind === 'note' ? e.degree : 0;
-                  });
-                  return (
-                    <li key={i}>
-                      <button
-                        className="v2-btn v2-cand"
-                        title={c.label}
-                        onClick={() => {
-                          const next = applyTierOp(score, pending.ids, pending.ticks, c.ticks, c.tuplet, c.dots);
-                          if (next) commit({ ...snap, score: next });
-                          setPending(null);
-                        }}
-                      >
-                        <GroupGlyph
-                          degrees={degrees}
-                          beams={c.ticks.map((t, i) =>
-                            c.tuplet
-                              ? tupletBeamCount(pending.ticks, c.tuplet)
-                              : beamCount(undotTicks(t, c.dots?.[i] ?? 0)),
-                          )}
-                          tuplet={c.tuplet}
-                          dots={c.dots}
-                        />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              <button className="v2-btn" onClick={() => setPending(null)}>
-                取消
-              </button>
-            </div>
-            ) : null}
+          </>) : null}
 
-          {          /*
+          {/*
             音频对齐（M9/M11）：载入 stem + 标定 TempoMap，播放时指示条跟着真实音频走。
             标定优先走「重新自动对齐」（浏览器端，beat.ts），锚点与手工微调做兜底。
             **常驻可见**（用户要求）：此前是 details 折叠块，收起嵌套的「高级参数」时
             toggle 会冒泡到父级，把整块一起收掉（实测踩到），而且对轨时还要先找到它。
             放在侧栏末尾：它属于「播放」而不属于「记谱」，不该跟音符属性混在一屏。
           */}
+          {showAlignBlock ? (
           <div className={`v2-side-block v2-audio-block ${songInfoOpen ? 'is-hidden' : ''}`}>
             <div className="v2-side-title v2-inspector-title">
-              <span>音频对齐</span>
-              {audioReady ? <span className="v2-title-token">已就绪</span> : null}
+              <span>对轨</span>
+              {audioReady ? <span className="v2-title-token">{Math.round(tempoDraft.bpm)} 拍/分</span> : null}
             </div>
             {/* 对轨页直接进来时可能还没有谱面（没有上次会话）：先给一句去哪拿谱 */}
             {score.events.length === 0 ? (
@@ -3636,10 +4134,21 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </p>
             ) : null}
             <div className="v2-field">
-              <span className="v2-field-label">① 载入伴奏（自动测速并初步对齐）</span>
-              <button className="v2-btn" onClick={() => audioFileRef.current?.click()}>
-                载入音频
-              </button>
+              <div className="v2-grace-bar">
+                <button className="v2-btn" onClick={() => audioFileRef.current?.click()}>
+                  {stems.length ? '更换音频' : '载入音频'}
+                </button>
+                {/* 有伴奏或锚点才给清除：没有东西可清时按钮只会制造困惑 */}
+                {stems.length > 0 || anchors.length > 0 ? (
+                  <button
+                    className="v2-btn"
+                    title="去掉本谱已载入的伴奏与全部标定（对齐点 / 速度 / 播放源）；音频文件保留，重载同一文件秒回。伴奏与标定都会随曲库自动保存"
+                    onClick={clearAudioAlign}
+                  >
+                    清除
+                  </button>
+                ) : null}
+              </div>
               {stems.length > 0 ? (
                 <div className="v2-grace-bar">
                   {stems.map((s, i) => (
@@ -3661,64 +4170,44 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   e.target.value = '';
                 }}
               />
-              <p className="v2-hint">
-                伴奏与标定随曲库自动保存（曲库文件夹或浏览器本地），刷新 / 重开 / 换谱回来都会自动恢复。
-                wav 载入时会自动压成 mp3。
-              </p>
             </div>
             <div className="v2-field">
-              <span className="v2-field-label">② 对齐小节线（推荐）</span>
-              <p className="v2-hint">
-                波形上点<b>一条节奏线</b>（默认自动吸附，会从那里试听）→ 谱面点<b>一根小节线</b>
-                = 绑定，原点自动重算。小节线的拍位是干净的界点，比挑一颗音更稳；
-                绑两个以上，两点之间按变速曲线拉伸（前奏比谱面长也能跟住）。
-                谱面最左端还有一个标着「开头」的靶标，点它 = 绑定<b>谱面第 0 拍</b>
-                （简谱开头不画小节线，那个靶标是虚拟的，不会写进谱面）。
-              </p>
-              {anchors.length > 0 ? (
-                <p className="v2-hint">
-                  已绑 {anchors.length} 个锚点：
-                  {anchors
-                    .map((a) => `谱 ${Math.round(a.scoreBeat * 10) / 10} ↔ 音 ${Math.round(a.audioBeat * 10) / 10}`)
-                    .join(' · ')}
-                </p>
-              ) : null}
-            </div>
-            <div className="v2-field">
-              <span className="v2-field-label">③ 快速对准与微调（可选）</span>
-              {stems.length === 0 ? (
-                <p className="v2-hint">载入伴奏后，先用 ② 绑锚点对齐；这里再做单点微调。</p>
-              ) : (
-                <>
-                  <p className="v2-hint">
-                    波形上点<b>人声开口</b> → 谱面<b>选中那颗音</b> →{' '}
-                    <button
-                      className="v2-btn"
-                      disabled={wavePos === null}
-                      title="选中的音符 = 你点的时刻；没选音符则对齐谱面第一颗音。前奏自动反推"
-                      onClick={alignHere}
-                    >
-                      {focusTimed ? '把选中的音对到这里' : '对准这里'}
+              <div className="v2-grace-bar">
+                {/* 打拍定速：自动测速锁错倍频（谱 8 拍对上音频 17 拍）时的人工补救——
+                    人耳不会数错倍频。进行中的提示与按钮全在对轨状态条里 */}
+                <button
+                  className="v2-btn"
+                  disabled={stems.length === 0 || tapping}
+                  title="自动测速不准（网格线压不住鼓点）时用它：跟着音乐按空格打 4-8 拍，速度与起点一次定准；停 2 秒自动结算"
+                  onClick={startTapping}
+                >
+                  {tapping ? '打拍中…' : '打拍定速'}
+                </button>
+                {/* 网格微调：间距对但整条差一点；也可以直接在波形上拖任意一条节奏线 */}
+                {stems.length > 0 ? (
+                  <span className="v2-title-token" title="网格起点在音频里的位置；拖波形上的节奏线也能整组平移">
+                    {fmtClock(tempoDraft.phaseSec)}
+                  </span>
+                ) : null}
+                {stems.length > 0 ? (
+                  <>
+                    <button className="v2-btn" title="整条网格往左挪 100 毫秒" onClick={() => nudgePhase(-0.1)}>
+                      «
                     </button>
-                    {' '}＝ 让这颗音正好落在你点的时刻上，当某个字总是差半拍时用它。
-                  </p>
-                  <p className="v2-hint">
-                    整体快了 / 慢了？{' '}
-                    <button className="v2-btn" onClick={() => scaleTempo(0.5)} title="走速减半，对准的位置不动">
-                      减速
-                    </button>{' '}
-                    <button className="v2-btn" onClick={() => scaleTempo(2)} title="走速加倍">
-                      加速
+                    <button className="v2-btn" title="整条网格往左挪 10 毫秒" onClick={() => nudgePhase(-0.01)}>
+                      ‹
                     </button>
-                    {spanAudit && (spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4) ? (
-                      <span> ⚠ 谱面长度和音频对不上，先试减速 / 加速，或回 ② 多绑几个锚点</span>
-                    ) : null}
-                  </p>
-                </>
-              )}
+                    <button className="v2-btn" title="整条网格往右挪 10 毫秒" onClick={() => nudgePhase(0.01)}>
+                      ›
+                    </button>
+                    <button className="v2-btn" title="整条网格往右挪 100 毫秒" onClick={() => nudgePhase(0.1)}>
+                      »
+                    </button>
+                  </>
+                ) : null}
+              </div>
             </div>
             <div className="v2-field">
-              <span className="v2-field-label">④ 播放</span>
               <div className="v2-grace-bar">
                 <button
                   className={`v2-btn ${playSource === 'audio' ? 'is-on' : ''}`}
@@ -3728,6 +4217,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 >
                   伴奏音频
                 </button>
+                {playSource === 'audio' ? (
+                  <label className="v2-grace-check" title="谱面只从进唱记起时，伴奏前面的前奏照常放完再进谱面；进唱前 4 拍会在第一个音上闪烁倒数">
+                    <input
+                      type="checkbox"
+                      checked={playIntro}
+                      onChange={() => setPlayIntro((v) => !v)}
+                    />
+                    播放前奏
+                  </label>
+                ) : null}
                 <button
                   className={`v2-btn ${playSource === 'synth' ? 'is-on' : ''}`}
                   title="只听谱面合成音"
@@ -3738,11 +4237,25 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </div>
             </div>
             <details className="v2-adv">
-              <summary>高级参数（锚点 / 手工 BPM）</summary>
+              <summary>手动输入与诊断（锚点 / BPM / 微调）</summary>
             <div className="v2-field">
-              <span className="v2-field-label">
-                快速锚定（点波形填音频拍、选音符填谱面拍，也可直接改；两个锚点即可拉伸前奏）
-              </span>
+              <div className="v2-grace-bar">
+                {/* 单点对准：某个字总是差半拍时的精修——波形点的时刻 = 选中那颗音 */}
+                <button
+                  className="v2-btn"
+                  disabled={wavePos === null || !stems.length}
+                  title="让选中的音符正好落在波形上点的时刻。没绑变速曲线时：单点对准，整谱反推；已绑变速曲线时：在此处加锚点微调，已有对齐点保留"
+                  onClick={alignHere}
+                >
+                  {focusTimed ? '把选中的音对到这里' : '对准这里'}
+                </button>
+                {spanAudit && (spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4) ? (
+                  <span className="v2-title-token">⚠ 谱面长度和音频差 {(spanAudit.ratio * 100).toFixed(0)}%，多半是倍速估错（试 ÷2 / ×2 或打拍）</span>
+                ) : null}
+              </div>
+            </div>
+            <div className="v2-field">
+              <span className="v2-field-label">快速锚定（谱面拍 ↔ 音频拍）</span>
               <div className="v2-grace-bar">
                 谱面第
                 <input
@@ -3757,7 +4270,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   className="v2-num"
                   type="number"
                   step={1}
-                  min={0}
+                  title="可为负数：网格第 0 拍之前的拍位（打拍起点之前的前奏）同样有效"
                   value={quickAnchor.audio}
                   onChange={(e) => setQuickAnchor((q) => ({ ...q, audio: Number(e.target.value) }))}
                 />
@@ -3789,19 +4302,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </div>
             </div>
             <div className="v2-field">
-              <span className="v2-field-label">锚点（点谱面音符 → 点波形起始点 → 绑定）</span>
+              <span className="v2-field-label">对齐点</span>
               {focusTimed ? (
                 <p className="v2-hint">
-                  <b>已选中音符（谱面第 {focusScoreBeat} 拍）——点波形上「绑定选中音符」完成绑定</b>
-                  {quickAnchor.score > 0 &&
-                  focusScoreBeat !== null &&
-                  Math.abs(quickAnchor.score - focusScoreBeat) > 0.01 ? (
-                    <>
-                      {' '}
-                      注意：上面「快速锚定」里填的是第 <b>{quickAnchor.score}</b> 拍，<b>不是</b>
-                      你选中的这颗音（第 {focusScoreBeat} 拍）——用那一排绑定就会把谱面整体挪错。
-                    </>
-                  ) : null}
+                  已选中音符（谱面第 {focusScoreBeat} 拍）——波形定点后点「绑定选中音符」即可。
                 </p>
               ) : null}
               {anchors.length > 0 ? (
@@ -3824,40 +4328,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               ) : null}
               {impliedBpm !== null ? (
                 <p className="v2-hint">
-                  两点实测 <b>{impliedBpm} BPM</b>（面板填 {tempoDraft.bpm} → 谱面会
-                  {impliedBpm > tempoDraft.bpm ? '比歌慢' : '比歌快'}{' '}
-                  {Math.abs(impliedBpm - tempoDraft.bpm) >= 0.05
-                    ? `约 ${((Math.abs(impliedBpm - tempoDraft.bpm) / impliedBpm) * 100).toFixed(1)}%`
-                    : '基本吻合'}
-                  ；两锚点跨度 {anchorSpan} 拍
-                  {anchorSpan < 40 ? '，太近——±0.2s 的点击误差就会变成 3% 以上的 BPM 误差，建议拉开到 40 拍以上再读' : ''}
-                  ）
-                  <button className="v2-btn" onClick={applyImpliedBpm} title="把音频 BPM 改成两点实测值（锚点位置不变）">
+                  两点实测 <b>{impliedBpm} BPM</b>（当前填 {tempoDraft.bpm}，跨度 {anchorSpan} 拍
+                  {anchorSpan < 40 ? '，偏近、仅供参考' : ''}）
+                  <button className="v2-btn" onClick={applyImpliedBpm} title="把音频 BPM 改成两点实测值（对齐点位置不变）">
                     用实测改 BPM
                   </button>
                 </p>
               ) : null}
             </div>
             <div className="v2-field">
-              <span className="v2-field-label">当前对齐参数</span>
-              <p className="v2-hint">
-                {audioTempo
-                  ? audioTempo.kind === 'constant'
-                    ? `BPM ${Math.round(audioTempo.bpm)} · 相位 ${audioTempo.phaseSec}s · 谱面第 0 拍 = 音频第 ${audioTempo.scoreOriginBeat} 拍`
-                    : `变速曲线（${audioTempo.beatTimes.length} 拍）· 谱面第 0 拍 = 音频第 ${audioTempo.scoreOriginBeat} 拍`
-                  : '未标定'}
-              </p>
-            </div>
-            <div className="v2-field">
               <span className="v2-field-label">估测 BPM（导入伴奏时算的）</span>
               {tempoEst ? (
                 <div className="v2-grace-bar">
-                  <span className="v2-title-token">BPM {Math.round(tempoEst.bpm)}</span>
-                  <span className="v2-title-token">相位 {tempoEst.phaseSec}s</span>
-                  <span className="v2-title-token" title="相位聚拢度 0–1，越大越可信">
-                    置信 {tempoEst.confidence}
+                  {/* 一句话 + 可信度分级；相位 / 残差 / 置信数值收进悬停 */}
+                  <span
+                    className="v2-title-token"
+                    title={`技术细节：网格起点 ${tempoEst.phaseSec}s · 置信 ${tempoEst.confidence} · 残差 ${tempoEst.residualMs}ms`}
+                  >
+                    自动测速 ≈{Math.round(tempoEst.bpm)} 拍/分 ·{' '}
+                    {tempoEst.confidence >= 0.5
+                      ? '比较可信'
+                      : tempoEst.confidence >= 0.25
+                        ? '不太有把握'
+                        : '很不可靠'}
                   </span>
-                  <span className="v2-title-token">残差 {tempoEst.residualMs}ms</span>
                   <button
                     className="v2-btn"
                     title={`把谱面速度（@bpm）改成 ${Math.round(tempoEst.bpm)}`}
@@ -3892,32 +4386,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 <p className="v2-hint">导入伴奏后自动估测；也可以手工在下面填。</p>
               )}
               {spanAudit ? (
-                <p className="v2-hint">
-                  体检：谱面 {Math.round(scoreBeats)} 拍 @{tempoDraft.bpm} ≈{' '}
-                  <b>{spanAudit.span.toFixed(1)}s</b>；音频从谱面起点算还剩{' '}
-                  <b>{spanAudit.remaining.toFixed(1)}s</b>
-                  {spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4 ? (
-                    <>
-                      {' '}
-                      → <b>差 {(spanAudit.ratio * 100).toFixed(0)}%，BPM 大概率是错的</b>
-                      （整数倍最可疑，先点 ÷2 或 ×2）
-                    </>
-                  ) : (
-                    ' ✓ 基本吻合'
-                  )}
+                <p className="v2-hint" title={`谱面 ${Math.round(scoreBeats)} 拍 ≈ ${spanAudit.span.toFixed(1)}s；音频从谱面起点算还剩 ${spanAudit.remaining.toFixed(1)}s`}>
+                  体检：谱面长度与音频{spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4 ? <b>对不上（速度多半测错了）</b> : '基本吻合'}
                 </p>
               ) : null}
-              <p className="v2-hint">
-                <b>谱面速度</b>（@bpm，{Math.round(score.meta.bpm)}）管合成音与指示条，
-                <b>音频 BPM</b> 管伴奏对齐——两者是独立的两个数，谱面速度不会自动跟着音频变。
-                估测只是起点：钉一个锚点后原点会吸收它的误差。
-              </p>
             </div>
             <div className="v2-field">
-              <span className="v2-field-label">恒定 BPM 三参数（手工微调）</span>
+              <span className="v2-field-label">手工微调（一般用「打拍子」代替）</span>
               <div className="v2-grace-bar">
                 <label className="v2-grace-check">
-                  BPM
+                  拍/分
                   <input
                     className="v2-num"
                     type="number"
@@ -3929,8 +4407,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     onChange={(e) => setTempoDraft((d) => ({ ...d, bpm: Number(e.target.value) }))}
                   />
                 </label>
-                <label className="v2-grace-check">
-                  相位 s
+                <label className="v2-grace-check" title="节奏网格的第 0 拍在音频里的位置（秒）。打拍子会自动算好，一般不用手填">
+                  起点(秒)
                   <input
                     className="v2-num"
                     type="number"
@@ -3940,8 +4418,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     onChange={(e) => setTempoDraft((d) => ({ ...d, phaseSec: Number(e.target.value) }))}
                   />
                 </label>
-                <label className="v2-grace-check">
-                  原点拍
+                <label className="v2-grace-check" title="谱面第 0 拍对应音频的第几拍（负数 = 谱面比音频晚开始）。「对准这里」会自动算好">
+                  开头对位
                   <input
                     className="v2-num"
                     type="number"
@@ -3966,15 +4444,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   ×2
                 </button>
               </div>
-              <p className="v2-hint">
-                拿不准是不是倍速：点 <b>÷2</b> 再播，看波形上的<b>网格线是否压在鼓点上</b>——
-                压住了就说明原来是估成了两倍速。
-              </p>
             </div>
             </details>
             {audioMsg ? <p className="v2-hint">{audioMsg}</p> : null}
           </div>
-          </>}
+          ) : null}
         </aside>
       </div>
       ) : null}

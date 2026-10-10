@@ -137,6 +137,24 @@ export interface LayoutLine {
   index: number;
   y: number;
   items: PlacedItem[];
+  /**
+   * 挪到**本行行首**的拍号：上一行以「带拍号的小节线」结尾时，
+   * 那个拍号画在本行第一颗音的左侧（行末右侧已经没有谱面，画不下）。
+   * x 是绘制中心，行内内容已为它让出位置。
+   */
+  leadingMeter?: { meter: string; x: number };
+  /**
+   * 本行开头紧前面那根小节线（上一行行末的那根）：事件 id 与事件下标。
+   * 点多声部连谱号 / 行首拍号 = 选中它（它们本来就是同一个编辑对象）；
+   * 连谱号高亮也用它判定（焦点小节线 = 本行行前那根线时点亮）。
+   */
+  leadingBarlineId?: string;
+  leadingBarlineIndex?: number;
+  /**
+   * 本行**行末**小节线改的拍号已挪到下一行行首：绘制层据此跳过行末右侧那份，
+   * 否则同一个拍号会出现两份（一份挂在行末、一份在下一行行首）。
+   */
+  meterMoved?: boolean;
   beams: PlacedBeam[];
   arcs: PlacedArc[];
   badges: PlacedBadge[];
@@ -455,6 +473,12 @@ function dashCountOf(ticks: number, dot: 0 | 1 | 2): number {
   return dashes;
 }
 
+/**
+ * 行首拍号让位宽度（px，随字号缩放）：上一行行末小节线改的拍号挪到本行时，
+ * 本行内容整体右移这么多，拍号画在让出来的空隙里。
+ */
+export const METER_LEAD = 30;
+
 export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   if (score.parts?.length) return layoutEnsemble(score, opts, layoutScore);
   const unit = opts.unit ?? 1.3;
@@ -598,7 +622,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const bar = ev as BarlineEvent;
       const base = bar.style === 'final' ? 26 : bar.repeat ? 24 : 20;
       w = (base + (bar.beatAfter ? 30 : 0)) * k + spacing;
-    } else if (ev.kind === 'directive' || ev.kind === 'jump') w = 26 * k + spacing;
+    } else if (ev.kind === 'directive') {
+      // 括号记号画在音符旁边，比力度 / 标注文字窄（那两个画在谱行下方、独占一格）
+      w = (ev.type === 'paren' ? 15 : 26) * k + spacing;
+    } else if (ev.kind === 'jump') w = 26 * k + spacing;
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w };
   });
 
@@ -729,8 +756,26 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
     const y = padTop + titleHeight + li * lineHeight + lineHeight / 2;
 
+    /*
+      行首拍号：上一行以「带拍号的小节线」结尾时，那个拍号挪到本行——
+      画在第一颗音的左侧（行末右侧已经没有谱面，画上去就是挂在行外）。
+      本行内容整体右移 METER_LEAD 给它让位，绘制层按 leadingMeter 画。
+    */
+    const prevLineEnd = from > 0 ? score.events[from - 1] : undefined;
+    const leadMeter =
+      prevLineEnd && prevLineEnd.kind === 'barline'
+        ? (prevLineEnd as BarlineEvent).beatAfter
+        : undefined;
+    const lead = leadMeter ? METER_LEAD * k : 0;
+    // 本行行末若是「带拍号的小节线」且还有下一行：拍号挪给下一行，
+    // 本行行末右侧就不再画（下一行行首会画）
+    const tailEv = to > 0 ? score.events[to - 1] : undefined;
+    const tailMeter =
+      tailEv && tailEv.kind === 'barline' ? (tailEv as BarlineEvent).beatAfter : undefined;
+    const meterMoved = !!tailMeter && li + 1 < starts.length;
+
     const items: PlacedItem[] = [];
-    let cx = padding;
+    let cx = padding + lead;
     /** 本行起始的小节号：跨行连续，不从 1 重来。口径与 measureAt 完全一致
      *  （前面还没有音符的小节线是开头边界，不计入） */
     let measureNo = 1;
@@ -759,8 +804,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const usedRest = line.reduce((a, x) => a + x.w, 0) - usedBars;
     // 末行不对齐：内容少时硬拉会把音符间距拉得离谱，允许右边自然留白
     const isLast = li === starts.length - 1;
+    // 让位宽度要从可用宽度里扣掉，否则行末锚点（小节线）会被挤出右缘
     const stretch =
-      opts.positions || isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - usedBars) / usedRest);
+      opts.positions || isLast || usedRest <= 0
+        ? 1
+        : Math.max(1, (maxX - lead - usedBars) / usedRest);
 
     for (let i = from; i < to; i += 1) {
       const { ev, w } = widths[i];
@@ -868,7 +916,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     {
       let acc = 0;
       let open = false;
-      let barX = padding;
+      let barX = padding + lead;
       const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       /** 本小节是否以弱起线开头 */
@@ -1083,7 +1131,24 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }
 
     const previous = score.events[from - 1];
-    lines.push({ index: li, y, items, beams, arcs, badges, tuplets, voltas: [], pageBreakBefore: previous?.kind === 'barline' && previous.breakAfter === 'page' });
+    lines.push({
+      index: li,
+      y,
+      items,
+      beams,
+      arcs,
+      badges,
+      tuplets,
+      voltas: [],
+      pageBreakBefore: previous?.kind === 'barline' && previous.breakAfter === 'page',
+      // 拍号画在让出来的那段空隙中间（右侧照旧离第一颗音有一点距离）
+      ...(leadMeter ? { leadingMeter: { meter: leadMeter, x: padding + lead * 0.45 } } : {}),
+      // 行前小节线（上一行行末那根）：连谱号 / 行首拍号的点击与高亮都挂在它身上
+      ...(prevLineEnd && prevLineEnd.kind === 'barline'
+        ? { leadingBarlineId: prevLineEnd.id, leadingBarlineIndex: from - 1 }
+        : {}),
+      meterMoved,
+    });
   }
 
   // 跨音力度范围在每一行分段，楔形开口沿全跨度连续变化。
@@ -1313,14 +1378,86 @@ export function hitScoreStart(layout: LayoutResult, x: number, y: number): boole
 export function pickAt(layout: LayoutResult, x: number, y: number): LayoutPick | null {
   const pick = pickSingleAt(layout, x, y);
   if (!pick) return null;
+  // pick 自己带了声部（多点声部连谱号 / 跨声部小节线时已解析到首声部）就认它——
+  // 用最近事件反推会把焦点落到别的声部的音上，选中的线就丢了
+  if (pick.partId) return pick;
   const id = hitTest(layout, x, y);
   const partId = layout.lines.find((line) => line.items.some((it) => it.eventId === id))?.partId;
   return partId ? { ...pick, partId } : pick;
 }
 
 function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | null {
-  // 变拍号与所属小节线共用编辑设置，数字墨迹也可直接选中。
   const k = layout.glyph.fontSize / 21;
+
+  /**
+   * 首声部 id（多声部时）。小节线的属性——拍号、反复、房子、终止——都由它控制，
+   * 其余声部只读跟随（界面上二、三声部的这些设置是禁用状态）。
+   */
+  const firstPartId = layout.lines.find((ln) => ln.partId)?.partId;
+  /**
+   * 多声部：点任何声部的小节线，都落到**首声部同一时间点**的那根线
+   * （同一小节边界，重奏共用绝对坐标 ⇒ x 相同）。否则在二、三声部上
+   * 根本改不了拍号 / 反复这些属于首声部的属性。
+   */
+  const conductorBarline = (
+    it: PlacedItem,
+    line: LayoutLine,
+  ): { it: PlacedItem; line: LayoutLine } => {
+    if (!firstPartId || line.partId === firstPartId) return { it, line };
+    const target = layout.lines.find((ln) => ln.partId === firstPartId && ln.system === line.system);
+    if (!target) return { it, line };
+    const bx = it.x + it.w / 2;
+    let best: PlacedItem | null = null;
+    let bestDx = Infinity;
+    for (const cand of target.items) {
+      if (cand.kind !== 'barline') continue;
+      const dx = Math.abs(cand.x + cand.w / 2 - bx);
+      if (dx < bestDx) {
+        bestDx = dx;
+        best = cand;
+      }
+    }
+    return best && bestDx <= 10 ? { it: best, line: target } : { it, line };
+  };
+
+  // 多声部连谱号（行首那条竖线，含它右侧的细竖线）与行首拍号：
+  // 点它们 = 选中**行前那根小节线**（layout 已记录 leadingBarlineIndex）。
+  // 归属首声部（属性归它管），焦点才不会落到别的声部的音上。
+  const pickLeadingBarline = (line: LayoutLine): LayoutPick | null => {
+    // 必须取**首声部那一行**的行前小节线：各声部的事件序列各自编号，
+    // 拿二声部的下标去首声部找会指到别的音上
+    const src = firstPartId
+      ? (layout.lines.find((ln) => ln.partId === firstPartId && ln.system === line.system) ?? line)
+      : line;
+    if (src.leadingBarlineIndex === undefined || src.leadingBarlineIndex < 0) return null;
+    return {
+      index: src.leadingBarlineIndex,
+      mode: 'over',
+      cursor: src.leadingBarlineIndex + 1,
+      ...(src.partId ? { partId: src.partId } : {}),
+    };
+  };
+  for (const s of layout.systems ?? []) {
+    if (x < s.bracketX - 8 * k || x > s.bracketX + 14 * k) continue;
+    if (y < s.top || y > s.bottom) continue;
+    const line = layout.lines.find(
+      (ln) => Math.abs(y - ln.y) <= layout.lineHeight / 2 && ln.index >= s.from && ln.index < s.to,
+    );
+    if (!line) continue;
+    // 谱头（第一行）前面没有小节线：点连谱号不做事，也不落到任何音符上
+    if (line.leadingBarlineIndex === undefined) return null;
+    const hit = pickLeadingBarline(line);
+    if (hit) return hit;
+  }
+  for (const line of layout.lines) {
+    if (!line.leadingMeter) continue;
+    if (Math.abs(x - line.leadingMeter.x) <= 12 * k && Math.abs(y - line.y) <= 22 * k) {
+      const hit = pickLeadingBarline(line);
+      if (hit) return hit;
+    }
+  }
+
+  // 变拍号与所属小节线共用编辑设置，数字墨迹也可直接选中。
   for (const line of layout.lines) for (const it of line.items) {
     if (it.kind !== 'barline' || !it.beatAfter) continue;
     const meterX = it.x + it.w / 2 + 14 * k;
@@ -1336,16 +1473,22 @@ function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | 
     if (!it) continue;
 
     if (it.kind === 'barline') {
+      // 多声部：一律落到首声部同一时间点的那根线（反复 / 拍号 / 房子归首声部管）
+      const cb = conductorBarline(it, line);
+      const bar = cb.it;
+      const barLine = cb.line;
+      const owner = barLine.partId ? { partId: barLine.partId } : {};
       // 点竖线 = **选中这条线**（反复 / 终止线 / 房子都是它的属性，点它才能改）。
       // 线的两侧留作插入点：只有正中那一小条是「选线」，免得想插音却选中了线。
-      const mid = it.x + it.w / 2;
+      const mid = bar.x + bar.w / 2;
       if (x >= mid - 5 && x <= mid + 5) {
-        return { index: it.eventIndex, mode: 'over', cursor: it.eventIndex + 1 };
+        return { index: bar.eventIndex, mode: 'over', cursor: bar.eventIndex + 1, ...owner };
       }
       return {
-        index: it.eventIndex,
+        index: bar.eventIndex,
         mode: 'insert',
-        cursor: x < mid ? it.eventIndex : it.eventIndex + 1,
+        cursor: x < mid ? bar.eventIndex : bar.eventIndex + 1,
+        ...owner,
       };
     }
 

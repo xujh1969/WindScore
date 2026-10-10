@@ -1,6 +1,7 @@
 import type { LayoutLine, LayoutOptions, LayoutResult, PlacedItem } from './layout';
+import { METER_LEAD } from './layout';
 import { partMeasures, partScore, scoreParts } from './parts';
-import type { Score } from './types';
+import type { BarlineEvent, Score } from './types';
 import { TICKS_PER_BEAT } from './ticks';
 
 type Position = { x: number; w: number; line: number; dashXs?: number[] };
@@ -77,19 +78,35 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   }
   const systemOf: number[] = [];
   const offsetOf: number[] = [];
+  /**
+   * 每个系统的行首让位（拍号）：上一小节以「带拍号的小节线」结尾时，
+   * 拍号挪到新一行的行首（画在第一个声部那一行），整个系统的内容一起右移——
+   * 各声部共用一套绝对坐标，只挪一个声部会导致上下对不齐。
+   */
+  const systemLead: number[] = [0];
+  const systemMeter: string[] = [];
   let system = 0;
   let used = 0;
   for (let mi = 0; mi < count; mi++) {
     const previous = mi > 0 ? singles[0].events[tables[0][mi - 1]?.to - 1] : undefined;
-    if (used > 0 && (used + widths[mi] > available || (previous?.kind === 'barline' && previous.breakAfter))) { system++; used = 0; }
+    if (used > 0 && (used + widths[mi] > available - (systemLead[system] ?? 0) || (previous?.kind === 'barline' && previous.breakAfter))) {
+      system++;
+      used = 0;
+      const bar = previous && previous.kind === 'barline' ? (previous as BarlineEvent) : undefined;
+      const lead = bar?.beatAfter ? METER_LEAD * k : 0;
+      systemLead[system] = lead;
+      systemMeter[system] = bar?.beatAfter ?? '';
+    }
     systemOf.push(system);
     offsetOf.push(used);
+    // 让位宽度占掉可用宽度，否则行末会被挤出右缘
     used += widths[mi];
   }
   const positions = new Map<string, Position>();
   for (const list of entries) for (const e of list) {
     const p = local.get(e.item.eventId)!;
-    const offset = left + offsetOf[e.measure];
+    // 行首拍号让位：整个系统一起右移，各声部保持对齐
+    const offset = left + (systemLead[systemOf[e.measure]] ?? 0) + offsetOf[e.measure];
     positions.set(e.item.eventId, { x: offset + p.x, w: p.w, line: systemOf[e.measure], ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x) } : {}) });
   }
   const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
@@ -104,8 +121,14 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     for (let pi = 0; pi < parts.length; pi++) {
       const source = placed[pi].lines.find((line) => line.items.some((it) => positions.get(it.eventId)?.line === si));
       const y = startY + si * systemH + pi * rowH + rowH / 2;
-      const line: LayoutLine = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si } : {
-        index: lines.length, y, items: [], beams: [], arcs: [], badges: [], tuplets: [], voltas: [], partId: parts[pi].id, partName: parts[pi].name, system: si,
+      // 行首拍号：每个声部的行首都画（与五线谱换拍号惯例一致——
+      // 每一行谱都要能独立读出当前拍号）。x 相同，竖着对齐成一列
+      const lead = systemLead[si] ?? 0;
+      const leadingMeter = lead > 0 ? { meter: systemMeter[si] ?? '', x: left + lead * 0.45 } : undefined;
+      // 本系统行末小节线的拍号是否挪给了下一系统（下一系统行首带拍号）
+      const meterMoved = !!systemMeter[si + 1];
+      const line: LayoutLine = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved } : {
+        index: lines.length, y, items: [], beams: [], arcs: [], badges: [], tuplets: [], voltas: [], partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved,
       };
       lines.push(line);
       if (source) {

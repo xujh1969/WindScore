@@ -410,6 +410,21 @@ details.v2-side-block[open] > summary::before {
   overflow: hidden auto;
 }
 
+/* 对轨屏侧栏页签：伴奏对轨 / 简谱编辑。跟工具栏的分段控件同款，
+   钉在侧栏顶部（不随内容滚动），两个页签一眼可见 */
+.v2-side-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  /* 分段控件自带 padding 0，这里把左右撑满、下方留白，跟下面的面板拉开 */
+  padding: 3px;
+  margin-bottom: 2px;
+  background: var(--surface);
+}
+.v2-side-tabs .v2-seg {
+  flex: 1 1 0;
+}
+
 /* 源码视图：右栏整块收起，编辑器铺满舞台。
    用 data-view 而不是条件渲染，aside 那段结构不必跟着缩进一层。 */
 .v2-body[data-view='source'] {
@@ -461,12 +476,13 @@ details.v2-side-block[open] > summary::before {
 .v2-bar[data-mode='align'] .v2-hide-align {
   display: none;
 }
-.v2-side[data-mode='score'] > .v2-audio-block {
-  display: none;
-}
-.v2-side[data-mode='align'] > :not(.v2-audio-block) {
-  display: none;
-}
+/*
+  侧栏内容**不再靠 CSS 按 data-mode 隐藏**：
+  对轨屏现在是「伴奏对轨 / 简谱编辑」两个页签，切换由 React 控制渲染
+  （见 EditorApp 的 showEditBlocks / showAlignBlock）。
+  旧的两条规则（score 藏对齐面板、align 藏其余）会把页签和编辑面板一起 display:none
+  ——表现为「页签加了却看不见」。
+*/
 .v2-wave-wrap--big .v2-wave {
   height: 106px; /* 176px 的 3/5：对轨页省出竖向空间给谱面（2026-10 用户调整） */
 }
@@ -903,15 +919,116 @@ details.v2-side-block[open] > summary::before {
     crosshair;
 }
 
-/* 吸附开关：跟着波形条走，不进侧栏——它只对「点波形」这一个动作生效 */
+/* 吸附开关：悬浮在波形**左下角**（角落里不占一整行），只对「点波形」生效。
+   底衬与左上的控制条同款（半透明黑胶囊），深浅主题的波形上都看得清 */
 .v2-wave-snap {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 11px;
+  color: #fff;
+  cursor: pointer;
+}
+
+/*
+ * 对轨状态条：整个对轨流程的「下一步」只在这一行里说。
+ * 空闲 = 中性灰；打拍 / 等待谱面点击 = 强调色（一眼看到「系统在等我做什么」）。
+ */
+.v2-align-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   font-size: var(--fs-ui);
   color: var(--muted);
+  flex: 0 0 auto;
+}
+.v2-align-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+.v2-align-status.is-active .v2-align-dot,
+.v2-align-status.is-busy .v2-align-dot {
+  background: var(--accent);
+  animation: v2-align-pulse 1.2s ease-in-out infinite;
+}
+.v2-align-status.is-active,
+.v2-align-status.is-busy {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.v2-align-status.is-busy {
+  background: var(--accent-soft);
+}
+@keyframes v2-align-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.v2-align-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 节奏线浮层：选中一条线后给出的操作（平移 / 删除对齐点）。
+   默认贴在波形下方（draw 循环里每帧定位）；z-index 抬高，
+   盖过下方紧邻的谱面画布，浮层按钮才点得到 */
+.v2-wave-pop {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  min-width: 150px;
+}
+.v2-wave-pop-title {
+  font-size: var(--fs-ui);
+  font-weight: 700;
+  color: var(--text);
+}
+.v2-wave-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.v2-wave-pop-row em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+.v2-wave-pop-del {
+  font-size: var(--fs-ui);
+  color: var(--warn);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  text-align: left;
   cursor: pointer;
+}
+.v2-wave-pop-del:hover {
+  text-decoration: underline;
 }
 
 .v2-wave {
@@ -1228,30 +1345,6 @@ details.v2-side-block[open] > summary::before {
   flex-wrap: wrap;
 }
 
-/* 对轨页波形上方的工具条：按钮 + 一句说明（说明可以窄屏收起，按钮永远在） */
-.v2-wave-tool {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.v2-wave-tool-hint {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--fs-ui);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 900px) {
-  .v2-wave-tool-hint {
-    display: none;
-  }
-}
-
 /* 弹窗里的外链：主题色 + 下划线，长网址允许换行 */
 .v2-exp-link {
   color: var(--accent);
@@ -1382,11 +1475,16 @@ details.v2-side-block[open] > summary::before {
 .v2-wave-stop-icon {
   /* 用 CSS 方块而不是字符 ■：字符的墨迹落在 em 盒里偏下的位置，
      即使外层 place-items:center 也对不齐（看着就是偏右下），
-     而且偏移量随字体变化，没法稳定居中 */
+     而且偏移量随字体变化，没法稳定居中。
+     半透明：实心方块把底下的波形 / 播放头全挡死了 */
   width: 28px;
   height: 28px;
   border-radius: 3px;
   background: currentColor;
+  opacity: 0.45;
+}
+.v2-wave-stop:hover .v2-wave-stop-icon {
+  opacity: 0.75;
 }
 
 .v2-play-stage {
@@ -2213,3 +2311,11 @@ details.v2-side-block[open] > summary::before {
 .v2-lyric-tools strong { color: var(--text); }
 .v2-exp-part { padding: 12px 20px; border-bottom: 1px solid var(--border); }
 .v2-exp-part select { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; }
+
+/* 打拍大按钮：跟节奏点击要够大够好按（音频对齐 ② 打拍子定速度） */
+.v2-tap-btn {
+  min-width: 200px;
+  padding: 14px 20px;
+  font-size: 18px;
+  font-weight: 700;
+}

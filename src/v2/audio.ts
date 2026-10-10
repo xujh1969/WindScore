@@ -41,6 +41,26 @@ function newAudioContext(): AudioContext {
   return new Ctor();
 }
 
+/**
+ * 全局唯一发声通道：任何一端（伴奏 Player / 波形试听 AudioPreview）起播前，
+ * 先把别处正在响的停掉。各类自己的 stop() 只能保证「自己不叠自己」；
+ * 两端之间（以及组件重挂载换出新实例时）靠这张注册表互斥——
+ * 就算 UI 层漏了一次互斥调用（播放状态与播放器实际状态脱节），
+ * 也绝不会出现两条音频同时响（用户实测踩过：点波形几次，多层声音叠着放）。
+ */
+let sounding: { stop(): void } | null = null;
+
+/** 起播前认领发声通道：先停掉别的，再把 self 顶上去（self 自己的 stop 已在调用方先行执行） */
+function claimAudio(self: { stop(): void }): void {
+  if (sounding && sounding !== self) sounding.stop();
+  sounding = self;
+}
+
+/** 播放结束 / 主动停止时归还通道 */
+function releaseAudio(self: { stop(): void }): void {
+  if (sounding === self) sounding = null;
+}
+
 export class Player {
   private ctx: AudioContext | null = null;
   private timer: number | null = null;
@@ -103,6 +123,7 @@ export class Player {
   start(timeline: TimelineEntry[], bpm: number, fromTick = 0): number {
     this.stop();
     if (timeline.length === 0) return 0;
+    claimAudio(this);
     const first = timeline.findIndex((e) => e.endTick > fromTick);
     if (first < 0) return 0;
 
@@ -148,6 +169,7 @@ export class Player {
     this.stop();
     const { timeline, tempo, fromTick, stems, synth, onEnded } = opts;
     if (timeline.length === 0 || stems.length === 0) return 0;
+    claimAudio(this);
 
     const first = timeline.findIndex((e) => e.endTick > fromTick);
     if (first < 0) return 0;
@@ -237,6 +259,7 @@ export class Player {
     this.index = 0;
     this.audioMode = false;
     this.tempo = null;
+    releaseAudio(this);
   }
 
   /** 一个音：三角波 + 20ms 淡入 / 末尾 50ms 淡出 */
@@ -291,9 +314,14 @@ export class AudioPreview {
     return this.ctx ? this.ctx.currentTime - this.when + this.startSec : null;
   }
 
-  start(stems: AudioStem[], startSec: number, onEnded?: () => void): void {
+  /**
+   * 从 startSec 起播 stem。maxSec 给定时**放到就停**（波形点击试听用：
+   * 放 N 拍自动停，不用手动掐）——以音频时钟计时，与试听结束走同一条路。
+   */
+  start(stems: AudioStem[], startSec: number, onEnded?: () => void, maxSec?: number): void {
     this.stop();
     if (stems.length === 0) return;
+    claimAudio(this);
     const ctx = newAudioContext();
     this.ctx = ctx;
     this.endedCb = onEnded ?? null;
@@ -313,6 +341,7 @@ export class AudioPreview {
     }
     const shortest = Math.min(...stems.map((s) => s.buffer.duration));
     this.endSec = this.when + Math.max(0.1, shortest - from);
+    if (maxSec !== undefined && maxSec > 0) this.endSec = Math.min(this.endSec, this.when + maxSec);
     this.timer = window.setInterval(() => {
       if (this.ctx && this.ctx.currentTime > this.endSec + 0.2) {
         const cb = this.endedCb;
@@ -348,5 +377,6 @@ export class AudioPreview {
       this.ctx = null;
       void ctx.close();
     }
+    releaseAudio(this);
   }
 }

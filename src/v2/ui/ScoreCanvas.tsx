@@ -142,6 +142,8 @@ export function ScoreCanvas({
   // 谱面 / 选区 / 尺寸变化 → 重排并重绘
   /** 最近一帧的播放头：悬停重绘时照原样传回去，别把指示条画没了 */
   const headRef = useRef<Playhead>(null);
+/** KTV 式入拍提醒：前奏期间（播放 tick 为负）在第一个音上闪烁 + 倒数 */
+const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | null>(null);
   /** 配对态悬停的小节线 id：拖到别的线上要立刻换靶标 */
   const hoverBarRef = useRef<string | null>(null);
   /** pairing 的最新值：画布事件回调里要用，又不能把它塞进依赖 */
@@ -203,6 +205,7 @@ export function ScoreCanvas({
         caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
         playhead: head,
         playheads: head ? headsRef.current : [],
+        cue: cueRef.current,
         focusId,
         playStyle,
         showMeasureNumbers: score.meta.showMeasureNumbers !== false,
@@ -354,6 +357,20 @@ export function ScoreCanvas({
       // 直接取会让指示条在每个倚音上从 0 重新扫一次（闪烁来回抖）
       const act = activeMainAt(timeline, tick);
       headsRef.current = activeHeadsAt(timeline, tick);
+
+      // 入拍提醒：播放头为负 = 伴奏还在放前奏（谱面第 0 拍之前）。
+      // 最后 4 拍开始在第一个音上闪烁并倒数——前奏一结束音符就到，
+      // 没有提示的话眼睛来不及落上去（KTV 字幕那一套）
+      const firstId = timeline[0]?.eventId ?? null;
+      if (firstId && tick < 0 && tick > -4 * TICKS_PER_BEAT) {
+        cueRef.current = {
+          eventId: firstId,
+          beatsLeft: -tick / TICKS_PER_BEAT,
+          pulse: 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 4), // 2Hz 脉动
+        };
+      } else {
+        cueRef.current = null;
+      }
       paintRef.current(act ? { eventId: act.entry.eventId, frac: act.progress } : null);
 
       // 平滑滚动：目标 = 正在播的那一行保持在视口中部；
@@ -362,21 +379,27 @@ export function ScoreCanvas({
       // 所以反复回到前一段时，滚动也会跟着回到前面那一行
       const layout = layoutRef.current;
       const wrap = wrapRef.current;
-      if (act && layout && wrap) {
-        const followId = headsRef.current.find((h) => layout.lines.some((line) => line.items.some((it) => it.eventId === h.eventId)))?.eventId ?? act.entry.eventId;
-        const li = layout.lines.findIndex((ln) =>
-          ln.items.some((it) => it.eventId === followId),
-        );
-        if (li >= 0) {
-          const system = layout.systems?.find((s) => li >= s.from && li < s.to);
-          const target = Math.max(0, system ? (system.top + system.bottom) / 2 - wrap.clientHeight / 2 : layout.lines[li].y - wrap.clientHeight / 2);
-          if (followRef.current) {
-            // 起播第一帧直接到位（从文档顶端滑过去太远），之后每帧缓动
-            wrap.scrollTop = snapped
-              ? wrap.scrollTop + (target - wrap.scrollTop) * 0.08
-              : target;
+      if (layout && wrap) {
+        // 前奏期间没有 act（还没进谱面），这时的跟随目标就是入拍提醒那个音——
+        // 否则提醒闪在屏幕外，等于没提醒
+        const followId = act
+          ? headsRef.current.find((h) => layout.lines.some((line) => line.items.some((it) => it.eventId === h.eventId)))?.eventId ?? act.entry.eventId
+          : cueRef.current?.eventId ?? null;
+        if (followId) {
+          const li = layout.lines.findIndex((ln) =>
+            ln.items.some((it) => it.eventId === followId),
+          );
+          if (li >= 0) {
+            const system = layout.systems?.find((s) => li >= s.from && li < s.to);
+            const target = Math.max(0, system ? (system.top + system.bottom) / 2 - wrap.clientHeight / 2 : layout.lines[li].y - wrap.clientHeight / 2);
+            if (followRef.current) {
+              // 起播第一帧直接到位（从文档顶端滑过去太远），之后每帧缓动
+              wrap.scrollTop = snapped
+                ? wrap.scrollTop + (target - wrap.scrollTop) * 0.08
+                : target;
+            }
+            snapped = true;
           }
-          snapped = true;
         }
       }
       raf = requestAnimationFrame(loop);

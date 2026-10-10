@@ -549,6 +549,24 @@ function parseSingle(text: string, modern = false): ParseResult {
     const tokens = line.replace(/~/g, '~ ').split(/\s+/).filter(Boolean);
     for (let raw of tokens) {
       /*
+       * 左右括号记号：**全角** （ ）
+       * 半角 ( ) 已经被连音线占了（(5 6 5)），所以括号字形用全角——中文输入法
+       * 下就是普通括号，写法也直观：一段的头一个音前放 （ ，末一个音后放 ）。
+       * 两个记号各自独立（不需要成对、不占时值），所以能跨小节 / 跨行。
+       */
+      if (raw === '（' || raw === '）') {
+        const id = nextId();
+        const ev: Event = {
+          id,
+          kind: 'directive',
+          type: 'paren',
+          value: raw === '（' ? '(' : ')',
+        };
+        events.push(ev);
+        byId.set(id, ev);
+        continue;
+      }
+      /*
        * (文字) 装饰记号：括号里是**非音符内容**（中文 / 字母，如 (前奏)）时，
        * 整块按文字显示——不占时值、演奏忽略，只用来标注段落（前奏 / 间奏 / 尾奏）。
        * 括号必须成对写在同一个记号里；括号里是音符语法（数字开头，如 (5 6 5)）
@@ -1012,8 +1030,17 @@ function serializeSingle(score: Score): string {
         break;
       }
       case 'directive':
-        // 文字装饰记号（(前奏) 之类）回写时把括号带上，round-trip 无损
-        out.push(ev.type === 'text' ? `(${ev.value})` : ev.value);
+        // 文字装饰记号（(前奏) 之类）回写时把括号带上，round-trip 无损；
+        // 左右括号记号回写成全角 （ ）——半角 ( ) 是连音线，不能混
+        out.push(
+          ev.type === 'text'
+            ? `(${ev.value})`
+            : ev.type === 'paren'
+              ? ev.value === '('
+                ? '（'
+                : '）'
+              : ev.value,
+        );
         emitted.add(ev.id);
         break;
       default:

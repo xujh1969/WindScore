@@ -128,6 +128,10 @@ const M = {
   markBottom: 34,
   /** 谱面上的字母标记（吐音 T） */
   markFont: '700 12px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 括号字符字体：与数字同字号但按墨迹等高缩小（首次绘制时测量得出） */
+  parenFont: '',
+  /** parenFont 对应的数字字体串，用于失效判断 */
+  parenFontFor: '',
   /** 每颗倚音占的横向宽度（随字号缩放） */
   graceW: 13,
   /** 相对 21px 基准的缩放系数，绘制层做少量比例换算用 */
@@ -182,6 +186,33 @@ function applyMetrics(g: GlyphMetrics): void {
   M.markBottom = g.markBottom;
 }
 
+/**
+ * 括号字符字体：与数字**同锚点、同排**绘制，但括号字形天然比数字高
+ * （上下都伸出），按墨迹测量把字号缩到括号墨迹高度与数字一致——
+ * 字形仍是正常的 ( ) 字符，只是等高。每种数字字体只测一次。
+ * 环境不支持墨迹测量时退回经验缩放。
+ */
+function parenFont(ctx: CanvasRenderingContext2D): string {
+  if (M.parenFontFor === M.font) return M.parenFont;
+  const prev = ctx.font;
+  ctx.font = M.font;
+  const p = ctx.measureText('(');
+  const d = ctx.measureText('0');
+  ctx.font = prev;
+  let scale = 0.78;
+  if (p.actualBoundingBoxAscent !== undefined) {
+    const ph = p.actualBoundingBoxAscent + p.actualBoundingBoxDescent;
+    const dh = d.actualBoundingBoxAscent + d.actualBoundingBoxDescent;
+    if (ph > 0 && dh > 0) scale = dh / ph;
+  }
+  // 注意不能用 parseFloat(M.font)：字体串以字重开头（"600 21px …"），
+  // 会把 600 当成字号。必须取 px 前的数值
+  const size = Number(/(\d+(?:\.\d+)?)px/.exec(M.font)?.[1] ?? 21);
+  M.parenFont = `600 ${(size * scale).toFixed(2)}px ${M.font.replace(/^.*?px\s+/, '')}`;
+  M.parenFontFor = M.font;
+  return M.parenFont;
+}
+
 /** 基准（21px 字号）的点半径 / 底色块半高，仅供测试与外部参考 */
 export const DOT_R = M.dotR;
 /** 底色块半高。减时线在 beamOffset(1) 处，两者不能重叠 */
@@ -231,6 +262,12 @@ export interface PaintOptions {
   playheads?: { eventId: string; frac: number }[];
   /** 属性检查器正在编辑的事件，整块点亮（含附点 / 增时线 / 八度点） */
   focusId?: string | null;
+  /**
+   * KTV 式**入拍提醒**：前奏期间（播放头还在谱面第 0 拍之前）在即将进入的
+   * 第一个音上闪烁 + 倒数拍数，回答「什么时候进」。
+   * pulse 由调用方按帧给出 0..1（正弦即可，画布每帧重绘）。
+   */
+  cue?: { eventId: string; beatsLeft: number; pulse: number } | null;
   /** 播放指示方式，默认 head（跳动的色块 + 竖线）；band = 行进度条 */
   playStyle?: 'head' | 'band';
   /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
@@ -280,7 +317,14 @@ export function paintLayout(
     const bottom = system.bottom - layout.lineHeight / 2 + M.barHalf;
     const x = system.bracketX;
     const k = M.k;
-    ctx.fillStyle = theme.ink;
+    // 连谱号高亮：焦点小节线 = 本系统行前那根线（点连谱号选中的就是它）。
+    // 焦点色把粗竖线与细竖线一起点亮，和选中小节线的反馈同一套语言
+    const bracketHot =
+      !!opts.focusId &&
+      layout.lines
+        .slice(system.from, system.to)
+        .some((ln) => ln.leadingBarlineId === opts.focusId);
+    ctx.fillStyle = bracketHot ? theme.accent : theme.ink;
     // 重奏连谱号：粗竖线的两端向右弯出尖钩，右侧另配一条细竖线。
     ctx.beginPath();
     ctx.moveTo(x + 8 * k, top - 5 * k);
@@ -292,12 +336,30 @@ export function paintLayout(
     ctx.bezierCurveTo(x + 1.5 * k, top + 2 * k, x + 6 * k, top + 1 * k, x + 8 * k, top - 5 * k);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = theme.ink;
-    ctx.lineWidth = k;
+    ctx.strokeStyle = bracketHot ? theme.accent : theme.ink;
+    ctx.lineWidth = bracketHot ? 1.6 * Math.max(1, k) : k;
     ctx.beginPath();
     ctx.moveTo(x + 4 * k, top);
     ctx.lineTo(x + 4 * k, bottom);
     ctx.stroke();
+  }
+
+  /**
+   * 焦点是小节线时记下它的中心 x 与所在系统：多声部里同一小节边界的
+   * 小节线 x 相同（重奏共用绝对坐标），各声部的这根线要一起点亮——
+   * 只亮第一声部会让用户以为点错了（用户实测反馈）。
+   */
+  let focusBarX: number | null = null;
+  let focusBarSystem: number | null = null;
+  if (opts.focusId) {
+    for (const line of layout.lines) {
+      for (const it of line.items) {
+        if (it.eventId === opts.focusId && it.kind === 'barline') {
+          focusBarX = it.x + it.w / 2;
+          focusBarSystem = line.system ?? null;
+        }
+      }
+    }
   }
 
   for (const line of layout.lines) {
@@ -316,12 +378,15 @@ export function paintLayout(
       caret: opts.caret ?? null,
       playhead: head ?? opts.playhead ?? null,
       focusId: opts.focusId ?? null,
+      cue: opts.cue ?? null,
       playStyle: opts.playStyle ?? 'head',
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
       showBreaks: opts.showBreaks ?? false,
       pairing: opts.pairing ?? false,
       pairingHoverId: opts.pairingHoverId ?? null,
       pairingStart: opts.pairingStart ?? false,
+      focusBarX,
+      focusBarSystem,
     });
   }
 }
@@ -452,6 +517,8 @@ interface LinePaint {
   caret: { x: number; y: number } | null;
   playhead: { eventId: string; frac: number } | null;
   focusId: string | null;
+  /** KTV 式入拍提醒（前奏期间闪烁 + 倒数） */
+  cue: { eventId: string; beatsLeft: number; pulse: number } | null;
   /** 播放指示方式：head = 跟着音符跳的色块 + 竖线；band = 从行首生长的高亮条 */
   playStyle: 'head' | 'band';
   /** 小节号开关（缺省显示） */
@@ -463,6 +530,39 @@ interface LinePaint {
   pairingHoverId: string | null;
   /** 配对中且**谱面开头没有小节线**：在最左端补一个「开头」靶标（第 0 拍） */
   pairingStart: boolean;
+  /**
+   * 焦点小节线的时间点（中心 x + 所在系统）：多声部里各声部同一小节边界的
+   * 小节线 x 相同，用它们点亮全部声部的这根线（见 paintLayout 的注释）。
+   */
+  focusBarX: number | null;
+  focusBarSystem: number | null;
+}
+
+/**
+ * 拍号记号（叠写的分子 / 分母 + 中间横线），居中画在 x 上。
+ * 两处共用：小节线右侧（常规）、小节第一颗音左侧（该小节线在行末时）。
+ */
+function drawMeterMark(
+  ctx: CanvasRenderingContext2D,
+  meter: string,
+  x: number,
+  y: number,
+  theme: PaintTheme,
+): void {
+  const [num, den] = meter.split('/');
+  ctx.font = M.markFont;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = theme.ink;
+  ctx.fillText(num, x, y - 8 * M.k);
+  ctx.fillText(den, x, y + 8 * M.k);
+  ctx.strokeStyle = theme.ink;
+  ctx.lineWidth = Math.max(1, M.k);
+  const half = Math.max(ctx.measureText(num).width, ctx.measureText(den).width) / 2 + 2 * M.k;
+  ctx.beginPath();
+  ctx.moveTo(x - half, y);
+  ctx.lineTo(x + half, y);
+  ctx.stroke();
+  ctx.textAlign = 'left';
 }
 
 function paintLine(
@@ -526,6 +626,32 @@ function paintLine(
     }
   }
 
+  // KTV 式入拍提醒：前奏还在放、谱面第一个音马上要进——在它身上闪烁并倒数。
+  // 没有这个提示时，前奏一结束音符就「凭空开始」，眼睛根本来不及落上去
+  if (o.cue) {
+    for (const it of line.items) {
+      if (it.eventId !== o.cue.eventId) continue;
+      if (it.kind !== 'note' && it.kind !== 'rest') continue;
+      const b = glyphBox(ctx, it, y);
+      const p = Math.max(0, Math.min(1, o.cue.pulse));
+      ctx.save();
+      ctx.globalAlpha = 0.18 + 0.5 * p;
+      ctx.fillStyle = theme.accent;
+      roundRect(ctx, b.x - 5, b.top - 5, b.w + 10, b.bottom - b.top + 10, 8);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = theme.accent;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // 还差几拍：整拍倒数（4 / 3 / 2 / 1），比纯闪烁更能回答「何时进」
+      ctx.fillStyle = theme.accent;
+      ctx.font = '700 12px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(Math.max(1, Math.ceil(o.cue.beatsLeft))), b.x + b.w / 2, b.top - 12);
+      ctx.restore();
+    }
+  }
+
   // 配对时谱面开头的「第 0 拍」靶标：画在第一行最左端，与小节线同一套画法
   if (o.pairing && o.pairingStart && line.index === 0) {
     const first = line.items[0];
@@ -544,8 +670,26 @@ function paintLine(
     // 隐藏小节线（|*）：占位宽度照算、小节号计数照常，线与小节号都不画
     if (it.kind !== 'barline' || it.hidden) continue;
     const bx = it.x + it.w / 2;
-    ctx.strokeStyle = it.final ? theme.barFinal : theme.bar;
-    ctx.lineWidth = it.final ? 2.5 : 1.5;
+    // 选中的小节线要看得出来选的是哪一根：整条线换成强调色并加粗，
+    // 再在线外圈一层淡色底（属性面板此刻改的就是它）。
+    // 多声部：同一时间点（同 x）的各声部小节线一起点亮
+    const sameTimePoint =
+      o.focusBarX !== null &&
+      o.focusBarSystem === line.system &&
+      Math.abs(it.x + it.w / 2 - o.focusBarX) < 2;
+    const picked =
+      o.focusId === it.eventId ||
+      (selectedIds?.has(it.eventId) ?? false) ||
+      sameTimePoint;
+    if (picked) {
+      ctx.save();
+      ctx.fillStyle = theme.selected;
+      roundRect(ctx, bx - 5 * M.k, y - M.barHalf, 10 * M.k, M.barHalf * 2, 4);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.strokeStyle = picked ? theme.accent : it.final ? theme.barFinal : theme.bar;
+    ctx.lineWidth = picked ? 3 : it.final ? 2.5 : 1.5;
     ctx.beginPath();
     ctx.moveTo(bx, y - M.barHalf);
     ctx.lineTo(bx, y + M.barHalf);
@@ -757,33 +901,43 @@ function paintLine(
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.muted;
 
-  // 力度记号：谱行下方。绑定在音符上的画在音符正下方，独立事件画在自己的格子里
-  for (const it of line.items) if (it.kind === 'barline' && it.beatAfter) {
-    const [num, den] = it.beatAfter.split('/');
-    const x = it.x + it.w / 2 + 14 * M.k;
-    ctx.font = M.markFont;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = theme.ink;
-    ctx.fillText(num, x, y - 8 * M.k);
-    ctx.fillText(den, x, y + 8 * M.k);
-    ctx.strokeStyle = theme.ink;
-    ctx.lineWidth = Math.max(1, M.k);
-    const half = Math.max(ctx.measureText(num).width, ctx.measureText(den).width) / 2 + 2 * M.k;
-    ctx.beginPath(); ctx.moveTo(x - half, y); ctx.lineTo(x + half, y); ctx.stroke();
-    ctx.textAlign = 'left';
+  // 拍号记号：画在带拍号的小节线右侧。
+  // 例外：本行行末那根线的拍号已挪给下一行行首（line.meterMoved），这里不画，
+  // 否则同一个拍号会出现两份（行末一份 + 下一行行首一份）
+  for (const it of line.items) {
+    if (it.kind !== 'barline' || !it.beatAfter) continue;
+    if (line.meterMoved && it === line.items[line.items.length - 1]) continue;
+    drawMeterMark(ctx, it.beatAfter, it.x + it.w / 2 + 14 * M.k, y, theme);
+  }
+  if (line.leadingMeter) {
+    drawMeterMark(ctx, line.leadingMeter.meter, line.leadingMeter.x, y, theme);
   }
   if (o.showBreaks) for (const it of line.items) {
     if (it.kind !== 'barline' || !it.breakAfter) continue;
     ctx.font = M.markFont.replace('12px', `${16 * M.k}px`);
     ctx.fillStyle = theme.accent;
     ctx.textAlign = 'center';
-    ctx.fillText(it.breakAfter === 'page' ? '↵页' : '↵', it.x + it.w / 2 + (it.beatAfter ? 14 * M.k : 0), y - 34 * M.k);
+    const moved = line.meterMoved && it === line.items[line.items.length - 1];
+    ctx.fillText(it.breakAfter === 'page' ? '↵页' : '↵', it.x + it.w / 2 + (it.beatAfter && !moved ? 14 * M.k : 0), y - 34 * M.k);
     ctx.textAlign = 'left';
   }
   ctx.fillStyle = theme.muted;
   ctx.font = M.markFont;
   for (const it of line.items) {
     if (it.kind === 'directive' && it.value) {
+      // 左右括号：**字符括号**画在音符左右两侧同一行，与数字同锚点、同排，
+      // 不像力度 / 段落标注那样画在谱行下方——用户要的是 (6 2 2) 这种夹住音符的效果。
+      // 括号字形天然比数字高，用 parenFont 测量出的等高字号绘制
+      if (it.value === '(' || it.value === ')') {
+        const cx = it.x + it.w / 2;
+        ctx.save();
+        ctx.font = parenFont(ctx);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = theme.ink;
+        ctx.fillText(it.value, cx, y);
+        ctx.restore();
+        continue;
+      }
       ctx.fillText(it.value, it.x + 2, y + M.markBottom);
       continue;
     }

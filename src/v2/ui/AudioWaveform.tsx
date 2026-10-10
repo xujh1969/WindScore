@@ -60,6 +60,22 @@ interface Props {
   /** 绑定按钮的文案（选中线 / 选中音符由调用方说了算） */
   bindLabel?: string;
   onHover?: (info: { beat: number; bar: number; sec: number } | null) => void;
+  /**
+   * 网格整组平移：**拖任意一条（非锚点）节奏线 = 整张网格平移**。
+   * Shift 按住时位移 ×0.1 细调（组件内部处理）；deltaSec 是相对拖动起点的累计偏移。
+   * 三个回调缺一不可，缺了就不启用拖拽。
+   */
+  onGridShiftStart?: () => void;
+  onGridShift?: (deltaSec: number) => void;
+  onGridShiftEnd?: () => void;
+  /** 被选中的起点是否已经是对齐点（锚点）：浮层里据此显示「删除」 */
+  markerIsAnchor?: boolean;
+  /** 删除被选中起点上的对齐点 */
+  onDeleteAnchor?: () => void;
+  /** 浮层里的网格微调（‹›«»，毫秒级） */
+  onNudge?: (deltaSec: number) => void;
+  /** 浮层标题（如「第 24 拍 · 0:42.50」） */
+  markerTitle?: string;
 }
 
 const BINS = 2048;
@@ -163,13 +179,33 @@ export function AudioWaveform({
   canBind,
   bindLabel,
   onHover,
+  onGridShiftStart,
+  onGridShift,
+  onGridShiftEnd,
+  markerIsAnchor,
+  onDeleteAnchor,
+  onNudge,
+  markerTitle,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const view = useRef({ start: 0, span: duration });
   const drag = useRef<{ x: number; start: number } | null>(null);
+  /**
+   * 网格拖拽态：按在节奏线附近（±6px）时，拖动 = 整组平移而不是平移视图。
+   * lastApplied 记上次已上报的偏移，本次只上报增量（细调中途切换 Shift 也不跳变）。
+   */
+  const gridDrag = useRef<{
+    x: number;
+    beat: number;
+    lastApplied: number;
+    /** 当前有效偏移（秒），画 ghost 线用 */
+    eff: number;
+  } | null>(null);
   /** 悬停预览：会吸到哪条线（null = 鼠标不在波形上 / 关了吸附） */
   const hoverSnap = useRef<{ beat: number; sec: number } | null>(null);
+  /** 浮层 DOM：位置每帧跟着 markerSec / 视图走（视图在 ref 里，React 不知道） */
+  const popRef = useRef<HTMLDivElement>(null);
 
   // 混合所有**开启的** stem 的峰值包络
   const peaks = useMemo(() => {
@@ -204,8 +240,41 @@ export function AudioWaveform({
     const w = wrapRef.current?.clientWidth ?? 1;
     const pxPerBeat = step / (view.current.span / Math.max(1, w));
     const skip = gridSkipOf(pxPerBeat, beatsPerMeasure);
-    const beat = Math.max(0, snapBeatToGrid(raw, skip));
+    // 不再夹到 ≥0：网格第 0 拍之前（打拍起点之前的前奏）同样是有效拍位，
+    // 夹 0 会让「点前面那段」全部塌陷到第 0 拍，那段就永远绑不上
+    const beat = snapBeatToGrid(raw, skip);
     return { beat, sec: beatTime(beat) };
+  };
+
+  /** 光标是否压在一条（画面上真画出来的）网格线上：返回那条线的拍号，没压上 = null */
+  const lineAt = (sec: number): number | null => {
+    const w = wrapRef.current?.clientWidth ?? 1;
+    if (w <= 0) return null;
+    const pxPerBeat = step / (view.current.span / w);
+    const b = snapBeatToGrid(secToBeat(sec), gridSkipOf(pxPerBeat, beatsPerMeasure));
+    const xOfBeat = ((beatTime(b) - view.current.start) / view.current.span) * w;
+    const cx = ((sec - view.current.start) / view.current.span) * w;
+    return Math.abs(xOfBeat - cx) <= LINE_HIT_PX ? b : null;
+  };
+
+  /** 这条线上是否钉着对齐点（锚点线不参与整组平移——它是对齐的依据） */
+  const anchoredAt = (beat: number): boolean =>
+    anchors.some((a) => Math.abs(a.audioBeat - beat) < 0.5);
+
+  /**
+   * 画面上相邻（画出来的）网格线的间距（px）。间距不够宽时线太密，
+   * 「按在线上」和「按在空白」没法区分——间距小于 GRID_DRAG_MIN 时
+   * 拖拽一律当**平移视图**，想拖线整组平移就放大再拖
+   * （缩得越小 1px 误差越大，拖线微调本来就不该在这个尺度做）。
+   * 40px 是实测值：14px 时线区占屏幕比例太高，随手一按就误触拖线。
+   */
+  const GRID_DRAG_MIN = 40;
+  /** 按在线上的命中半径（px）：比吸附预览窄，正对着线按下去才算拖线 */
+  const LINE_HIT_PX = 4;
+  const gridDraggable = (): boolean => {
+    const w = wrapRef.current?.clientWidth ?? 1;
+    const pxPerBeat = step / (view.current.span / Math.max(1, w));
+    return pxPerBeat * gridSkipOf(pxPerBeat, beatsPerMeasure) >= GRID_DRAG_MIN;
   };
 
   // 绘制循环：播放头要动，索性每帧重画（画布很小，代价可忽略）
@@ -238,9 +307,10 @@ export function AudioWaveform({
 
     // 播放头自动跟随（分页式）：走到窗口右侧就整窗左移，让指示线重新出现在
     // 左侧约 8% 处——以前放大后播放头走到右边缘就消失，只能手动拖回来。
-    // 正在拖动平移时不抢镜（那是用户在主动看别处）
+    // 正在拖动（平移视图 / 拖网格线）时不抢镜：拖拽期间视图一动，
+    // 线的视觉位移就和施加的平移量对不上（用户实测「拖一半」的根源之一）
     const playSec = getPlaySec();
-    if (playSec !== null && !drag.current) {
+    if (playSec !== null && !drag.current && !gridDrag.current) {
       const v = view.current;
       if (playSec > v.start + v.span * 0.92 || playSec < v.start) {
         v.start = Math.max(0, Math.min(Math.max(0, duration - v.span), playSec - v.span * 0.08));
@@ -281,12 +351,14 @@ export function AudioWaveform({
     }
 
     // 节拍网格（音频标定格）。太密时只画「强线」（每 beatsPerMeasure 条）
-    const a0 = Math.max(0, Math.floor(secToBeat(start)) - 1);
+    // 起点不夹 0、负拍照画：网格第 0 拍之前（打拍起点之前 / 长前奏）也有节拍，
+    // 不画出来那段就成了「无节奏区」，既看不出拍也吸不上、绑不了
+    const a0 = Math.floor(secToBeat(start)) - 1;
     const a1 = Math.ceil(secToBeat(start + span)) + 1;
     // 与吸附共用同一个判据：看不见的线不能吸
     const skip = gridSkipOf(pxPerBeat, beatsPerMeasure);
     for (let a = a0; a <= a1; a += 1) {
-      if (a < 0 || a % skip !== 0) continue;
+      if (a % skip !== 0) continue;
       const x = xOf(beatTime(a));
       const strong = a % beatsPerMeasure === 0;
       ctx.strokeStyle = strong ? wt.grid : wt.gridWeak;
@@ -307,6 +379,31 @@ export function AudioWaveform({
       const x = xOf(beatTime(a.audioBeat));
       ctx.fillStyle = wt.anchor;
       ctx.fillRect(x - 1, h - 8, 3, 8);
+    }
+
+    // 网格拖拽中的 ghost：原位置画虚线，当前位置画实线，标出平移量
+    if (gridDrag.current && Math.abs(gridDrag.current.eff) > 0.001) {
+      const g = gridDrag.current;
+      const x0 = xOf(beatTime(g.beat));
+      const x1 = xOf(beatTime(g.beat + g.eff / step));
+      ctx.strokeStyle = wt.marker;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x0, 0);
+      ctx.lineTo(x0, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = wt.marker;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x1, 0);
+      ctx.lineTo(x1, h);
+      ctx.stroke();
+      const ms = Math.round(g.eff * 1000);
+      ctx.fillStyle = wt.marker;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillText(`${ms > 0 ? '+' : ''}${ms} ms`, x1 + 4, 26);
     }
 
     // 人声进入（自动检测，需人声分轨）
@@ -398,6 +495,14 @@ export function AudioWaveform({
         ctx.stroke();
       }
     }
+
+    // 浮层跟随：视图平移 / 缩放时 React 不知道（都在 ref 里），位置每帧在这里贴。
+    // 贴在波形**正下方**：挡在波形中间就看不见波形了，没法边看边微调
+    if (popRef.current && markerSec !== null) {
+      const x = Math.max(8, Math.min(w - 200, xOf(markerSec) + 8));
+      popRef.current.style.left = `${x}px`;
+      popRef.current.style.top = `${h + 4}px`;
+    }
   };
 
   // 滚轮缩放（以光标为中心）
@@ -422,27 +527,70 @@ export function AudioWaveform({
   }, [duration]);
 
   return (
-    <div
-      ref={wrapRef}
-      className={`v2-wave ${previewing ? 'is-previewing' : ''}`}
+    <>
+      <div
+        ref={wrapRef}
+        className={`v2-wave ${previewing ? 'is-previewing' : ''}`}
       title={
-        snap
-          ? '点波形 = 吸到最近的节奏线并从那里试听 · 滚轮缩放 · 拖动平移'
-          : '点波形 = 从这里试听（未吸附） · 滚轮缩放 · 拖动平移'
+        (snap ? '点节奏线 = 选中并试听（吸附）' : '点波形 = 从这里试听（未吸附）') +
+        ' · 放大到线距够宽时拖节奏线 = 整组平移（Shift 细调）；缩得小时拖拽 = 平移视图 · 滚轮缩放'
       }
       onPointerDown={(e) => {
+        const rect = wrapRef.current?.getBoundingClientRect();
+        if (rect) {
+          const sec = view.current.start + ((e.clientX - rect.left) / rect.width) * view.current.span;
+          const line = lineAt(sec);
+          // 按在节奏线上（线距够稀、且线上没钉对齐点）→ 拖动 = 整组平移网格；
+          // 线距太密（缩得很小）时一律当平移视图，否则满屏都是线，根本没法平移
+          if (
+            line !== null &&
+            !anchoredAt(line) &&
+            gridDraggable() &&
+            onGridShiftStart &&
+            onGridShift &&
+            onGridShiftEnd
+          ) {
+            onGridShiftStart();
+            gridDrag.current = { x: e.clientX, beat: line, lastApplied: 0, eff: 0 };
+            (e.target as HTMLElement).setPointerCapture(e.pointerId);
+            return;
+          }
+        }
         drag.current = { x: e.clientX, start: view.current.start };
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         const rect = wrapRef.current?.getBoundingClientRect();
-        if (rect && onHover) {
-          const sec = view.current.start + ((e.clientX - rect.left) / rect.width) * view.current.span;
+        const sec =
+          rect !== undefined
+            ? view.current.start + ((e.clientX - rect.left) / rect.width) * view.current.span
+            : null;
+        if (rect && onHover && sec !== null) {
           const beat = Math.round(secToBeat(sec));
           onHover({ beat, bar: Math.floor(beat / beatsPerMeasure) + 1, sec });
           hoverSnap.current = snapAt(sec);
         }
-        if (!drag.current) return;
+        // 悬停在线上（可拖时）光标变左右箭头，提示「这条线可以拖」
+        if (wrapRef.current && sec !== null) {
+          const line = lineAt(sec);
+          wrapRef.current.style.cursor =
+            line !== null && !anchoredAt(line) && gridDraggable()
+              ? 'ew-resize'
+              : drag.current
+                ? 'grabbing'
+                : 'grab';
+        }
+        // 网格拖拽：横向位移 → 秒数，Shift 按住 ×0.1 细调；只上报增量
+        if (gridDrag.current) {
+          const w = rect?.width ?? 1;
+          const raw = ((e.clientX - gridDrag.current.x) / w) * view.current.span;
+          const eff = raw * (e.shiftKey ? 0.1 : 1);
+          onGridShift?.(eff - gridDrag.current.lastApplied);
+          gridDrag.current.lastApplied = eff;
+          gridDrag.current.eff = eff;
+          return;
+        }
+        if (!drag.current || sec === null) return;
         const dx = e.clientX - drag.current.x;
         if (Math.abs(dx) < 4) return;
         const w = rect?.width ?? 1;
@@ -454,12 +602,22 @@ export function AudioWaveform({
       onPointerLeave={() => {
         hoverSnap.current = null;
         onHover?.(null);
+        if (wrapRef.current && !drag.current && !gridDrag.current) wrapRef.current.style.cursor = '';
       }}
       onPointerUp={(e) => {
-        if (e.target !== canvasRef.current) return; // 控制钮上的松开不算定点
-        const moved = drag.current ? Math.abs(e.clientX - drag.current.x) : 99;
-        drag.current = null;
-        if (moved > 4) return; // 拖动 = 平移，不是定点
+        if (gridDrag.current) {
+          // 线上按下但没拖动（≤4px）= 单击选线，照常定点；
+          // 真拖动了 = 平移，不上报定点
+          const clicked = Math.abs(e.clientX - gridDrag.current.x) <= 4;
+          gridDrag.current = null;
+          onGridShiftEnd?.();
+          if (!clicked) return;
+        } else {
+          if (e.target !== canvasRef.current) return; // 控制钮上的松开不算定点
+          const moved = drag.current ? Math.abs(e.clientX - drag.current.x) : 99;
+          drag.current = null;
+          if (moved > 4) return; // 拖动 = 平移，不是定点
+        }
         const rect = wrapRef.current?.getBoundingClientRect();
         if (!rect) return;
         const raw = Math.max(
@@ -497,24 +655,55 @@ export function AudioWaveform({
         </span>
       </div>
 
+        {/*
+          试听中：波形正中一个半透明圆形停止键。
+          放在正中而不是角上，是因为「正在放、我要停」时眼睛就在波形中间；
+          绑定了小节线也会自动停（EditorApp 的 commitAnchor 里做），这时它自然消失。
+        */}
+        {previewing ? (
+          <button
+            className="v2-wave-stop"
+            title="停止试听"
+            aria-label="停止试听"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onClick={onStop}
+          >
+            <span className="v2-wave-stop-icon" aria-hidden />
+          </button>
+        ) : null}
+      </div>
       {/*
-        试听中：波形正中一个半透明圆形停止键。
-        放在正中而不是角上，是因为「正在放、我要停」时眼睛就在波形中间；
-        绑定了小节线也会自动停（EditorApp 的 commitAnchor 里做），这时它自然消失。
+        节奏线浮层：选中一条线后就地给出的操作——
+        整组平移（微调对齐）、删除对齐点（绑错了撤销）。
+        **渲染在 .v2-wave 之外**：它有 overflow:hidden，浮层贴到波形下方会被裁掉。
+        挂到外层相对定位的 wrap 上，位置由 draw 循环每帧贴在波形正下方。
       */}
-      {previewing ? (
-        <button
-          className="v2-wave-stop"
-          title="停止试听"
-          aria-label="停止试听"
+      {markerSec !== null && (markerTitle || onNudge || onDeleteAnchor) ? (
+        <div
+          ref={popRef}
+          className="v2-wave-pop"
           onPointerDown={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
-          onClick={onStop}
         >
-          <span className="v2-wave-stop-icon" aria-hidden />
-        </button>
+          {markerTitle ? <span className="v2-wave-pop-title">{markerTitle}</span> : null}
+          {onNudge ? (
+            <span className="v2-wave-pop-row" title="整条网格一起挪（毫秒级），对齐跟着走；拖动网格线更快，Shift 细调">
+              <button onClick={() => onNudge(-0.1)}>«</button>
+              <button onClick={() => onNudge(-0.01)}>‹</button>
+              <button onClick={() => onNudge(0.01)}>›</button>
+              <button onClick={() => onNudge(0.1)}>»</button>
+              <em>平移网格</em>
+            </span>
+          ) : null}
+          {markerIsAnchor && onDeleteAnchor ? (
+            <button className="v2-wave-pop-del" title="这个对齐点不要了（对齐回退到其余对齐点 / 自动标定）" onClick={onDeleteAnchor}>
+              删除此对齐点
+            </button>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

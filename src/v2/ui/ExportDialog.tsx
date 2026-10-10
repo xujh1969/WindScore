@@ -30,7 +30,7 @@ export interface ExportDialogProps {
   visibleLayout?: LayoutResult;
   visibleOptions?: LayoutOptions;
   initialPartId?: string;
-  /** 是否允许导出视频（曲库播放 / 动态谱播放 = true；简谱编辑 = false，视频只在演奏页有意义） */
+  /** 是否允许导出视频（默认 true，所有入口都有；声音自动分流：配好伴奏录伴奏，没配录合成音） */
   allowVideo?: boolean;
   /** 视频配色跟随界面 */
   dark: boolean;

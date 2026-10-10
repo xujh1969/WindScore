@@ -47,6 +47,7 @@ import {
   setBarlineVoltaOpen,
   setTextAnnotation,
   textAnnotationOf,
+  annotationTextOf,
   setVoltaFromSelection,
   toggleJumpAfterBarline,
   setAccidental,
@@ -458,14 +459,20 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   //   1=#F → # 不是 [A-Ga-g]，整个不匹配，静默退回 C 调
   // 两个都是听不出来、也看不出来的错，所以逐个钉死。
   console.log('\n[调号升降号]');
+  // 音名落在最靠近 C 的八度（-5..+6）：G=-5 A=-3 B=-1 C=0 D=+2 E=+4 F=+5 F#=+6
   check('1=C → 0', keyOffset('1=C') === 0);
+  check('1=D → +2', keyOffset('1=D') === 2, String(keyOffset('1=D')));
+  check('1=E → +4', keyOffset('1=E') === 4, String(keyOffset('1=E')));
+  check('1=F → +5', keyOffset('1=F') === 5, String(keyOffset('1=F')));
   check('1=#F → 6（规范写法）', keyOffset('1=#F') === 6, String(keyOffset('1=#F')));
   check('1=F# → 6（英文写法）', keyOffset('1=F#') === 6, String(keyOffset('1=F#')));
-  check('1=bB → 10（规范写法）', keyOffset('1=bB') === 10, String(keyOffset('1=bB')));
-  check('1=Bb → 10（英文写法）', keyOffset('1=Bb') === 10, String(keyOffset('1=Bb')));
-  check('1=b 是 B 本位 → 11（前导 b 歧义消解）', keyOffset('1=b') === 11, String(keyOffset('1=b')));
-  check('♯ ♭ 字形也认', keyOffset('1=♭B') === 10 && keyOffset('1=♯F') === 6);
-  check('1=G 不受影响', keyOffset('1=G') === 7);
+  check('1=G → -5（不上翻到高八度）', keyOffset('1=G') === -5, String(keyOffset('1=G')));
+  check('1=A → -3', keyOffset('1=A') === -3, String(keyOffset('1=A')));
+  check('1=B → -1', keyOffset('1=B') === -1, String(keyOffset('1=B')));
+  check('1=bB → -2（比 C 低 2 个半音）', keyOffset('1=bB') === -2, String(keyOffset('1=bB')));
+  check('1=Bb → -2（英文写法）', keyOffset('1=Bb') === -2, String(keyOffset('1=Bb')));
+  check('1=b 是 B 本位 → -1（前导 b 歧义消解）', keyOffset('1=b') === -1, String(keyOffset('1=b')));
+  check('♯ ♭ 字形也认', keyOffset('1=♭B') === -2 && keyOffset('1=♯F') === 6);
   check('认不出时退回 C 调', keyOffset('随便写的') === 0);
 
   check('normalizeKey → 1=bB', normalizeKey('1=Bb') === '1=bB', String(normalizeKey('1=Bb')));
@@ -477,9 +484,10 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('setMeta 拒绝脏调号', setMeta(s, { key: '降B调' }).meta.key === '1=C');
   check('脏调号被拒时原样返回引用', setMeta(s, { key: '咦' }) === s);
 
-  // 调号决定基准音：1=bB 时音级 1 = B♭4 = MIDI 70
-  check('1=bB 的音级 1 = 70', toMidi(1, 0, '1=bB') === 70, String(toMidi(1, 0, '1=bB')));
+  // 调号决定基准音：1=bB 时音级 1 = B♭3 = MIDI 58（比 C 低 2 个半音）
+  check('1=bB 的音级 1 = 58', toMidi(1, 0, '1=bB') === 58, String(toMidi(1, 0, '1=bB')));
   check('1=#F 的音级 1 = 66', toMidi(1, 0, '1=#F') === 66, String(toMidi(1, 0, '1=#F')));
+  check('1=G 的音级 1 = 55', toMidi(1, 0, '1=G') === 55, String(toMidi(1, 0, '1=G')));
   check('1=C 的音级 1 = 60', toMidi(1, 0, '1=C') === 60);
 }
 
@@ -1987,10 +1995,10 @@ const blank = (): Score => ({
 
 // ───────────────────────── M5 时刻表 ─────────────────────────
 console.log('\n[M5 时刻表]');
-check('1=G 的音级 1 相对 C 偏 7 个半音', keyOffset('1=G') === 7, String(keyOffset('1=G')));
+check('1=G 的音级 1 相对 C 偏 -5 个半音（最靠近 C 的八度）', keyOffset('1=G') === -5, String(keyOffset('1=G')));
 check('1=C 的 1 音 → MIDI 60（C4）', toMidi(1, 0, '1=C') === 60, String(toMidi(1, 0, '1=C')));
-check('1=G 的 1 音 → MIDI 67（G4）', toMidi(1, 0, '1=G') === 67, String(toMidi(1, 0, '1=G')));
-check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 1, '1=G')));
+check('1=G 的 1 音 → MIDI 55（G3）', toMidi(1, 0, '1=G') === 55, String(toMidi(1, 0, '1=G')));
+check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 1, '1=G')));
 
 {
   const { score } = parseDsl(readFileSync(join(DIR, 'molihua.jps'), 'utf-8'));
@@ -2186,11 +2194,11 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
   check('转调记号绑到后面的音符上', n2.keyChange === '1=G', String(n2.keyChange));
   check('转调序列化 round-trip', serializeDsl(t).includes('转1=G'));
 
-  // 播放音高：C 调的 5 = 67；G 调的 5 = 74、6 = 76
+  // 播放音高：C 调的 5 = 67；G 调（-5）的 6 = E = 64
   const midis = buildTimeline(t).map((e) => e.midi);
   check(
     '转调前的音按旧调、转调后按新调',
-    midis.join(',') === '67,67,76,76',
+    midis.join(',') === '67,67,64,64',
     midis.join(','),
   );
 
@@ -2208,7 +2216,7 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
   const tiedMidis = buildTimeline(tied).map((e) => `${e.startTick}:${e.midi}`);
   check(
     '延音线跨转调不合并（转调听得见）',
-    tiedMidis.join(' ') === '0:67 48:74 96:74 144:74 192:74',
+    tiedMidis.join(' ') === '0:67 48:62 96:62 144:62 192:62',
     tiedMidis.join(' '),
   );
   // 对照：没有转调时照旧合并成一个长音
@@ -2221,6 +2229,17 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 79, String(toMidi(1, 
     buildTimeline(plainTie)
       .map((e) => e.midi)
       .join(','),
+  );
+
+  // ③ 链式延音 5~5~5（跨小节）：每一环都要接上。旧实现只查链首的 outgoing ties，
+  // 第二颗并进第一颗的条目后，第三颗查不到连线就重新起声——
+  // 用户实测：跨小节三个 5，第三个又多响了一次
+  const chainTie = parseDsl('@beat 4/4\n\n1 2 3 5~ | 5~5 6 5 | 5 5 5 5 ||\n').score!;
+  const chainAttacks = buildTimeline(chainTie).filter((e) => e.degree === 5 && !e.grace);
+  check(
+    '链式延音 5~5~5 只响一次（第三颗不再重复起声）',
+    chainAttacks.length === 6 && chainAttacks[0]?.startTick === 144 && chainAttacks[0]?.endTick === 288,
+    `attacks=${chainAttacks.length} first=${chainAttacks[0]?.startTick}-${chainAttacks[0]?.endTick}`,
   );
 
   // ② 转调写在「后面没有音」的地方：必须报错，不能静默丢弃
@@ -2985,6 +3004,102 @@ console.log('\n[(文字) 装饰记号：前奏 / 间奏标注]');
     '只有 ( 没成对 → 报错并提示成对写法',
     unpaired.errors.some((m) => m.includes('成对')),
     unpaired.errors.join('；'),
+  );
+}
+
+console.log('\n[标注框写括号 = 音符左右两侧的括号记号]');
+{
+  const base = parseDsl('@beat 4/4\n\n6 2 2 ||').score!;
+  const n0 = base.events.find((e) => e.kind === 'note')!.id;
+  const n2 = base.events.filter((e) => e.kind === 'note')[2]!.id;
+
+  // 标注框只打一个 ( —— 要的是音符**左侧**的括号，不是下方的 (( 文字
+  const withOpen = setTextAnnotation(base, n0, '(');
+  const openEv = withOpen.events.filter(
+    (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren',
+  );
+  check('输入 ( 产生一个括号记号', openEv.length === 1, JSON.stringify(openEv));
+  check('它插在音符**前**（画在左侧）', withOpen.events.findIndex((e) => e.id === openEv[0]!.id) < withOpen.events.findIndex((e) => e.id === n0));
+  check(
+    '不产生文字标注（不会变成 (( ）',
+    !withOpen.events.some(
+      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'text',
+    ),
+  );
+  // 末音写 ) —— 插在音符**后**（画在右侧）
+  const withClose = setTextAnnotation(withOpen, n2, ')');
+  const closeIdx = withClose.events.findIndex(
+    (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren' && (e as { value: string }).value === ')',
+  );
+  check('输入 ) 插在音符**后**', closeIdx === withClose.events.findIndex((e) => e.id === n2) + 1);
+  // 框里读得回来（否则打了 ( 提交后框里又空了，像没写进去）
+  check('标注框读回 (', annotationTextOf(withOpen, n0) === '(', annotationTextOf(withOpen, n0));
+  check('标注框读回 )', annotationTextOf(withClose, n2) === ')', annotationTextOf(withClose, n2));
+  // 文字与括号互斥：写「前奏」后括号摘掉，反之亦然
+  const asText = setTextAnnotation(withOpen, n0, '前奏');
+  check(
+    '写文字后括号被摘掉',
+    !asText.events.some((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren'),
+  );
+  const backToParen = setTextAnnotation(asText, n0, '(');
+  check(
+    '改回 ( 后文字标注被摘掉',
+    !backToParen.events.some(
+      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'text',
+    ),
+  );
+  // 清空：这个音两侧的括号摘掉，别的音的不动
+  const cleared = setTextAnnotation(withClose, n2, '');
+  check(
+    '清空只摘掉本音的括号（别的音不受影响）',
+    cleared.events.filter((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren')
+      .length === 1,
+  );
+  // 回写：括号走全角，与连音线的半角 ( ) 不冲突
+  const back = serializeDsl(withClose);
+  check('回写用全角括号', back.includes('（') && back.includes('）'), back);
+  check('重新打开括号还在', parseDsl(back).score!.events.filter((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren').length === 2);
+}
+
+console.log('\n[左右括号记号（画在音符左右两侧，可跨行）]');
+{
+  // 全角 （ ）= 括号字形；半角 ( ) 仍是连音线，两者互不干扰
+  const src = '@beat 4/4\n\n（ 6 2 2 ） | 3 5 6 ||';
+  const r = parseDsl(src);
+  check('全角括号解析无错误', r.errors.length === 0, r.errors.join('；'));
+  const parens = r.score!.events.filter(
+    (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren',
+  );
+  check('解析出左右两个括号记号', parens.length === 2, JSON.stringify(parens));
+  check(
+    '左括号在第一个音前、右括号在最后一个音后',
+    (parens[0] as { value: string }).value === '(' &&
+      (parens[1] as { value: string }).value === ')',
+  );
+  // 回写仍是全角，再打开不丢
+  const back = serializeDsl(r.score!);
+  check('回写成全角 （ ）', back.includes('（') && back.includes('）'));
+  const reopen = parseDsl(back);
+  check(
+    '重新打开括号不丢',
+    reopen.score!.events.filter(
+      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren',
+    ).length === 2,
+  );
+  // 括号不占时值：谱面写了 6 个音就还是 6 个音（括号只是两个零时值记号）
+  const notes = r.score!.events.filter((e) => e.kind === 'note' || e.kind === 'rest');
+  check('括号不占时值', notes.length === 6, String(notes.length));
+  // 与连音线共存：半角 (5 6 5) 依旧是连音线
+  const both = parseDsl('@beat 4/4\n\n（ (5 6 5) 2 ） ||');
+  check('括号与连音线共存', both.errors.length === 0, both.errors.join('；'));
+  check(
+    '二者分别解析（括号 2 + 连音线不产生文字标注）',
+    both.score!.events.filter(
+      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren',
+    ).length === 2 &&
+      !both.score!.events.some(
+        (e) => e.kind === 'directive' && (e as { type?: string }).type === 'text',
+      ),
   );
 }
 

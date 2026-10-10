@@ -152,7 +152,12 @@ export interface JumpEvent extends BaseEvent {
 
 export interface DirectiveEvent extends BaseEvent {
   kind: 'directive';
-  type: 'tempo' | 'dynamic' | 'patch' | 'text';
+  /**
+   * text = 段落标注（(前奏)）；**paren = 左右括号记号**——
+   * 画在音符左右两侧、与音符同一行，用来把一段（可跨行）音符夹在括号里，
+   * 如 (6 2 2)：头一个音前放左括号、末一个音后放右括号
+   */
+  type: 'tempo' | 'dynamic' | 'patch' | 'text' | 'paren';
   value: string;
 }
 

@@ -42,6 +42,11 @@ export function accidentalOffset(acc?: Accidental): number {
 /**
  * 记谱调 "1=G" 中，音级 1 相对 C 的半音数。
  *
+ * 音名落在**最靠近 C 的八度**（-5..+6）：
+ *   G=-5  A=-3  B=-1  C=0  D=+2  E=+4  F=+5  F#=+6
+ * 否则 bB 会算成 +10（比 C 高出一个小七度），合成音整体高得刺耳——
+ * 应该是比 C 低 2 个半音（用户实测反馈）。
+ *
  * 升降号**写在音名前面**是简谱规范写法（`1=bB`、`1=#F`），
  * 写在后面是英文写法（`1=Bb`、`1=F#`）——两种都认，♯ ♭ 字形也认。
  *
@@ -55,7 +60,8 @@ export function keyOffset(key: string): number {
   if (!m) return 0;
   const base: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
   const acc = (c: string) => (c === '#' || c === '♯' ? 1 : c === 'b' || c === '♭' ? -1 : 0);
-  return (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
+  const off = (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
+  return off > 6 ? off - 12 : off;
 }
 
 /**
@@ -111,6 +117,14 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
   let tick = 0;
   /** 当前生效的调号：遇到带 keyChange 的音符就切换（含该音本身） */
   let curKey = score.meta.key;
+  /**
+   * 延音链状态：链尾音符 id + 链条主音条目在 out 里的下标。
+   * 链式延音 5~5~5 时第二颗并进第一颗的条目，第三颗必须查**第二颗**的
+   * outgoing ties 才知道自己要延续——旧代码永远查第一颗，链上第三颗起
+   * 全部重新起声（用户实测：跨小节三个 5，第三个又多响了一次）。
+   */
+  let chainTailId: string | null = null;
+  let chainMainIdx: number | null = null;
 
   for (const ev of score.events) {
     if (ev.kind !== 'note' && ev.kind !== 'rest') continue; // 小节线 / 换气不占时值
@@ -118,6 +132,8 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
     if (ev.kind === 'rest') {
       out.push({ eventId: eid(ev), startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null });
       tick += ev.ticks;
+      chainTailId = null; // 休止切断延音链
+      chainMainIdx = null;
       continue;
     }
 
@@ -164,31 +180,34 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
     // 延音线 / 弧线：与前一个同音高的长音合并，不再触发 attack——
     // 画了连音线的同音高相邻音要连续演奏，不能变成两个音。
     // 连线记在前一个音上（延音线 DSL 写 5~5；弧线是 toggleSlur 建的 slur），
-    // 所以要查 prev 的 outgoing ties。
-    const prev = out[out.length - 1];
-    const prevNote = prev ? (byId.get(prev.eventId) as NoteEvent | undefined) : undefined;
-    const linkedFromPrev = prevNote
-      ? (prevNote.ties ?? []).some(
+    // 所以要查「延音链尾」的 outgoing ties：链式 5~5~5 时第二颗已并进
+    // 第一颗的条目，第三颗必须查第二颗的 ties（旧代码查第一颗，链上
+    // 第三颗起全部重新起声——用户实测「跨小节三个 5，第三个又多响一次」）。
+    const tailNote = chainTailId ? (byId.get(chainTailId) as NoteEvent | undefined) : undefined;
+    const mainEntry = chainMainIdx !== null ? out[chainMainIdx] : undefined;
+    const linkedFromPrev = tailNote
+      ? (tailNote.ties ?? []).some(
           (t) => (t.kind === 'tie' || t.kind === 'slur') && t.to === ev.id,
         )
       : false;
     if (
       graceCount === 0 && // 带倚音的音要重新起声，不能并进前一个长音
       linkedFromPrev &&
-      prev &&
-      prev.midi !== null &&
-      prev.endTick === tick &&
-      prevNote &&
-      prevNote.degree === ev.degree &&
-      prevNote.octave === ev.octave &&
-      (prevNote.accidental ?? '') === (ev.accidental ?? '') && // 变音不同就不是同一个音，不能合并
+      mainEntry &&
+      mainEntry.midi !== null &&
+      mainEntry.endTick === tick && // 链条正好走到当前时刻：中间被倚音 / 休止打断就合不上
+      tailNote &&
+      tailNote.degree === ev.degree &&
+      tailNote.octave === ev.octave &&
+      (tailNote.accidental ?? '') === (ev.accidental ?? '') && // 变音不同就不是同一个音，不能合并
       // 音高必须真的相同：中间夹了转调（含这个音自己的转调）时，
       // 同样的音级已经落到另一个音高上，再合并就会把转调吞掉——
       // 听感上「这个音开始的转调」变成从下一个音才生效，甚至完全不生效。
-      prev.midi === toMidi(ev.degree, ev.octave, curKey, ev.accidental)
+      mainEntry.midi === toMidi(ev.degree, ev.octave, curKey, ev.accidental)
     ) {
-      prev.endTick = tick + ev.ticks;
+      mainEntry.endTick = tick + ev.ticks;
       tick += ev.ticks;
+      chainTailId = ev.id; // 链尾前移：下一颗音要查这一颗的 ties
       continue;
     }
 
@@ -202,6 +221,8 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
       midi: toMidi(ev.degree, ev.octave, curKey, ev.accidental),
     });
     tick += ev.ticks;
+    chainTailId = ev.id;
+    chainMainIdx = out.length - 1;
   }
 
   return out.sort((a, b) => a.startTick - b.startTick);

@@ -17,7 +17,7 @@ import {
   undotTicks,
   type DurationTier,
 } from './ticks';
-import { isTimed, type JumpEvent, type JumpMark } from './types';
+import { isTimed, type DirectiveEvent, type JumpEvent, type JumpMark } from './types';
 import type {
   Accidental,
   Articulation,
@@ -457,12 +457,18 @@ export function extendPrev(score: Score, at: number): { score: Score; ok: boolea
   return { score, ok: false };
 }
 
-/** 八度 ^ / v，可叠加（§6.6 Alt+↑/↓ 在此由 delta 表达） */
+/**
+ * 八度 ^ / v，可叠加（§6.6 Alt+↑/↓ 在此由 delta 表达）。
+ * 封顶 ±3（三个八度点）：属性面板 setOctave 同样限 ±3，两条路必须一致，
+ * 否则键盘能把音推到面板点不回来、序列化出 ^^^^ 这种超纲写法
+ */
 export function shiftOctave(score: Score, id: string, delta: number): Score {
   return {
     ...score,
     events: score.events.map((e) =>
-      e.id === id && e.kind === 'note' ? { ...e, octave: e.octave + delta } : e,
+      e.id === id && e.kind === 'note'
+        ? { ...e, octave: Math.max(-3, Math.min(3, e.octave + delta)) }
+        : e,
     ),
   };
 }
@@ -820,31 +826,138 @@ export function textAnnotationOf(score: Score, noteId: string): string | null {
  * 设置 / 修改 / 删除音符前的文字标注（脚本里的 `(前奏)` 段落标记）。
  * text 为空串 = 删除；已有标注 = 改文字；都没有 = 在音符前插入新指令。
  */
+/**
+ * 标注框里显示什么：有段落文字就显示文字；只有括号记号时把括号显示出来
+ * （否则用户打了 ( 提交后框里又空了，看着像没写进去）。
+ */
+export function annotationTextOf(score: Score, noteId: string): string {
+  const t = textAnnotationOf(score, noteId);
+  if (t) return t;
+  const f = parenFlagsOf(score, noteId);
+  return `${f.open ? '(' : ''}${f.close ? ')' : ''}`;
+}
+
+/** 音符左右两侧的括号记号（'(' 在前、')' 在后），用于查询按钮点亮状态 */
+export function parenFlagsOf(score: Score, noteId: string): { open: boolean; close: boolean } {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return { open: false, close: false };
+  const isParen = (e: Event | undefined, ch: string): boolean =>
+    !!e && e.kind === 'directive' && e.type === 'paren' && e.value === ch;
+  return {
+    open: isParen(score.events[idx - 1], '('),
+    close: isParen(score.events[idx + 1], ')'),
+  };
+}
+
+/**
+ * 加 / 去左右括号：已有一个就删掉，没有就在音符前（(）或后（)）插一个。
+ *
+ * 为什么是两个独立记号而不是「选中区间加括号」：一段音符常常跨好几行，
+ * 头一个音和末一个音不在同一行，按区间操作既选不准也说不清括号画在哪。
+ */
+export function toggleParen(score: Score, noteId: string, side: 'open' | 'close'): Score {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return score;
+  const ch = side === 'open' ? '(' : ')';
+  const at = side === 'open' ? idx - 1 : idx + 1;
+  const cur = score.events[at];
+  if (cur && cur.kind === 'directive' && cur.type === 'paren' && cur.value === ch) {
+    return { ...score, events: score.events.filter((_, i) => i !== at) };
+  }
+  const ns = score.part ? `p${score.part.id}:` : '';
+  const id = `${ns}e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`;
+  const ev: Event = { id, kind: 'directive', type: 'paren', value: ch };
+  const events = [...score.events];
+  events.splice(side === 'open' ? idx : idx + 1, 0, ev);
+  return { ...score, events };
+}
+
+/** 摘掉音符两侧（前 / 后）符合 pred 的 directive。返回原对象表示没动过 */
+function stripAdjacentDirectives(
+  score: Score,
+  noteId: string,
+  pred: (e: DirectiveEvent) => boolean,
+): Score {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return score;
+  const drop = new Set<number>();
+  for (const i of [idx - 1, idx + 1]) {
+    const e = score.events[i];
+    if (e && e.kind === 'directive' && pred(e)) drop.add(i);
+  }
+  if (drop.size === 0) return score;
+  return { ...score, events: score.events.filter((_, i) => !drop.has(i)) };
+}
+
+/** 摘掉音符两侧已有的括号记号 */
+function stripParens(score: Score, noteId: string): Score {
+  return stripAdjacentDirectives(score, noteId, (e) => e.type === 'paren');
+}
+
+/** 摘掉音符前的段落文字标注 */
+function stripText(score: Score, noteId: string): Score {
+  const idx = score.events.findIndex((e) => e.id === noteId);
+  if (idx < 0) return score;
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const e = score.events[i];
+    if (e.kind !== 'directive') break;
+    if (e.type === 'text') {
+      return { ...score, events: score.events.filter((_, j) => j !== i) };
+    }
+  }
+  return score;
+}
+
+/**
+ * 设置 / 修改 / 删除音符前的文字标注（脚本里的 `(前奏)` 段落标记）。
+ *
+ * **只写了括号字符（( / ) / ()）时走另一条路**：那不是文字，是画在音符
+ * 左右两侧的括号记号（paren directive）——用户从标注框输入 ( 就是想在
+ * 音符左边看到 (，包成 `((` 画到音符下方完全不是他要的。
+ * 半角括号在**脚本源码**里确实是连音线写法，但这只影响文本层：内部一律存
+ * 成 paren directive、回写时用全角 （ ），与连音线互不干扰。
+ */
 export function setTextAnnotation(score: Score, noteId: string, text: string): Score {
   const idx = score.events.findIndex((e) => e.id === noteId);
   if (idx < 0) return score;
   if (score.events[idx].kind !== 'note' && score.events[idx].kind !== 'rest') return score;
+  const trimmed = text.trim();
+
+  // 清空：文字标注与两侧括号一起摘掉
+  if (!trimmed) return stripParens(stripText(score, noteId), noteId);
+
+  if (trimmed === '(' || trimmed === ')' || trimmed === '()') {
+    // 输入是「最终形态」不是增量：先清干净，再按输入重新加
+    let s = stripParens(stripText(score, noteId), noteId);
+    // ( 插在音符**前**（画在左侧）；) 插在音符**后**（画在右侧）
+    if (trimmed.includes('(')) s = toggleParen(s, noteId, 'open');
+    if (trimmed.includes(')')) s = toggleParen(s, noteId, 'close');
+    return s;
+  }
+
+  // 普通文字：先摘括号（同一个框一次只表达一种），再按原逻辑写文字标注
+  const base = stripParens(score, noteId);
   let di = -1;
-  for (let i = idx - 1; i >= 0; i -= 1) {
-    const e = score.events[i];
+  for (let i = base.events.findIndex((e) => e.id === noteId) - 1; i >= 0; i -= 1) {
+    const e = base.events[i];
     if (e.kind !== 'directive') break;
     if (e.type === 'text') {
       di = i;
       break;
     }
   }
-  const trimmed = text.trim();
-  const events = [...score.events];
-  if (!trimmed) {
-    if (di >= 0) events.splice(di, 1);
-    return { ...score, events };
-  }
+  const events = [...base.events];
   if (di >= 0) {
     events[di] = { ...events[di], value: trimmed } as Event;
   } else {
-    const ns = score.part ? `p${score.part.id}:` : '';
-    const id = `${ns}e${maxSeq(score.events.map((e) => e.id), 'e') + 1}`;
-    events.splice(idx, 0, { id, kind: 'directive', type: 'text', value: trimmed });
+    const ns = base.part ? `p${base.part.id}:` : '';
+    const id = `${ns}e${maxSeq(base.events.map((e) => e.id), 'e') + 1}`;
+    events.splice(base.events.findIndex((e) => e.id === noteId), 0, {
+      id,
+      kind: 'directive',
+      type: 'text',
+      value: trimmed,
+    });
   }
   return { ...score, events };
 }

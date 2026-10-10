@@ -424,8 +424,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 播放指示方式：
    *   head = 跟着当前音跳的色块 + 平滑横移的竖线（旧方式）
    *   band = 从当前行行首开始、随音乐不断变宽的高亮条（更好跟）
+   *   ball = 发光小球拖着渐变尾巴、按抛物线轨迹逐音跳跃（深色发光、浅色彩色点+阴影）
    */
-  const [playStyle, setPlayStyle] = useState<'head' | 'band'>('head');
+  const [playStyle, setPlayStyle] = useState<'head' | 'band' | 'ball'>('head');
   /** 对轨页「音轨分离工具下载」的说明弹窗 */
   const [tramaOpen, setTramaOpen] = useState(false);
   /**
@@ -2954,7 +2955,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           }}
           video={{
             displayTimeline,
-            playStyle,
+            // 视频录制暂不支持光球特效：回退为色块+竖线
+            playStyle: playStyle === 'ball' ? 'head' : playStyle,
             timeline,
             fromTick: 0,
             bpm: score.meta.bpm,
@@ -3046,6 +3048,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   title="从当前行行首开始、随音乐变宽的高亮条"
                 >
                   高亮条
+                </button>
+                <button
+                  className={playStyle === 'ball' ? 'v2-seg is-on' : 'v2-seg'}
+                  onClick={() => setPlayStyle('ball')}
+                  title="发光小球拖着渐变尾巴，按抛物线轨迹逐音跳跃（深色发光照亮、浅色彩色点+阴影）"
+                >
+                  光球
                 </button>
               </div>
             </div>

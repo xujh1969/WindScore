@@ -40,7 +40,12 @@ export const TECHNIQUE_GLYPH: Record<
   bendDown: { mark: '↘', label: '后弯音' },
 };
 
+/** 播放指示方式：head = 色块+竖线；band = 高亮条；ball = 跳跃光球（带渐变拖尾） */
+export type PlayStyle = 'head' | 'band' | 'ball';
+
 export interface PaintTheme {
+  /** 深浅主题标记：光球特效用它切换「发光照亮」与「彩色点 + 阴影」两种画法 */
+  dark: boolean;
   bg: string;
   ink: string;
   muted: string;
@@ -61,6 +66,7 @@ export interface PaintTheme {
 }
 
 export const LIGHT_THEME: PaintTheme = {
+  dark: false,
   bg: '#ffffff',
   ink: '#27272a',
   muted: '#a1a1aa',
@@ -80,6 +86,7 @@ export const LIGHT_THEME: PaintTheme = {
 };
 
 export const DARK_THEME: PaintTheme = {
+  dark: true,
   bg: '#18181b',
   ink: '#e4e4e7',
   muted: '#71717a',
@@ -269,7 +276,13 @@ export interface PaintOptions {
    */
   cue?: { eventId: string; beatsLeft: number; pulse: number } | null;
   /** 播放指示方式，默认 head（跳动的色块 + 竖线）；band = 行进度条 */
-  playStyle?: 'head' | 'band';
+  playStyle?: PlayStyle;
+  /**
+   * 播放光球（playStyle = 'ball' 时由 ScoreCanvas 逐帧计算传入）：
+   * x/y = 球心（抛物线轨迹上），r = 半径，hot = 落地照亮强度 0..1，
+   * trail = 最近若干帧的位置（渐变拖尾）。
+   */
+  ball?: { x: number; y: number; r: number; hot: number; trail: { x: number; y: number }[] } | null;
   /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
   showMeasureNumbers?: boolean;
   /** 编辑时显示强制换行/分页标记。 */
@@ -389,6 +402,76 @@ export function paintLayout(
       focusBarSystem,
     });
   }
+
+  // 播放光球：最高层。深色 = 发光 + 照亮附近；浅色 = 彩色点 + 阴影拖尾
+  if (opts.ball) drawPlayBall(ctx, opts.ball, theme);
+}
+
+/** #rrggbb → rgba(r,g,b,a) */
+function hexA(hex: string, a: number): string {
+  const n = hex.replace('#', '');
+  const full = n.length === 3 ? n.split('').map((c) => c + c).join('') : n;
+  const v = parseInt(full, 16);
+  const al = Math.max(0, Math.min(1, a)).toFixed(3);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${al})`;
+}
+
+/**
+ * 播放光球：跟随抛物线轨迹的发光小球。
+ * 深色主题 = 光晕（globalCompositeOperation 'lighter' 叠加出「照亮附近」的感觉）；
+ * 浅色主题 = 彩色点 + 柔和阴影拖尾（白底下发光只会是一片白，阴影才看得见）。
+ */
+function drawPlayBall(
+  ctx: CanvasRenderingContext2D,
+  b: { x: number; y: number; r: number; hot: number; trail: { x: number; y: number }[] },
+  theme: PaintTheme,
+): void {
+  const accent = theme.accent;
+  // 拖尾：越靠近球越实、越大；深色叠加发光，浅色画阴影
+  for (let i = 0; i < b.trail.length; i += 1) {
+    const p = b.trail[i]!;
+    const f = (i + 1) / b.trail.length;
+    ctx.globalAlpha = theme.dark ? 0.04 + f * 0.3 : 0.03 + f * 0.12;
+    if (theme.dark) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = accent;
+    } else {
+      ctx.fillStyle = '#3f3f46';
+    }
+    ctx.beginPath();
+    ctx.arc(p.x, p.y + (theme.dark ? 0 : b.r * 0.7), b.r * (0.25 + f * 0.7), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 光晕 / 阴影：落地段（hot→1）照亮范围更大
+  const glowR = b.r * (theme.dark ? 2.8 + b.hot * 2.4 : 2.1);
+  const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, glowR);
+  if (theme.dark) {
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.3, hexA(accent, 0.5 + b.hot * 0.4));
+    g.addColorStop(1, hexA(accent, 0));
+    ctx.globalCompositeOperation = 'lighter';
+  } else {
+    g.addColorStop(0, hexA(accent, 0.95));
+    g.addColorStop(0.55, hexA(accent, 0.45));
+    g.addColorStop(1, hexA(accent, 0));
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = 12;
+  }
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 核心：深色用白热核心，浅色用实心彩色点
+  ctx.fillStyle = theme.dark ? '#ffffff' : accent;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r * (theme.dark ? 0.5 : 0.55), 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme, showEdit: boolean): void {
@@ -519,8 +602,8 @@ interface LinePaint {
   focusId: string | null;
   /** KTV 式入拍提醒（前奏期间闪烁 + 倒数） */
   cue: { eventId: string; beatsLeft: number; pulse: number } | null;
-  /** 播放指示方式：head = 跟着音符跳的色块 + 竖线；band = 从行首生长的高亮条 */
-  playStyle: 'head' | 'band';
+  /** 播放指示方式：head = 跟着音符跳的色块 + 竖线；band = 从行首生长的高亮条；ball = 跳跃光球 */
+  playStyle: PlayStyle;
   /** 小节号开关（缺省显示） */
   showMeasureNumbers: boolean;
   showBreaks: boolean;

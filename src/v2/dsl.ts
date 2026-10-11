@@ -53,7 +53,7 @@ import type {
  * 简谱里升降号写在音级左边（`#5` `b3`），和八度点谁先谁后没有硬规矩。
  * ♯ ♭ ♮ 字形与 # b 等同。
  */
-const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqh]*)$/;
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhg]*)$/;
 
 /**
  * 技法记号的后缀字母 → 数据值。
@@ -359,6 +359,8 @@ function parseSingle(text: string, modern = false): ParseResult {
       const rest: RestEvent = { id, kind: 'rest', ticks };
       // 休止符与音符一样可带附点（0. = 1.5 拍）
       if (dotCount) rest.dot = dotCount;
+      // 灰显（g 后缀）：前奏 / 间奏里的休止同样可以灰
+      if (artic.includes('g')) rest.gray = true;
       ev = rest;
       // 隐藏休止（番茄写法 8）：走 0 的完整时值语法，只是不画字形
       if (hiddenRest) rest.hidden = true;
@@ -380,6 +382,7 @@ function parseSingle(text: string, modern = false): ParseResult {
       const arts: Articulation[] = [];
       let fermata = false;
       let tongue: 'T' | 'K' | undefined;
+      let gray = false;
       const techniques: string[] = [];
       for (const c of artic) {
         if (c === '!') arts.push('staccato');
@@ -388,11 +391,13 @@ function parseSingle(text: string, modern = false): ParseResult {
         else if (c === '@') fermata = true;
         else if (c === 't') tongue = 'T';
         else if (c === 'k') tongue = 'K';
+        else if (c === 'g') gray = true;
         else if (c in TECHNIQUE_LETTER) techniques.push(TECHNIQUE_LETTER[c]);
       }
       if (arts.length) note.articulations = arts;
       if (fermata) note.fermata = true;
       if (tongue) note.tongue = tongue;
+      if (gray) note.gray = true;
       if (techniques.length) note.techniques = techniques;
       // 倚音（不占时值）：挂在这个主音上
       if (gBefore?.length) note.graceBefore = gBefore;
@@ -840,7 +845,7 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
-  if (ev.kind === 'rest') return `${ev.hidden ? '8' : '0'}${short}`;
+  if (ev.kind === 'rest') return `${ev.hidden ? '8' : '0'}${short}${ev.gray ? 'g' : ''}`;
   const n = ev;
   const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
   // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致
@@ -853,11 +858,12 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
     .join('');
   const ferm = n.fermata ? '@' : '';
   const tong = n.tongue === 'K' ? 'k' : n.tongue === 'T' ? 't' : '';
+  const gray = n.gray ? 'g' : '';
   const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? '').join('');
   // 倚音：前倚音写主音前、后倚音写主音后；复倚音连写 {65}
   const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join('')}}` : '';
   const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join('')}}` : '';
-  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${ga}`;
+  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${gray}${ga}`;
 }
 
 export function serializeDsl(score: Score): string {

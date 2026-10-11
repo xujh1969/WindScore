@@ -89,12 +89,16 @@ export interface PlacedItem {
   breakAfter?: 'line' | 'page';
   /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
   hidden?: boolean;
+  /** 灰显（前奏 / 间奏提示）：数字与随附记号画成灰色 */
+  gray?: boolean;
 }
 
 export interface PlacedBeam {
   x0: number;
   x1: number;
   level: number;
+  /** 减时线连接的成员全是灰显音时，线也跟着灰 */
+  gray?: boolean;
 }
 
 export interface PlacedArc {
@@ -826,6 +830,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         };
         // 隐藏休止（8）：占位宽度照算，字形由绘制层跳过
         if (ev.kind === 'rest' && ev.hidden) item.hidden = true;
+        if (ev.gray) item.gray = true;
         if (ev.kind === 'note') {
           const n = ev as NoteEvent;
           item.degree = n.degree;
@@ -976,9 +981,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         // 上面 item.beams 已给 rest 算好，这里漏了 kind 判断之外没别的差别
         if ((it.beams ?? 0) >= 1) {
           const x1 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
-          beams.push({ x0: it.x + 2, x1, level: 1 });
-          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1, level: 2 });
-          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1, level: 3 });
+          beams.push({ x0: it.x + 2, x1, level: 1, gray: it.gray });
+          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1, level: 2, gray: it.gray });
+          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1, level: 3, gray: it.gray });
         }
         continue;
       }
@@ -990,6 +995,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         .filter((m): m is PlacedItem => !!m);
       if (members.length === 0) continue;
 
+      // 组内成员**全部**灰显时减时线才跟着灰（混着普通音就保持墨色）
+      const groupGray = members.every((m) => m.gray);
       const first = members[0];
       const last = members[members.length - 1];
       const rightOf = (m: PlacedItem) => m.x + Math.min(m.w - 4 * k, glyph.glyphRight);
@@ -999,13 +1006,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       // 连音组（三连音 / 六连音）：一定画一条线 + 一个标号。
       // 连音成员的 beamCount 都是 0，不能靠它判断要不要画线。
       if (g.tuplet) {
-        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level });
+        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level, gray: groupGray });
         tuplets.push({ x0, x1, text: String(g.tuplet) });
         continue;
       }
       // 组内没人被细分（全 ≥ 1 拍）就不画减时线
       if (members.every((m) => (m.beams ?? 0) < 1)) continue;
-      beams.push({ x0, x1, level: 1 });
+      beams.push({ x0, x1, level: 1, gray: groupGray });
 
       // 更深的减时线：每一级只连接实际具有该级线数的连续成员。
       for (let level = 2; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
@@ -1014,7 +1021,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if ((members[s].beams ?? 0) < level) { s++; continue; }
           let end = s;
           while (end < members.length && (members[end].beams ?? 0) >= level) end++;
-          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level });
+          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level, gray: groupGray });
           s = end;
         }
       }

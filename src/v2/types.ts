@@ -97,6 +97,11 @@ export interface NoteEvent extends BaseEvent {
   lyrics?: string[];
   /** 单音音色覆盖，MIDI program 0-127 */
   patch?: number;
+  /**
+   * 灰显（DSL 后缀 `g`）：画成灰色，提示这段是前奏 / 间奏，不用吹奏。
+   * 纯视觉标记——播放、时值、小节拍数校验都不受影响。
+   */
+  gray?: boolean;
 }
 
 export interface RestEvent extends BaseEvent {
@@ -107,6 +112,8 @@ export interface RestEvent extends BaseEvent {
   groupId?: string;
   /** 隐藏休止（DSL `8`）：占位但不画字形，用于行中混排前的空拍占位 */
   hidden?: boolean;
+  /** 灰显（DSL 后缀 `g`）：同音符，前奏 / 间奏里的休止也可以灰 */
+  gray?: boolean;
 }
 
 /**

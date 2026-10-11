@@ -531,6 +531,25 @@ export function setFermata(score: Score, id: string): Score {
 }
 
 /**
+ * 批量灰显 / 复原（前奏 / 间奏提示）：选中的音符与休止符画成灰色。
+ * 纯视觉标记，播放与时值校验不受影响。ids 里不是音 / 休止的（小节线等）自动跳过。
+ */
+export function setGray(score: Score, ids: string[], gray: boolean): Score {
+  const set = new Set(ids);
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (!set.has(e.id)) return e;
+      if (e.kind !== 'note' && e.kind !== 'rest') return e;
+      const copy = { ...e };
+      if (gray) copy.gray = true;
+      else delete copy.gray;
+      return copy;
+    }),
+  };
+}
+
+/**
  * 转调：从此音起改用新调（记谱写作 `转1=G`，面板在音符属性里）。
  * 传 undefined / 空串 = 清除。非法调号原样拒绝——脏调号会让 toMidi 静默按 C 调算。
  */

@@ -169,7 +169,7 @@ function applyMetrics(g: GlyphMetrics): void {
   const fam = '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
   M.k = g.fontSize / 21;
   M.font = `600 ${g.fontSize}px ${fam}`;
-  M.graceFont = `600 ${12 * M.k}px ${fam}`;
+  M.graceFont = `600 ${14 * M.k}px ${fam}`;
   M.accFont = `600 ${13 * M.k}px ${fam}`;
   M.graceW = g.graceW;
   M.glyphPad = g.pad;
@@ -886,9 +886,9 @@ function paintLine(
   }
 
   // 减时线（下方连线）
-  ctx.strokeStyle = theme.ink;
   ctx.lineWidth = M.beamLine;
   for (const b of line.beams) {
+    ctx.strokeStyle = b.gray ? theme.muted : theme.ink;
     const by = y + M.beamTop + (b.level - 1) * M.beamStep;
     ctx.beginPath();
     ctx.moveTo(b.x0, by);
@@ -1171,7 +1171,8 @@ function drawGlyph(
   // 字号由字形渲染自己负责，不依赖上一个绘制块留下的 ctx.font
   ctx.font = M.font;
   ctx.textAlign = 'left';
-  ctx.fillStyle = theme.ink;
+  // 灰显（前奏 / 间奏提示）：数字与随附的点 / 变音记号全部画成灰色
+  ctx.fillStyle = it.gray ? theme.muted : theme.ink;
 
   // 隐藏休止（8）：占位宽度照算，一切字形（数字 / 附点 / 八度点 / 减时线）都不画
   if (it.hidden) return;
@@ -1216,12 +1217,22 @@ function drawGlyph(
     }
   }
 
-  // 增时线
+  // 增时线（5-- 的 --）：跟随所在音的灰显。
+  // 位置**在音符格宽内等分铺开**：数字之后的区域均分成 dashes 格，
+  // 每条线在各自的格内居中——数字→第一条线、线与线之间的间距全部均匀
+  // （5--- 占一整小节时摊成 5 · - · - · -）；重奏共享拍位的 dashXs 优先
   if (it.dashes) {
-    ctx.strokeStyle = theme.ink;
+    ctx.strokeStyle = it.gray ? theme.muted : theme.ink;
     ctx.lineWidth = M.beamLine;
+    const extStart = gx + gw + 5;
+    const extEnd = it.x + it.w - 6 * M.k;
+    // 格子太窄放不下一根线时回落到固定间距（极端密集的谱面）
+    const cell = Math.max((extEnd - extStart) / it.dashes, M.dashW + 2);
     for (let i = 0; i < it.dashes; i += 1) {
-      const x0 = it.dashXs?.[i] !== undefined ? it.dashXs[i] - M.dashW / 2 : gx + gw + 5 + i * M.dashGap;
+      const x0 =
+        it.dashXs?.[i] !== undefined
+          ? it.dashXs[i] - M.dashW / 2
+          : extStart + cell * i + (cell - M.dashW) / 2;
       ctx.beginPath();
       ctx.moveTo(x0, y);
       ctx.lineTo(x0 + M.dashW, y);
@@ -1230,8 +1241,8 @@ function drawGlyph(
   }
 
   // 倚音：前在左上、后在右上；弧线收到主音数字的侧边（前用左缘、后用右缘）。
-  // 起点往主音方向靠一点，弧的半径才不会拉得太开
-  if (it.graceBefore?.length) drawGraces(ctx, it.graceBefore, it.x + 5, y, theme, false, gx - 1);
+  // 起点往主音方向靠一点，弧的半径才不会拉得太开。主音灰显则倚音跟着灰
+  if (it.graceBefore?.length) drawGraces(ctx, it.graceBefore, it.x + 5, y, theme, false, gx - 1, it.gray);
   if (it.graceAfter?.length) {
     const n = it.graceAfter.length;
     drawGraces(
@@ -1242,6 +1253,7 @@ function drawGlyph(
       theme,
       true,
       gx + gw + 1,
+      it.gray,
     );
   }
 }
@@ -1259,14 +1271,21 @@ function drawGraces(
   theme: PaintTheme,
   flip: boolean,
   mainEdgeX: number,
+  gray?: boolean,
 ): void {
   if (list.length === 0) return;
+  const ink = gray ? theme.muted : theme.ink;
   ctx.font = M.graceFont;
   ctx.textAlign = 'center';
-  ctx.fillStyle = theme.ink;
+  ctx.fillStyle = ink;
   const w = M.graceW;
-  /** 数字基线：抬到主音左上角（高位，给下面的减时线与弧线留出层次） */
+  /**
+   * 数字中心：抬到主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
+   * 减时线必须挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号（14 号 ≈ 5.3k），
+   * 所以横线的偏移量随字号算出来（不能写死 gy+5——字号一大数字就压线）。
+   */
   const gy = y - 24;
+  const beamDy = 14 * M.k * 0.38 + 1;
   list.forEach((g, i) => {
     const cx = x0 + i * w + w / 2;
     const acc = g.accidental ? ACCIDENTAL_GLYPH[g.accidental] : '';
@@ -1280,22 +1299,22 @@ function drawGraces(
       }
     }
     if (g.octave < 0) {
-      // 低八度点画在减时线（gy+5 / gy+8）下方，间距与高音点一致（6px）。
+      // 低八度点画在减时线下方（第二条线再往下 5px），间距与高音点一致（6px）。
       // 此前漏了这一支——低音倚音（如低音 6）的下加点从来没画出来过
       for (let k = 0; k < -g.octave; k += 1) {
         ctx.beginPath();
-        ctx.arc(cx, gy + 13 + k * 6, 1.6, 0, Math.PI * 2);
+        ctx.arc(cx, gy + beamDy + 8 + k * 6, 1.6, 0, Math.PI * 2);
         ctx.fill();
       }
     }
   });
 
-  // 两条减时线：贴在数字下方、与数字之间留净空（数字底约 gy+1，横线从 gy+5 起）
-  ctx.strokeStyle = theme.ink;
+  // 两条减时线：第一条在数字墨底下 1px，第二条再往下 3px
+  ctx.strokeStyle = ink;
   ctx.lineWidth = 1.3;
   const span = list.length * w - 3;
   const bx = x0 + 1.5;
-  const by = gy + 5;
+  const by = gy + beamDy;
   for (let k = 0; k < 2; k += 1) {
     ctx.beginPath();
     ctx.moveTo(bx, by + k * 3);
@@ -1309,9 +1328,9 @@ function drawGraces(
   // 弧的顶端（切向竖直那一端）对准**倚音组的横向中心**，减时线紧贴它——
   // 数字、减时线、弧三者一条线，看着才是一体的装饰音。
   const sx = x0 + (list.length * w) / 2;
-  // 起笔高度：减时线（y-19 / y-16）下方留出 4px 净空，不与横线叠；
-  // 组里有低音点（gy+13 起）时起笔再往下让，弧线从点的下方过，不压点
-  const sy = y - (list.some((g) => g.octave < 0) ? 8 : 12);
+  // 起笔高度：减时线（gy+beamDy / +3）下方留出 4px 净空，不与横线叠；
+  // 组里有低音点（横线下 5px 起）时起笔再往下让，弧线从点的下方过，不压点
+  const sy = gy + beamDy + (list.some((g) => g.octave < 0) ? 11 : 7);
   const ey = y - 3; // 收笔高度：主音左下 / 右下（抬得比数字底高一点，弧更紧凑）
   const rx = Math.abs(mainEdgeX - sx);
   const ry = ey - sy;

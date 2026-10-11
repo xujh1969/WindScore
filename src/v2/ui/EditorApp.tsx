@@ -53,6 +53,7 @@ import {
   setDegree,
   setDot,
   setFermata,
+  setGray,
   setMeta,
   setNoteDynamic,
   setRepeatTimes,
@@ -3776,6 +3777,24 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     </button>
                     <button className="v2-btn" onClick={deleteSelection}>
                       删除所选
+                    </button>
+                    {/* 灰显 / 复原：批量标记前奏 / 间奏——这些音画成灰色，提示不用吹奏。
+                        仍照常播放与计时，纯视觉标记。对应 DSL 的 g 后缀 */}
+                    <button
+                      className="v2-btn"
+                      disabled={selectedTimedIds.length === 0}
+                      onClick={() => setScore(setGray(score, selectedTimedIds, true))}
+                      title="把选中的音符 / 休止画成灰色：提示这段是前奏或间奏，不用吹奏（播放不受影响）"
+                    >
+                      灰显
+                    </button>
+                    <button
+                      className="v2-btn"
+                      disabled={selectedTimedIds.length === 0}
+                      onClick={() => setScore(setGray(score, selectedTimedIds, false))}
+                      title="把选中的音符 / 休止恢复为正常颜色"
+                    >
+                      复原
                     </button>
                   </div>
                 </div>

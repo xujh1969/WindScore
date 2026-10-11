@@ -16,7 +16,7 @@
  * 形式下语义一致——锚点引用的永远是「音频第几拍」。
  */
 import { useEffect, useMemo, useRef } from 'react';
-import type { TempoMap } from '../tempo';
+import { beatToSec, secToBeat as beatOfSec, type TempoMap } from '../tempo';
 
 export interface WaveStem {
   name: string;
@@ -30,6 +30,7 @@ interface Props {
   /** 标定网格的 BPM / 相位（音频拍 k 的时刻 = gridPhase + k × 60/gridBpm） */
   gridBpm: number;
   gridPhase: number;
+  gridTimes?: number[];
   beatsPerMeasure: number;
   /** 波形上被选为绑定起始点的位置（秒）；null = 还没点过 */
   markerSec: number | null;
@@ -166,6 +167,7 @@ export function AudioWaveform({
   stems,
   gridBpm,
   gridPhase,
+  gridTimes,
   beatsPerMeasure,
   markerSec,
   markerBeat,
@@ -233,8 +235,9 @@ export function AudioWaveform({
 
   const wt = dark ? WAVE_THEME.dark : WAVE_THEME.light;
   const step = 60 / gridBpm;
-  const beatTime = (a: number): number => gridPhase + a * step;
-  const secToBeat = (sec: number): number => (sec - gridPhase) / step;
+  const grid: TempoMap = gridTimes ? { kind: 'curve', beatTimes: gridTimes, scoreOriginBeat: 0 } : { kind: 'constant', bpm: gridBpm, phaseSec: gridPhase, scoreOriginBeat: 0 };
+  const beatTime = (a: number): number => beatToSec(grid, a);
+  const secToBeat = (sec: number): number => beatOfSec(grid, sec);
 
   /**
    * 把光标秒数换算成「要吸到哪一条线」。skip 与绘图共用同一个判据，
@@ -421,7 +424,7 @@ export function AudioWaveform({
     if (gridDrag.current && Math.abs(gridDrag.current.eff) > 0.001) {
       const g = gridDrag.current;
       const x0 = xOf(beatTime(g.beat));
-      const x1 = xOf(beatTime(g.beat + g.eff / step));
+      const x1 = xOf(beatTime(g.beat) + g.eff);
       ctx.strokeStyle = wt.marker;
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 3]);

@@ -100,8 +100,9 @@ import {
   timelineTicks,
 } from '../timeline';
 import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, GraceNote, JumpMark, Score } from '../types';
-import { constantTempo, curveFromAnchors, secToTick, tempoFromAlign, tickToSec, type TempoMap } from '../tempo';
-import { detectVocalEntry, estimateTempoOfBuffer, scoreNoteOnsets, type TempoEstimate } from '../beat';
+import { beatToSec, secToBeat, constantTempo, curveFromAnchors, secToTick, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
+import { detectVocalEntry, scoreNoteOnsets, type TempoEstimate } from '../beat';
+import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
 import AudioWaveform from './AudioWaveform';
 import { isTimed } from '../types';
@@ -133,7 +134,7 @@ const DYNAMICS = ['pp', 'p', 'mp', 'mf', 'f', 'ff'];
  * 不重置的话，上一首的 BPM / 相位 / 原点会残留到新谱上：
  * 新音频估测不自信时（设计上不写入）界面显示的就是上一首的旧值
  */
-const DEFAULT_TEMPO_DRAFT = { bpm: 108, phaseSec: 0.31, originBeat: 36 };
+const DEFAULT_TEMPO_DRAFT: { bpm: number; phaseSec: number; originBeat: number; beatTimes?: number[] } = { bpm: 108, phaseSec: 0.31, originBeat: 36 };
 
 /** 秒 → m:ss.s（界面上说人话用，不暴露「相位」这类术语） */
 function fmtClock(sec: number): string {
@@ -604,6 +605,19 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [quickAnchor, setQuickAnchor] = useState({ score: 0, audio: 0 });
   /** 导入伴奏时估出来的 BPM / 相位（见 src/v2/beat.ts） */
   const [tempoEst, setTempoEst] = useState<TempoEstimate | null>(null);
+  const [appliedTempoEst, setAppliedTempoEst] = useState<TempoEstimate | null>(null);
+  const analysisRef = useRef<AbortController | null>(null);
+  const autoApplyRef = useRef<(est: TempoEstimate) => void>(() => {});
+  const autoScoreRef = useRef<Score | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  useEffect(() => {
+    if (autoScoreRef.current?.meta !== snap.score.meta) {
+      analysisRef.current?.abort();
+      setTempoEst(null);
+    }
+    autoScoreRef.current = null;
+  }, [snap.score]);
+  useEffect(() => () => analysisRef.current?.abort(), []);
   /**
    * 跟着音乐打拍子定速度：自动测速锁错倍频（谱 8 拍对上音频 17 拍这类）时
    * 的人工补救——armed 时每按一次空格记一拍，几拍后中位数就是真实速度
@@ -644,81 +658,41 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, []);
 
   /**
-   * 自动对齐：谱面音符起拍 + 音频 onset → BPM / 相位 / **原点**一次算完（不用锚点）。
+   * 音频逐拍跟踪后自动应用并同步谱面 BPM；谱面原点单独匹配。
    *
    * 拆成独立函数是因为它得能**重跑**——换了一段谱、或上次没对上改了谱之后，
    * 不该逼用户重新导入一遍音频。grid 参数给导入时用（此刻 stems 状态还没更新）。
    */
   const runAutoAlign = useCallback(
     async (prefix = '', grid?: AudioBuffer, fixedBpm = 0): Promise<TempoEstimate | null> => {
-      const src = grid ?? stems.reduce((a, b) => (b.buffer.duration > a.buffer.duration ? b : a), stems[0])?.buffer;
-      if (!src) {
-        setAudioMsg(`${prefix}先载入伴奏音频。`);
+      const source = rhythmSource(stems);
+      const src = grid ?? source?.buffer;
+      if (!src) { setAudioMsg(`${prefix}先载入伴奏音频。`); return null; }
+      analysisRef.current?.abort();
+      const controller = new AbortController();
+      analysisRef.current = controller;
+      setAnalyzing(true);
+      setTempoEst(null);
+      setAudioMsg(`${prefix}正在分析全曲节拍…`);
+      try {
+        const est = await analyzeBeats(src, {
+          noteOnsets: scoreNoteOnsets(snap.score),
+          scoreBeats: totalScoreBeats(snap.score),
+          ...(fixedBpm ? { fixedBpm } : {}),
+        }, controller.signal);
+        if (controller.signal.aborted) return null;
+        setTempoEst(est);
+        if (est) autoApplyRef.current(est);
+        const vocal = stems.find((s) => /vocal|人声|voice/i.test(s.name));
+        setVocalSec(vocal ? detectVocalEntry(vocal.buffer) : null);
+        setAudioMsg(est ? '' : `${prefix}没有足够的节奏证据，请使用打拍定速。`);
+        return est;
+      } catch (error) {
+        if (!controller.signal.aborted) setAudioMsg(`节拍分析失败：${error instanceof Error ? error.message : String(error)}`);
         return null;
+      } finally {
+        if (analysisRef.current === controller) setAnalyzing(false);
       }
-      setAudioMsg(
-        `${prefix}正在自动对齐（${fixedBpm ? `按谱面速度 ${Math.round(fixedBpm)} 定相位 / 原点` : '搜 BPM / 相位 / 原点'}）…`,
-      );
-      await new Promise((r) => setTimeout(r, 30)); // 让上面这句先画出来
-      const est = estimateTempoOfBuffer(src, {
-        noteOnsets: scoreNoteOnsets(snap.score),
-        scoreBeats: totalScoreBeats(snap.score),
-        // 谱面自己写的速度 = 倍频歧义的先验：八分音符伴奏在真速与二倍速上
-        // 都能站住网格，不把它喂进去，估测一定偏向偏快的那个
-        scoreBpm: score.meta.bpm,
-        ...(fixedBpm ? { fixedBpm } : {}),
-      });
-      setTempoEst(est);
-      // 人声分轨（文件名含 vocal / 人声 / voice）：自动检测进入点，波形上画标记
-      const vocalStem = stems.find((s) => /vocal|人声|voice/i.test(s.name));
-      const vSec = vocalStem ? detectVocalEntry(vocalStem.buffer) : null;
-      setVocalSec(vSec);
-      /*
-       * 采纳门槛。原来只认「相位聚拢度 R ≥ 0.15」——这条在**八分音符伴奏**上
-       * 正好把正确答案卡掉：真速档有一半音落在半拍处、R 相互抵消（实测 63 BPM
-       * 的 R 只有 0.002），界面于是留着上一次的旧值，看上去就是「识别错了」。
-       * 改成三条任一即可：找到原点、落拍率够、或聚拢度够。
-       */
-      const usable =
-        !!est && (est.originBeat !== null || est.hitRatio >= 0.2 || est.confidence >= 0.15);
-      if (est && usable) {
-        setTempoDraft((d) => ({
-          ...d,
-          bpm: est.bpm,
-          phaseSec: est.phaseSec,
-          ...(est.originBeat !== null ? { originBeat: est.originBeat } : {}),
-        }));
-        // 对齐成了锚点就多余了；而且锚点存的是「当前网格的拍号」，BPM 一改就失效
-        if (est.originBeat !== null) setAnchors([]);
-        // 顺手把**谱面速度**（@bpm）也改对：合成音模式跟伴奏一个速度才不会打架。
-        // 只在「铺满整首」这条硬证据成立时才改——否则 @bpm 是先验，
-        // 被一个没定案的倍速覆盖掉，下次重跑连参照都没了（撤销可还原）
-        const wantBpm = Math.round(est.bpm);
-        const oldBpm = Math.round(snap.score.meta.bpm);
-        const decided = !!est.spanRatio && est.spanRatio >= 0.85 && est.spanRatio <= 1.3;
-        let syncNote = `谱面速度 @bpm 保持 ${oldBpm}（这次没定案，先验留着下次用）。`;
-        if (decided && Math.abs(wantBpm - oldBpm) >= 1) {
-          setScore(setMeta(snap.score, { bpm: wantBpm }));
-          syncNote = `谱面速度 @bpm 已同步 ${oldBpm} → ${wantBpm}（撤销可还原）。`;
-        }
-        setAudioMsg(
-          `${prefix}估测 ≈${wantBpm} 拍/分（${est.confidence >= 0.5 ? '比较可信' : est.confidence >= 0.25 ? '不太有把握' : '很不可靠'}）。` +
-            (est.isConstant === false ? `⚠ 疑似变速（极差 ${est.drift} BPM），请多绑对齐点。` : '') +
-            (est.originBeat !== null
-              ? `谱面开头 = 音频第 ${est.originBeat} 拍，点播放核对；不准就拖节奏线或打拍定速。`
-              : '原点没匹配上：点节奏线 → 点谱面小节线绑一个对齐点。') +
-            (vSec !== null ? `人声约 ${vSec.toFixed(1)}s 进入（紫线）。` : '') +
-            syncNote,
-        );
-      } else {
-        setAudioMsg(
-          prefix +
-            (est
-              ? `自动测速 ≈${Math.round(est.bpm)} 拍/分，但把握不大，没有自动采用——点「跟着音乐打拍子定速度」人工定准。`
-              : '这段音频没测出稳定节拍（可能太安静或太自由）——点「跟着音乐打拍子定速度」人工定。'),
-        );
-      }
-      return est;
     },
     // setScore 声明在后面（TDZ），只在这里的函数体里用，不能进依赖数组
     [stems, snap.score],
@@ -751,8 +725,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         mp3s.forEach((f) => void putAudio(audioKey(f), f));
         setPlaySource('audio'); // 载入伴奏就是为了跟伴奏，默认就切过去
         const durs = [...new Set(decoded.map((d) => d.buffer.duration.toFixed(2)))].join(' / ');
-        // 用最长那条 stem（通常是完整伴奏）；鼓点最清楚的那条更准，但这里无从知道哪条是鼓
-        const grid = decoded.reduce((a, b) => (b.buffer.duration > a.buffer.duration ? b : a));
+        // 优先鼓轨，其次伴奏/其他、贝斯；不让等长分轨的上传顺序决定分析输入。
+        const grid = rhythmSource(decoded)!;
         // 先让波形画出来再开跑分析：自动对齐是重活（几十 MB 音频找节拍），
         // 不让出主线程的话，setStems 触发的渲染要等它跑完才轮得到——
         // exe 上就表现为「载入了却半天不见波形」
@@ -878,6 +852,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 这里的清除只断开本谱的引用（下次再载入同名文件秒回，不用重新解码落盘）。
    */
   const clearAudioAlign = useCallback(() => {
+    analysisRef.current?.abort();
     stopPlay();
     setStems([]);
     setAnchors([]);
@@ -1176,6 +1151,33 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
   const violations = useMemo(() => validateGroups(documentScore), [documentScore]);
 
+  const audioGrid = useMemo<TempoMap>(() => tempoDraft.beatTimes
+    ? { kind: 'curve', beatTimes: tempoDraft.beatTimes, scoreOriginBeat: 0 }
+    : { kind: 'constant', bpm: tempoDraft.bpm, phaseSec: tempoDraft.phaseSec, scoreOriginBeat: 0 }, [tempoDraft]);
+  const anchorChecks = useMemo(() => checkAnchorSpans(anchors, audioGrid), [anchors, audioGrid]);
+  const applyAutoEstimate = (est: TempoEstimate) => {
+    stopPlay();
+    const nextGrid: TempoMap = est.isConstant
+      ? constantTempo(est.bpm, est.phaseSec, 0)
+      : { kind: 'curve', beatTimes: est.beatTimes, scoreOriginBeat: 0 };
+    const convert = (b: number) => secToBeat(nextGrid, beatToSec(audioGrid, b));
+    const hasManual = anchors.length > 0 || tempoOverride !== null;
+    const originSec = audioTempo ? tickToSec(audioTempo, 0) : beatToSec(audioGrid, tempoDraft.originBeat);
+    setAnchors((list) => list.map((a) => ({ ...a, audioBeat: convert(a.audioBeat) })));
+    // 外部/手工曲线仍负责谱面映射；自动候选只替换音频节拍网格。
+    const origin = hasManual ? secToBeat(nextGrid, originSec) : est.originBeat ?? 0;
+    setTempoDraft({ bpm: est.bpm, phaseSec: est.phaseSec, originBeat: origin,
+      ...(est.isConstant ? {} : { beatTimes: est.beatTimes }) });
+    setAppliedTempoEst(est);
+    setWaveBeat(null);
+    if (documentScore.meta.bpm !== est.bpm) {
+      const next = setMeta(documentScore, { bpm: est.bpm });
+      autoScoreRef.current = next;
+      setScore(next);
+    }
+  };
+  autoApplyRef.current = applyAutoEstimate;
+
   const audioTempo = useMemo<TempoMap | null>(() => {
     // ≥2 个锚点 → 分段线性变速曲线（前奏长度不一致就靠它拉伸对齐）
     if (anchors.length >= 2) {
@@ -1185,6 +1187,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         return curveFromAnchors(anchors, {
           bpm: tempoDraft.bpm,
           phaseSec: tempoDraft.phaseSec,
+          beatTimes: tempoDraft.beatTimes,
           totalBeats: ticks / TICKS_PER_BEAT,
         });
       } catch {
@@ -1193,7 +1196,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     }
     if (tempoOverride) return tempoOverride;
     try {
-      return constantTempo(tempoDraft.bpm, tempoDraft.phaseSec, tempoDraft.originBeat);
+      return tempoDraft.beatTimes ? { kind: 'curve', beatTimes: tempoDraft.beatTimes, scoreOriginBeat: tempoDraft.originBeat } : constantTempo(tempoDraft.bpm, tempoDraft.phaseSec, tempoDraft.originBeat);
     } catch {
       return null;
     }
@@ -1209,11 +1212,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const s = [...anchors].sort((a, b) => a.scoreBeat - b.scoreBeat);
     const a = s[0];
     const b = s[s.length - 1];
-    const dt = ((b.audioBeat - a.audioBeat) * 60) / tempoDraft.bpm;
+    const dt = beatToSec(audioGrid, b.audioBeat) - beatToSec(audioGrid, a.audioBeat);
     const db = b.scoreBeat - a.scoreBeat;
     if (dt <= 0 || db <= 0) return null;
     return Math.round(((db * 60) / dt) * 10) / 10;
-  }, [anchors, tempoDraft.bpm]);
+  }, [anchors, audioGrid]);
 
   /**
    * 把音频速度整体乘 k（÷2 / ×2 / 用两点实测值），**以已绑定的锚点为轴**。
@@ -1232,6 +1235,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       const pivot = pivotBeat;
       setTempoDraft((d) => ({
         ...d,
+        ...(d.beatTimes ? { beatTimes: Array.from({ length: Math.floor((d.beatTimes.length - 1) * k) + 1 }, (_, i) => beatToSec(audioGrid, i / k)) } : {}),
         bpm: Math.round(d.bpm * k * 100) / 100,
         originBeat: Math.round((k * d.originBeat + (k - 1) * pivot) * 100) / 100,
       }));
@@ -1240,7 +1244,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setTempoOverride(null); // 有曲线就按新锚点重建（曲线里的时刻是从旧锚点算出来的）
       setAudioMsg(note);
     },
-    [anchors, pivotBeat],
+    [anchors, pivotBeat, audioGrid],
   );
 
   const scaleTempo = useCallback(
@@ -1304,7 +1308,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const usedSelection = !!selEv && isTimed(selEv);
     const refBeat = usedSelection ? tickAtEvent(score, selIdx) / TICKS_PER_BEAT : onsets[0];
     const clickedBeat =
-      Math.round(((wavePos - tempoDraft.phaseSec) / (60 / tempoDraft.bpm)) * 100) / 100;
+      Math.round(secToBeat(audioGrid, wavePos) * 100) / 100;
     if (anchors.length >= 2) {
       // 微调语义：加锚点而不是清场。（commitAnchor 声明在本函数之后，内联同款逻辑）
       setPivotBeat(refBeat);
@@ -1364,6 +1368,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const expansion = useMemo(() => expandScore(documentScore), [documentScore]);
   const playScore = expansion.score ?? documentScore;
   const timeline = useMemo(() => buildTimeline(playScore), [playScore]);
+  const notationTimeline = useMemo(() => buildTimeline(playScore, { mergeTies: false }), [playScore]);
 
   /**
    * 播放界面的「展开反复」开关：把带反复 / 跳转记号的原谱换成**拉平后的线性谱**。
@@ -1372,6 +1377,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 对得上（指示条落点才准）；用户手动选过之后就一直按用户选的来。
    */
   const [expandViewPick, setExpandViewPick] = useState<boolean | null>(null);
+  const [playPick, setPlayPick] = useState<{ id: string; tick: number; score: Score; viewChoice: boolean | null } | null>(null);
+  const activePlayPick = mode === 'play' && playPick?.score === playScore && playPick.viewChoice === expandViewPick ? playPick : null;
   const [exportOpen, setExportOpen] = useState(false);
   const visibleLayout = useRef<{ layout: LayoutResult; options: LayoutOptions } | null>(null);
   const rememberLayout = useCallback((layout: LayoutResult, options: LayoutOptions) => { visibleLayout.current = { layout, options }; }, []);
@@ -1394,6 +1401,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 有反复时下标要在**展开谱**里找：第二遍、第三遍只是同一颗音的复制品。
    */
   const playFromTick = useMemo(() => {
+    if (activePlayPick) return activePlayPick.tick;
     const total = timelineTicks(timeline);
     const at = snap.mode === 'over' ? Math.max(0, snap.cursor - 1) : snap.cursor;
     let src = Math.max(0, Math.min(at, score.events.length));
@@ -1401,7 +1409,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const srcId = score.events[src]?.id;
     const from = tickAtEvent(partScore(playScore, activePartId), srcId ? (expansion.firstIndex.get(srcId) ?? src) : 0);
     return from >= total ? 0 : from;
-  }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId]);
+  }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId, activePlayPick]);
 
   const startPlayNow = useCallback(() => {
     if (documentScore.parts?.length && expansion.errors.length) { setMsg(`重奏暂不能播放：${expansion.errors[0]}`); return; }
@@ -1421,7 +1429,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // playFromTick 未必正好 0（谱首有弱起 / 小节线时会落在第一拍内），
       // 所以判据用「从开头附近起播」而不是严格等于 0
       const introTick =
-        playIntro && playFromTick <= TICKS_PER_BEAT
+        playIntro && !activePlayPick && playFromTick <= TICKS_PER_BEAT
           ? Math.min(0, secToTick(audioTempo!, 0))
           : playFromTick;
       playerRef.current.startAudio({
@@ -1442,7 +1450,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.seek(playFromTick / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick]);
 
   // ── 跟着音乐打拍子定速度 ─────────────────────────────────────
   // 自动测速的失败模式是锁错倍频（17:8 就是 2.125 倍），数学上无法从错网格自救。
@@ -1489,6 +1497,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     setTempoDraft((d) => ({
       ...d,
       phaseSec: Math.round((d.phaseSec + deltaSec) * 1000) / 1000,
+      ...(d.beatTimes ? { beatTimes: d.beatTimes.map((t) => t + deltaSec) } : {}),
     }));
     // 变速曲线里存的是绝对时刻（beatTimes），网格动了它必须一起动，
     // 否则会出现「网格线挪了、谱面没动」的错位
@@ -1530,11 +1539,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const applyTaps = useCallback(() => {
     if (tapBpm === null || taps.length < 2) return;
     const newPhase = taps[0]!;
-    const old = tempoDraft;
     const toNewBeat = (oldBeat: number): number =>
-      Math.round(((old.phaseSec + oldBeat * (60 / old.bpm) - newPhase) / (60 / tapBpm)) * 100) / 100;
+      Math.round(((beatToSec(audioGrid, oldBeat) - newPhase) / (60 / tapBpm)) * 100) / 100;
     setTempoDraft((d) => ({
       ...d,
+      beatTimes: undefined,
       bpm: Math.round(tapBpm * 100) / 100,
       phaseSec: Math.round(newPhase * 1000) / 1000,
       originBeat: toNewBeat(d.originBeat),
@@ -1856,7 +1865,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const audioBeatOfWave = useMemo(() => {
     if (waveBeat !== null) return waveBeat;
     if (wavePos === null) return null;
-    return (wavePos - tempoDraft.phaseSec) / (60 / tempoDraft.bpm);
+    return secToBeat(audioGrid, wavePos);
   }, [waveBeat, wavePos, tempoDraft]);
 
   /**
@@ -1866,31 +1875,32 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const commitAnchor = useCallback(
     (scoreBeat: number, audioBeat: number, what: string, extra = '') => {
       setPivotBeat(scoreBeat);
-      setAnchors((list) => [
-        ...list.filter((x) => x.scoreBeat !== scoreBeat),
-        { scoreBeat, audioBeat },
-      ]);
+      const nextAnchors = [...anchors.filter((x) => x.scoreBeat !== scoreBeat), { scoreBeat, audioBeat }];
+      setAnchors(nextAnchors);
       setTempoOverride(null);
-      if (anchors.length + 1 < 2) {
+      if (nextAnchors.length < 2) {
         setTempoDraft((d) => ({ ...d, originBeat: Math.round((audioBeat - scoreBeat) * 100) / 100 }));
       }
       const detail =
         `${what} ↔ 音频第 ${Math.round(audioBeat * 10) / 10} 拍` +
-        (anchors.length + 1 >= 2
+        (nextAnchors.length >= 2
           ? ' · 两点之间按变速曲线拉伸（前奏比谱面长也能跟住）'
           : ' · 再绑一个更靠后的位置，前奏即可自动拉伸');
-      setAudioMsg(`已绑定：${detail}。${extra}`);
+      const checks = checkAnchorSpans(nextAnchors, audioGrid);
+      const check = checks.find((c) => c.to === scoreBeat) ?? checks.find((c) => c.from === scoreBeat);
+      const inspection = check ? `。自检查：${check.text}` : '';
+      setAudioMsg(`已绑定：${detail}${inspection}。${extra}`);
       // 绑定是低频而关键的一步，成没成必须**弹出来**说——
       // 光靠侧栏底部那行小字，眼睛还在谱面上根本注意不到
       setBindToast({
-        title: '绑定成功',
-        body: `${detail}${extra ? `。${extra}` : ''}`,
+        title: check?.warning ? '已绑定 · 拍数需要核对' : '绑定成功',
+        body: `${detail}${inspection}${extra ? `。${extra}` : ''}`,
         key: Date.now(),
       });
       previewRef.current.stop();
       setPreviewing(false);
     },
-    [anchors, setAudioMsg, setAnchors, setTempoDraft, setTempoOverride, setPivotBeat, setPreviewing],
+    [anchors, audioGrid, setAudioMsg, setAnchors, setTempoDraft, setTempoOverride, setPivotBeat, setPreviewing],
   );
 
   /**
@@ -1951,7 +1961,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.pause();
     setPlaying(false);
     setWavePos(sec);
-    setWaveBeat(Math.round(((sec - tempoDraft.phaseSec) / (60 / tempoDraft.bpm)) * 100) / 100);
+    setWaveBeat(Math.round(secToBeat(audioGrid, sec) * 100) / 100);
   }, [mode, audioReady, tempoDraft]);
 
   /** 删除某条节奏线上的对齐点（浮层「删除此对齐点」）；对齐回退到其余锚点 / 自动标定 */
@@ -2156,10 +2166,25 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * tick 两者一致（都按展开后的时间轴算），伴奏对齐与滚动不受影响。
    */
   const displayTimeline = useMemo(
-    () => (expandView ? buildTimeline(playScore, { ids: 'own' }) : timeline),
-    [playScore, timeline, expandView],
+    () => (expandView ? buildTimeline(playScore, { ids: 'own', mergeTies: false }) : notationTimeline),
+    [playScore, notationTimeline, expandView],
   );
+  const handlePlayPick = (pick: ScorePick): void => {
+    if (pick.mode !== 'over') return;
+    const partId = pick.partId ?? activePartId;
+    const shown = partScore(fullViewScore, partId);
+    const event = shown.events[pick.index];
+    if (!event || !isTimed(event)) return;
+    const expanded = partScore(playScore, partId);
+    const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
+    if (index < 0) return;
+    const sourceIndex = partScore(documentScore, partId).events.findIndex(e => e.id === (event.originId ?? event.id));
+    stopPlay();
+    setPlayPick({ id: event.id, tick: tickAtEvent(expanded, index), score: playScore, viewChoice: expandViewPick });
+    setSnap(s => ({ ...s, partId, cursor: Math.max(0, sourceIndex + 1), anchor: null, mode: 'over' }));
+  };
   const selectPart = (id: string) => {
+    setPlayPick(null);
     setLyricSelection(null);
     setPending(null);
     setSnap((s) => ({ ...s, partId: id, cursor: 0, anchor: null, mode: 'insert' }));
@@ -2857,12 +2882,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 光球
               </button>
             </div>
-            <span className="v2-play-note">
+            {restoringAudio || !audioReady || playSource !== 'audio' ? <span className="v2-play-note">
               {restoringAudio
                 ? '正在从本地恢复伴奏…'
                 : audioReady
                   ? playSource === 'audio'
-                    ? '跟伴奏放：指示条按对轨标定走'
+                    ? ''
                     : '合成音：想跟伴奏就切回「伴奏」'
                   : audioLost
                     ? entry === 'play'
@@ -2872,7 +2897,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                       ? '这首还没有伴奏——在主程序对轨界面载入伴奏并打包即可'
                       : '这首还没有伴奏——去曲库导入打包，或在对轨界面载入伴奏'}
               {expandView && canExpandView ? '（显示的是拉平后的线性谱）' : ''}
-            </span>
+            </span> : null}
             {/* 导出放在工具条最右：这一排里只有它会离开当前界面 */}
             <button
               className="v2-btn v2-play-export"
@@ -2920,6 +2945,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           <div className="v2-play-stage">
             <ScoreCanvas
               score={viewScore}
+              activePartId={activePartId}
               dark={dark}
               unit={EDITOR_UNIT}
               fontSize={effFont}
@@ -2931,12 +2957,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               playing={playing}
               clock={clockRef.current}
               getPlayTick={getPlayTick}
-              onPick={() => {
-                /* 只放不编：谱面不可点 */
-              }}
+              onPick={handlePlayPick}
               onEnded={onPlayEnded}
               showCaret={false}
-              focusId={null}
+              focusId={activePlayPick?.id ?? null}
               onLayout={rememberLayout}
             />
           </div>
@@ -2976,7 +3000,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             if (playing) stopPlay();
           }}
           video={{
-            displayTimeline,
+            displayTimeline: mode === 'play' ? displayTimeline : notationTimeline,
             // 视频录制暂不支持光球特效：回退为色块+竖线
             playStyle: playStyle === 'ball' ? 'head' : playStyle,
             timeline,
@@ -3121,6 +3145,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 <span>{notes ? '中文词句自动分格 · 空格确认 / 补空位 · ← → 移动' : '当前声部没有音符，请结束歌词输入后先写旋律'}</span>
                 <button className="v2-btn" onClick={() => setLyricSelection(null)}>结束歌词输入</button>
               </div> : null}
+              {mode === 'align' && stems.length > 0 && analyzing ? (
+                <div className="v2-align-candidate" role="status" aria-live="polite">
+                  <div className="v2-align-candidate-text">
+                    <strong>正在识别全曲节拍…</strong>
+                    <span>完成后自动更新音频网格与谱面速度。</span>
+                  </div>
+                </div>
+              ) : null}
               {/*
                 对轨状态条：整个对轨流程的「下一步」永远只在这一行里说。
                 四种状态（打拍 / 等待谱面点击 / 边听边校 / 空闲）各一句话，替代旧面板的全部说明文字。
@@ -3140,7 +3172,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                         : playing && playSource === 'audio' && audioReady
                           ? '边听边校：指示条跟伴奏错位？按 N 在此刻加对齐点'
                           : audioReady
-                            ? `${Math.round(tempoDraft.bpm)} 拍/分 · 已对齐 ${anchors.length} 处 · 点节奏线对齐，拖节奏线整组平移`
+                            ? `${tempoEst && appliedTempoEst === tempoEst ? '已自动识别 · ' : ''}当前网格 ${Math.round(tempoDraft.bpm)} 拍/分 · 已绑定 ${anchors.length} 处 · 点节奏线对齐，拖节奏线整组平移`
                             : '载入伴奏后自动测速 · 点节奏线 → 点谱面小节线完成对齐'}
                   </span>
                   {tapping ? (
@@ -3193,6 +3225,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     dark={dark}
                     gridBpm={tempoDraft.bpm}
                     gridPhase={tempoDraft.phaseSec}
+                    gridTimes={tempoDraft.beatTimes}
                     beatsPerMeasure={beatsPerMeasure(meterAt(score, snap.cursor))}
                     markerSec={wavePos}
                     markerBeat={waveBeat}
@@ -3265,7 +3298,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 selectedIds={selectedIds}
                 cursor={snap.cursor}
                 /* 记谱页永远画原谱 → 用原谱口径的时间线（展开视图是播放页的事） */
-                timeline={timeline}
+                timeline={notationTimeline}
                 playing={playing}
                 clock={clockRef.current}
                 getPlayTick={getPlayTick}
@@ -3276,7 +3309,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 focusId={overEvent?.id ?? null}
                 showCaret={lyricVerse === null && snap.mode === 'insert'}
                 playStyle={playStyle}
-                onEditTitle={() => setSongInfoOpen((v) => !v)}
+                onEditTitle={() => {
+                  if (mode === 'align') switchAlignTab('edit');
+                  setLyricSelection(null);
+                  setSongInfoOpen(true);
+                }}
                 onBlankClick={() => setSongInfoOpen(false)}
                 lyricEdit={lyricVerse !== null && !playing ? {
                   partId: activePartId, verse: lyricVerse, startId: overId, session: lyricSelection!.session,
@@ -3375,6 +3412,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               >
                 简谱编辑
               </button>
+              <button className={`v2-btn${songInfoOpen ? ' is-on' : ''}`} onClick={() => {
+                switchAlignTab('edit');
+                setLyricSelection(null);
+                setSongInfoOpen(true);
+              }}>简谱属性</button>
             </div>
           ) : null}
           {showEditBlocks ? (lyricVerse !== null ? <div className="v2-side-block">
@@ -4246,6 +4288,18 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 ) : null}
               </div>
             </div>
+            {anchors.length > 0 ? (
+              <div className="v2-field">
+                <span className="v2-field-label">两点节拍自检查</span>
+                {anchorChecks.length ? anchorChecks.map((c) => (
+                  <p className="v2-hint" key={`${c.from}:${c.to}`}>
+                    <span>谱面第 {c.from} → {c.to} 拍：</span><br />
+                    <strong>{c.warning ? '⚠ ' : ''}{c.text}</strong>
+                  </p>
+                )) : <p className="v2-hint">请再绑定一个位置，建议相隔至少 8 拍。</p>}
+                {anchorChecks.length ? <p className="v2-hint">检查的是未经锚点拉伸的网格。拍数吻合不代表中间每拍都准确；跨反复或间奏时请分段绑定。</p> : null}
+              </div>
+            ) : null}
             <div className="v2-field">
               <div className="v2-grace-bar">
                 <button
@@ -4289,7 +4343,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   {focusTimed ? '把选中的音对到这里' : '对准这里'}
                 </button>
                 {spanAudit && (spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4) ? (
-                  <span className="v2-title-token">⚠ 谱面长度和音频差 {(spanAudit.ratio * 100).toFixed(0)}%，多半是倍速估错（试 ÷2 / ×2 或打拍）</span>
+                  <span className="v2-title-token">⚠ 谱面长度和音频差 {(spanAudit.ratio * 100).toFixed(0)}%，可能是不完整谱、反复或间奏差异，请试听核对速度</span>
                 ) : null}
               </div>
             </div>
@@ -4318,22 +4372,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   className="v2-btn"
                   onClick={() => {
                     if (!Number.isFinite(quickAnchor.score) || !Number.isFinite(quickAnchor.audio)) return;
-                    const a = { scoreBeat: quickAnchor.score, audioBeat: quickAnchor.audio };
-                    setAnchors((list) => [...list.filter((x) => x.scoreBeat !== a.scoreBeat), a]);
-                    // 单锚点也要立即生效：恒定 BPM 的原点 = 音频拍 − 谱面拍。
-                    // 之后再钉第二个锚点，audioTempo 会自动换成拉伸曲线。
-                    setTempoOverride(null);
-                    setPivotBeat(a.scoreBeat);
-                    setTempoDraft((d) => ({
-                      ...d,
-                      originBeat: Math.round((a.audioBeat - a.scoreBeat) * 100) / 100,
-                    }));
-                    setAudioMsg(
-                      `已锚定：谱面第 ${a.scoreBeat} 拍 ↔ 音频第 ${a.audioBeat} 拍。` +
-                        (anchors.length + 1 >= 2
-                          ? '已有 2 个以上锚点，段间按变速曲线拉伸。'
-                          : '再钉一个锚点即可让前奏按实际长度拉伸对齐。'),
-                    );
+                    commitAnchor(quickAnchor.score, quickAnchor.audio, `谱面第 ${quickAnchor.score} 拍`);
                   }}
                 >
                   绑定
@@ -4368,7 +4407,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               {impliedBpm !== null ? (
                 <p className="v2-hint">
                   两点实测 <b>{impliedBpm} BPM</b>（当前填 {tempoDraft.bpm}，跨度 {anchorSpan} 拍
-                  {anchorSpan < 40 ? '，偏近、仅供参考' : ''}）
+                  {anchorSpan < 8 ? '，偏近、仅供参考' : ''}）
                   <button className="v2-btn" onClick={applyImpliedBpm} title="把音频 BPM 改成两点实测值（对齐点位置不变）">
                     用实测改 BPM
                   </button>
@@ -4382,51 +4421,31 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   {/* 一句话 + 可信度分级；相位 / 残差 / 置信数值收进悬停 */}
                   <span
                     className="v2-title-token"
-                    title={`技术细节：网格起点 ${tempoEst.phaseSec}s · 置信 ${tempoEst.confidence} · 残差 ${tempoEst.residualMs}ms`}
+                    title={`候选：${tempoEst.candidates.map((c) => c.bpm.toFixed(1)).join(" / ")} BPM · 拍链支持率 ${(tempoEst.support * 100).toFixed(0)}% · 全部起音峰到恒速网格的 RMS ${tempoEst.residualMs}ms（不是准确率）`}
                   >
-                    自动测速 ≈{Math.round(tempoEst.bpm)} 拍/分 ·{' '}
+                    自动识别 {tempoEst.bpm} 拍/分 ·{' '}
                     {tempoEst.confidence >= 0.5
-                      ? '比较可信'
+                      ? '证据较强'
                       : tempoEst.confidence >= 0.25
-                        ? '不太有把握'
-                        : '很不可靠'}
+                        ? '证据一般'
+                        : '证据较弱'}
                   </span>
-                  <button
-                    className="v2-btn"
-                    title={`把谱面速度（@bpm）改成 ${Math.round(tempoEst.bpm)}`}
-                    onClick={() => {
-                      const v = Math.round(tempoEst.bpm);
-                      setScore(setMeta(score, { bpm: v }));
-                      setAudioMsg(`谱面速度已改成 ${v}（原 ${Math.round(score.meta.bpm)}）`);
-                    }}
-                  >
-                    写进谱面速度（现 {Math.round(score.meta.bpm)}
-                    {Math.abs(Math.round(tempoEst.bpm) - Math.round(score.meta.bpm)) >= 1
-                      ? ` → ${Math.round(tempoEst.bpm)}`
-                      : ''}
-                    ）
-                  </button>
+                  {tempoEst.candidates.slice(0, 3).map((c) => <button key={c.bpm} className="v2-btn" disabled={analyzing} onClick={() => void runAutoAlign('', undefined, c.bpm)} title="按这个速度档重新分析并自动应用">试 {c.bpm.toFixed(1)} BPM</button>)}
                   <button
                     className="v2-btn"
                     title="用当前谱面的音符起拍重新搜 BPM / 相位 / 原点（换过谱或上次没对上时点它）"
+                    disabled={analyzing}
                     onClick={() => void runAutoAlign()}
                   >
                     重新自动对齐
                   </button>
-                  <button
-                    className="v2-btn"
-                    title={`不搜速度，直接按谱面 @bpm ${Math.round(score.meta.bpm)} 定相位与原点（BPM 明明是对的、却被估成倍速时用它）`}
-                    onClick={() => void runAutoAlign('', undefined, score.meta.bpm)}
-                  >
-                    按谱面速度（{Math.round(score.meta.bpm)}）
-                  </button>
                 </div>
               ) : (
-                <p className="v2-hint">导入伴奏后自动估测；也可以手工在下面填。</p>
+                <p className="v2-hint">{analyzing ? '正在分析全曲节拍…' : '导入伴奏后自动识别并更新速度；也可以打拍定速。'}</p>
               )}
               {spanAudit ? (
                 <p className="v2-hint" title={`谱面 ${Math.round(scoreBeats)} 拍 ≈ ${spanAudit.span.toFixed(1)}s；音频从谱面起点算还剩 ${spanAudit.remaining.toFixed(1)}s`}>
-                  体检：谱面长度与音频{spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4 ? <b>对不上（速度多半测错了）</b> : '基本吻合'}
+                  体检：谱面长度与音频{spanAudit.ratio < 0.7 || spanAudit.ratio > 1.4 ? <b>不一致（可能是不完整谱、反复或间奏差异）</b> : '基本吻合'}
                 </p>
               ) : null}
             </div>
@@ -4443,7 +4462,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     max={300}
                     value={tempoDraft.bpm}
                     disabled={tempoOverride !== null}
-                    onChange={(e) => setTempoDraft((d) => ({ ...d, bpm: Number(e.target.value) }))}
+                    onChange={(e) => { const bpm = Number(e.target.value); if (bpm > 0) rescaleTempo(bpm / tempoDraft.bpm, '已调整节拍网格速度'); }}
                   />
                 </label>
                 <label className="v2-grace-check" title="节奏网格的第 0 拍在音频里的位置（秒）。打拍子会自动算好，一般不用手填">
@@ -4454,7 +4473,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     step={0.01}
                     value={tempoDraft.phaseSec}
                     disabled={tempoOverride !== null}
-                    onChange={(e) => setTempoDraft((d) => ({ ...d, phaseSec: Number(e.target.value) }))}
+                    onChange={(e) => nudgePhase(Number(e.target.value) - tempoDraft.phaseSec)}
                   />
                 </label>
                 <label className="v2-grace-check" title="谱面第 0 拍对应音频的第几拍（负数 = 谱面比音频晚开始）。「对准这里」会自动算好">
@@ -4574,10 +4593,33 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   );
 }
 
-/**
- * 谱面总拍数（含休止符）。判「这份谱是不是整曲转录」用：
- * 谱面总时长 ÷ 音频时长 ≈ 1 就说明速度档对了，≈ 0.5 / 2 就是倍速错了。
- */
+/** 比较原始音频网格；不能用已被锚点拉伸的 audioTempo 自证正确。 */
+function checkAnchorSpans(anchors: Anchor[], grid: TempoMap) {
+  const sorted = [...anchors].sort((a, b) => a.scoreBeat - b.scoreBeat);
+  return sorted.slice(1).map((b, i) => {
+    const a = sorted[i];
+    const scoreSpan = b.scoreBeat - a.scoreBeat;
+    const audioSpan = b.audioBeat - a.audioBeat;
+    const seconds = beatToSec(grid, b.audioBeat) - beatToSec(grid, a.audioBeat);
+    const valid = scoreSpan > 0 && audioSpan > 0 && seconds > 0
+      && [scoreSpan, audioSpan, seconds].every(Number.isFinite);
+    const ratio = audioSpan / scoreSpan;
+    const delta = audioSpan - scoreSpan;
+    const close = valid && Math.abs(delta) <= Math.max(0.25, scoreSpan * 0.05);
+    const verdict = !valid ? '点位顺序或数值异常，请重新绑定'
+      : scoreSpan < 4 ? '跨度太短，请再绑一个更远的点'
+      : close ? '这段拍数基本吻合'
+      : Math.abs(ratio - 2) < 0.15 ? '疑似网格速度翻倍'
+      : Math.abs(ratio - 0.5) < 0.075 ? '疑似网格速度减半'
+      : '拍数不一致，请核对网格、点位及间奏/反复';
+    const text = valid
+      ? `谱面 ${Number(scoreSpan.toFixed(2))} 拍 / 网格 ${Number(audioSpan.toFixed(2))} 拍 · 差 ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} 拍 · 耗时 ${seconds.toFixed(2)} 秒 · 实测 ${(scoreSpan * 60 / seconds).toFixed(2)} BPM · ${verdict}`
+      : verdict;
+    return { from: a.scoreBeat, to: b.scoreBeat, warning: !valid || !close || scoreSpan < 4, text };
+  });
+}
+
+/** 谱面总拍数（含休止符），用于长度诊断，不能单独据此裁定速度档。 */
 function totalScoreBeats(score: Score): number {
   let t = 0;
   for (const e of score.events) if (e.kind === 'note' || e.kind === 'rest') t += e.ticks;

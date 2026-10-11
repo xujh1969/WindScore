@@ -473,7 +473,8 @@ export function expandScore(score: Score): ExpandResult {
       const at = events.findIndex((e) => e.id === ev.originId);
       warnings.push(`第 ${at >= 0 ? measureAt(events, at) : '?'} 小节处的连线跨了反复边界，已断开`);
     }
-    if (kept.length > 0) ev.ties = kept;
+    // 每一遍必须指向这一遍的目标，不能把第二遍连回第一遍的源 id。
+    if (kept.length > 0) ev.ties = kept.map((t) => ({ ...t, to: next!.id }));
     else delete ev.ties;
   }
 

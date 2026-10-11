@@ -262,40 +262,53 @@ function folderBackend(): DirHandleLike {
   return rootDir;
 }
 
-async function fileIn(rel: string, create: boolean): Promise<FileHandleLike> {
+async function fileIn(rel: string, create: boolean, base = folderBackend()): Promise<FileHandleLike> {
   const parts = rel.split('/');
-  let dir = folderBackend();
+  let dir = base;
   for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create });
   return dir.getFileHandle(parts[parts.length - 1]!, { create });
 }
 
-function tauriPath(rel: string): Promise<string> {
-  return import('@tauri-apps/api/path').then((p) => p.join(tauriRoot, ...rel.split('/')));
+function tauriPath(rel: string, root = tauriRoot): Promise<string> {
+  return import('@tauri-apps/api/path').then((p) => p.join(root, ...rel.split('/')));
 }
 
 /** 写文件前确保子目录存在（Tauri 的 createDir 递归建） */
-async function ensureTauriDir(rel: string): Promise<void> {
+async function ensureTauriDir(rel: string, root = tauriRoot): Promise<void> {
   const parts = rel.split('/');
   if (parts.length < 2) return;
   const fs = await import('@tauri-apps/api/fs');
   const path = await import('@tauri-apps/api/path');
-  await fs.createDir(await path.join(tauriRoot, ...parts.slice(0, -1)), { recursive: true });
+  await fs.createDir(await path.join(root, ...parts.slice(0, -1)), { recursive: true });
 }
 
+const jsonWrites = new Map<string, Promise<void>>();
 export async function writeJson(rel: string, data: unknown): Promise<void> {
   const text = JSON.stringify(data);
-  if (backend === 'folder') {
-    const fh = await fileIn(rel, true);
-    const w = await fh.createWritable();
-    await w.write(new TextEncoder().encode(text));
-    await w.close();
-    return;
-  }
-  if (backend === 'tauri') {
-    const fs = await import('@tauri-apps/api/fs');
-    await ensureTauriDir(rel);
-    await fs.writeTextFile(await tauriPath(rel), text);
-  }
+  const target = backend;
+  const dir = rootDir;
+  const root = tauriRoot;
+  const job = (jsonWrites.get(rel) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    if (target === 'folder') {
+      if (!dir) throw new Error('曲库文件夹未连接');
+      const fh = await fileIn(rel, true, dir);
+      const w = await fh.createWritable();
+      await w.write(new TextEncoder().encode(text));
+      await w.close();
+      return;
+    }
+    if (target === 'tauri') {
+      const fs = await import('@tauri-apps/api/fs');
+      await ensureTauriDir(rel, root);
+      await fs.writeTextFile(await tauriPath(rel, root), text);
+    }
+  });
+  jsonWrites.set(rel, job);
+  const clear = (): void => {
+    if (jsonWrites.get(rel) === job) jsonWrites.delete(rel);
+  };
+  void job.then(clear, clear);
+  await job;
 }
 
 export async function readJson(rel: string): Promise<unknown | null> {

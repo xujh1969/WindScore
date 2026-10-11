@@ -145,13 +145,13 @@ export interface Anchor {
  */
 export function curveFromAnchors(
   anchors: Anchor[],
-  opts: { bpm: number; phaseSec: number; totalBeats: number },
+  opts: { bpm: number; phaseSec: number; totalBeats: number; beatTimes?: number[] },
 ): TempoCurve {
   if (anchors.length < 2) throw new Error('变速曲线至少要 2 个锚点');
   const step = 60 / opts.bpm;
   const pts = [...anchors]
     .sort((a, b) => a.scoreBeat - b.scoreBeat)
-    .map((a) => ({ b: a.scoreBeat, t: opts.phaseSec + a.audioBeat * step }));
+    .map((a) => ({ b: a.scoreBeat, t: opts.beatTimes ? beatToSec({ kind: 'curve', beatTimes: opts.beatTimes, scoreOriginBeat: 0 }, a.audioBeat) : opts.phaseSec + a.audioBeat * step }));
   // 去重：同谱面拍的两个锚点保留后者（后钉的修正先钉的）
   const pts2 = pts.filter((p, i) => i === 0 || p.b !== pts[i - 1].b);
   if (pts2.length < 2) throw new Error('锚点谱面拍重合，无法成曲线');

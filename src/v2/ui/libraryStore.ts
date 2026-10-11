@@ -45,9 +45,12 @@ const KEY = 'ws-library';
 const VERSION = 1;
 /** 文件后端里的清单文件名（文档结构与 localStorage 里的完全一致） */
 const LIB_FILE = 'library.json';
-const docOf = (items: LibraryItem[]): { version: number; items: LibraryItem[] } => ({
+interface LibraryDoc { version: number; items: LibraryItem[]; deletedIds?: string[] }
+let deletedIds = new Set<string>();
+const docOf = (items: LibraryItem[]): LibraryDoc => ({
   version: VERSION,
   items,
+  deletedIds: [...deletedIds],
 });
 
 const EMPTY_META: LibraryMeta = {
@@ -157,16 +160,25 @@ export function isItem(x: unknown): x is LibraryItem {
 }
 
 /** localStorage 里的原始文档（兜底后端用；也用于文件夹模式的首次迁移源） */
-function readLocal(): LibraryItem[] {
+function readLocalDoc(): LibraryDoc {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const doc = JSON.parse(raw) as { version?: number; items?: unknown[] };
-    if (!doc || doc.version !== VERSION || !Array.isArray(doc.items)) return [];
-    return sortLibrary(doc.items.filter(isItem));
+    if (!raw) return { version: VERSION, items: [] };
+    const doc = JSON.parse(raw) as LibraryDoc;
+    if (!doc || doc.version !== VERSION || !Array.isArray(doc.items)) return { version: VERSION, items: [] };
+    const deleted = validDeletedIds(doc);
+    return { version: VERSION, items: sortLibrary(doc.items.filter(isItem).filter(it => !deleted.includes(it.id))), deletedIds: deleted };
   } catch {
-    return [];
+    return { version: VERSION, items: [] };
   }
+}
+
+function validDeletedIds(doc: LibraryDoc | null): string[] {
+  return Array.isArray(doc?.deletedIds) ? doc.deletedIds.filter((id): id is string => typeof id === 'string') : [];
+}
+
+function readLocal(): LibraryItem[] {
+  return readLocalDoc().items;
 }
 
 /**
@@ -177,6 +189,15 @@ function readLocal(): LibraryItem[] {
  */
 let mem: LibraryItem[] = [];
 let hydrated = false;
+let pendingWrite: Promise<void> = Promise.resolve();
+function persistFile(doc: LibraryDoc): Promise<void> {
+  pendingWrite = writeJson(LIB_FILE, doc);
+  void pendingWrite.catch(() => undefined);
+  return pendingWrite;
+}
+export function flushLibraryWrites(): Promise<void> {
+  return currentBackend() === 'local' ? Promise.resolve() : pendingWrite;
+}
 
 const listeners = new Set<() => void>();
 /** 曲库内容变化（水合完成 / 任何写入成功）后通知订阅者 */
@@ -215,35 +236,27 @@ export function mergeLibrary(
  *   - 文件夹有库但本地有它缺的条目 → 合并（授权失效那段时间写进本地的歌救回来）
  */
 export async function hydrateLibrary(): Promise<void> {
+  let local = readLocalDoc();
   if (currentBackend() === 'local') {
+    deletedIds = new Set(validDeletedIds(local));
     hydrated = true;
+    notify();
     return;
   }
-  const doc = (await readJson(LIB_FILE)) as { version?: number; items?: unknown[] } | null;
-  if (doc && doc.version === VERSION && Array.isArray(doc.items)) {
-    mem = sortLibrary(doc.items.filter(isItem));
-    const local = readLocal();
-    if (local.length > 0) {
-      const { merged, added } = mergeLibrary(mem, local);
-      if (added > 0) {
-        mem = merged;
-        try {
-          await writeJson(LIB_FILE, docOf(mem));
-        } catch {
-          /* 写不进就先用内存的，下次再试 */
-        }
-      }
-    }
-  } else {
-    const local = readLocal();
-    if (local.length > 0) {
-      mem = local;
-      try {
-        await writeJson(LIB_FILE, docOf(mem));
-      } catch {
-        /* 写不进就先用内存的，下次再试 */
-      }
-    }
+  await pendingWrite.catch(() => undefined);
+  const doc = (await readJson(LIB_FILE)) as LibraryDoc | null;
+  local = readLocalDoc();
+  deletedIds = new Set([...validDeletedIds(local), ...validDeletedIds(doc)]);
+  const folder = doc?.version === VERSION && Array.isArray(doc.items) ? doc.items.filter(isItem) : [];
+  mem = mergeLibrary(folder, local.items).merged.filter(it => !deletedIds.has(it.id));
+  const mergedDoc = docOf(mem);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(mergedDoc));
+  } catch {
+    /* 文件后端仍可独立保存 */
+  }
+  if (JSON.stringify(doc) !== JSON.stringify(mergedDoc)) {
+    await persistFile(mergedDoc).catch(() => undefined);
   }
   hydrated = true;
   notify();
@@ -257,15 +270,23 @@ export function readLibrary(): LibraryItem[] {
 
 function writeLibrary(items: LibraryItem[]): boolean {
   const sorted = sortLibrary(items);
+  // 断连期间的删除记录也要带回文件夹，旧备份不能再次补回已删除条目。
+  for (const id of validDeletedIds(readLocalDoc())) deletedIds.add(id);
+  const doc = docOf(sorted);
   if (currentBackend() === 'local') {
     try {
-      localStorage.setItem(KEY, JSON.stringify(docOf(sorted)));
+      localStorage.setItem(KEY, JSON.stringify(doc));
     } catch {
       return false;
     }
   } else {
     mem = sorted;
-    void writeJson(LIB_FILE, docOf(sorted)).catch(() => undefined); // 写透，失败下次整库重写
+    try {
+      localStorage.setItem(KEY, JSON.stringify(doc));
+    } catch {
+      /* 文件后端仍可独立保存 */
+    }
+    void persistFile(doc);
   }
   notify();
   return true;
@@ -310,7 +331,10 @@ export function removeLibraryItem(id: string): boolean {
   const items = readLibrary();
   const next = items.filter((it) => it.id !== id);
   if (next.length === items.length) return false;
-  return writeLibrary(next);
+  deletedIds.add(id);
+  if (writeLibrary(next)) return true;
+  deletedIds.delete(id);
+  return false;
 }
 
 /** 收藏 / 取消收藏（动态谱首页的「我的收藏」） */

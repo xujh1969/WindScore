@@ -25,6 +25,7 @@
 - `timeline.ts`、`tempo.ts`、`clock.ts`：把事件转为演奏时间线，处理调号、转调、恒速/变速映射和播放时钟。
 - `expand.ts`：把反复结构派生成线性谱，供播放与导出使用；编辑仍针对原谱。
 - `audio.ts`、`beat.ts`、`mp3.ts`：合成/伴奏播放、音频 BPM 与入口估算、WAV 转 MP3。
+- `beatTracker.ts`、`beatClient.ts`、`beat.worker.ts`：多速度候选与动态规划逐拍跟踪，分轨选择和可取消的全曲 Worker 分析。自动候选应用后以 `tempoDraft.beatTimes` 驱动波形、吸附与播放；独立模型 CLI 的后续约定见 `docs/beat-analyzer-cli-contract.md`。
 - `pack.ts`：ZIP store 读写；业务包格式与 `.wspack` 约定在 `ui/packBundle.ts`。
 
 ### UI 与本地数据：`src/v2/ui/`

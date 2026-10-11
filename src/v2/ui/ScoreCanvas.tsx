@@ -133,6 +133,20 @@ function evalBallTrack(track: BallTrack, tick: number, trail: { x: number; y: nu
   return { x: a.x + span * u, y: a.y - h * 4 * u * (1 - u), r, hot: 0, alpha: 1 - u, trail };
 }
 
+/** 所有页面按相同拍距采样拖尾，避免帧率不同导致尾长、亮度不同。 */
+function sampleBallTrail(track: BallTrack, tick: number, startTick: number, trail: { x: number; y: number }[]): BallDraw | null {
+  trail.length = 0;
+  const step = TICKS_PER_BEAT * 0.05;
+  const first = Math.max(startTick, track.onsets[0].tick);
+  for (let i = 19; i >= 0; i--) {
+    const t = tick - i * step;
+    if (t < first) continue;
+    const point = evalBallTrack(track, t, trail);
+    if (point) trail.push({ x: point.x, y: point.y });
+  }
+  return evalBallTrack(track, tick, trail);
+}
+
 interface Props {
   score: Score;
   activePartId?: string;
@@ -458,6 +472,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     let raf = 0;
     const total = timelineTicks(timeline);
     let snapped = false;
+    let trailStartTick: number | null = null;
     // 起播即恢复自动跟随：用户手动滚过之后，本次播放期间不再抢控制权
     followRef.current = true;
 
@@ -484,25 +499,12 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           const track = buildBallTrack(layout, timeline, activePartId);
           const trail = trailRef.current;
           const lastT = lastBallTickRef.current;
-          if (!track || lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) {
+          if (!track || trailStartTick === null || lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) {
             trail.length = 0;
-          }
-          // 掉帧（对轨页波形 + 谱面双重重绘，帧距可能跨好几拍）时按固定 tick
-          // 步长**补插中间点**：拖尾密度与帧率无关，不会被拉成一节节断影。
-          // 历史只留约 1 拍（20 点 × 0.05 拍）——拖尾是彗星尾，不是长飘带
-          if (track && lastT !== null && tick > lastT && tick - lastT <= TICKS_PER_BEAT * 4) {
-            const stepT = TICKS_PER_BEAT * 0.05;
-            for (let t = lastT + stepT; t < tick; t += stepT) {
-              const bi = evalBallTrack(track, t, trail);
-              if (bi) trail.push({ x: bi.x, y: bi.y });
-            }
+            trailStartTick = tick;
           }
           lastBallTickRef.current = tick;
-          const b = track ? evalBallTrack(track, tick, trail) : null;
-          if (b) {
-            trail.push({ x: b.x, y: b.y });
-            if (trail.length > 20) trail.splice(0, trail.length - 20); // 拖尾点数上限
-          }
+          const b = track ? sampleBallTrail(track, tick, trailStartTick ?? tick, trail) : null;
           ballRef.current = b;
         }
       } else {
@@ -601,17 +603,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         const dt = (now - prev) / 1000;
         prev = now;
         t += dt * rate;
-        // 帧距大也补插中间点，续跑的余跳拖尾同样保持连续
-        const stepT = TICKS_PER_BEAT * 0.05;
-        for (let u = t - dt * rate + stepT; u < t; u += stepT) {
-          const bi = evalBallTrack(fadeTrack, u, trailRef.current);
-          if (bi) trailRef.current.push({ x: bi.x, y: bi.y });
-        }
-        const b = evalBallTrack(fadeTrack, t, trailRef.current);
-        if (b) {
-          trailRef.current.push({ x: b.x, y: b.y });
-          if (trailRef.current.length > 20) trailRef.current.splice(0, trailRef.current.length - 20);
-        }
+        const b = sampleBallTrail(fadeTrack, t, trailStartTick ?? fadeTick, trailRef.current);
         ballRef.current = b;
         paintRef.current(headRef.current);
         if (b) requestAnimationFrame(step);

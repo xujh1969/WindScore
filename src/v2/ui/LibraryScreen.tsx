@@ -21,6 +21,7 @@ import {
   describeMeta,
   importLibrary,
   removeLibraryItem,
+  flushLibraryWrites,
   renameLibraryItem,
   searchLibrary,
   useLibraryItems,
@@ -331,8 +332,16 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackH
                   <span className="v2-lib-confirm">删除？</span>
                   <button
                     className="v2-btn is-danger"
-                    onClick={() => {
-                      removeLibraryItem(it.id);
+                    onClick={async () => {
+                      if (!removeLibraryItem(it.id)) {
+                        onNotify('删除未保存，请检查曲库存储是否可用');
+                        return;
+                      }
+                      try {
+                        await flushLibraryWrites();
+                      } catch {
+                        onNotify('曲库文件写入失败，请检查文件夹权限后重试保存');
+                      }
                       setConfirming(null);
                     }}
                   >

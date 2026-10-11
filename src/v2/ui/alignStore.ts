@@ -25,7 +25,7 @@ export interface AudioRef {
 export interface AlignPersist {
   version: 1;
   audio: AudioRef[];
-  tempoDraft: { bpm: number; phaseSec: number; originBeat: number };
+  tempoDraft: { bpm: number; phaseSec: number; originBeat: number; beatTimes?: number[] };
   anchors: { scoreBeat: number; audioBeat: number }[];
   /** TempoMap 的 JSON 形态（constant / curve），恢复时经 tempoFromAlign 校验 */
   override: unknown | null;

@@ -98,7 +98,7 @@ export function toMidi(
  */
 export type TimelineIdFlavor = 'source' | 'own';
 
-export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {}): TimelineEntry[] {
+export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; mergeTies?: boolean } = {}): TimelineEntry[] {
   if (score.part || score.parts?.length) {
     const parts = scoreParts(score);
     const solo = parts.some((p) => p.solo);
@@ -191,6 +191,7 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor } = {
         )
       : false;
     if (
+      opts.mergeTies !== false && // 显示时间线保留每个音的拍位，声音时间线仍合并延音
       graceCount === 0 && // 带倚音的音要重新起声，不能并进前一个长音
       linkedFromPrev &&
       mainEntry &&

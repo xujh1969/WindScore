@@ -1,28 +1,22 @@
 /**
- * 浏览器端 BPM / 相位估测（导入伴奏后当场算，不再只能等 Python）。
- *
- * 算法与 `scripts/align.py` 同源（决策 A8），口径逐行对齐：
- *   ① onset 强度包络：谱流正向差分（spectral flux），半波整流 → 压缩 → 平滑
- *   ② 取包络 90 分位以上的峰，峰时刻用**窗中心**（f*hop + n/2）
- *   ③ 网格搜索 55–200 BPM：每个候选 BPM 下把所有峰折到圆周上算聚拢度 R，最大者即真 BPM
- *      （R = |mean(e^{i2πφ})|，φ 是峰在一拍里的相位；BPM 猜对了峰才会挤在一起）
- *   ④ 在 ±0.1 BPM 内以 0.002 步长细化一轮
- *   ⑤ 质量自报：峰到最近拍点的 RMS 残差（ms）与落拍比例——用来判断「这个数能不能信」
- *
- * 与离线标定文件的分工：这里是**当场估个大概**（几秒内出数，用来把谱面速度改对）；
- * 精确对齐仍可导入 align.json 对齐参数文件（旧版离线管线或人工标定产出）。
- *
- * 纯函数、不碰 AudioContext：入参是 Float32Array + 采样率，所以能在 Node 里跑测试。
+ * 浏览器传统节拍识别：多频带起音 + 周期候选 + 动态规划逐拍跟踪。
+ * 谱面速度仅作软先验，谱面长度不参与速度选择；UI 通过 Worker 分析全曲。
+ * 恒速拍链可拟合为 BPM/相位，否则输出 beatTimes；谱面原点另外匹配。
  */
 import { TICKS_PER_BEAT } from './ticks';
 import type { Score } from './types';
+import { trackBeatEnvelope, type BeatCandidate } from './beatTracker';
 
 const N = 1024; // FFT 窗长
 const HOP = 256; // 帧移
-const TARGET_SR = 11025; // 与 align.py 一致：BPM 只需要低频骨架，降采样省 4 倍算力
-const MAX_SECONDS = 150; // 只分析前 150s：BPM 通常全曲恒定，省掉长曲的等待
+const TARGET_SR = 11025; // 保留 5.5kHz 以下起音信息，降低全曲分析算力。
+const MAX_SECONDS = Infinity; // 全曲逐拍跟踪；UI 在 Worker 中分析。
 
 export interface TempoEstimate {
+  beatTimes: number[];
+  candidates: BeatCandidate[];
+  ambiguous: boolean;
+  support: number;
   bpm: number;
   /** 音频网格相位（秒）：第 0 拍落在音频的哪里 */
   phaseSec: number;
@@ -35,27 +29,26 @@ export interface TempoEstimate {
   /** 原点的匹配强度（梳状得分 − 局部均值），越大越可信；≤0 表示没比随机强 */
   originScore: number;
   /**
-   * 谱面时长 / 音频时长。整曲转录的谱按对的速度放，这个值 ≈ 1；
-   * 倍速错了就是 0.5 或 2——这是判「谱面该走多快」最硬的证据。
+   * 谱面时长 / 音频时长。仅供诊断，不能据此判断速度档或自动更改谱面。
    */
   spanRatio: number;
   /** 恒速判定：分段精化的各段 BPM（空 = 音频太短没法定） */
   segments: number[];
-  /** 各段 BPM 的截尾极差；≤0.5 判恒定（align.py 同标准） */
+  /** 局部周期 BPM 的极差；与拍链拟合误差共同判断恒速 */
   drift: number;
   /** true = 恒定，false = 疑似变速，null = 段数不足没法定 */
   isConstant: boolean | null;
-  /** 相位聚拢度 0–1，越大越可信（干净鼓点 ~0.5+，稀疏伴奏可能只有 0.2） */
+  /** 拍链支持与周期相关性的综合证据 0–1，不是概率或准确率 */
   confidence: number;
   /** 峰到最近拍点的 RMS 残差（毫秒） */
   residualMs: number;
-  /** 落在拍点附近（±1/4 拍）的峰占比 0–1 */
+  /** 落在恒速拍点附近（±1/10 拍）的峰占比 0–1 */
   hitRatio: number;
   /** 参与计算的 onset 峰个数（太少说明这段音频没什么节奏） */
   peakCount: number;
 }
 
-/** 降到 ~11kHz：整数倍抽取后块平均，避免混叠 */
+/** 降到 ~11kHz：整数倍抽取后块平均，降低高频混叠（不是理想低通） */
 function downsample(x: Float32Array, sr: number): { data: Float32Array; sr: number } {
   if (sr <= TARGET_SR) return { data: x, sr };
   const r = Math.max(1, Math.round(sr / TARGET_SR));
@@ -69,7 +62,7 @@ function downsample(x: Float32Array, sr: number): { data: Float32Array; sr: numb
   return { data: out, sr: sr / r };
 }
 
-/** 混合成立体声→单声道（能量平均，不是简单相加，免得削顶） */
+/** 波形平均；检测严重相消时退回能量最强声道。 */
 export function mixdown(buffer: AudioBuffer): Float32Array {
   const ch = buffer.numberOfChannels;
   const len = buffer.length;
@@ -79,6 +72,15 @@ export function mixdown(buffer: AudioBuffer): Float32Array {
     const d = buffer.getChannelData(c);
     for (let i = 0; i < len; i += 1) out[i] += d[i] / ch;
   }
+  let mixedEnergy = 0, strongestEnergy = 0, strongest = 0;
+  for (let i = 0; i < len; i += 16) mixedEnergy += out[i] * out[i];
+  for (let c = 0; c < ch; c++) {
+    const d = buffer.getChannelData(c);
+    let energy = 0;
+    for (let i = 0; i < len; i += 16) energy += d[i] * d[i];
+    if (energy > strongestEnergy) { strongestEnergy = energy; strongest = c; }
+  }
+  if (mixedEnergy < strongestEnergy * 0.1) return buffer.getChannelData(strongest).slice();
   return out;
 }
 
@@ -140,8 +142,7 @@ function fft(re: Float64Array, im: Float64Array, tw: { cos: Float64Array; sin: F
 }
 
 /**
- * onset 强度包络（谱流）：flux(帧 f) = Σ max(|X_f| − |X_{f−1}|, 0)
- * 与 align.py 的 `onset_env` 同口径：半波整流 → 减中位数 → log1p(×5) → 5 点汉宁平滑。
+ * 多频带对数谱流：正差分 → 各带归一 → 局部基线 → 合并并平滑。
  */
 export function onsetEnvelope(
   x: Float32Array,
@@ -156,6 +157,7 @@ export function onsetEnvelope(
   const re = new Float64Array(n);
   const im = new Float64Array(n);
   const prev = new Float64Array(n / 2 + 1);
+  const bands = Array.from({ length: 4 }, () => new Float64Array(env.length));
 
   for (let f = 0; f < nfr; f += 1) {
     const off = f * hop;
@@ -164,19 +166,33 @@ export function onsetEnvelope(
       im[i] = 0;
     }
     fft(re, im, tw);
-    let flux = 0;
     for (let i = 0; i <= n / 2; i += 1) {
-      const m = Math.hypot(re[i], im[i]);
-      if (m > prev[i]) flux += m - prev[i];
+      const m = Math.log1p(Math.hypot(re[i], im[i]) * 10);
+      const delta = Math.max(0, m - prev[i]);
+      const hz = i * sr / n;
+      const band = hz < 200 ? 0 : hz < 1000 ? 1 : hz < 3000 ? 2 : 3;
+      if (f > 0) bands[band][f - 1] += delta;
       prev[i] = m;
     }
-    if (f > 0) env[f - 1] = flux;
   }
 
-  // 减中位数（去掉底噪）→ 对数压缩 → 平滑
-  const sorted = Float64Array.from(env).sort();
-  const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 0;
-  for (let i = 0; i < env.length; i += 1) env[i] = Math.log1p(Math.max(env[i] - median, 0) * 5);
+  // 各频带单独归一，防止低频贝斯或高频镲片独占全部起音证据。
+  env.fill(0);
+  for (const band of bands) {
+    const sortedBand = Float64Array.from(band).sort();
+    const norm = sortedBand[Math.floor(sortedBand.length * 0.9)] || sortedBand[sortedBand.length - 1] || 1;
+    const prefix = new Float64Array(band.length + 1);
+    for (let i = 0; i < band.length; i++) prefix[i + 1] = prefix[i] + band[i];
+    const radius = Math.round(sr / hop / 2);
+    for (let i = 0; i < env.length; i++) {
+      const a = Math.max(0, i - radius), b = Math.min(env.length, i + radius + 1);
+      const baseline = (prefix[b] - prefix[a]) / (b - a);
+      env[i] += Math.min(4, Math.max(0, band[i] - baseline * 0.6) / norm);
+    }
+  }
+
+  // 局部基线已在频带内移除；不用全曲阈值抹掉柔和前奏。
+  for (let i = 0; i < env.length; i++) env[i] = Math.log1p(env[i] * 2);
   const k = hanning(5);
   let ks = 0;
   for (let i = 0; i < 5; i += 1) ks += k[i];
@@ -194,29 +210,30 @@ export function onsetEnvelope(
   // = 脉冲位于窗内 3/4 处，所以这个口径比真实 onset 早 ~n/4（11k 下约 23ms）。
   // 不在这里补这个常数：真实音频的 attack 不是理想脉冲，补了反而可能更偏。
   // 相位只是估测起点，用户钉一个锚点后原点会把它吸收掉。
-  return { env: smoothed, t0Sec: n / 2 / sr, hopSec: hop / sr };
+  return { env: smoothed, t0Sec: (hop + n / 2) / sr, hopSec: hop / sr };
 }
 
 /**
- * 包络 90 分位以上的**局部极大**时刻（秒）。
+ * 超过局部自适应阈值的包络极大时刻（秒）。
  *
  * 取局部极大而不是「所有过阈值的帧」：过阈值的帧在峰两侧连成一小片平台，
- * 把它们全算进去，均值会被平台偏早的那一侧拖着走（实测相位早 38ms）。
- * 再对峰做一次抛物线插值，把时刻定到亚帧精度（实测残差 ~5ms）。
+ * 把它们全算进去会重复统计同一次起音。
+ * 再对峰做一次抛物线插值，把时刻定到亚帧精度。
  */
 function onsetPeaks(env: Float64Array, t0Sec: number, hopSec: number): Float64Array {
   if (env.length < 3) return new Float64Array(0);
-  let mean = 0;
-  for (let i = 0; i < env.length; i += 1) mean += env[i];
-  mean /= env.length;
+  const prefix = new Float64Array(env.length + 1);
+  for (let i = 0; i < env.length; i++) prefix[i + 1] = prefix[i] + env[i];
   const sorted = Float64Array.from(env).sort();
-  const thr = sorted[Math.floor(sorted.length * 0.9)];
+  const floor = sorted[Math.floor(sorted.length * 0.5)] * 0.5;
   const times: number[] = [];
   for (let i = 1; i < env.length - 1; i += 1) {
     const y = env[i];
-    if (y <= mean) continue;
+    const radius = Math.round(0.5 / hopSec);
+    const a = Math.max(0, i - radius), b = Math.min(env.length, i + radius + 1);
+    const thr = (prefix[b] - prefix[a]) / (b - a) * 1.2;
     if (!(y >= env[i - 1] && y > env[i + 1])) continue;
-    if (y < thr) continue;
+    if (y <= Math.max(thr, floor, 1e-8)) continue;
     // 抛物线插值：用三点的曲率把峰定到帧之间
     const denom = env[i - 1] - 2 * y + env[i + 1];
     const delta = denom !== 0 ? (0.5 * (env[i - 1] - env[i + 1])) / denom : 0;
@@ -265,12 +282,12 @@ function residual(peaks: Float64Array, bpm: number, phaseSec: number): { ms: num
   for (let i = 0; i < peaks.length; i += 1) {
     const rel = ((peaks[i] - phaseSec) / beat) % 1;
     const d = Math.min(Math.abs(rel), 1 - Math.abs(rel)) * beat; // 到最近拍点的距离（秒）
-    if (d < beat * 0.25) {
-      sum += d * d;
+    sum += d * d;
+    if (d < beat * 0.1) {
       hit += 1;
     }
   }
-  const n = Math.max(1, hit);
+  const n = Math.max(1, peaks.length);
   return { ms: Math.sqrt(sum / n) * 1000, hit: hit / Math.max(1, peaks.length) };
 }
 
@@ -417,8 +434,6 @@ function matchOrigin(
   bpm: number,
   phaseSec: number,
   originMax: number,
-  /** 放宽「峰值必须突出」这条：慢网格上合格候选天然更多，严格判会一律被挡 */
-  relaxPeak = false,
 ): { originBeat: number; score: number } | null {
   const tmpl = originTemplate(noteOnsets);
   if (!tmpl) return null;
@@ -449,7 +464,7 @@ function matchOrigin(
   // 峰值必须**突出**才认：均匀的脉冲串（鼓机/纯节拍）能把任何节奏型都「对上」，
   // 那种情况下几乎所有原点都落在 95% 里（实测 18%），而真匹配只有 1%。
   // 不判这一条，谱面与音频毫无关系时也会自信地报一个原点。
-  if (!relaxPeak && cands.length >= 20 && strong.length / cands.length > 0.1) return null;
+  if (cands.length >= 20 && strong.length / cands.length > 0.1) return null;
   let best = strong.reduce((a, b) => (b.origin < a.origin ? b : a));
   // 0.05 拍步进细化
   for (let o = Math.max(0, best.origin - 0.5); o <= best.origin + 0.5; o += 0.05) {
@@ -474,10 +489,7 @@ export function estimateTempo(
     /** 谱面总拍数（含休止）：判「谱面铺满整首」用 */
     scoreBeats?: number;
     /**
-     * 谱面自己写的 @bpm ——**倍频歧义的先验**。
-     * 八分音符伴奏在「真速」与「二倍速」上都能站住网格（细网格是粗网格的超集），
-     * 光靠峰值聚拢度一定偏向偏快的那个；而你亲手写的 @bpm 才是靠谱的那一票。
-     * 只在长度比这条硬证据没定案时用它。
+     * 谱面 @bpm 是速度候选排序的软参考，不能覆盖音频证据。
      */
     scoreBpm?: number;
     /** 强制按这个 BPM 对齐（「按谱面速度对齐」按钮）：跳过网格搜索，只定相位与原点 */
@@ -499,215 +511,47 @@ export function estimateTempo(
   const peaks = onsetPeaks(env, t0Sec, hopSec);
   if (peaks.length < 16) return null;
 
-  // fixedBpm：不搜速度，只在这个速度上定相位 / 原点（用户说「就按谱面速度来」）
-  const forced = opts?.fixedBpm && opts.fixedBpm > 0 ? opts.fixedBpm : 0;
-  const coarse = forced
-    ? { bpm: forced, phaseSec: 0 }
-    : gridSearch(peaks, lo, hi, 0.02);
-  const fine = forced
-    ? { bpm: forced, phaseSec: phaseScore(peaks, forced).frac * (60 / forced) }
-    : gridSearch(peaks, Math.max(lo, coarse.bpm - 0.1), Math.min(hi, coarse.bpm + 0.1), 0.002);
-
-  let bpm = fine.bpm;
-  let phaseSec = fine.phaseSec;
+  const tracked = trackBeatEnvelope(env, hopSec, t0Sec, {
+    lo, hi, hint: opts?.scoreBpm, fixed: opts?.fixedBpm,
+  });
+  if (tracked.beatTimes.length < 8) return null;
+  let bpm = tracked.bpm;
+  const times = tracked.beatTimes;
+  // 用整条拍链拟合速度与相位；只有链条接近直线才采用恒速形式。
+  const meanIndex = (times.length - 1) / 2;
+  const meanTime = times.reduce((a, b) => a + b, 0) / times.length;
+  let cov = 0, variance = 0;
+  for (let i = 0; i < times.length; i++) { cov += (i - meanIndex) * (times[i] - meanTime); variance += (i - meanIndex) ** 2; }
+  const step = opts?.fixedBpm ? 60 / opts.fixedBpm : cov / variance;
+  const intercept = meanTime - meanIndex * step;
+  const fitError = Math.sqrt(times.reduce((sum, t, i) => sum + (t - intercept - i * step) ** 2, 0) / times.length);
+  const drift = tracked.segments.length ? Math.max(...tracked.segments) - Math.min(...tracked.segments) : 0;
+  const isConstant = !!opts?.fixedBpm || (fitError < 0.04 && drift < 1.5);
+  if (isConstant && !opts?.fixedBpm) bpm = 60 / step;
+  const phaseSec = isConstant ? ((intercept % step) + step) % step : times[0];
+  const beatTimes = isConstant ? times.map((_, i) => intercept + i * step) : times;
   let originBeat: number | null = null;
   let originScore = 0;
-  let spanRatio = 0;
-
-  // 恒速判定（音频脉冲档，与谱面无关）：按**全曲**分段精化看各段 BPM 是否一致。
-  // 不能用 150s 分析段分段——段边界与 align.py 不同会得出不同结果
-  // （青花瓷实测：全曲分段 drift 0.16「恒定」，分析段分段 0.55 误报变速）
-  const segSrc = downsample(samples, sampleRate);
-  const segCount = Math.max(2, Math.min(10, Math.floor(durSec / 5)));
-  const segments = segmentBpms(segSrc.data, segSrc.sr, fine.bpm, segCount);
-  const drift = trimmedSpread(segments);
-  const isConstant: boolean | null = segments.length >= 2 ? drift <= 0.5 : null;
-
-  /**
-   * 谱面原点 + BPM 复核（给了谱面音符起拍才算；复用上面那份包络，省一次）。
-   *
-   * 为什么不能只信相位聚拢度 R：细网格是粗网格的超集，所以「倍速」的 R 天然不低于
-   * 真速（100 BPM 带八分音符旋律时实测 R(200)=0.89 > R(100)=0.50），一定偏向偏快的那个。
-   *
-   * 为什么也不能只信梳状得分：真实伴奏上各倍速的梳状得分常常差不到 10%
-   * （青花瓷实测：108 → 1.111、54 → 1.031、216 → 0.568），判不出来。
-   *
-   * 真正能定案的是**谱面时长 / 音频时长**：整曲转录的谱，按对的速度放，
-   * 这个比值必须 ≈ 1；倍速错了就是 0.5 或 2（青花瓷：108 → 0.48、54 → 0.97）。
-   * 所以先按这条挑速度，再用梳状得分定原点，最后才在选定速度附近精化。
-   */
-  const notes = opts?.noteOnsets;
-  const totalScoreBeats = opts?.scoreBeats;
-
-  /**
-   * b 是否是网格速度的**整倍频**（相差 2 的整数次幂）。
-   *
-   * 这是采纳 @bpm 先验的安全阀：谱面上写的速度也可能是错的
-   * （青花瓷实测 @bpm 写 60、实际 108），盲目信它就把对的网格值推翻了。
-   * 只有当音频里真的存在「@bpm 的 2ⁿ 倍」这条脉冲时（八分/十六分音符伴奏
-   * 正是这种情形），才说明 @bpm 与音频同源，可以拿它定倍频。
-   */
-  const octaveOf = (b: number): boolean => {
-    if (!b || b <= 0) return false;
-    const oct = Math.log2(fine.bpm / b);
-    return Math.abs(oct - Math.round(oct)) < 0.12;
-  };
-  if (notes && notes.length >= 6) {
-    const totalBeats = Math.max(...notes);
-    /** 每个候选速度的扫描结果（key = bpm） */
-    const res = new Map<number, { phase: number; origin: number; score: number }>();
-    const evalAt = (b: number): void => {
-      // 下限放宽到「测得脉冲的一半」：半速记谱的谱面速度就在那里，
-      // 不能拿网格搜索的先验（55–200）把它卡掉（青花瓷 54.0 < 55，实测被拒）
-      if (b < Math.min(lo, fine.bpm / 2) || b > hi) return;
-      const { frac } = phaseScore(peaks, b);
-      const ph = frac * (60 / b);
-      // 原点范围按**全曲时长**算：分析只覆盖前 150s，但半速谱面的原点可能靠后，
-      // 用分析段算会把真原点判成越界（青花瓷 54 档的真原点 2.5 就被卡成 0 了）
-      const originMax = Math.max(0, durSec / (60 / b) - totalBeats);
-      // 先严格；被「峰值突出度」挡掉而又有长度比这条硬证据时，放宽再来一次
-      const m =
-        matchOrigin(env, t0Sec, hopSec, notes, b, ph, originMax) ??
-        (totalScoreBeats ? matchOrigin(env, t0Sec, hopSec, notes, b, ph, originMax, true) : null);
-      if (!m) return;
-      const cur = res.get(b);
-      if (!cur || m.score > cur.score) res.set(b, { phase: ph, origin: m.originBeat, score: m.score });
-    };
-
-    // ① 倍速候选（真值几乎总在这三个里）。
-    // 只卡上限：这些候选来自**实测的**脉冲，网格搜索的先验下限（55）管不着它——
-    // 半速记谱的谱面速度 = 脉冲/2，可能低于 55（青花瓷 54.0 就这么被拒过）。
-    // 谱面 @bpm 自己也是候选（含它的倍频/分频）——网格可能锁在它的二倍速上，
-    // 而那个「更快的」档在 R 上永远占优，不给 @bpm 进场机会就永远选错
-    const scoreBpm = opts?.scoreBpm ?? 0;
-    const candSet = forced
-      ? [forced]
-      : [
-          fine.bpm,
-          fine.bpm / 2,
-          fine.bpm * 2,
-          ...(scoreBpm > 0 ? [scoreBpm, scoreBpm / 2, scoreBpm * 2] : []),
-        ];
-    for (const cand of candSet) {
-      if (cand > hi) continue;
-      // 「慢一半」的 R 会塌到接近 0（八分音符在慢网格上落在半拍处、正负抵消），
-      // 但那可能正是正确答案——有长度比或谱面 @bpm 撑腰时就不能用 R 把它卡掉。
-      // 快的候选反过来仍要卡：细网格天然占优（超集）。
-      const shielded = cand < fine.bpm && (!!totalScoreBeats || scoreBpm > 0);
-      if (cand !== fine.bpm && !shielded && phaseScore(peaks, cand).R < 0.15) {
-        continue;
-      }
-      evalAt(cand);
-    }
-
-    // ② 挑速度：谱面「正好铺满整首」的那个优先
-    /** 谱面「正好铺满整首」的那个候选优先（durSec 见上：全曲时长） */
-    let pick: { bpm: number; phase: number; origin: number; score: number } | null = null;
-    const best = [...res.entries()].reduce<{ bpm: number; phase: number; origin: number; score: number } | null>(
-      (acc, [b, v]) => (!acc || v.score > acc.score ? { bpm: b, ...v } : acc),
-      null,
-    );
-    /** 谱面按速度 b、原点 o 放完要多久 / 音频从谱面起点算还剩多久（比值 ≈1 = 整曲转录） */
-    const spanVsRest = (b: number, phase: number, origin: number): number => {
-      const step = 60 / b;
-      const remaining = durSec - (phase + origin * step);
-      if (remaining <= 5 || !totalScoreBeats) return 0;
-      return (totalScoreBeats * step) / remaining;
-    };
-
-    if (best) pick = best;
-    /** 长度比定案：唯一能铺满整首的倍速档（硬证据，优先于梳状得分） */
-    const fits =
-      best && totalScoreBeats
-        ? [...res.entries()].filter(([b, v]) => {
-            const ratio = spanVsRest(b, v.phase, v.origin);
-            return ratio >= 0.85 && ratio <= 1.3;
-          })
-        : [];
-    const spanChosen = fits.length === 1;
-    if (spanChosen) {
-      // 长度比（硬证据）定案，优先级最高
-      // 不再要求该档的梳状得分接近最高——谱面与编曲有出入时（简略前奏、配器不同），
-      // 梳状得分会是负的（青花瓷实测 54 档 = −0.19），拿它当门槛会把正确的
-      // 速度档拒掉，用户就被迫手点「减速/加速」。
-      pick = { bpm: fits[0][0], ...fits[0][1] };
-    } else if (!spanChosen && best && opts?.scoreBpm && octaveOf(opts.scoreBpm)) {
-      // ②b 谱面 @bpm 先验：长度比没定案时（谱面只记了半首 / 音频有长尾静音），
-      // 倍频只能靠「你亲手写的速度」来定。取与 @bpm 最接近的那个候选——
-      // 八分音符伴奏在真速与二倍速上都能站住网格，R 一定偏快，不能交给它判
-      const target = opts.scoreBpm;
-      const near = [...res.entries()]
-        .filter(([b]) => octaveOf(b)) // 只在与网格同源（倍频）的候选里挑
-        .sort((a, b) => Math.abs(Math.log(a[0] / target)) - Math.abs(Math.log(b[0] / target)))
-        .find(([, v]) => Number.isFinite(v.score));
-      if (near) pick = { bpm: near[0], ...near[1] };
-    }
-
-    // ③ 在选定的速度附近精化（错 1% 在 20 拍模板上就漂 0.2 拍，得分立刻掉）。
-    // 只在**梳状选出的档**上精化：长度比定的档，其梳状得分往往是噪声
-    // （谱面与编曲对不上时是负的），精化会被噪声牵着走（实测 60 漂成 62.4）。
-    // 长度比定的速度本身是硬证据，网格测量值已经足够准（±0.05 BPM）。
-    if (pick && pick.score > 0 && !spanChosen) {
-      const around = pick.bpm;
-      // 精化窗口收窄到 ±2%（真实速度漂移 <1%，窗口开到 ±8% 时细网格又会
-      // 凭「超集」占便宜，把 108 一路推到 116——实测踩到）
-      const coarse = Math.max(0.05, around * 0.005);
-      for (let b = around * 0.97; b <= around * 1.03; b += coarse) evalAt(b);
-      const fineStep = Math.max(0.01, around * 0.001);
-      for (let b = around - coarse; b <= around + coarse; b += fineStep) evalAt(b);
-      // 精化必须留在同一个倍速档里；得分接近时（5% 内）取**离基准最近的那个**，
-      // 不让细网格把速度往快里拽
-      const cands = [...res.entries()].filter(([b]) => b >= around * 0.98 && b <= around * 1.02);
-      const top = cands.reduce<{ bpm: number; phase: number; origin: number; score: number } | null>(
-        (acc, [b, v]) => (!acc || v.score > acc.score ? { bpm: b, ...v } : acc),
-        null,
-      );
-      const refined = top
-        ? (cands
-            .filter(([, v]) => v.score >= top.score * 0.95)
-            .sort((a, b) => Math.abs(a[0] - around) - Math.abs(b[0] - around))
-            .map(([b, v]) => ({ bpm: b, ...v }))[0] ?? top)
-        : null;
-      if (refined && refined.score > pick.score) pick = refined;
-    }
-
-    // 采纳：梳状对得上，或由长度比定的档（此时得分可能为负——那只是
-    // 「谱面节奏型与编曲对不上」，不代表速度错）
-    if (pick && (pick.score > 0 || totalScoreBeats)) {
-      bpm = pick.bpm;
-      phaseSec = pick.phase;
-      originBeat = pick.origin;
-      originScore = pick.score;
-      spanRatio = Math.round(spanVsRest(pick.bpm, pick.phase, pick.origin) * 100) / 100;
-    }
+  // 节拍和谱面起点独立判断；不再用整首长度强行选择倍速或放宽匹配。
+  if (isConstant && opts?.noteOnsets && opts.noteOnsets.length >= 6) {
+    const originMax = Math.max(0, durSec * bpm / 60 - Math.max(...opts.noteOnsets));
+    const match = matchOrigin(env, t0Sec, hopSec, opts.noteOnsets, bpm, phaseSec, originMax);
+    if (match && match.score > 0.15) { originBeat = match.originBeat; originScore = match.score; }
   }
-
-  // 谱面太短（起拍 <6 个）时上面整段都跑不了，倍频就没人判——
-  // 此时只剩 @bpm 这一票：音频里若有「@bpm 的 2ⁿ 倍」这条脉冲，就按 @bpm 定档。
-  // 同样要过 octaveOf 这道安全阀（谱面速度写错时不会被带偏）
-  if ((!notes || notes.length < 6) && !forced && opts?.scoreBpm && octaveOf(opts.scoreBpm)) {
-    bpm = opts.scoreBpm;
-    phaseSec = Math.round(phaseScore(peaks, bpm).frac * (60 / bpm) * 1000) / 1000;
-  }
-
-  const { ms, hit } = residual(peaks, bpm, phaseSec);
+  const quality = residual(peaks, bpm, phaseSec);
   return {
     bpm: Math.round(bpm * 100) / 100,
     phaseSec: Math.round(phaseSec * 1000) / 1000,
-    originBeat,
-    originScore,
-    spanRatio,
-    segments,
-    drift: Math.round(drift * 100) / 100,
-    isConstant,
-    confidence: Math.round(phaseScore(peaks, bpm).R * 1000) / 1000,
-    residualMs: Math.round(ms * 10) / 10,
-    hitRatio: Math.round(hit * 100) / 100,
-    peakCount: peaks.length,
+    originBeat, originScore,
+    spanRatio: originBeat !== null && opts?.scoreBeats ? opts.scoreBeats * 60 / bpm / Math.max(1, durSec - phaseSec - originBeat * 60 / bpm) : 0,
+    segments: tracked.segments, drift, isConstant,
+    confidence: tracked.confidence, support: tracked.support,
+    residualMs: Math.round(quality.ms * 10) / 10, hitRatio: quality.hit,
+    peakCount: peaks.length, beatTimes, candidates: tracked.candidates, ambiguous: tracked.ambiguous,
   };
 }
 
-/** AudioBuffer → 估测（UI 用这个入口） */
+/** AudioBuffer → 同步估测；UI 使用 beatClient 的 Worker 入口。 */
 export function estimateTempoOfBuffer(
   buffer: AudioBuffer,
   opts?: {

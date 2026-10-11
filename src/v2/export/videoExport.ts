@@ -8,11 +8,12 @@
 import type { Score } from "../types";
 import type { LayoutResult } from "../layout";
 import type { AudioStem } from "../audio";
+import { buildBallTrack, sampleBallTrail } from '../ball';
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
 import { activeHeadsAt, activeMainAt, type TimelineEntry } from "../timeline";
 import { TICKS_PER_BEAT } from "../ticks";
 import { saveBytesAsFile, type SaveResult } from "../io";
-import { exportLayoutFor, safeFileName } from "./tasks";
+import { safeFileName } from "./tasks";
 import { exportVideoFast } from "./encode";
 import { mixStems, synthNotes, type Mix } from "./mix";
 import { exportTheme, paintVideoFrame } from "./render";
@@ -22,6 +23,7 @@ import {
   scrollTargetY,
   stripCanvasSize,
   videoGeometry,
+  videoLayoutFor,
   type VideoRatio,
 } from "./video";
 import { buildStrip, scrollTargetX, stripTickRanges } from "./strip";
@@ -35,7 +37,8 @@ export interface VideoExportOptions {
   timeline: TimelineEntry[];
   /** 显示用时间线（画原谱时传映射回原谱 id 的那份） */
   displayTimeline?: TimelineEntry[];
-  playStyle?: "head" | "band";
+  playStyle?: "head" | "band" | "ball";
+  activePartId?: string;
   fromTick: number;
   /** 只录一段时的结束 tick（含）；不给 = 到谱面末尾 */
   toTick?: number;
@@ -117,7 +120,8 @@ export async function exportScoreVideoToFile(
   opts: VideoExportOptions,
 ): Promise<SaveResult & { seconds: number; ext: string; sizeMB: number; codec: string }> {
   const { canvasW: pageW, canvasH: pageH, geo } = videoGeometry(opts.ratio, opts.shortSide);
-  const layout = opts.layout ?? exportLayoutFor(opts.score, geo, opts.showTitle ?? true);
+  const sourceLayout = opts.layout ?? videoLayoutFor(opts.score, opts.ratio, opts.shortSide, opts.showTitle ?? true);
+  const layout = { ...sourceLayout, title: opts.showTitle === false ? null : sourceLayout.title };
   const showTl = opts.displayTimeline ?? opts.timeline;
   const theme = exportTheme(opts.dark);
 
@@ -126,7 +130,7 @@ export async function exportScoreVideoToFile(
   // 底色随外观：深色 = 纯黑（配「滤色」叠加），浅色 = 纯白（配「正片叠底」叠加）
   const isStrip = opts.ratio === 'strip';
   const strip = isStrip ? buildStrip(layout) : null;
-  const STRIP_SCALE = 2;
+  const STRIP_SCALE = geo.scale;
   const stripSize = strip ? stripCanvasSize(opts.shortSide, strip.height, STRIP_SCALE) : null;
   const canvasW = stripSize ? stripSize.w : pageW;
   const canvasH = stripSize ? stripSize.h : pageH;
@@ -148,13 +152,18 @@ export async function exportScoreVideoToFile(
   });
   const frameCount = Math.max(1, Math.round(seconds * opts.fps));
   const audio = buildExportAudio(opts, seconds);
+  const ballLayout = strip?.layout ?? layout;
+  const followPartId = ballLayout.lines.some(line => line.partId === opts.activePartId)
+    ? opts.activePartId : ballLayout.lines[0]?.partId;
+  const ballTrack = opts.playStyle === 'ball' ? buildBallTrack(ballLayout, showTl, followPartId) : null;
+  const ballTrail: { x: number; y: number }[] = [];
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasW;
   canvas.height = canvasH;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("拿不到 2D 画布");
-  const scale = strip ? STRIP_SCALE : Math.max(0.2, Math.min(canvasW / layout.width, 2.4));
+  const scale = geo.scale;
   const xOff = Math.max(0, (canvasW - layout.width * scale) / 2);
 
   const res = await exportVideoFast({
@@ -167,6 +176,7 @@ export async function exportScoreVideoToFile(
     draw: (i) => {
       // 离线渲染：滚动位置是 tick 的纯函数，不需要逐帧去「追」目标
       const tick = clock.tickAt(i / opts.fps);
+      const ball = ballTrack ? sampleBallTrail(ballTrack, tick, opts.fromTick, ballTrail) : null;
       const act = activeMainAt(showTl, tick);
       if (strip && stripSize && stripRanges) {
         paintVideoFrame(ctx, strip.layout, stripTheme, {
@@ -175,6 +185,7 @@ export async function exportScoreVideoToFile(
           scale,
           scrollX: scrollTargetX(stripRanges, tick, scale, canvasW, strip.width),
           playStyle: opts.playStyle ?? "head",
+          ball,
           playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
           playheads: activeHeadsAt(showTl, tick),
           showMeasureNumbers: opts.showMeasureNumbers ?? true,
@@ -189,6 +200,7 @@ export async function exportScoreVideoToFile(
         offsetX: xOff,
         scrollY: scrollTargetY(lineRanges ?? [], tick, scale, canvasH, layout.lineHeight),
         playStyle: opts.playStyle ?? "head",
+        ball,
         playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
         playheads: activeHeadsAt(showTl, tick),
         showMeasureNumbers: opts.showMeasureNumbers ?? true,

@@ -19,7 +19,7 @@ import {
 } from '../export/tasks';
 import { exportScoreVideoToFile } from '../export/videoExport';
 import { exportScoreImageToFile } from '../export/image';
-import { VIDEO_RATIOS, recordSeconds, videoGeometry, type VideoRatio } from '../export/video';
+import { VIDEO_RATIOS, recordSeconds, videoGeometry, videoLayoutFor, stripCanvasSize, type VideoRatio } from '../export/video';
 import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
 
@@ -42,7 +42,8 @@ export interface ExportDialogProps {
     /** 画的是原谱时传映射回原谱 id 的那份时间线，指示才对得上谱面 */
     displayTimeline: TimelineEntry[];
     /** 播放指示样式（跟界面设置一致） */
-    playStyle: 'head' | 'band';
+    playStyle: 'head' | 'band' | 'ball';
+    activePartId?: string;
     fromTick: number;
     bpm: number;
     tempo: TempoMap | null;
@@ -112,6 +113,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 没伴奏就别让用户选「伴奏」——导出来会是哑的
   const canRecord = video.stems.length > 0 && video.tempo !== null;
   const useAudio: 'stems' | 'synth' = canRecord && audio !== 'synth' ? 'stems' : 'synth';
+  const videoLayout = useMemo(() => videoLayoutFor(score, ratio, shortSide, showTitle), [score, ratio, shortSide, showTitle]);
 
   /** 页数 / 画面尺寸 / 时长都是纯计算，选项一动就能报出来（不用等真导出） */
   const preview = useMemo(() => {
@@ -121,10 +123,10 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     try { pdfPlan = planExport(score, a4Geometry(landscape, dpi, 1), showTitle, pdfLayout); pages = pdfPlan.plans.length; }
     catch (e) { layoutError = e instanceof Error ? e.message : String(e); }
     const vg = videoGeometry(ratio, shortSide);
-    // 滚动横幅：宽 = 设定数值，高 = 长条高 × 2（与导出一致）
+    // 滚动横幅的高度与实际导出共用 C 方案排版及缩放。
     const canvasW = ratio === 'strip' ? shortSide : vg.canvasW;
-    const canvasH = ratio === 'strip' && pdfPlan
-      ? Math.round(buildStrip(pdfPlan.layout).height * 2)
+    const canvasH = ratio === 'strip'
+      ? stripCanvasSize(shortSide, buildStrip(videoLayout).height, vg.geo.scale).h
       : vg.canvasH;
     const total = Math.max(1, video.measureTicks.length);
     const from = Math.min(Math.max(1, mFrom), total);
@@ -141,7 +143,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       audio: useAudio,
     });
     return { pages, pdfPlan, layoutError, canvasW, canvasH, seconds, from, to, total };
-  }, [score, pdfLayout, landscape, dpi, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
+  }, [score, pdfLayout, videoLayout, landscape, dpi, showTitle, ratio, shortSide, useAudio, mFrom, mTo, video]);
 
   const pageIndex = Math.min(pdfPage, Math.max(0, preview.pages - 1));
   // PDF 预览缩放：null = 适应窗口（CSS 缩到面板内）；数字 = 相对页面原始像素的倍率。
@@ -251,7 +253,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         score,
         name: exportName,
         mode: ratio === 'strip' ? 'strip' : 'page',
-        ...(ratio === 'strip' ? { layout: pdfLayout } : {}),
+        layout: videoLayout,
 
         timeline: video.timeline,
         fromTick: video.measureTicks[preview.from - 1] ?? video.fromTick,
@@ -268,6 +270,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         audio: useAudio,
         displayTimeline: video.displayTimeline,
         playStyle: video.playStyle,
+        activePartId: partId || video.activePartId,
         showMeasureNumbers: showBars,
         onProgress: setProgress,
         cancelled: () => cancelRef.current,
@@ -444,6 +447,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 ))}
               </div>
             </div>
+            <p className="v2-exp-hint">版面采用 C「大字紧排」，按所选比例排版，字号随分辨率等比缩放。</p>
             {ratio === 'strip' ? (
             <p className="v2-exp-hint">
               滚动横幅：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。

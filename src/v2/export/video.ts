@@ -5,7 +5,8 @@
  * 这里全部不碰浏览器 API，所以能进 node 单测。
  */
 
-import type { LayoutResult } from "../layout";
+import { layoutScore, type LayoutResult } from "../layout";
+import type { Score } from '../types';
 import type { PageGeometry } from "./render";
 import type { AudioStem } from "../audio";
 import type { TempoMap } from "../tempo";
@@ -168,16 +169,15 @@ export function recordSeconds(opts: {
 }
 
 /**
- * 视频的画面参数：按**短边**定字号（每行小节数随比例变），
- * 横向能放下的宽度另算，所以竖屏不会把一行拉得又长又挤。
+ * C 大字紧排：1080px 短边时数字 44px，其他分辨率等比缩放。
  */
 export function videoGeometry(
   ratio: VideoRatio,
   shortSide: number,
 ): { canvasW: number; canvasH: number; geo: PageGeometry } {
   const { w, h } = videoCanvasSize(ratio, shortSide);
-  const scale = Math.max(1.1, Math.min(2.6, shortSide / 620));
-  const margin = Math.round(Math.min(w, h) * 0.04);
+  const scale = (44 / 21) * (shortSide / 1080);
+  const margin = 36 * (shortSide / 1080);
   return {
     canvasW: w,
     canvasH: h,
@@ -190,6 +190,19 @@ export function videoGeometry(
       marginBottom: Math.round(margin * 1.2),
     },
   };
+}
+
+/** 与已确认的 C 样张一致；按画幅排版，不沿用网页的行宽。 */
+export function videoLayoutFor(score: Score, ratio: VideoRatio, shortSide: number, showTitle: boolean): LayoutResult {
+  const { geo } = videoGeometry(ratio, shortSide);
+  return layoutScore(score, {
+    contentWidth: (geo.pageW - geo.marginX * 2) / geo.scale,
+    fontSize: 21,
+    unit: 0.42,
+    letterSpacing: -8,
+    padding: 0,
+    showTitle,
+  });
 }
 
 /**

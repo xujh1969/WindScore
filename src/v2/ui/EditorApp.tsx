@@ -3001,8 +3001,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           }}
           video={{
             displayTimeline: mode === 'play' ? displayTimeline : notationTimeline,
-            // 视频录制暂不支持光球特效：回退为色块+竖线
-            playStyle: playStyle === 'ball' ? 'head' : playStyle,
+            playStyle,
+            activePartId,
             timeline,
             fromTick: 0,
             bpm: score.meta.bpm,

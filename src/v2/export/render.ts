@@ -12,6 +12,7 @@
 import { layoutScore, type LayoutResult } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout, type PaintTheme } from '../paint';
 import type { Score } from '../types';
+import type { BallDraw } from '../ball';
 import { planPages, type PageBand, type PagePlan } from './pdf';
 
 /** 导出的字体栈：跟界面一致，导出的谱面才像「同一款软件印出来的」 */
@@ -202,8 +203,9 @@ export function paintVideoFrame(
     offsetX?: number;
     playhead?: { eventId: string; frac: number } | null;
     playheads?: { eventId: string; frac: number }[];
-    /** 播放指示样式，与界面上「光标 / 高亮条」的设置一致 */
-    playStyle?: 'head' | 'band';
+    /** 播放指示样式，与界面上「光标 / 高亮条 / 光球」的设置一致 */
+    playStyle?: 'head' | 'band' | 'ball';
+    ball?: BallDraw | null;
     showMeasureNumbers?: boolean;
     progress?: number;
   },
@@ -224,6 +226,7 @@ export function paintVideoFrame(
       playhead: opts.playhead ?? null,
       playheads: opts.playheads,
       playStyle: opts.playStyle ?? 'head',
+      ball: opts.ball,
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
     });
   } else {
@@ -234,6 +237,7 @@ export function paintVideoFrame(
       playhead: opts.playhead ?? null,
       playheads: opts.playheads,
       playStyle: opts.playStyle ?? 'head',
+      ball: opts.ball,
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
     });
   }

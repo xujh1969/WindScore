@@ -375,8 +375,8 @@ console.log('[导出 · 离线混音]');
     sampleRate: 1000,
     offsetSec: 0.25,
   });
-  check('offsetSec 之前是静音（伴奏前段被剪掉）', off.channels[0]![0] === 0 && off.channels[0]![200] === 0);
-  check('offsetSec 之后才有声音', off.channels[0]![300] === 1, String(off.channels[0]![300]));
+  check('offsetSec 裁切源音频，视频开头立即有声音', off.channels[0]![0] === 1 && off.channels[0]![200] === 1);
+  check('裁切后声音持续到目标时长', off.channels[0]![300] === 1, String(off.channels[0]![300]));
 
   const mute = mixStems({ stems: [{ buffer: dc(100), gain: 0 }], durationSec: 0.1, sampleRate: 1000 });
   check('gain 0 的 stem 被跳过（静音轨不进混音）', peakOf(mute) === 0, String(peakOf(mute)));

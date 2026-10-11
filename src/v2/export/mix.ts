@@ -50,17 +50,27 @@ export function mixStems(opts: {
 }): Mix {
   const channels = opts.channels ?? 2;
   const mix = alloc(opts.durationSec, opts.sampleRate, channels);
-  const offset = Math.max(0, Math.round((opts.offsetSec ?? 0) * opts.sampleRate));
+  const offsetSec = opts.offsetSec ?? 0;
 
   for (const stem of opts.stems) {
     if (stem.gain <= 0) continue;
     const src = stem.buffer;
-    const count = Math.min(mix.length - offset, Math.max(0, src.length - offset));
-    if (count <= 0) continue;
+    const ratio = src.sampleRate / opts.sampleRate;
+    const offset = offsetSec * src.sampleRate;
+    const start = Math.max(0, Math.ceil(-offset / ratio));
+    const end = Math.min(mix.length, Math.ceil((src.length - offset) / ratio));
+    if (end <= start) continue;
     for (let ch = 0; ch < channels; ch += 1) {
       const from = src.getChannelData(Math.min(ch, src.numberOfChannels - 1));
       const into = mix.channels[ch]!;
-      for (let i = 0; i < count; i += 1) into[offset + i]! += from[offset + i]! * stem.gain;
+      for (let i = start; i < end; i += 1) {
+        const position = offset + i * ratio;
+        const index = Math.floor(position);
+        const fraction = position - index;
+        const a = from[index]!;
+        const b = from[Math.min(index + 1, src.length - 1)]!;
+        into[i]! += (a + (b - a) * fraction) * stem.gain;
+      }
     }
   }
   return mix;

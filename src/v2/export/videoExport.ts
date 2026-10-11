@@ -26,7 +26,7 @@ import {
 } from "./video";
 import { buildStrip, scrollTargetX, stripTickRanges } from "./strip";
 
-/** 导出音轨的采样率（伴奏解码出来是多少就用多少，避免二次重采样） */
+/** 合成音导出采样率；伴奏沿用首条分轨的原采样率 */
 const MIX_RATE = 44100;
 
 export interface VideoExportOptions {
@@ -96,8 +96,8 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
     return mixStems({
       stems: opts.stems,
       durationSec: seconds,
-      sampleRate: MIX_RATE,
-      offsetSec: clock.secondsOf(opts.fromTick),
+      sampleRate: opts.stems[0]!.buffer.sampleRate,
+      offsetSec: tickToSec(opts.tempo, opts.fromTick),
     });
   }
   const notes = opts.timeline

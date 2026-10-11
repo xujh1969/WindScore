@@ -706,7 +706,11 @@ function paintLine(
 
   // 播放指示
   if (headItem) {
-    const b = noteBox(ctx, headItem);
+    // 播放头框用**时值格宽**（it.x / it.w）而不是字形宽：长音（四拍的 0）的块
+    // 与其时长相称，多声部同一时刻各声部的块覆盖同一段时间、齐头并进——
+    // 用字形宽的话块长短只跟字形走，声部之间参差不齐。选中 / 焦点框仍用
+    // noteBox（那里必须与命中感知区一致，见 noteBox 的注释）
+    const b = { x: headItem.x, w: headItem.w };
     const px = b.x + b.w * (playhead?.frac ?? 0);
     if (o.playStyle === 'band') {
       // 行进度条：从行首生长到播放位置，宽度随节奏变化。
@@ -940,10 +944,10 @@ function paintLine(
     ctx.fillText(label, it.x + it.w / 2, y - M.markTop);
   }
 
-  // 播放头竖线：走完高亮框的宽度（进度条模式不需要——条的右缘就是位置）
+  // 播放头竖线：走完高亮框的宽度（进度条模式不需要——条的右缘就是位置）。
+  // 框已改用时值格宽，竖线在整个时值格内扫动——长音的进度一眼可读
   if (headItem && playhead && o.playStyle === 'head') {
-    const b = noteBox(ctx, headItem);
-    const px = b.x + b.w * playhead.frac;
+    const px = headItem.x + headItem.w * playhead.frac;
     ctx.fillStyle = theme.playhead;
     ctx.fillRect(Math.round(px), y - M.barHalf, 2, M.barHalf * 2);
   }

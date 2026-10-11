@@ -185,6 +185,24 @@ console.log('\n[反复展开 · 嵌套与拍内组]');
     '组内成员 id 与展开事件一致',
     s.groups[0].memberIds.every((id) => s.events.some((e) => e.id === id)),
   );
+
+  // 回归：D.S. 回跳重放出来的克隆（id 带 #）必须挂到**重放自己新建的组**上。
+  // 旧实现只改 id 不重建组——第二遍的 groupId 指向第一遍的组，成员表里却没有
+  // 它们，排版按成员表找组落空，D.S. 之后本该连成一拍的减时线全被断开。
+  const ds = expandScore(parseDsl('@beat 4/4\n\n$s <5/2 3/2> 5 5 $ds ||\n').score!).score!;
+  check('D.S. 重放：组按遍复制成两个', ds.groups.length === 2, String(ds.groups.length));
+  const orphaned = ds.events.filter((e) => {
+    const gid = (e as NoteEvent).groupId;
+    if (!gid) return false;
+    const g = ds.groups.find((x) => x.id === gid);
+    return !g || !g.memberIds.includes(e.id);
+  });
+  check('D.S. 重放：没有音符挂着找不到自己成员身份的组', orphaned.length === 0, orphaned.map((e) => e.id).join(','));
+  check(
+    'D.S. 重放：重放组的成员都是 # 克隆',
+    ds.groups[1] !== undefined && ds.groups[1]!.memberIds.every((id) => id.includes('#')),
+    ds.groups.map((g) => `${g.id}(${g.memberIds.length})`).join(' '),
+  );
 }
 
 console.log('\n[反复展开 · 完整一段曲子]');

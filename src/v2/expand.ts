@@ -353,11 +353,46 @@ export function expandScore(score: Score): ExpandResult {
 
     if (hasJump && errors.length === 0) {
       const emitCount = new Map<string, number>();
+      /**
+       * 回跳重放**自己这遍**的拍内组：克隆出来的音符 id 带 `#n` 后缀，
+       * 但 groupId 还指向第一遍的组——那个组的 memberIds 里没有这些克隆，
+       * 排版按成员表找组就找不到了，整组拍内连线 / 减时线散架
+       * （实测：D.S. 之后本该连成一拍的几个音全被断开）。
+       * 所以重放时与 phase ② 的 push 同一套规则重建组：组内连续成员
+       * 挂同一个新组，遇到没有 groupId 的音就收组。
+       */
+      const replayGroups: BeatGroup[] = [];
+      const gseq = new Map<string, number>();
+      let curG: { src: string; g: BeatGroup } | null = null;
       const clone = (ev: Event): Event => {
         const n = (emitCount.get(ev.id) ?? 0) + 1;
         emitCount.set(ev.id, n);
         // 第一次经过保持原 id（谱面高亮 / 组引用都认它）；D.S. 后重播的加 #n 后缀
-        return n === 1 ? ev : ({ ...ev, id: `${ev.id}#${n}` } as Event);
+        const e2: Event = n === 1 ? ev : ({ ...ev, id: `${ev.id}#${n}` } as Event);
+        if (e2.kind === 'note' || e2.kind === 'rest') {
+          const gid = (e2 as TimedEvent).groupId;
+          if (gid && n > 1) {
+            if (!curG || curG.src !== gid) {
+              const k = (gseq.get(gid) ?? 0) + 1;
+              gseq.set(gid, k);
+              const src = score.groups.find((g) => g.id === gid);
+              const g: BeatGroup = {
+                id: `${gid}#${k}`,
+                totalTicks: 0,
+                memberIds: [],
+                ...(src?.tuplet ? { tuplet: src.tuplet } : {}),
+              };
+              replayGroups.push(g);
+              curG = { src: gid, g };
+            }
+            (e2 as TimedEvent).groupId = curG.g.id;
+            curG.g.memberIds.push(e2.id);
+            curG.g.totalTicks += (e2 as TimedEvent).ticks ?? 0;
+          } else if (!gid) {
+            curG = null;
+          }
+        }
+        return e2;
       };
       const walked: Event[] = [];
       let i = 0;
@@ -410,6 +445,8 @@ export function expandScore(score: Score): ExpandResult {
         i += 1;
       }
       out = walked;
+      // 重放段新建的组并入最终组表（第一遍沿用 phase ② 的组，不用动）
+      groups.push(...replayGroups);
     }
   }
 

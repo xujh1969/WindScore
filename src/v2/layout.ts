@@ -1075,11 +1075,19 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x1 = b.x + Math.min(b.w - 4 * k, glyph.glyphRight);
       const span = x1 - x0;
       if (span < 10) return;
-      // 连音线覆盖的元素数 = 本段音符数 + 区间内的小节线数；超过 3 个走平线画法
+      // 平线画法的判据：**连线覆盖的总时值超过 3 拍**（不是音符个数）。
+      // 个数判据漏掉长音符：`(1--- 1---)` 只有 2 个音却横跨 8 拍，
+      // 大弧会拱得很高；按拍数算，长音符自然落入平线（实测用户要求）。
+      // 小节线不计时值，但跨越它说明连线横穿了小节，一并计入元素数
       let nodes = chain.length;
+      let beats = 0;
       if (kind === 'slur' && chain.length > 1) {
         const lo = Math.min(...chain.map((i) => i.eventIndex));
         const hi = Math.max(...chain.map((i) => i.eventIndex));
+        for (const m of chain) {
+          const ev = byId.get(m.eventId);
+          if (ev && 'ticks' in ev) beats += (ev as { ticks: number }).ticks;
+        }
         for (let i = lo + 1; i < hi; i += 1) {
           if (score.events[i]?.kind === 'barline') nodes += 1;
         }
@@ -1091,7 +1099,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         lift: kind === 'slur' ? Math.min(16, 10 + span * 0.05) : 11,
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
-        flat: kind === 'slur' && nodes > 3,
+        flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
       });
     };
 

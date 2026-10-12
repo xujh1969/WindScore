@@ -334,7 +334,7 @@ function applyLyrics(score2, rows) {
 }
 
 // src/v2/dsl.ts
-var NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqh]*)$/;
+var NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)$/;
 var TECHNIQUE_LETTER = {
   V: "breath",
   // 换气 V（大写，避开低八度点 v）
@@ -531,8 +531,8 @@ function parseSingle(text2, modern = false) {
         }
         case "space": {
           const n = Number(v);
-          if (Number.isFinite(n) && n >= -4 && n <= 24) meta.letterSpacing = n;
-          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -4\u201324 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
+          if (Number.isFinite(n) && n >= -10 && n <= 24) meta.letterSpacing = n;
+          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -10\u201324 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
           break;
         }
         case "measureno": {
@@ -596,6 +596,7 @@ function parseSingle(text2, modern = false) {
       if (gBefore || gAfter) errors.push("\u501A\u97F3\u53EA\u80FD\u52A0\u5728\u97F3\u7B26\u4E0A\uFF0C\u4E0D\u80FD\u52A0\u5728\u4F11\u6B62\u7B26\u4E0A");
       const rest = { id, kind: "rest", ticks };
       if (dotCount) rest.dot = dotCount;
+      if (artic.includes("g")) rest.gray = true;
       ev = rest;
       if (hiddenRest) rest.hidden = true;
     } else {
@@ -615,6 +616,7 @@ function parseSingle(text2, modern = false) {
       const arts = [];
       let fermata = false;
       let tongue;
+      let gray = false;
       const techniques = [];
       for (const c of artic) {
         if (c === "!") arts.push("staccato");
@@ -623,11 +625,13 @@ function parseSingle(text2, modern = false) {
         else if (c === "@") fermata = true;
         else if (c === "t") tongue = "T";
         else if (c === "k") tongue = "K";
+        else if (c === "g") gray = true;
         else if (c in TECHNIQUE_LETTER) techniques.push(TECHNIQUE_LETTER[c]);
       }
       if (arts.length) note.articulations = arts;
       if (fermata) note.fermata = true;
       if (tongue) note.tongue = tongue;
+      if (gray) note.gray = true;
       if (techniques.length) note.techniques = techniques;
       if (gBefore?.length) note.graceBefore = gBefore;
       if (gAfter?.length) note.graceAfter = gAfter;
@@ -964,7 +968,7 @@ function renderDuration(ticks, dot) {
 function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? "/1" : "");
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n2) => "/".repeat(Math.log2(Number(n2)))) : duration;
-  if (ev.kind === "rest") return `${ev.hidden ? "8" : "0"}${short}`;
+  if (ev.kind === "rest") return `${ev.hidden ? "8" : "0"}${short}${ev.gray ? "g" : ""}`;
   const n = ev;
   const marks = n.octave > 0 ? "^".repeat(n.octave) : "v".repeat(-n.octave);
   const acc = n.accidental ?? "";
@@ -974,10 +978,11 @@ function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   ).join("");
   const ferm = n.fermata ? "@" : "";
   const tong = n.tongue === "K" ? "k" : n.tongue === "T" ? "t" : "";
+  const gray = n.gray ? "g" : "";
   const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? "").join("");
   const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join("")}}` : "";
   const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join("")}}` : "";
-  return `${gb}${body}${tieOut ? "~" : ""}${arts}${ferm}${tong}${tech}${ga}`;
+  return `${gb}${body}${tieOut ? "~" : ""}${arts}${ferm}${tong}${tech}${gray}${ga}`;
 }
 function serializeDsl(score2) {
   if (score2.part || score2.parts?.length) {
@@ -1611,6 +1616,7 @@ function layoutScore(score2, opts) {
           dashXs: opts.positions?.get(ev.id)?.dashXs
         };
         if (ev.kind === "rest" && ev.hidden) item.hidden = true;
+        if (ev.gray) item.gray = true;
         if (ev.kind === "note") {
           const n = ev;
           item.degree = n.degree;
@@ -1733,9 +1739,9 @@ function layoutScore(score2, opts) {
       if (!g) {
         if ((it.beams ?? 0) >= 1) {
           const x12 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
-          beams.push({ x0: it.x + 2, x1: x12, level: 1 });
-          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1: x12, level: 2 });
-          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1: x12, level: 3 });
+          beams.push({ x0: it.x + 2, x1: x12, level: 1, gray: it.gray });
+          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1: x12, level: 2, gray: it.gray });
+          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1: x12, level: 3, gray: it.gray });
         }
         continue;
       }
@@ -1743,18 +1749,19 @@ function layoutScore(score2, opts) {
       seenGroups.add(g.id);
       const members = g.memberIds.map((id) => itemById.get(id)).filter((m) => !!m);
       if (members.length === 0) continue;
+      const groupGray = members.every((m) => m.gray);
       const first = members[0];
       const last = members[members.length - 1];
       const rightOf = (m) => m.x + Math.min(m.w - 4 * k, glyph.glyphRight);
       const x0 = first.x + 2;
       const x1 = rightOf(last);
       if (g.tuplet) {
-        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level });
+        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level, gray: groupGray });
         tuplets.push({ x0, x1, text: String(g.tuplet) });
         continue;
       }
       if (members.every((m) => (m.beams ?? 0) < 1)) continue;
-      beams.push({ x0, x1, level: 1 });
+      beams.push({ x0, x1, level: 1, gray: groupGray });
       for (let level = 2; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
         let s = 0;
         while (s < members.length) {
@@ -1764,7 +1771,7 @@ function layoutScore(score2, opts) {
           }
           let end = s;
           while (end < members.length && (members[end].beams ?? 0) >= level) end++;
-          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level });
+          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level, gray: groupGray });
           s = end;
         }
       }

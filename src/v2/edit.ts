@@ -237,7 +237,7 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   if (
     'letterSpacing' in patch &&
     next.letterSpacing !== undefined &&
-    (!Number.isFinite(next.letterSpacing) || next.letterSpacing < -4 || next.letterSpacing > 24)
+    (!Number.isFinite(next.letterSpacing) || next.letterSpacing < -10 || next.letterSpacing > 24)
   ) {
     return score;
   }

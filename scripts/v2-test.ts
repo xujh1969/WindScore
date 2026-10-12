@@ -846,6 +846,10 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   // 非法值：解析报错、setMeta 拒绝
   check('@size 99 报错', parseDsl('@size 99\n\n5 ||\n').errors.length > 0);
   check('@space 99 报错', parseDsl('@space 99\n\n5 ||\n').errors.length > 0);
+  // 字间距下限 -10（曾夹在 -4）：负值收紧排版，密集谱面用
+  const tight = parseDsl('@space -10\n@beat 4/4\n\n5 5 5 5 ||\n');
+  check('@space -10 接受', tight.errors.length === 0 && tight.score?.meta.letterSpacing === -10, tight.errors.join(' / '));
+  check('@space -11 报错', parseDsl('@space -11\n\n5 ||\n').errors.length > 0);
   const metaBase = parseDsl('@beat 4/4\n\n5 ||\n').score!;
   check('setMeta 拒绝越界字号', setMeta(metaBase, { fontSize: 99 }) === metaBase);
   check(

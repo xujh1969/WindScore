@@ -260,10 +260,10 @@ function parseSingle(text: string, modern = false): ParseResult {
           break;
         }
         case 'space': {
-          // 字间距（px）。可以为负（收紧），范围 -4–24
+          // 字间距（px）。可以为负（收紧），范围 -10–24（下限保相邻数字不糊在一起）
           const n = Number(v);
-          if (Number.isFinite(n) && n >= -4 && n <= 24) meta.letterSpacing = n;
-          else errors.push(`字间距解析失败（应为 -4–24 的数字）：${v}`);
+          if (Number.isFinite(n) && n >= -10 && n <= 24) meta.letterSpacing = n;
+          else errors.push(`字间距解析失败（应为 -10–24 的数字）：${v}`);
           break;
         }
         case 'measureno': {

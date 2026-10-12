@@ -2822,7 +2822,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <span>字距</span>
               <input
                 type="range"
-                min={-6}
+                min={-10}
                 max={24}
                 step={1}
                 value={effGap}
@@ -3507,7 +3507,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 label="字间距"
                 type="number"
                 value={score.meta.letterSpacing ?? 0}
-                min={-4}
+                min={-10}
                 max={24}
                 onCommit={(v) => setScore(setMeta(score, { letterSpacing: Number(v) }))}
               />

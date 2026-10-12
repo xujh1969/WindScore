@@ -85,6 +85,11 @@ export interface NoteEvent extends BaseEvent {
    */
   techniques?: string[];
   /**
+   * 自定义记号：用户在「气息与技法」里随手打的最多 3 个汉字 / 符号，
+   * 原样画在音符上方（DSL 写 5[滑]）。空 = 没有。
+   */
+  mark?: string;
+  /**
    * 力度，跟音符绑定、画在音符下方：pp p mp mf f ff。
    * 与「渐强 / 渐弱」(hairpin) 互相独立，一个音可以既有力度又有渐变。
    */

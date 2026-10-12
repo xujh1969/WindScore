@@ -55,6 +55,7 @@ import {
   setGray,
   setMeta,
   setNoteDynamic,
+  setNoteMark,
   setRepeatTimes,
   setOctave,
   toggleTechnique,
@@ -3507,7 +3508,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 type="number"
                 value={score.meta.letterSpacing ?? 0}
                 min={-10}
-                max={24}
+                max={20}
                 onCommit={(v) => setScore(setMeta(score, { letterSpacing: Number(v) }))}
               />
               <MetaInput
@@ -4099,6 +4100,34 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                         </button>
                       ))}
                   </div>
+                  {/*
+                    自定义记号：最多 3 个汉字 / 符号，原样标在音符上方（跟在技法后面）。
+                    **非受控**输入框（defaultValue + key=focus.id）：React 全程不碰
+                    DOM value——受控值一改（哪怕是 slice 截断）就会中止中文组曲、
+                    把未转换的拼音原样提交（想打「又一春」变成「you」）；
+                    组曲事件再漏一个（compositionend 没送到本实例）整框就彻底打不了
+                    字。key 挂 focus.id：换选中音时重挂载，defaultValue 自然换成
+                    新音自己的记号，不会串。提交仍然是回车 / 失焦才写谱
+                    （每键写谱会挪动选中下标、把输入框卸载掉）。
+                    也不加 maxLength：拼音约 3 字符就顶到上限，同样会提前提交组曲；
+                    3 字上限在提交时截断 + setNoteMark 内校验，双保险。
+                  */}
+                  <input
+                    key={focus.id}
+                    className="v2-meta-input"
+                    style={{ marginTop: 6 }}
+                    defaultValue={focus.mark ?? ''}
+                    placeholder="自定义记号（≤3 字，如：气、滑、花）"
+                    title="最多 3 个汉字或符号，原样写在音符上方。清空 = 去掉。回车或点别处生效"
+                    onBlur={(e) => {
+                      setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
+                      (e.target as HTMLInputElement).blur();
+                    }}
+                  />
                 </div>
                 <div className="v2-field">
                   {/*
@@ -4195,6 +4224,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   useTier={useTier}
                   onDot={(d) => setScore(setDot(score, focus.id, d))}
                 />
+                {/*
+                  括号：休止符与音符一视同仁（(0 0) 这种反复/可选段里包休止的
+                  写法很常见）。toggleParen / parenFlagsOf 本来就吃任意 timed 事件，
+                  这里只是把和音符分支同样的两个按钮摆出来。
+                */}
+                <div className="v2-field">
+                  <span className="v2-field-label">括号（画在休止符左右两侧，可跨行）</span>
+                  <div className="v2-grace-bar">
+                    <button
+                      className={parenFlags.open ? 'v2-btn is-on' : 'v2-btn'}
+                      title="在这个休止符左边加左括号（再点一次去掉）"
+                      onClick={() => setScore(toggleParen(score, focus.id, 'open'))}
+                    >
+                      ( 左括号
+                    </button>
+                    <button
+                      className={parenFlags.close ? 'v2-btn is-on' : 'v2-btn'}
+                      title="在这个休止符右边加右括号（再点一次去掉）"
+                      onClick={() => setScore(toggleParen(score, focus.id, 'close'))}
+                    >
+                      右括号 )
+                    </button>
+                  </div>
+                </div>
               </>
             ) : (
               <>
@@ -4991,7 +5044,9 @@ function emptyScore(): Score {
   return {
     version: 2,
     format: 3,
-    meta: { title: '未命名曲谱', key: '1=C', beat: '4/4', bpm: 90, patch: 73 },
+    // 新谱默认字间距 -10（用户实测最美观）；老文件没写 @space 的仍按 0 排，
+    // 不改变已有谱面的样子。可调范围 -10–20。
+    meta: { title: '未命名曲谱', key: '1=C', beat: '4/4', bpm: 90, patch: 73, letterSpacing: -10 },
     events: [],
     groups: [],
   };

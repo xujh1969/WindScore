@@ -53,7 +53,7 @@ import type {
  * 简谱里升降号写在音级左边（`#5` `b3`），和八度点谁先谁后没有硬规矩。
  * ♯ ♭ ♮ 字形与 # b 等同。
  */
-const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)$/;
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
 
 /**
  * 技法记号的后缀字母 → 数据值。
@@ -260,10 +260,10 @@ function parseSingle(text: string, modern = false): ParseResult {
           break;
         }
         case 'space': {
-          // 字间距（px）。可以为负（收紧），范围 -10–24（下限保相邻数字不糊在一起）
+          // 字间距（px）。可以为负（收紧），范围 -10–20（下限保相邻数字不糊在一起）
           const n = Number(v);
-          if (Number.isFinite(n) && n >= -10 && n <= 24) meta.letterSpacing = n;
-          else errors.push(`字间距解析失败（应为 -10–24 的数字）：${v}`);
+          if (Number.isFinite(n) && n >= -10 && n <= 20) meta.letterSpacing = n;
+          else errors.push(`字间距解析失败（应为 -10–20 的数字）：${v}`);
           break;
         }
         case 'linegap': {
@@ -339,7 +339,7 @@ function parseSingle(text: string, modern = false): ParseResult {
       errors.push(`无法解析的记号：${core}`);
       return;
     }
-    const [, pre, digit, post, dots, div, dashes, tieMark, artic] = m;
+    const [, pre, digit, post, dots, div, dashes, tieMark, artic, custom] = m;
 
     let octave = 0;
     for (const c of pre + post) {
@@ -406,6 +406,8 @@ function parseSingle(text: string, modern = false): ParseResult {
       if (tongue) note.tongue = tongue;
       if (gray) note.gray = true;
       if (techniques.length) note.techniques = techniques;
+      // 自定义记号 `5[花舌]`：最多 3 个字符，原样画在音符上方
+      if (custom) note.mark = custom.slice(1, -1);
       // 倚音（不占时值）：挂在这个主音上
       if (gBefore?.length) note.graceBefore = gBefore;
       if (gAfter?.length) note.graceAfter = gAfter;
@@ -716,6 +718,12 @@ function parseSingle(text: string, modern = false): ParseResult {
           errors.push(
             `跳转记号无法识别：${raw}（可用 $s=𝄋 · $x=⊕ · $t=To⊕ · $f=Fine · $ds=D.S. · $dc=D.C.）`,
           );
+        } else if (/^\[[^[\]]*\]?$/.test(raw)) {
+          // 房子 / 渐强范围在上面已各自处理；走到这里说明是**单独成记号**的方括号
+          errors.push(`自定义记号要写在音符后面（如 5[滑]），不能单独成记号：${raw}`);
+        } else if (raw.endsWith(']') && NOTE_RE.test(raw)) {
+          // 自定义记号贴在音符后：5[滑] / 5[花舌]（NOTE_RE 的末组吃掉 [..]）
+          pushTimed(raw, graceBefore, graceAfter);
         } else if (/[()\u4e00-\u9fff]/.test(raw)) {
           // token 里有括号或中文但没走任何已知分支：多半是装饰文字没写成对，
           // 或括号里混了音符和文字。给出「成对」指引，别只丢一句无法识别。
@@ -867,10 +875,12 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   const tong = n.tongue === 'K' ? 'k' : n.tongue === 'T' ? 't' : '';
   const gray = n.gray ? 'g' : '';
   const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? '').join('');
+  // 自定义记号：方括号包住，最多 3 字符（括号本身不进记号，否则无法 round-trip）
+  const cust = n.mark && /^[^[\]]{1,3}$/.test(n.mark) ? `[${n.mark}]` : '';
   // 倚音：前倚音写主音前、后倚音写主音后；复倚音连写 {65}
   const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join('')}}` : '';
   const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join('')}}` : '';
-  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${gray}${ga}`;
+  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${cust}${gray}${ga}`;
 }
 
 export function serializeDsl(score: Score): string {

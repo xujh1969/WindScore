@@ -57,6 +57,9 @@ export interface PlacedItem {
   tongue?: 'T' | 'K';
   /** 电吹管技法记号，可多选，在音符上方横向排列 */
   techniques?: string[];
+  /** 自定义记号（用户在面板里打的 ≤3 字符），原样画在音符上方。
+   *  不叫 mark——那个名字被 jump 的记号类型占了 */
+  custom?: string;
   /** 延长音（弧线加点的 ⌒），画在音符上方 */
   fermata?: boolean;
   /** 转调记号（如 "1=G"），画在音符上方更高一行 */
@@ -868,6 +871,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if (n.graceAfter?.length) item.graceAfter = n.graceAfter;
           if (n.articulations?.includes('staccato')) item.staccato = true;
           if (n.techniques?.length) item.techniques = n.techniques;
+          if (n.mark) item.custom = n.mark;
           if (n.dynamic) item.dynamic = n.dynamic;
           if (n.hairpin && !n.hairpinTo) item.hairpin = n.hairpin;
           if (n.lyrics?.length) item.lyrics = n.lyrics;
@@ -979,6 +983,19 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const tuplets: PlacedTuplet[] = [];
     const itemById = new Map(items.map((it) => [it.eventId, it]));
     const seenGroups = new Set<string>();
+    /**
+     * 减时线端点必须按**数字墨迹**算，不能按单元格：数字固定在格内
+     * pad 处起笔（变音记号 / 前倚音再右移），而单元格宽随字间距伸缩——
+     * 字间距为负时格宽收窄，单元格右缘缩进数字墨迹内侧，线端就「够不到」
+     * 最后一个音、整条线相对音符偏左（用户实测：间距 −10 时组线左移）。
+     * 悬伸量沿用既有视觉规格：左端墨缘内 3px、右端墨缘外 4px
+     * （间距 0 时与旧的单元格算法逐像素一致，只修负间距下的错位）。
+     */
+    const inkLeft = (m: PlacedItem) =>
+      m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
+    const beamX0 = (m: PlacedItem) => inkLeft(m) - 3;
+    const beamX1 = (m: PlacedItem) => inkLeft(m) + glyph.nominalWidth + 4;
+
     for (const it of items) {
       if (it.kind !== 'note' && it.kind !== 'rest') continue;
       const gid = groupOfEvent.get(it.eventId);
@@ -988,10 +1005,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         // 休止符与音符一样画减时线（简谱惯例：0 下加一条线 = 八分休止）——
         // 上面 item.beams 已给 rest 算好，这里漏了 kind 判断之外没别的差别
         if ((it.beams ?? 0) >= 1) {
-          const x1 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
-          beams.push({ x0: it.x + 2, x1, level: 1, gray: it.gray });
-          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1, level: 2, gray: it.gray });
-          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1, level: 3, gray: it.gray });
+          const x0 = beamX0(it);
+          const x1 = beamX1(it);
+          beams.push({ x0, x1, level: 1, gray: it.gray });
+          if ((it.beams ?? 0) >= 2) beams.push({ x0, x1, level: 2, gray: it.gray });
+          if ((it.beams ?? 0) >= 3) beams.push({ x0, x1, level: 3, gray: it.gray });
         }
         continue;
       }
@@ -1007,9 +1025,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const groupGray = members.every((m) => m.gray);
       const first = members[0];
       const last = members[members.length - 1];
-      const rightOf = (m: PlacedItem) => m.x + Math.min(m.w - 4 * k, glyph.glyphRight);
-      const x0 = first.x + 2;
-      const x1 = rightOf(last);
+      const x0 = beamX0(first);
+      const x1 = beamX1(last);
 
       // 连音组（三连音 / 六连音）：一定画一条线 + 一个标号。
       // 连音成员的 beamCount 都是 0，不能靠它判断要不要画线。
@@ -1029,7 +1046,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if ((members[s].beams ?? 0) < level) { s++; continue; }
           let end = s;
           while (end < members.length && (members[end].beams ?? 0) >= level) end++;
-          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level, gray: groupGray });
+          beams.push({ x0: beamX0(members[s]), x1: beamX1(members[end - 1]), level, gray: groupGray });
           s = end;
         }
       }

@@ -237,7 +237,7 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   if (
     'letterSpacing' in patch &&
     next.letterSpacing !== undefined &&
-    (!Number.isFinite(next.letterSpacing) || next.letterSpacing < -10 || next.letterSpacing > 24)
+    (!Number.isFinite(next.letterSpacing) || next.letterSpacing < -10 || next.letterSpacing > 20)
   ) {
     return score;
   }
@@ -532,6 +532,25 @@ export function setFermata(score: Score, id: string): Score {
       const copy = { ...e };
       if (copy.fermata) delete copy.fermata;
       else copy.fermata = true;
+      return copy;
+    }),
+  };
+}
+
+/**
+ * 自定义记号：面板输入框打的 ≤3 个汉字 / 符号，原样画在音符上方。
+ * 空串 / 超长 / 含方括号都拒绝（括号是 DSL 的定界符，放不进来）。
+ */
+export function setNoteMark(score: Score, id: string, v: string | undefined): Score {
+  const text = (v ?? '').trim();
+  if (text.length > 3 || /[[\]]/.test(text)) return score;
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'note') return e;
+      const copy = { ...e };
+      if (text) copy.mark = text;
+      else delete copy.mark;
       return copy;
     }),
   };

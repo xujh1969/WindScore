@@ -957,12 +957,13 @@ function paintLine(
   ctx.font = M.markFont;
   ctx.textAlign = 'center';
   for (const it of line.items) {
-    // 转调记号：紧贴数字顶部（写法带「转」字，如 转1=#A），
-    // 技法记号行在更高处，不会打架——演奏者要一眼看出它属于哪个音
+    // 转调记号：紧贴数字顶部（写法带「转」字，如 转1=#A）。
+    // 技法记号行贴在音符上方 10px（墨顶 ≈ y−26），转调文字抬到 y−32k，
+    // 两者各占一层不打架——演奏者要一眼看出它属于哪个音
     if (it.keyChange) {
       ctx.font = M.badgeFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(`转${it.keyChange}`, it.x + 11 + (it.graceInk ?? 0), y - 20);
+      ctx.fillText(`转${it.keyChange}`, it.x + 11 + (it.graceInk ?? 0), y - 32 * M.k);
       ctx.font = M.markFont;
     }
     const run: { mark: string; color: string; flip?: boolean; dot?: boolean }[] = [];
@@ -972,9 +973,24 @@ function paintLine(
       const g = TECHNIQUE_GLYPH[v];
       if (g) run.push({ mark: g.mark, color: theme.tech, flip: g.flip });
     }
+    // 自定义记号：面板里打的 ≤3 个汉字 / 符号，原样写在技法后面
+    if (it.custom) run.push({ mark: it.custom, color: theme.tech });
     // 延长音：弧线加弧线正下方的小圆点（对应 DSL 的 @）
     if (it.fermata) run.push({ mark: '⌒', color: theme.tech, dot: true });
     if (run.length === 0) continue;
+    // 记号行的纵向位置：**贴在音符上方、只留 5px 间距**（用户要求）。
+    // 记号与数字都以 middle 基线画：数字墨顶 ≈ y − 0.35em，
+    // 记号墨底 ≈ my + 0.35×12px——按这两个反推 my，间距就是 10px
+    // （用户实测：贴 5px 太挤、抬 15px 又顶到连音线，取中间）。
+    // 有高八度点的音，整行再上移到点之上；有转调记号的音同理
+    // （转调文字已相应抬高，见上）
+    const markHalf = 4.2; // 12px 记号的墨迹半高
+    const markGap = 10 * M.k; // 记号墨底与数字墨顶的净距
+    let baseY = y - 0.35 * 21 * M.k - markGap - markHalf;
+    if ((it.octave ?? 0) > 0) {
+      const dotTop = y - M.octaveBase - ((it.octave ?? 1) - 1) * M.octaveStep - M.dotR;
+      baseY = Math.min(baseY, dotTop - markGap - markHalf);
+    }
     const widths = run.map((r) => ctx.measureText(r.mark).width);
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
     let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
@@ -983,7 +999,7 @@ function paintLine(
       mx += widths[i] + 3;
       ctx.fillStyle = r.color;
       // 弧线字形压在基线以上，抬高一点才给正下方的圆点留出位置
-      const my = y - M.markTop - (r.dot ? 3 : 0);
+      const my = baseY - (r.dot ? 3 : 0);
       if (r.flip) {
         ctx.save();
         ctx.translate(tx, my);
@@ -995,7 +1011,7 @@ function paintLine(
       }
       if (r.dot) {
         ctx.beginPath();
-        ctx.arc(tx, y - M.markTop + 2, 2, 0, Math.PI * 2);
+        ctx.arc(tx, baseY + 2, 2, 0, Math.PI * 2);
         ctx.fill();
       }
     });
@@ -1093,12 +1109,13 @@ function paintLine(
   }
   ctx.font = M.font;
 
-  // 连线（上方弧线）
+  // 连线（上方弧线）。整条弧再抬高 5px（用户实测：与电吹管技法记号行
+  // 挨得太近，符号下移 5px、弧线上移 5px，两层各让一半）
   ctx.lineWidth = 1.5;
   for (const a of line.arcs) {
     ctx.strokeStyle = theme.curve;
     const base = a.kind === 'tie' ? M.arcTieBase : M.arcBase;
-    const ay = y - base - a.octaveUp * M.octaveStep;
+    const ay = y - base - 5 * M.k - a.octaveUp * M.octaveStep;
     ctx.beginPath();
     if (a.flat) {
       // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，
@@ -1299,9 +1316,10 @@ function drawGraces(
   const w = M.graceW;
   /**
    * 数字中心：挂在主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
-   * 高度卡在两个约束之间：**向下避开连音线弧**（弧从音符边缘 y−24 起向上拱，
-   * 数字墨顶必须低于它）又**向上不压主音字形**（主音墨顶 ≈ y−8）。
-   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−18，墨顶 y−22.6，与弧线净空 ≈0.7px；
+   * 高度卡在两个约束之间：**向下避开连音线弧**（弧端从音符边缘 y−29 起向上拱
+   * ——arcBase 24 又整体抬了 5px，数字墨顶必须低于它）又**向上不压主音字形**
+   * （主音墨顶 ≈ y−8）。
+   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−18，墨顶 y−22.6，与弧线净空 ≈5.7px；
    * **低音倚音**（带 v 点）下方还要容纳低音点 + 弧线两层，
    * 整体比普通倚音再抬高 4px（y−22）给它们让位。
    * 减时线挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号，

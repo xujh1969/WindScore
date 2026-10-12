@@ -266,6 +266,13 @@ function parseSingle(text: string, modern = false): ParseResult {
           else errors.push(`字间距解析失败（应为 -10–24 的数字）：${v}`);
           break;
         }
+        case 'linegap': {
+          // 行间距增量（px，按字号比例缩放）。0–48，负数没有意义（行高只加不减）
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 0 && n <= 48) meta.lineGap = n;
+          else errors.push(`行间距解析失败（应为 0–48 的数字）：${v}`);
+          break;
+        }
         case 'measureno': {
           // 小节号：只有 off 会写进文件（缺省是显示）
           if (/^(off|0|false|no)$/i.test(v)) meta.showMeasureNumbers = false;
@@ -897,6 +904,7 @@ function serializeSingle(score: Score): string {
   // 版式参数只在用户改过时写出（缺省值不写，老文件保持原样）
   if (score.meta.fontSize !== undefined) head.push(`@size ${score.meta.fontSize}`);
   if (score.meta.letterSpacing !== undefined) head.push(`@space ${score.meta.letterSpacing}`);
+  if (score.meta.lineGap !== undefined) head.push(`@lineGap ${score.meta.lineGap}`);
   if (score.meta.showMeasureNumbers === false) head.push('@measureNo off');
 
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));

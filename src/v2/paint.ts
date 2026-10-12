@@ -1047,21 +1047,22 @@ function paintLine(
     if (it.dynamic) ctx.fillText(it.dynamic, it.x + 11 + (it.graceInk ?? 0), y + M.markBottom);
     // 渐强 / 渐弱：扁平楔形（几何绘制，字符 〈〉 太细高），画在力度记号右边。
     // 渐强从细到粗向右张开（尖在左），渐弱相反。偏移与尺寸全按字号比例，
-    // 并让开前倚音的位移——小字号下写死的像素会把楔形漂到数字外面
+    // 并让开前倚音的位移——小字号下写死的像素会把楔形漂到数字外面。
+    // 尺寸不能太小：实测 18k×6k 在小字号下像一根断线，认不出是渐弱符号
     if (it.hairpin) {
-      const cx = it.x + (it.dynamic ? 33 : 11) * M.k + (it.graceInk ?? 0) + 9 * M.k;
+      const cx = it.x + (it.dynamic ? 33 : 11) * M.k + (it.graceInk ?? 0) + 13 * M.k;
       const cy = y + M.markBottom;
       ctx.strokeStyle = theme.muted;
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
       if (it.hairpin === 'cresc') {
-        ctx.moveTo(cx - 9 * M.k, cy);
-        ctx.lineTo(cx + 9 * M.k, cy - 3 * M.k);
-        ctx.lineTo(cx + 9 * M.k, cy + 3 * M.k);
+        ctx.moveTo(cx - 13 * M.k, cy);
+        ctx.lineTo(cx + 13 * M.k, cy - 5 * M.k);
+        ctx.lineTo(cx + 13 * M.k, cy + 5 * M.k);
       } else {
-        ctx.moveTo(cx + 9 * M.k, cy);
-        ctx.lineTo(cx - 9 * M.k, cy - 3 * M.k);
-        ctx.lineTo(cx - 9 * M.k, cy + 3 * M.k);
+        ctx.moveTo(cx + 13 * M.k, cy);
+        ctx.lineTo(cx - 13 * M.k, cy - 5 * M.k);
+        ctx.lineTo(cx - 13 * M.k, cy + 5 * M.k);
       }
       ctx.stroke();
     }
@@ -1288,12 +1289,14 @@ function drawGraces(
    * 数字中心：挂在主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
    * 高度卡在两个约束之间：**向下避开连音线弧**（弧从音符边缘 y−24 起向上拱，
    * 数字墨顶必须低于它）又**向上不压主音字形**（主音墨顶 ≈ y−8）。
-   * 13 号字（墨半高 ≈ 4.55k）配 y−18：墨顶 y−22.6，与弧线净空 ≈0.7px，
-   * 减时线（gy+beamDy）距主音墨顶 ≈1.4px。
+   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−18，墨顶 y−22.6，与弧线净空 ≈0.7px；
+   * **低音倚音**（带 v 点）下方还要容纳低音点 + 弧线两层，
+   * 整体比普通倚音再抬高 4px（y−22）给它们让位。
    * 减时线挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号，
    * 偏移量随字号算出来（不能写死 gy+5——字号一大数字就压线）。
    */
-  const gy = y - 18;
+  const hasLow = list.some((g) => g.octave < 0);
+  const gy = y - (hasLow ? 22 : 18);
   const beamDy = 13 * M.k * 0.38 + 1;
   list.forEach((g, i) => {
     const cx = x0 + i * w + w / 2;
@@ -1308,11 +1311,12 @@ function drawGraces(
       }
     }
     if (g.octave < 0) {
-      // 低八度点画在减时线下方（第二条线再往下 5px），间距与高音点一致（6px）。
+      // 低八度点画在减时线下方 3px（贴紧第二条线，给下面的弧线让位），
+      // 间距与高音点一致（6px）。
       // 此前漏了这一支——低音倚音（如低音 6）的下加点从来没画出来过
       for (let k = 0; k < -g.octave; k += 1) {
         ctx.beginPath();
-        ctx.arc(cx, gy + beamDy + 8 + k * 6, 1.6, 0, Math.PI * 2);
+        ctx.arc(cx, gy + beamDy + 7 + k * 6, 1.6, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -1337,9 +1341,9 @@ function drawGraces(
   // 弧的顶端（切向竖直那一端）对准**倚音组的横向中心**，减时线紧贴它——
   // 数字、减时线、弧三者一条线，看着才是一体的装饰音。
   const sx = x0 + (list.length * w) / 2;
-  // 起笔高度：减时线（gy+beamDy / +3）下方留 2px 净空（整体下移后纵向变紧），
-  // 不与横线叠；组里有低音点（横线下 5px 起）时起笔再往下让，弧线从点的下方过
-  const sy = gy + beamDy + (list.some((g) => g.octave < 0) ? 9 : 5);
+  // 起笔高度：普通倚音 = 减时线下方 2px；低音倚音 = 低音点（gy+beamDy+7 起，
+  // 点径 1.6）下方 0.4px——点与弧线各占一条通道，不再叠在一起
+  const sy = gy + beamDy + (hasLow ? 9 : 5);
   const ey = y - 3; // 收笔高度：主音左下 / 右下（抬得比数字底高一点，弧更紧凑）
   const rx = Math.abs(mainEdgeX - sx);
   // 低音倚音（v 点占掉弧线起点下方的空间）时 sy 会贴到甚至越过 ey，

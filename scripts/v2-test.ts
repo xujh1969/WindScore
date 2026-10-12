@@ -850,6 +850,19 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const tight = parseDsl('@space -10\n@beat 4/4\n\n5 5 5 5 ||\n');
   check('@space -10 接受', tight.errors.length === 0 && tight.score?.meta.letterSpacing === -10, tight.errors.join(' / '));
   check('@space -11 报错', parseDsl('@space -11\n\n5 ||\n').errors.length > 0);
+  // 行间距增量（@lineGap）：0–48，按字号比例增加行高
+  check('@lineGap 解析', parseDsl('@beat 4/4\n@lineGap 12\n\n5 ||\n').score?.meta.lineGap === 12);
+  check(
+    '@lineGap 序列化写回',
+    serializeDsl(parseDsl('@beat 4/4\n@lineGap 12\n\n5 ||\n').score!).includes('@lineGap 12'),
+  );
+  check('@lineGap 99 报错', parseDsl('@beat 4/4\n@lineGap 99\n\n5 ||\n').errors.length > 0);
+  check(
+    '@lineGap 抬高行高',
+    layoutScore(parseDsl('@beat 4/4\n@lineGap 12\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight -
+      layoutScore(parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight ===
+      12,
+  );
   const metaBase = parseDsl('@beat 4/4\n\n5 ||\n').score!;
   check('setMeta 拒绝越界字号', setMeta(metaBase, { fontSize: 99 }) === metaBase);
   check(

@@ -498,7 +498,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   // 行高 86 的上半行（43px）装得下，不用为它加高
   const verses = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? e.lyrics?.length ?? 0 : 0));
   const lyricBottom = (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 64 : 44) + verses * 24;
-  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0), verses ? (lyricBottom + 8) * 2 * k : 0);
+  // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 原紧凑行距
+  const lineGap = score.meta.lineGap ?? 0;
+  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
   const padTop = 20;

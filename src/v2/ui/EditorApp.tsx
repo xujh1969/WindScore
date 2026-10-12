@@ -3511,6 +3511,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 max={24}
                 onCommit={(v) => setScore(setMeta(score, { letterSpacing: Number(v) }))}
               />
+              <MetaInput
+                label="行间距"
+                type="number"
+                value={score.meta.lineGap ?? 0}
+                min={0}
+                max={48}
+                onCommit={(v) => setScore(setMeta(score, { lineGap: Number(v) }))}
+              />
               {/* 小节号：写在小节线下方的小字，随文件保存（@measureNo off 关掉） */}
               <label className="v2-grace-check" title="在小节线下方用小字标出小节号">
                 <input
@@ -3523,7 +3531,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             </div>
             <p className="v2-hint">
               调号支持升降号：1=bB、1=#F（♭B / ♯F 也认）。速度单位是 BPM，音色是 MIDI 音色号
-              0–127。字号 / 字间距 / 小节号随文件保存。改完按回车或点别处生效。
+              0–127。字号 / 字间距 / 行间距 / 小节号随文件保存。改完按回车或点别处生效。
             </p>
           </div>
 

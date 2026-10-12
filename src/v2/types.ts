@@ -230,6 +230,11 @@ export interface ScoreMeta {
   /** 字间距（px），缺省 0。加在每个记号占位的横向空隙上，正数拉开、负数收紧 */
   letterSpacing?: number;
   /**
+   * 行间距增量（px，按字号比例缩放）：行高的额外增加量，0 = 默认紧凑行距。
+   * 写进 DSL `@lineGap`；正数拉开行与行的距离（留白 / 歌词空间不够时用）
+   */
+  lineGap?: number;
+  /**
    * 小节线下方是否画小节号（`@measureNo off` 关掉）。缺省 true——
    * 只有用户明确关掉时才写进文件，老文件保持原样
    */

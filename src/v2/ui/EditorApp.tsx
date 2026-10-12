@@ -31,7 +31,6 @@ import {
   setGrace,
   setGraceSlot as setGraceSlotOp,
   setKeyChange,
-  setHairpin,
   setHairpinRange,
   setBarNotation,
   extendPrev,
@@ -4105,8 +4104,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   {/*
                     力度跟音符绑定（画在音符下方），不再是插在缝隙里的独立事件：
                     按钮即开关，点亮的再点一次就去掉。
+                    单音渐强 / 渐弱按钮已移除——渐强渐弱是**范围**记号，
+                    用「区间操作」里的跨音力度范围设置（见上）。
                   */}
-                  <span className="v2-field-label">力度 · 渐强渐弱（标在音符下方）</span>
+                  <span className="v2-field-label">力度（标在音符下方）</span>
                   <div className="v2-grid v2-grid-4">
                     {DYNAMICS.map((v) => (
                       <button
@@ -4118,20 +4119,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                         {v}
                       </button>
                     ))}
-                    <button
-                      className={focus.hairpin === 'cresc' ? 'v2-btn is-on' : 'v2-btn'}
-                      onClick={() => setScore(setHairpin(score, focus.id, 'cresc'))}
-                      title="渐强，再点一次去掉"
-                    >
-                      渐强
-                    </button>
-                    <button
-                      className={focus.hairpin === 'dim' ? 'v2-btn is-on' : 'v2-btn'}
-                      onClick={() => setScore(setHairpin(score, focus.id, 'dim'))}
-                      title="渐弱，再点一次去掉"
-                    >
-                      渐弱
-                    </button>
                   </div>
                 </div>
                 <div className="v2-field">

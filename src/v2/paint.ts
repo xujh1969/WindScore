@@ -1072,7 +1072,7 @@ function paintLine(
   for (const span of line.hairpins ?? []) {
     const cy = y + M.markBottom + 14 * M.k;
     ctx.strokeStyle = theme.muted;
-    ctx.lineWidth = 1.2 * M.k;
+    ctx.lineWidth = Math.max(1.4, 1.2 * M.k);
     ctx.beginPath();
     ctx.moveTo(span.x0, cy - span.startOpen);
     ctx.lineTo(span.x1, cy - span.endOpen);

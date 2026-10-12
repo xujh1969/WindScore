@@ -1174,7 +1174,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }
     const length = segments.reduce((sum, s) => sum + Math.max(1, s.x1 - s.x0), 0);
     let done = 0;
-    const opening = (fraction: number) => 4 * k * (e.hairpin === 'cresc' ? fraction : 1 - fraction);
+    // 楔形开口：固定视觉高度（不随跨度变扁）——4k 在小字号下只有两三像素，
+    // 长跨度画出来是两条几乎平行的细线，看着像断裂的乱线而不是渐弱符号
+    const opening = (fraction: number) => 9 * k * (e.hairpin === 'cresc' ? fraction : 1 - fraction);
     for (const s of segments) {
       const span = Math.max(1, s.x1 - s.x0);
       (lines[s.li].hairpins ??= []).push({ x0: s.x0, x1: s.x1, kind: e.hairpin, startOpen: opening(done / length), endOpen: opening((done + span) / length) });

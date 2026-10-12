@@ -1046,21 +1046,22 @@ function paintLine(
     if (it.kind !== 'note') continue;
     if (it.dynamic) ctx.fillText(it.dynamic, it.x + 11 + (it.graceInk ?? 0), y + M.markBottom);
     // 渐强 / 渐弱：扁平楔形（几何绘制，字符 〈〉 太细高），画在力度记号右边。
-    // 渐强从细到粗向右张开（尖在左），渐弱相反
+    // 渐强从细到粗向右张开（尖在左），渐弱相反。偏移与尺寸全按字号比例，
+    // 并让开前倚音的位移——小字号下写死的像素会把楔形漂到数字外面
     if (it.hairpin) {
-      const cx = (it.dynamic ? it.x + 11 + 22 : it.x + 11) + 9;
+      const cx = it.x + (it.dynamic ? 33 : 11) * M.k + (it.graceInk ?? 0) + 9 * M.k;
       const cy = y + M.markBottom;
       ctx.strokeStyle = theme.muted;
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       if (it.hairpin === 'cresc') {
-        ctx.moveTo(cx - 9, cy);
-        ctx.lineTo(cx + 9, cy - 3);
-        ctx.lineTo(cx + 9, cy + 3);
+        ctx.moveTo(cx - 9 * M.k, cy);
+        ctx.lineTo(cx + 9 * M.k, cy - 3 * M.k);
+        ctx.lineTo(cx + 9 * M.k, cy + 3 * M.k);
       } else {
-        ctx.moveTo(cx + 9, cy);
-        ctx.lineTo(cx - 9, cy - 3);
-        ctx.lineTo(cx - 9, cy + 3);
+        ctx.moveTo(cx + 9 * M.k, cy);
+        ctx.lineTo(cx - 9 * M.k, cy - 3 * M.k);
+        ctx.lineTo(cx - 9 * M.k, cy + 3 * M.k);
       }
       ctx.stroke();
     }

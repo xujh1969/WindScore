@@ -1915,15 +1915,25 @@ const blank = (): Score => ({
 {
   // 电吹管技法：DSL 后缀字母 → technique 值，序列化写回
   console.log('\n[电吹管技法]');
-  const body = '@beat 4/4\n\n5f 6d 5m 6w 5s 6x 5q 6h ||';
+  const body = '@beat 4/4\n\n5f 6d 5m 6w 5s 6x 5q 6h 5r ||';
   const s = parseDsl(body);
   check('技法解析无误', s.errors.length === 0, s.errors.join(' / '));
   const ns = s.score!.events.filter((e) => e.kind === 'note') as NoteEvent[];
   check(
-    '八个技法各就各位',
+    '九个技法各就各位',
     ns.map((n) => n.techniques?.join('+')).join(',') ===
-      'flutter,da,mordentUp,mordentDown,slideUp,slideDown,bendUp,bendDown',
+      'flutter,da,mordentUp,mordentDown,slideUp,slideDown,bendUp,bendDown,trill',
     ns.map((n) => n.techniques?.join('+')).join(','),
+  );
+
+  // 回归：颤音 r 曾漏在 NOTE_RE 字符集外（TECHNIQUE_LETTER 有它、正则没有），
+  // 带 r 的谱（如 月光下的凤尾竹 的 3--r）整首「无法解析的记号」
+  const tr = parseDsl('@beat 4/4\n\n3--r ||');
+  check(
+    '颤音 r 可解析（含增时线）',
+    tr.errors.length === 0 &&
+      ((tr.score!.events[0] as NoteEvent).techniques ?? []).join('+') === 'trill',
+    tr.errors.join(' / '),
   );
 
   // 多选：一个音同时挂花舌 + 上滑音，横向两个符号
@@ -1950,7 +1960,7 @@ const blank = (): Score => ({
   // 排版层把记号带上（画不画是 paint 的事，数据必须先到位）
   const L = layoutScore(s.score!, { contentWidth: 1200 });
   const placed = L.lines.flatMap((l) => l.items).filter((i) => i.techniques?.length);
-  check('技法进排版项', placed.length === 8, String(placed.length));
+  check('技法进排版项', placed.length === 9, String(placed.length));
 
   // T / K / 换气 三个互斥：按下一个，其余两个等于没按
   const base = parseDsl('@beat 4/4\n\n5V ||').score!;

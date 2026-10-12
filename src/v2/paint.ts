@@ -169,7 +169,7 @@ function applyMetrics(g: GlyphMetrics): void {
   const fam = '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
   M.k = g.fontSize / 21;
   M.font = `600 ${g.fontSize}px ${fam}`;
-  M.graceFont = `600 ${14 * M.k}px ${fam}`;
+  M.graceFont = `600 ${13 * M.k}px ${fam}`;
   M.accFont = `600 ${13 * M.k}px ${fam}`;
   M.graceW = g.graceW;
   M.glyphPad = g.pad;
@@ -1285,12 +1285,16 @@ function drawGraces(
   ctx.fillStyle = ink;
   const w = M.graceW;
   /**
-   * 数字中心：抬到主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
-   * 减时线必须挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号（14 号 ≈ 5.3k），
-   * 所以横线的偏移量随字号算出来（不能写死 gy+5——字号一大数字就压线）。
+   * 数字中心：挂在主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
+   * 高度卡在两个约束之间：**向下避开连音线弧**（弧从音符边缘 y−24 起向上拱，
+   * 数字墨顶必须低于它）又**向上不压主音字形**（主音墨顶 ≈ y−8）。
+   * 13 号字（墨半高 ≈ 4.55k）配 y−18：墨顶 y−22.6，与弧线净空 ≈0.7px，
+   * 减时线（gy+beamDy）距主音墨顶 ≈1.4px。
+   * 减时线挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号，
+   * 偏移量随字号算出来（不能写死 gy+5——字号一大数字就压线）。
    */
-  const gy = y - 24;
-  const beamDy = 14 * M.k * 0.38 + 1;
+  const gy = y - 18;
+  const beamDy = 13 * M.k * 0.38 + 1;
   list.forEach((g, i) => {
     const cx = x0 + i * w + w / 2;
     const acc = g.accidental ? ACCIDENTAL_GLYPH[g.accidental] : '';
@@ -1333,13 +1337,16 @@ function drawGraces(
   // 弧的顶端（切向竖直那一端）对准**倚音组的横向中心**，减时线紧贴它——
   // 数字、减时线、弧三者一条线，看着才是一体的装饰音。
   const sx = x0 + (list.length * w) / 2;
-  // 起笔高度：减时线（gy+beamDy / +3）下方留出 4px 净空，不与横线叠；
-  // 组里有低音点（横线下 5px 起）时起笔再往下让，弧线从点的下方过，不压点
-  const sy = gy + beamDy + (list.some((g) => g.octave < 0) ? 11 : 7);
+  // 起笔高度：减时线（gy+beamDy / +3）下方留 2px 净空（整体下移后纵向变紧），
+  // 不与横线叠；组里有低音点（横线下 5px 起）时起笔再往下让，弧线从点的下方过
+  const sy = gy + beamDy + (list.some((g) => g.octave < 0) ? 9 : 5);
   const ey = y - 3; // 收笔高度：主音左下 / 右下（抬得比数字底高一点，弧更紧凑）
   const rx = Math.abs(mainEdgeX - sx);
-  const ry = ey - sy;
-  if (rx > 1.5 && ry > 0) {
+  // 低音倚音（v 点占掉弧线起点下方的空间）时 sy 会贴到甚至越过 ey，
+  // ry ≤ 0 弧线就整个消失（实测：低音音符的倚音画不出下面的弧线）——
+  // 弧高钳到最小 2.5px，保证任何情况下都画得出来
+  const ry = Math.max(2.5, ey - sy);
+  if (rx > 1.5) {
     ctx.strokeStyle = theme.curve;
     ctx.beginPath();
     if (flip) {

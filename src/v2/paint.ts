@@ -1100,8 +1100,19 @@ function paintLine(
     const base = a.kind === 'tie' ? M.arcTieBase : M.arcBase;
     const ay = y - base - a.octaveUp * M.octaveStep;
     ctx.beginPath();
-    ctx.moveTo(a.x0, ay);
-    ctx.quadraticCurveTo((a.x0 + a.x1) / 2, ay - a.lift * 2, a.x1, ay);
+    if (a.flat) {
+      // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，
+      // 既压上方标记又笨拙；小半径端弧保持「这是一条连线」的语义
+      const endW = Math.min(12 * M.k, (a.x1 - a.x0) / 4);
+      const top = ay - a.lift;
+      ctx.moveTo(a.x0, ay);
+      ctx.quadraticCurveTo(a.x0 + endW * 0.3, top - a.lift * 0.25, a.x0 + endW, top);
+      ctx.lineTo(a.x1 - endW, top);
+      ctx.quadraticCurveTo(a.x1 - endW * 0.3, top - a.lift * 0.25, a.x1, ay);
+    } else {
+      ctx.moveTo(a.x0, ay);
+      ctx.quadraticCurveTo((a.x0 + a.x1) / 2, ay - a.lift * 2, a.x1, ay);
+    }
     ctx.stroke();
   }
 

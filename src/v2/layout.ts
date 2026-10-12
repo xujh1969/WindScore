@@ -108,6 +108,12 @@ export interface PlacedArc {
   kind: 'slur' | 'tie';
   /** 弧线要让开的高八度点数（取两端最大值） */
   octaveUp: number;
+  /**
+   * 长连线（跨超过 3 个音符 / 小节线）：两端小弧 + 中间平线，
+   * 不用一整条大弧——长跨度上大弧会拱得很高，压到上方的换气 / 吐音标记，
+   * 也不好看（用户实测要求）
+   */
+  flat?: boolean;
 }
 
 export interface PlacedBadge {
@@ -1069,6 +1075,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x1 = b.x + Math.min(b.w - 4 * k, glyph.glyphRight);
       const span = x1 - x0;
       if (span < 10) return;
+      // 连音线覆盖的元素数 = 本段音符数 + 区间内的小节线数；超过 3 个走平线画法
+      let nodes = chain.length;
+      if (kind === 'slur' && chain.length > 1) {
+        const lo = Math.min(...chain.map((i) => i.eventIndex));
+        const hi = Math.max(...chain.map((i) => i.eventIndex));
+        for (let i = lo + 1; i < hi; i += 1) {
+          if (score.events[i]?.kind === 'barline') nodes += 1;
+        }
+      }
       arcs.push({
         x0,
         x1,
@@ -1076,6 +1091,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         lift: kind === 'slur' ? Math.min(16, 10 + span * 0.05) : 11,
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
+        flat: kind === 'slur' && nodes > 3,
       });
     };
 

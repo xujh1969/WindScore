@@ -217,6 +217,26 @@ console.log('\n[反复展开 · 完整一段曲子]');
     expandedShape(src),
   );
   check('展开后共 8 小节 × 4 拍', totalTicks(src) === 8 * 4 * 48, String(totalTicks(src)));
+
+  // 回归：`|: A [1] B :| [2] C`——第二房子写在 :| 之后（其他简谱软件的常见
+  // 写法，那道 :| 只是第一房子的收尾）。旧实现报「[2] 不在反复段内」拒绝展开
+  const trailing = '@beat 4/4\n\n|: 1 2 | [1] 3 4 :| [2] 5 6 ||\n';
+  const tr = expandScore(parseDsl(trailing).score!);
+  check('外挂房子：无错误', tr.errors.length === 0, tr.errors.join(' / '));
+  check(
+    '外挂房子：展开成 A B A C',
+    expandedShape(trailing) === '1 2 | 3 4 | 1 2 | 5 6 ‖',
+    expandedShape(trailing),
+  );
+  check('外挂房子：repeatedSections 记 1', tr.repeatedSections === 1, String(tr.repeatedSections));
+  // 房子盖到谱尾（后面没有别的段边界）时结束线落在 events.length，曾把整个
+  // 反复段误判为「结束线不在区间内」而跳过——一首反复都不展开
+  const tailHouse = '@beat 4/4\n\n1 1 | |: 2 2 | [1] 3 3 :| [2] 4 4 ||\n';
+  check(
+    '外挂房子盖到谱尾也展开',
+    expandedShape(tailHouse) === '1 1 | 2 2 | 3 3 | 2 2 | 4 4 ‖',
+    expandedShape(tailHouse),
+  );
 }
 
 console.log('\n[反复展开 · 黄金不变量]');

@@ -121,6 +121,15 @@ export function expandScore(score: Score): ExpandResult {
   };
   const timesOf = (endIdx: number): number => (barAt(endIdx)?.times ?? 2);
 
+  /**
+   * 「外挂房子」：`|: A [1] B :| [2] C`——第二房子写在 `:|` **之后**。
+   * 这是很多简谱软件的常见写法（那道 `:|` 只是第一房子的收尾），真实语义是
+   * 反复段一直盖到第二房子末尾：第一遍 A+B，第二遍 A+C。
+   * 两种写法都认：`:|` 与 `[2]` 被合并成一根带 volta 的结束线，或 `[2]` 单独
+   * 紧跟在一道 `:|` 后面。先记下（不在反复段内的房子本行要报错，这种不能报），
+   * 下面再把所属反复段的结束线延伸到房子末尾。
+   */
+  const trailingHouses: number[] = [];
   // 跳房子：挂在某根小节线上，范围 = 本线 → 下一条带房子的线 / 所在反复段的 :|
   const voltaEnd = new Map<number, number>();
   for (let i = 0; i < events.length; i += 1) {
@@ -129,6 +138,12 @@ export function expandScore(score: Score): ExpandResult {
 
     const sec = enclosing(i);
     if (!sec) {
+      const prev = i > 0 ? events[i - 1] : null;
+      const afterEnd = prev && prev.kind === 'barline' && prev.repeat === 'end';
+      if (bar.repeat === 'end' || afterEnd) {
+        trailingHouses.push(i);
+        continue;
+      }
       errors.push(`第 ${measureAt(events, i)} 小节的 [${bar.volta.join(',')}] 不在反复段内`);
       continue;
     }
@@ -147,6 +162,34 @@ export function expandScore(score: Score): ExpandResult {
     voltaEnd.set(i, end);
   }
 
+  // 扩展：反复段盖到外挂房子末尾。遍数仍认原 `:|` 上的 times
+  // （延伸后的结束线是普通小节线，没有 times），所以要记住原结束线的下标
+  const endTimes = new Map<number, number>();
+  for (const h of trailingHouses) {
+    // 外挂房子的「反复结束线」：合并写法下就是房子线自己，否则是它前一道
+    const endIdx = barAt(h)?.repeat === 'end' ? h : h - 1;
+    let start: number | undefined;
+    for (const [s, e] of repeatPair) if (e === endIdx) start = s;
+    if (start === undefined) {
+      errors.push(`第 ${measureAt(events, h)} 小节的 [${(barAt(h) as BarlineEvent).volta!.join(',')}] 不在反复段内`);
+      continue;
+    }
+    let end = events.length;
+    for (let j = h + 1; j < events.length; j += 1) {
+      const b2 = barAt(j);
+      // 房子区域到下一处**段边界**（房子 / 反复）为止；都没有就盖到谱尾
+      if (b2?.volta || b2?.repeat === 'end' || b2?.repeat === 'start') {
+        end = j;
+        break;
+      }
+    }
+    voltaEnd.set(h, end);
+    repeatPair.set(start, end);
+    endTimes.set(end, endIdx);
+  }
+  const timesOfPair = (endIdx: number): number =>
+    timesOf(endTimes.get(endIdx) ?? endIdx);
+
   // 房子号断档检查：`|: A [1] B [3] C :|` 这种第 2 遍无房可进才是真问题
   // （那一遍只奏公共部分，多半是漏标）。
   // 但**最后一遍没房是完全合法的**——`|: A [1] B :|` 就是标准的「第一遍房子」：
@@ -158,7 +201,7 @@ export function expandScore(score: Score): ExpandResult {
       if (v) numbers.push(...v);
     }
     if (numbers.length === 0) continue;
-    const times = timesOf(e);
+    const times = timesOfPair(e);
     const maxHouse = Math.max(...numbers);
     const missing = Array.from({ length: times }, (_, i) => i + 1).filter(
       (p) => !numbers.includes(p) && p < maxHouse,
@@ -278,21 +321,25 @@ export function expandScore(score: Score): ExpandResult {
 
       if (bar?.repeat === 'start') {
         const end = repeatPair.get(i);
-        if (end === undefined || end >= to) {
+        // end === to 只有一种合法情况：顶层调用（to = events.length）且反复段
+        // 一直盖到谱尾（外挂房子延伸出来的结束线）。嵌套区间里 end 必须严格小于 to
+        if (end === undefined || end > to) {
           i += 1;
           continue; // 结构错误已在 ① 报过
         }
-        const times = Math.max(2, timesOf(end));
+        const times = Math.max(2, timesOfPair(end));
         repeatedSections += 1;
         pushBar(ev); // `|:` 本身是一条小节线
+        // 两遍之间的分隔线 = **原 `:|`**（外挂房子把 end 延伸到谱尾时它仍在 endTimes 里）
+        const sep = events[endTimes.get(end) ?? end];
         for (let p = 1; p <= times; p += 1) {
           // 第二遍起在前面补一条分隔线（就是反复段结束那道线）
-          if (p > 1) pushBar(events[end]);
+          if (p > 1 && sep) pushBar(sep);
           emitPass(i, end, p);
         }
         // 收尾：源谱在 `:|` 之后还接内容（`… :| 2 2 2 2 ||`）时，这道线就是那段的分隔；
         // 后面若是 `||`，pushBar 会让它顶掉这一根，不会出现 `| ||`
-        pushBar(events[end]);
+        if (end < events.length) pushBar(events[end]);
         i = end + 1;
         continue;
       }

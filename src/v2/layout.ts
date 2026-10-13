@@ -988,13 +988,14 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
      * pad 处起笔（变音记号 / 前倚音再右移），而单元格宽随字间距伸缩——
      * 字间距为负时格宽收窄，单元格右缘缩进数字墨迹内侧，线端就「够不到」
      * 最后一个音、整条线相对音符偏左（用户实测：间距 −10 时组线左移）。
-     * 悬伸量沿用既有视觉规格：左端墨缘内 3px、右端墨缘外 4px
-     * （间距 0 时与旧的单元格算法逐像素一致，只修负间距下的错位）。
+     * 悬伸量收窄（用户实测：出头太多，还要再向中间收 5px）：
+     * 线比数字墨迹**每端各缩进 2.5px**（左 +1.5 / 右 −0.5）——
+     * 线略短于数字，两端不再出头。
      */
     const inkLeft = (m: PlacedItem) =>
       m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
-    const beamX0 = (m: PlacedItem) => inkLeft(m) - 3;
-    const beamX1 = (m: PlacedItem) => inkLeft(m) + glyph.nominalWidth + 4;
+    const beamX0 = (m: PlacedItem) => inkLeft(m) + 1.5;
+    const beamX1 = (m: PlacedItem) => inkLeft(m) + glyph.nominalWidth - 0.5;
 
     for (const it of items) {
       if (it.kind !== 'note' && it.kind !== 'rest') continue;
@@ -1088,8 +1089,14 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       chain: PlacedItem[],
       kind: 'slur' | 'tie',
     ): void => {
-      const x0 = a.x + 5;
-      const x1 = b.x + Math.min(b.w - 4 * k, glyph.glyphRight);
+      // 端点 = 首音数字墨迹**右缘** → 末音数字墨迹**左缘**：弧线从第一个音的
+      // 右上方拱到最后一个音的左上方，两端不压在数字上（用户要求）。
+      // 复用减时线的 inkLeft（与绘制层数字起笔公式一致，变音/倚音自动对准）。
+      // 两音贴得太近（负字间距）时中间放不下弧，退回盖过两端数字的整段画法
+      const fromRight = inkLeft(a) + glyph.nominalWidth;
+      const toLeft = inkLeft(b);
+      const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
+      const x1 = toLeft - fromRight >= 10 ? toLeft : inkLeft(b) + glyph.nominalWidth;
       const span = x1 - x0;
       if (span < 10) return;
       // 平线画法的判据：**连线覆盖的总时值超过 3 拍**（不是音符个数）。
@@ -1112,8 +1119,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       arcs.push({
         x0,
         x1,
-        // 跨度越大弧越明显，但上限 16px，给上方的换气 / 吐音标记留位置
-        lift: kind === 'slur' ? Math.min(16, 10 + span * 0.05) : 11,
+        // 跨度越大弧越明显，但整体压扁（用户实测：上限 16→12、基数 10→7），
+        // 给上方的换气 / 吐音标记留位置
+        lift: kind === 'slur' ? Math.min(12, 7 + span * 0.04) : 11,
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
         flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || nodes > 3),

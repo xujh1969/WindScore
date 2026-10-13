@@ -4096,7 +4096,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                             (focus.techniques ?? []).includes(value) ? 'v2-btn is-on' : 'v2-btn'
                           }
                           onClick={() => setScore(toggleTechnique(score, focus.id, value))}
-                          title={`${g.label}，谱面标作 ${g.mark}`}
+                          title={g.path ? `${g.label}，谱面标作波音记号（锯齿加中缝竖线）` : `${g.label}，谱面标作 ${g.mark}`}
                         >
                           {g.label}
                         </button>

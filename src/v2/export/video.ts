@@ -86,27 +86,37 @@ export function lineTickRanges(
   layout: LayoutResult,
   timeline: TimelineEntry[],
 ): LineTickRange[] {
-  const startOf = new Map<string, number>();
-  const endOf = new Map<string, number>();
-  for (const e of timeline) {
-    if (!startOf.has(e.eventId)) startOf.set(e.eventId, e.startTick);
-    endOf.set(e.eventId, Math.max(endOf.get(e.eventId) ?? 0, e.endTick));
-  }
-  const out: LineTickRange[] = [];
   const rows = layout.systems?.map((system) => ({ y: system.top + layout.lineHeight / 2, items: layout.lines.slice(system.from, system.to).flatMap((line) => line.items) })) ?? layout.lines;
-  for (const ln of rows) {
-    let from = Infinity;
-    let to = -Infinity;
-    for (const it of ln.items) {
-      const s = startOf.get(it.eventId);
-      if (s === undefined) continue;
-      from = Math.min(from, s);
-      to = Math.max(to, endOf.get(it.eventId) ?? s);
-    }
-    if (from === Infinity) continue;
+  // 每个事件属于哪一行（多声部时一行 = 一个系统，所有声部合成一条）
+  const rowOfEvent = new Map<string, number>();
+  rows.forEach((ln, i) => {
+    for (const it of ln.items) if (!rowOfEvent.has(it.eventId)) rowOfEvent.set(it.eventId, i);
+  });
+  /**
+   * 展开**反复**后同一条线会被经过多遍：显示用时间线把各遍都映射回
+   * 原谱 id，但 tick 各不相同。旧版按 eventId 把各遍合并进同一行区间——
+   * 第二遍的 tick 全算进第一遍的 `to`，行区间永远向前，滚动跟着音乐
+   * 走到行尾就停住不回头（用户实测：画面停在后面，光标自己跑一圈才回来）。
+   * 现在每遍各记一段，段与段在 tick 轴上相距很远，滚动会跟着光标跳回
+   * 反复起点。
+   */
+  const segs: { from: number; to: number; y: number }[] = [];
+  for (const e of timeline) {
+    const row = rowOfEvent.get(e.eventId);
+    if (row === undefined) continue;
+    segs.push({ from: e.startTick, to: Math.max(e.endTick, e.startTick + 1), y: rows[row].y });
+  }
+  segs.sort((a, b) => a.from - b.from);
+  const out: LineTickRange[] = [];
+  for (const seg of segs) {
     const prev = out[out.length - 1];
-    // 相邻两行之间不留缝：上一行结束直接接这一行开始
-    out.push({ from: prev ? Math.min(prev.to, from) : from, to, y: ln.y });
+    // 同一行的相邻段（同一遍内的相邻音 / 和弦，或间隙不超过一拍）并成一段；
+    // 不同行之间不留缝：上一行结束直接接这一行开始
+    if (prev && prev.y === seg.y && seg.from <= prev.to + TICKS_PER_BEAT) {
+      prev.to = Math.max(prev.to, seg.to);
+    } else {
+      out.push({ from: prev ? Math.min(prev.to, seg.from) : seg.from, to: seg.to, y: seg.y });
+    }
   }
   return out;
 }

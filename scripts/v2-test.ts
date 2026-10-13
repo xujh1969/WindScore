@@ -1216,8 +1216,15 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
           for (const id of [e.id, t.to]) {
             ends += 1;
             const covered = L.lines.some((l) => {
-              const it = l.items.find((i) => i.eventId === id);
-              return !!it && l.arcs.some((a) => a.x0 <= it.x + 14 && a.x1 >= it.x);
+              const it = l.items.find((i) => i.eventId === id) as
+                | { x: number; accW?: number; graceInk?: number }
+                | undefined;
+              if (!it) return false;
+              // 弧端 = 首音数字墨迹右缘 / 末音数字墨迹左缘（pad 5 + 标称宽 13，k=1）
+              // ——只要弧与该音的数字墨迹横向有交叠，就算这个端画出了弧
+              const inkL = it.x + 5 + (it.accW ?? 0) + (it.graceInk ?? 0);
+              const inkR = inkL + 13;
+              return l.arcs.some((a) => a.x0 <= inkR + 2 && a.x1 >= inkL - 2);
             });
             if (!covered) missing += 1;
           }
@@ -1456,7 +1463,8 @@ const blank = (): Score => ({
   const last = L.lines[0].items.filter((i) => i.kind === 'note')[2];
   check(
     '弧线覆盖整组',
-    tuplets[0].x0 <= first.x + 4 && tuplets[0].x1 >= last.x + 10,
+    // 线端按数字墨迹算并各向中间缩 2.5px：x0 在首音 x+6.5、x1 在末音 x+17.5
+    tuplets[0].x0 <= first.x + 8 && tuplets[0].x1 >= last.x + 10,
     `x0=${tuplets[0].x0.toFixed(1)} x1=${tuplets[0].x1.toFixed(1)}`,
   );
 }
@@ -1707,7 +1715,9 @@ const blank = (): Score => ({
   check('两个八分音符连成一条横线', beams.length === 1, `beams=${beams.length}`);
   check(
     '横线横跨两个音（不是各画一小段）',
-    beams[0].x0 <= notes[0].x + 2 && beams[0].x1 >= notes[1].x + 20,
+    // 端点按数字墨迹算（pad 5 起笔、两端各向中间缩 2.5px）：
+    // x0 在首音 x+6.5、x1 到末音 x+17.5 —— 仍是连过两个音的一条线
+    beams[0].x0 <= notes[0].x + 8 && beams[0].x1 >= notes[1].x + 16,
     `x0=${beams[0].x0.toFixed(1)} x1=${beams[0].x1.toFixed(1)}`,
   );
 }
@@ -1840,9 +1850,19 @@ const blank = (): Score => ({
   );
 
   // 链式 slur 必须合并成一条弧，不能每段各画一条
-  const arcs = layoutScore(slurred, { contentWidth: 1000 }).lines.flatMap((l) => l.arcs);
+  const lay = layoutScore(slurred, { contentWidth: 1000 });
+  const arcs = lay.lines.flatMap((l) => l.arcs);
   check('3 个音的连音线只画 1 条弧（不是 2 条重叠）', arcs.length === 1, `arcs=${arcs.length}`);
-  check('弧线跨过全部 3 个音', arcs.length === 1 && arcs[0].x1 - arcs[0].x0 > 60);
+  // 弧从首音数字**右上**起到末音数字**左上**止：两端不压数字
+  // （墨迹：pad 5 起笔、标称宽 13 —— x0 落在首音 x+18 附近，x1 落在末音 x+5 附近）
+  const notes = lay.lines[0].items.filter((i) => i.kind === 'note');
+  const a0 = arcs[0];
+  check(
+    '弧从首音数字右上方起、到末音数字左上方止',
+    a0.x0 >= notes[0].x + 10 && a0.x0 <= notes[0].x + 24 &&
+      a0.x1 >= notes[2].x && a0.x1 <= notes[2].x + 10,
+    `x0=${a0.x0.toFixed(1)} x1=${a0.x1.toFixed(1)}`,
+  );
 }
 
 {

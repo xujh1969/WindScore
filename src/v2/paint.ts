@@ -22,23 +22,60 @@ export const ACCIDENTAL_GLYPH: Record<Accidental, string> = { '#': '♯', b: '�
 /**
  * 电吹管技法记号：数据值 → 谱面字形。
  * DSL 后缀字母见 dsl.ts 的 TECHNIQUE_LETTER，两处通过数据值（键）对应。
- * flip = 上下翻转（下波音就是上波音倒过来）。
+ * flip = 上下翻转；path = 不用字符、改走专用路径绘制（见 drawMordent）。
  */
 export const TECHNIQUE_GLYPH: Record<
   string,
-  { mark: string; label: string; flip?: boolean }
+  { mark: string; label: string; flip?: boolean; path?: 'mordentUp' | 'mordentDown' }
 > = {
   breath: { mark: 'V', label: '换气' },
   trill: { mark: 'tr', label: '颤音' },
   flutter: { mark: '*', label: '花舌' },
   da: { mark: '扌', label: '打音' },
-  mordentUp: { mark: '≈', label: '上波音' },
-  mordentDown: { mark: '≈', label: '下波音', flip: true },
+  // 波音不用字符 ≈（太扁太圆，出不来装饰音的锐利感）——走 drawMordent
+  // 的路径画法：锯齿 + 中缝竖线，上波音竖线上伸、下波音下伸。
+  // mark 仍填 ≈ 仅供横向占位测量（≈ 的字宽 ≈ 路径宽）
+  mordentUp: { mark: '≈', label: '上波音', path: 'mordentUp' },
+  mordentDown: { mark: '≈', label: '下波音', path: 'mordentDown' },
   slideUp: { mark: '↑', label: '上滑音' },
   slideDown: { mark: '↓', label: '下滑音' },
   bendUp: { mark: '↗', label: '前弯音' },
   bendDown: { mark: '↘', label: '后弯音' },
 };
+
+/**
+ * 波音记号（上波音 / 下波音）：标准的「锯齿 + 中缝竖线」装饰音画法。
+ * 以 (cx, cy) 为锯齿中心：宽 13px、高 4.4px 的三峰折线；竖线从中缝
+ * 穿出——上波音向上伸、下波音向下伸（两种波音一眼可分）。
+ * 颜色取调用方已设好的 fillStyle（与吐音 / 花舌等记号同色）。
+ */
+function drawMordent(ctx: CanvasRenderingContext2D, cx: number, cy: number, up: boolean): void {
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle;
+  ctx.lineWidth = 1.3;
+  ctx.lineJoin = 'miter';
+  const w = 6.5; // 半宽
+  const h = 2.2; // 锯齿半高
+  ctx.beginPath();
+  ctx.moveTo(cx - w, cy + h);
+  ctx.lineTo(cx - w * 0.55, cy - h);
+  ctx.lineTo(cx - w * 0.15, cy + h);
+  ctx.lineTo(cx + w * 0.2, cy - h);
+  ctx.lineTo(cx + w * 0.6, cy + h);
+  ctx.lineTo(cx + w, cy - h);
+  ctx.stroke();
+  // 中缝竖线：从锯齿中心穿出，上波音朝上、下波音朝下
+  ctx.beginPath();
+  if (up) {
+    ctx.moveTo(cx, cy - h - 3.5);
+    ctx.lineTo(cx, cy + h - 1);
+  } else {
+    ctx.moveTo(cx, cy - h + 1);
+    ctx.lineTo(cx, cy + h + 3.5);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
 
 /** 播放指示方式：head = 色块+竖线；band = 高亮条；ball = 跳跃光球（带渐变拖尾） */
 export type PlayStyle = 'head' | 'band' | 'ball';
@@ -858,13 +895,15 @@ function paintLine(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     for (const v of line.voltas) {
-      // 括线贴着小节线顶端（barHalf 上方 5px），遍数数字画在线上方——
-      // 简谱里房子是贴着小节线走的，不是吊在换气标记那层
+      // 括线贴着小节线顶端（barHalf 上方 5px）。房子两壁再加高 15px（21→36），
+      // 遍数数字写在**房子里**并上移（横线下方 11px 基线）——印刷谱的标准画法，
+      // 数字吊在横线正下方靠上位置；简谱里房子是贴着小节线走的，
+      // 不是吊在换气标记那层。两壁沿小节线下探，不碰数字
       const vy = y - M.barHalf - 5;
       ctx.beginPath();
       // 跨行延续段没有左墙，不画左钩
       if (!v.cont) {
-        ctx.moveTo(v.x0, vy + 7);
+        ctx.moveTo(v.x0, vy + 36);
         ctx.lineTo(v.x0, vy);
       } else {
         ctx.moveTo(v.x0, vy);
@@ -872,17 +911,17 @@ function paintLine(
       ctx.lineTo(v.x1, vy);
       // 右端开放（简谱惯例：长房 / 跨行房）不画右钩——横线拉到收口处为止，
       // 表示「一直演奏到 :|」；短房才两头都带钩
-      if (!v.open) ctx.lineTo(v.x1, vy + 7);
+      if (!v.open) ctx.lineTo(v.x1, vy + 36);
       ctx.stroke();
       ctx.fillStyle = theme.ink;
-      ctx.fillText(v.numbers.join(','), (v.x0 + v.x1) / 2, vy - 5);
+      ctx.fillText(v.numbers.join(','), (v.x0 + v.x1) / 2, vy + 11);
       // 非末遍房子的段尾：明确提示「唱完这里跳回反复起点」——
       // 印刷谱靠 [1] 房末尾的 :| 传达这个信息，本应用的反复段里没有它
       if (v.jump) {
         ctx.save();
         ctx.font = M.badgeFont;
         ctx.fillStyle = theme.muted;
-        ctx.fillText('↩跳回', v.x1 + 3, vy - 4);
+        ctx.fillText('↩跳回', v.x1 + 3, vy + 11);
         ctx.restore();
       }
     }
@@ -966,12 +1005,18 @@ function paintLine(
       ctx.fillText(`转${it.keyChange}`, it.x + 11 + (it.graceInk ?? 0), y - 32 * M.k);
       ctx.font = M.markFont;
     }
-    const run: { mark: string; color: string; flip?: boolean; dot?: boolean }[] = [];
+    const run: {
+      mark: string;
+      color: string;
+      flip?: boolean;
+      dot?: boolean;
+      path?: 'mordentUp' | 'mordentDown';
+    }[] = [];
     if (it.tongue) run.push({ mark: it.tongue, color: theme.tongue });
     if (it.staccato) run.push({ mark: '·', color: theme.ink }); // 断音 / 顿音：小圆点
     for (const v of it.techniques ?? []) {
       const g = TECHNIQUE_GLYPH[v];
-      if (g) run.push({ mark: g.mark, color: theme.tech, flip: g.flip });
+      if (g) run.push({ mark: g.mark, color: theme.tech, flip: g.flip, path: g.path });
     }
     // 自定义记号：面板里打的 ≤3 个汉字 / 符号，原样写在技法后面
     if (it.custom) run.push({ mark: it.custom, color: theme.tech });
@@ -991,7 +1036,9 @@ function paintLine(
       const dotTop = y - M.octaveBase - ((it.octave ?? 1) - 1) * M.octaveStep - M.dotR;
       baseY = Math.min(baseY, dotTop - markGap - markHalf);
     }
-    const widths = run.map((r) => ctx.measureText(r.mark).width);
+    const widths = run.map((r) =>
+      r.path ? 13 : ctx.measureText(r.mark).width,
+    );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
     let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
     run.forEach((r, i) => {
@@ -1000,7 +1047,10 @@ function paintLine(
       ctx.fillStyle = r.color;
       // 弧线字形压在基线以上，抬高一点才给正下方的圆点留出位置
       const my = baseY - (r.dot ? 3 : 0);
-      if (r.flip) {
+      if (r.path) {
+        // 路径字形（波音）：锯齿中心对齐记号行的墨迹中心
+        drawMordent(ctx, tx, my, r.path === 'mordentUp');
+      } else if (r.flip) {
         ctx.save();
         ctx.translate(tx, my);
         ctx.scale(1, -1);
@@ -1318,15 +1368,16 @@ function drawGraces(
    * 数字中心：挂在主音左上角（全局 textBaseline='middle' 被继承，gy 是**墨迹中心**）。
    * 高度卡在两个约束之间：**向下避开连音线弧**（弧端从音符边缘 y−29 起向上拱
    * ——arcBase 24 又整体抬了 5px，数字墨顶必须低于它）又**向上不压主音字形**
-   * （主音墨顶 ≈ y−8）。
-   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−18，墨顶 y−22.6，与弧线净空 ≈5.7px；
+   * （主音墨顶 ≈ y−7.4）。
+   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−15（用户实测整体下移 3px），
+   * 墨顶 y−19.6，与弧线净空 ≈9.4px，墨底距主音字形顶 ≈3.1px；
    * **低音倚音**（带 v 点）下方还要容纳低音点 + 弧线两层，
-   * 整体比普通倚音再抬高 4px（y−22）给它们让位。
+   * 整体比普通倚音再抬高 4px（y−19）给它们让位。
    * 减时线挂在**数字墨底之下至少 1px**：墨底 ≈ gy + 0.38×字号，
    * 偏移量随字号算出来（不能写死 gy+5——字号一大数字就压线）。
    */
   const hasLow = list.some((g) => g.octave < 0);
-  const gy = y - (hasLow ? 22 : 18);
+  const gy = y - (hasLow ? 19 : 15);
   const beamDy = 13 * M.k * 0.38 + 1;
   list.forEach((g, i) => {
     const cx = x0 + i * w + w / 2;

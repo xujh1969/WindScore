@@ -245,6 +245,34 @@ console.log('[导出 · 滚动跟随]');
   check('没有版面就不滚', scrollTargetY([], 100, 1, h, 86) === 0);
 }
 
+console.log('[导出 · 反复展开的滚动跟随]');
+{
+  // 展开反复：显示时间线把每一遍都映射回原谱 id（a/b/c 各响两遍），
+  // 第二遍 tick 继续往后走。行的区间必须按遍分段，滚动才会跟着跳回反复起点
+  const layout = {
+    lines: [
+      { y: 50, items: [{ eventId: 'a' }] },
+      { y: 136, items: [{ eventId: 'b' }] },
+      { y: 222, items: [{ eventId: 'c' }] },
+    ],
+  } as unknown as LayoutResult;
+  const timeline = [
+    { eventId: 'a', startTick: 0, endTick: 100 },
+    { eventId: 'b', startTick: 100, endTick: 200 },
+    { eventId: 'c', startTick: 200, endTick: 300 },
+    { eventId: 'a', startTick: 300, endTick: 400 },
+    { eventId: 'b', startTick: 400, endTick: 500 },
+    { eventId: 'c', startTick: 500, endTick: 600 },
+  ] as never;
+  const ranges = lineTickRanges(layout, timeline);
+  check('反复的每一遍各成一段（6 段，不是 3 段）', ranges.length === 6, JSON.stringify(ranges));
+  check('第二遍回到第一行的 y', ranges[3]!.y === 50 && ranges[3]!.from === 300, JSON.stringify(ranges[3]));
+  // 第二遍放第一行时（tick 350），滚动目标应回到谱面上方（第一行），
+  // 而不是停在最后一段的 y 上不动
+  const y = scrollTargetY(ranges, 350, 1, 200, 86);
+  check('第二遍滚动跟着光标回头', Math.abs(y - 50) < 86, String(y));
+}
+
 console.log('[导出 · 时长]');
 {
   const score = parseDsl('@beat 4/4\n@tmp 120\n1 2 3 4 | 1 2 3 4 ||\n').score!;

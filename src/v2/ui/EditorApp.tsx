@@ -1746,6 +1746,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   /** 段落标注的编辑草稿（null = 没在编辑，显示谱面里的值） */
   const [annotDraft, setAnnotDraft] = useState<string | null>(null);
+  /** 自定义记号输入框（非受控）：✓ 按钮要读它当前的值 */
+  const markInputRef = useRef<HTMLInputElement | null>(null);
   /** 当前音左右两侧是否已加了括号（按钮点亮用） */
   const parenFlags = useMemo(
     () => (focus && isTimed(focus) ? parenFlagsOf(score, focus.id) : { open: false, close: false }),
@@ -4107,27 +4109,44 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                     把未转换的拼音原样提交（想打「又一春」变成「you」）；
                     组曲事件再漏一个（compositionend 没送到本实例）整框就彻底打不了
                     字。key 挂 focus.id：换选中音时重挂载，defaultValue 自然换成
-                    新音自己的记号，不会串。提交仍然是回车 / 失焦才写谱
+                    新音自己的记号，不会串。写谱只在回车 / 失焦 / 按 ✓ 时发生
                     （每键写谱会挪动选中下标、把输入框卸载掉）。
                     也不加 maxLength：拼音约 3 字符就顶到上限，同样会提前提交组曲；
                     3 字上限在提交时截断 + setNoteMark 内校验，双保险。
                   */}
-                  <input
-                    key={focus.id}
-                    className="v2-meta-input"
-                    style={{ marginTop: 6 }}
-                    defaultValue={focus.mark ?? ''}
-                    placeholder="自定义记号（≤3 字，如：气、滑、花）"
-                    title="最多 3 个汉字或符号，原样写在音符上方。清空 = 去掉。回车或点别处生效"
-                    onBlur={(e) => {
-                      setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter') return;
-                      setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
-                      (e.target as HTMLInputElement).blur();
-                    }}
-                  />
+                  <div className="v2-grace-bar" style={{ marginTop: 6 }}>
+                    <input
+                      key={focus.id}
+                      ref={markInputRef}
+                      className="v2-meta-input"
+                      defaultValue={focus.mark ?? ''}
+                      placeholder="自定义记号（≤3 字，如：气、滑、花）"
+                      title="最多 3 个汉字或符号，原样写在音符上方。清空 = 去掉。回车、点别处或按 ✓ 生效"
+                      onBlur={(e) => {
+                        setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
+                        markInputRef.current?.blur();
+                      }}
+                    />
+                    {/* 显式确认：光靠「光标离开才写谱」太隐晦，给个明确的 ✓ */}
+                    <button
+                      className="v2-btn v2-btn-breath"
+                      title="确认，写进谱面"
+                      // 按下时不让输入框失焦——否则 onBlur 会先提交一次，
+                      // 这里的点击再提交一次，白多一条撤销记录
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() =>
+                        setScore(
+                          setNoteMark(score, focus.id, (markInputRef.current?.value ?? '').slice(0, 3)),
+                        )
+                      }
+                    >
+                      ✓
+                    </button>
+                  </div>
                 </div>
                 <div className="v2-field">
                   {/*
@@ -4153,29 +4172,45 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 <div className="v2-field">
                   <span className="v2-field-label">标注（段落文字）</span>
                   {/*
-                    草稿式输入（回车 / 点别处才提交），不能每敲一个字就写谱：
+                    草稿式输入（回车 / 点别处 / 按 ✓ 才提交），不能每敲一个字就写谱：
                     写谱会在音符前插入一个 directive，而「当前选中的音」是按下标取的
                     （events[cursor-1]）——下标一挪，焦点就落到新插入的标注上，
                     输入框当场卸载，中文输入法直接被打断（第一个字之后再也打不进去）。
                   */}
-                  <input
-                    className="v2-meta-input"
-                    value={annotDraft ?? annotationTextOf(score, focus.id)}
-                    placeholder="如：前奏；只打 ( 或 ) = 在音符左 / 右侧加括号"
-                    title="段落文字标注（谱面显示为 (文字)）；只输入 ( 或 ) 则是在音符左侧 / 右侧加括号。回车或点别处提交"
-                    onChange={(e) => setAnnotDraft(e.target.value)}
-                    onBlur={() => {
-                      if (annotDraft === null) return;
-                      commitAnnotation(annotDraft);
-                      setAnnotDraft(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter') return;
-                      commitAnnotation(annotDraft ?? '');
-                      setAnnotDraft(null);
-                      (e.target as HTMLInputElement).blur();
-                    }}
-                  />
+                  <div className="v2-grace-bar">
+                    <input
+                      className="v2-meta-input"
+                      value={annotDraft ?? annotationTextOf(score, focus.id)}
+                      placeholder="如：前奏（与下面的括号互不影响）"
+                      title="段落文字标注（谱面显示为 (文字)）。左右括号是独立的一对按钮，在这里打字不会动括号、点括号也不会动文字。回车、点别处或按 ✓ 提交"
+                      onChange={(e) => setAnnotDraft(e.target.value)}
+                      onBlur={() => {
+                        if (annotDraft === null) return;
+                        commitAnnotation(annotDraft);
+                        setAnnotDraft(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        commitAnnotation(annotDraft ?? '');
+                        setAnnotDraft(null);
+                        (e.target as HTMLInputElement).blur();
+                      }}
+                    />
+                    {/* 显式确认：光靠「光标离开才写谱」太隐晦，给个明确的 ✓ */}
+                    <button
+                      className="v2-btn v2-btn-breath"
+                      title="确认，写进谱面"
+                      // 按下时不让输入框失焦——否则 onBlur 会先提交一次，
+                      // 这里的点击再提交一次，白多一条撤销记录
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        commitAnnotation(annotDraft ?? annotationTextOf(score, focus.id));
+                        setAnnotDraft(null);
+                      }}
+                    >
+                      ✓
+                    </button>
+                  </div>
                 </div>
                 {/*
                   括号：两个独立记号——头一个音前放左括号、末一个音后放右括号，

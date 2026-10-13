@@ -48,6 +48,7 @@ import {
   setTextAnnotation,
   textAnnotationOf,
   annotationTextOf,
+  toggleParen,
   setVoltaFromSelection,
   toggleJumpAfterBarline,
   setAccidental,
@@ -3034,56 +3035,39 @@ console.log('\n[(文字) 装饰记号：前奏 / 间奏标注]');
   );
 }
 
-console.log('\n[标注框写括号 = 音符左右两侧的括号记号]');
+console.log('\n[标注与左右括号互不干涉]');
 {
   const base = parseDsl('@beat 4/4\n\n6 2 2 ||').score!;
   const n0 = base.events.find((e) => e.kind === 'note')!.id;
   const n2 = base.events.filter((e) => e.kind === 'note')[2]!.id;
+  const parens = (s: { events: { kind: string; type?: string }[] }): number =>
+    s.events.filter((e) => e.kind === 'directive' && e.type === 'paren').length;
+  const texts = (s: { events: { kind: string; type?: string }[] }): number =>
+    s.events.filter((e) => e.kind === 'directive' && e.type === 'text').length;
 
-  // 标注框只打一个 ( —— 要的是音符**左侧**的括号，不是下方的 (( 文字
-  const withOpen = setTextAnnotation(base, n0, '(');
-  const openEv = withOpen.events.filter(
-    (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren',
-  );
-  check('输入 ( 产生一个括号记号', openEv.length === 1, JSON.stringify(openEv));
-  check('它插在音符**前**（画在左侧）', withOpen.events.findIndex((e) => e.id === openEv[0]!.id) < withOpen.events.findIndex((e) => e.id === n0));
-  check(
-    '不产生文字标注（不会变成 (( ）',
-    !withOpen.events.some(
-      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'text',
-    ),
-  );
-  // 末音写 ) —— 插在音符**后**（画在右侧）
-  const withClose = setTextAnnotation(withOpen, n2, ')');
-  const closeIdx = withClose.events.findIndex(
-    (e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren' && (e as { value: string }).value === ')',
-  );
-  check('输入 ) 插在音符**后**', closeIdx === withClose.events.findIndex((e) => e.id === n2) + 1);
-  // 框里读得回来（否则打了 ( 提交后框里又空了，像没写进去）
-  check('标注框读回 (', annotationTextOf(withOpen, n0) === '(', annotationTextOf(withOpen, n0));
-  check('标注框读回 )', annotationTextOf(withClose, n2) === ')', annotationTextOf(withClose, n2));
-  // 文字与括号互斥：写「前奏」后括号摘掉，反之亦然
-  const asText = setTextAnnotation(withOpen, n0, '前奏');
-  check(
-    '写文字后括号被摘掉',
-    !asText.events.some((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren'),
-  );
-  const backToParen = setTextAnnotation(asText, n0, '(');
-  check(
-    '改回 ( 后文字标注被摘掉',
-    !backToParen.events.some(
-      (e) => e.kind === 'directive' && (e as { type?: string }).type === 'text',
-    ),
-  );
-  // 清空：这个音两侧的括号摘掉，别的音的不动
-  const cleared = setTextAnnotation(withClose, n2, '');
-  check(
-    '清空只摘掉本音的括号（别的音不受影响）',
-    cleared.events.filter((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren')
-      .length === 1,
-  );
+  // 标注框里打 ( —— 半角括号是 (标注) 的定界符，不写进正文、也不去切括号
+  const typed = setTextAnnotation(base, n0, '(');
+  check('标注框输入 ( 不产生括号记号', parens(typed) === 0, JSON.stringify(typed.events));
+  check('也不产生文字标注', texts(typed) === 0, JSON.stringify(typed.events));
+
+  // 括号走它自己的按钮：头一音左括号、末音右括号
+  const withOpen = toggleParen(base, n0, 'open');
+  const withClose = toggleParen(withOpen, n2, 'close');
+  check('括号按钮加上左右括号', parens(withClose) === 2, JSON.stringify(withClose.events));
+
+  // 写文字标注：括号一个不少，文字照常写进去
+  const asText = setTextAnnotation(withClose, n0, '前奏');
+  check('写文字不动括号', parens(asText) === 2, JSON.stringify(asText.events));
+  check('文字标注写进去了', textAnnotationOf(asText, n0) === '前奏', String(textAnnotationOf(asText, n0)));
+  // 清空文字：只摘文字，括号仍在（反过来也一样）
+  const cleared = setTextAnnotation(asText, n0, '');
+  check('清空文字不动括号', parens(cleared) === 2, JSON.stringify(cleared.events));
+  check('文字标注已摘掉', texts(cleared) === 0, JSON.stringify(cleared.events));
+  // 标注框只读文字：只有括号时框里是空的（不再把括号显示成 ()）
+  check('标注框只读文字（有括号无文字时为空）', annotationTextOf(cleared, n0) === '', annotationTextOf(cleared, n0));
+  check('标注框读出文字', annotationTextOf(asText, n0) === '前奏', annotationTextOf(asText, n0));
   // 回写：括号走全角，与连音线的半角 ( ) 不冲突
-  const back = serializeDsl(withClose);
+  const back = serializeDsl(asText);
   check('回写用全角括号', back.includes('（') && back.includes('）'), back);
   check('重新打开括号还在', parseDsl(back).score!.events.filter((e) => e.kind === 'directive' && (e as { type?: string }).type === 'paren').length === 2);
 }

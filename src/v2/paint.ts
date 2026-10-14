@@ -1159,13 +1159,14 @@ function paintLine(
   }
   ctx.font = M.font;
 
-  // 连线（上方弧线）。整条弧再抬高 5px（用户实测：与电吹管技法记号行
-  // 挨得太近，符号下移 5px、弧线上移 5px，两层各让一半）
+  // 连线（上方弧线）。带技法记号：抬高 5px 给记号行让位；
+  // 没带（layout 标记 tight）：反过来下压 5px，弧线贴着音符画——
+  // 位置不再一刀切（用户实测要求）
   ctx.lineWidth = 1.5;
   for (const a of line.arcs) {
     ctx.strokeStyle = theme.curve;
     const base = a.kind === 'tie' ? M.arcTieBase : M.arcBase;
-    const ay = y - base - 5 * M.k - a.octaveUp * M.octaveStep;
+    const ay = y - base + (a.tight ? 5 * M.k : -5 * M.k) - a.octaveUp * M.octaveStep;
     ctx.beginPath();
     if (a.flat) {
       // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，

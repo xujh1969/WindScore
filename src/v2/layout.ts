@@ -117,6 +117,12 @@ export interface PlacedArc {
    * 也不好看（用户实测要求）
    */
   flat?: boolean;
+  /**
+   * 贴近模式：弧线覆盖的音符**都没有**气息技法符号（吐音 / 技法 / 断音 /
+   * 延长音 / 自定义记号）时为 true——绘制层据此省掉为记号行预留的抬升，
+   * 弧线贴着音符画；只要有一个音带符号，整条弧仍抬在记号行之上。
+   */
+  tight?: boolean;
 }
 
 export interface PlacedBadge {
@@ -1059,6 +1065,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       : padding;
 
     /**
+     * 音符上方是否画了「气息与技法」记号（吐音 T/K、技法、断音 ·、
+     * 延长音 ⌒、自定义记号）——连音线要不要抬高让位就看这个。
+     */
+    const hasMarks = (m: PlacedItem): boolean =>
+      !!m.tongue || !!(m.techniques?.length) || !!m.custom || !!m.staccato || !!m.fermata;
+
+    /**
      * 连线被断行切断、且这一行只剩一个成员时，朝延续方向补一段短弧。
      * 少了这段，跨小节 / 跨行的连线会整条凭空消失——
      * (3 | 3) 这种跨小节连线正好会掉进这个情况。
@@ -1080,7 +1093,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         return;
       }
       if (x1 - x0 < 10) return;
-      arcs.push({ x0, x1, lift: 11, kind: 'slur', octaveUp: it.octave ?? 0 });
+      // tight 弧贴近音符，拱高也压小，弧顶才不会扫到下方的数字
+      arcs.push({
+        x0,
+        x1,
+        lift: hasMarks(it) ? 11 : 6,
+        kind: 'slur',
+        octaveUp: it.octave ?? 0,
+        tight: !hasMarks(it),
+      });
     };
 
     const pushArc = (
@@ -1099,6 +1120,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x1 = toLeft - fromRight >= 10 ? toLeft : inkLeft(b) + glyph.nominalWidth;
       const span = x1 - x0;
       if (span < 10) return;
+      // tight（链上无技法记号）弧贴近音符，拱高上限也压小：
+      // 弧顶 = ay − lift，下压 5px 后再取大 lift 会扫到下方的数字
+      const tight = !chain.some(hasMarks);
       // 平线画法的判据：**连线覆盖的总时值超过 3 拍**（不是音符个数）。
       // 个数判据漏掉长音符：`(1--- 1---)` 只有 2 个音却横跨 8 拍，
       // 大弧会拱得很高；按拍数算，长音符自然落入平线（实测用户要求）。
@@ -1120,11 +1144,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         x0,
         x1,
         // 跨度越大弧越明显，但整体压扁（用户实测：上限 16→12、基数 10→7），
-        // 给上方的换气 / 吐音标记留位置
-        lift: kind === 'slur' ? Math.min(12, 7 + span * 0.04) : 11,
+        // 给上方的换气 / 吐音标记留位置；tight 弧上限再压到 9（tie 5）
+        lift: kind === 'slur' ? Math.min(tight ? 9 : 12, 7 + span * 0.04) : tight ? 5 : 11,
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
         flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
+        // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
+        tight,
       });
     };
 

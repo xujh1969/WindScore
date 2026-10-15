@@ -6,7 +6,6 @@
  */
 
 import type { Score } from "../types";
-import type { LayoutResult } from "../layout";
 import type { AudioStem } from "../audio";
 import { buildBallTrack, sampleBallTrail } from '../ball';
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
@@ -16,7 +15,7 @@ import { saveBytesAsFile, type SaveResult } from "../io";
 import { safeFileName } from "./tasks";
 import { exportVideoFast } from "./encode";
 import { mixStems, synthNotes, type Mix } from "./mix";
-import { exportTheme, paintVideoFrame } from "./render";
+import { exportTheme, paintVideoFrame, prepareExportLayout, type ExportLayoutResult, type ExportNotation } from "./render";
 import {
   lineTickRanges,
   recordSeconds,
@@ -31,7 +30,7 @@ import { buildStrip, scrollTargetX, stripTickRanges } from "./strip";
 /** 合成音导出采样率；伴奏沿用首条分轨的原采样率 */
 const MIX_RATE = 44100;
 
-export interface VideoExportOptions {
+export interface VideoExportOptions extends ExportNotation {
   score: Score;
   name: string;
   timeline: TimelineEntry[];
@@ -53,7 +52,7 @@ export interface VideoExportOptions {
   /** 'page' = 纵向整页滚动（默认）；'strip' = 横向长条（绿幕抠像用） */
   mode?: 'page' | 'strip';
   /** 长条模式的页面排版输入（对话框传页面当前显示的那份） */
-  layout?: LayoutResult;
+  layout?: ExportLayoutResult;
   audio: "stems" | "synth" | "none";
   showTitle?: boolean;
   showMeasureNumbers?: boolean;
@@ -120,8 +119,13 @@ export async function exportScoreVideoToFile(
   opts: VideoExportOptions,
 ): Promise<SaveResult & { seconds: number; ext: string; sizeMB: number; codec: string }> {
   const { canvasW: pageW, canvasH: pageH, geo } = videoGeometry(opts.ratio, opts.shortSide);
-  const sourceLayout = opts.layout ?? videoLayoutFor(opts.score, opts.ratio, opts.shortSide, opts.showTitle ?? true);
-  const layout = { ...sourceLayout, title: opts.showTitle === false ? null : sourceLayout.title };
+  const sourceLayout = opts.layout
+    ? (opts.layout.staff ? opts.layout : prepareExportLayout(opts.score, opts.layout, opts))
+    : videoLayoutFor(opts.score, opts.ratio, opts.shortSide, opts.showTitle ?? true, opts);
+  const title = opts.showTitle === false ? null : sourceLayout.title;
+  const layout = { ...sourceLayout, title,
+    ...(sourceLayout.staff ? { staff: { ...sourceLayout.staff, title } } : {}),
+  };
   const showTl = opts.displayTimeline ?? opts.timeline;
   const theme = exportTheme(opts.dark);
 
@@ -155,7 +159,19 @@ export async function exportScoreVideoToFile(
   const ballLayout = strip?.layout ?? layout;
   const followPartId = ballLayout.lines.some(line => line.partId === opts.activePartId)
     ? opts.activePartId : ballLayout.lines[0]?.partId;
-  const ballTrack = opts.playStyle === 'ball' ? buildBallTrack(ballLayout, showTl, followPartId) : null;
+  let landingPositions: Map<string, { x: number; y: number }> | undefined;
+  if (opts.playStyle === 'ball' && ballLayout.staff) {
+    const staff = ballLayout.staff;
+    const k = staff.glyph.fontSize / 21;
+    landingPositions = new Map();
+    for (const line of staff.lines) {
+      if (followPartId && line.partId && line.partId !== followPartId) continue;
+      for (const s of line.symbols) if ((s.kind === 'note' || s.kind === 'rest') && !s.hidden) {
+        landingPositions.set(s.eventId, { x: s.x, y: s.y - staff.sp * 0.36 - (3.7 + 3) * k });
+      }
+    }
+  }
+  const ballTrack = opts.playStyle === 'ball' ? buildBallTrack(ballLayout, showTl, followPartId, landingPositions) : null;
   const ballTrail: { x: number; y: number }[] = [];
 
   const canvas = document.createElement("canvas");

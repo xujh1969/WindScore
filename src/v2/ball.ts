@@ -30,10 +30,12 @@ export function buildBallTrack(
   layout: LayoutResult,
   timeline: TimelineEntry[],
   followPartId: string | undefined,
+  /** 五线谱等视图提供最终落点；省略时沿用简谱数字上方的落点。 */
+  landingPositions?: ReadonlyMap<string, { x: number; y: number }>,
 ): BallTrack | null {
   const k = layout.glyph.fontSize / 21;
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const line of layout.lines) {
+  const pos = new Map<string, { x: number; y: number }>(landingPositions);
+  if (!landingPositions) for (const line of layout.lines) {
     if (followPartId && line.partId && line.partId !== followPartId) continue;
     for (const it of line.items) {
       if (it.kind !== 'note' && it.kind !== 'rest') continue;
@@ -65,7 +67,7 @@ export function buildBallTrack(
    */
   const r = 3.7 * k;
   const rest = layout.glyph.fontSize * 0.35 + r + 5 * k;
-  for (const o of onsets) o.y -= rest;
+  if (!landingPositions) for (const o of onsets) o.y -= rest;
   return { onsets, k, r };
 }
 

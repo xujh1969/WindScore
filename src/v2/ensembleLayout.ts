@@ -1,8 +1,9 @@
 import type { LayoutLine, LayoutOptions, LayoutResult, PlacedItem } from './layout';
 import { METER_LEAD } from './layout';
 import { partMeasures, partScore, scoreParts } from './parts';
-import type { BarlineEvent, Score } from './types';
+import type { Score } from './types';
 import { TICKS_PER_BEAT } from './ticks';
+import { addPlaybackAnchors, balancedBreaks, fitSpacing } from './spacing';
 
 type Position = { x: number; w: number; line: number; dashXs?: number[] };
 type Entry = { item: PlacedItem; tick: number; measure: number; lead: number };
@@ -33,6 +34,8 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   });
   const local = new Map<string, { x: number; w: number; dashXs?: number[] }>();
   const widths: number[] = [];
+  const densities: number[] = [];
+  const closingWidths: number[] = [];
   for (let mi = 0; mi < count; mi++) {
     const current = entries.flat().filter((e) => e.measure === mi);
     const end = Math.max(0, ...tables.map((ms) => ms[mi]?.ticks ?? 0));
@@ -50,11 +53,16 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       onsets.set(tick, x + pre + opening + lead);
       leads.set(tick, lead);
       const step = ticks[ti + 1] === undefined ? 0 : ticks[ti + 1] - tick;
-      const ink = Math.max(0, ...here.filter((e) => e.item.kind === 'note' || e.item.kind === 'rest').map((e) => 26 * k + e.lead + (e.item.graceAfter?.length ?? 0) * measured[0].glyph.graceW));
-      x += pre + opening + Math.max(ink, step * (opts.unit ?? 1.3) + (step > 0 ? 8 * k : 0));
+      const ink = Math.max(0, ...here.filter((e) => e.item.kind === 'note' || e.item.kind === 'rest').map((e) => {
+        const item = e.item;
+        const lyric = Math.max(0, ...(item.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
+        return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k)
+          + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
+      }));
+      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? 1.3) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === 'barline' && e.tick > 0).map((e) => e.item.w));
-    const close = x;
+    const close = Math.max(x, 60 * k - barW);
     const preUsed = new Map<string, number>();
     for (const e of current) {
       const it = e.item;
@@ -75,6 +83,8 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       }
     }
     widths.push(Math.max(60 * k, close + barW));
+    closingWidths.push(barW);
+    densities.push(Math.pow(Math.max(1, ...entries.map(list => list.filter(e => e.measure === mi && (e.item.kind === 'note' || e.item.kind === 'rest')).length)), 1.5));
   }
   const systemOf: number[] = [];
   const offsetOf: number[] = [];
@@ -85,29 +95,43 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
    */
   const systemLead: number[] = [0];
   const systemMeter: string[] = [];
-  let system = 0;
-  let used = 0;
-  for (let mi = 0; mi < count; mi++) {
+  const units = widths.map((ideal, mi) => {
     const previous = mi > 0 ? singles[0].events[tables[0][mi - 1]?.to - 1] : undefined;
-    if (used > 0 && (used + widths[mi] > available - (systemLead[system] ?? 0) || (previous?.kind === 'barline' && previous.breakAfter))) {
-      system++;
-      used = 0;
-      const bar = previous && previous.kind === 'barline' ? (previous as BarlineEvent) : undefined;
-      const lead = bar?.beatAfter ? METER_LEAD * k : 0;
-      systemLead[system] = lead;
-      systemMeter[system] = bar?.beatAfter ?? '';
+    const tail = singles[0].events[tables[0][mi]?.to - 1];
+    return { ideal, min: ideal, weight: densities[mi],
+      lead: previous?.kind === 'barline' && previous.beatAfter ? METER_LEAD * k : 0,
+      forced: tail?.kind === 'barline' && !!tail.breakAfter };
+  });
+  const starts = balancedBreaks(units, available);
+  const scales: number[] = [];
+  for (let si = 0; si < starts.length; si++) {
+    const from = starts[si];
+    const to = starts[si + 1] ?? count;
+    const previous = from > 0 ? singles[0].events[tables[0][from - 1]?.to - 1] : undefined;
+    systemLead[si] = units[from].lead;
+    systemMeter[si] = previous?.kind === 'barline' ? previous.beatAfter ?? '' : '';
+    const budget = available - systemLead[si] + (closingWidths[to - 1] - 20 * k) / 2;
+    const natural = widths.slice(from, to).reduce((sum, w) => sum + w, 0);
+    const shortTail = (si === starts.length - 1 || units[to - 1].forced) && natural < budget * 0.6;
+    const fitted = fitSpacing(units.slice(from, to), budget, !shortTail);
+    let offset = 0;
+    for (let mi = from; mi < to; mi++) {
+      systemOf[mi] = si;
+      offsetOf[mi] = offset;
+      scales[mi] = (fitted[mi - from] - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi]);
+      offset += fitted[mi - from];
     }
-    systemOf.push(system);
-    offsetOf.push(used);
-    // 让位宽度占掉可用宽度，否则行末会被挤出右缘
-    used += widths[mi];
   }
+  const system = starts.length - 1;
   const positions = new Map<string, Position>();
   for (const list of entries) for (const e of list) {
     const p = local.get(e.item.eventId)!;
     // 行首拍号让位：整个系统一起右移，各声部保持对齐
     const offset = left + (systemLead[systemOf[e.measure]] ?? 0) + offsetOf[e.measure];
-    positions.set(e.item.eventId, { x: offset + p.x, w: p.w, line: systemOf[e.measure], ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x) } : {}) });
+    const scale = scales[e.measure];
+    // 同一拍所有声部共同伸缩，字形不缩放；前置倚音和变音保持固定墨迹宽。
+    const lead = e.item.kind === 'note' || e.item.kind === 'rest' ? e.lead : 0;
+    positions.set(e.item.eventId, { x: offset + (p.x + lead) * scale - lead, w: e.item.kind === 'barline' && e.tick > 0 ? p.w : p.w * scale, line: systemOf[e.measure], ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {}) });
   }
   const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
   const title = placed[0].title;
@@ -138,5 +162,6 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     }
     systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
   }
+  addPlaybackAnchors(lines, measured[0].glyph);
   return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24 };
 }

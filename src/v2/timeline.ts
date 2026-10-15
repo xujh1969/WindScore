@@ -9,9 +9,8 @@ import { TICKS_PER_BEAT } from './ticks';
 import { measureAt } from './expand';
 import { partScore, scoreParts } from './parts';
 import type { Accidental, Event as ScoreEvent, NoteEvent, Score } from './types';
+import { accidentalOffset as pitchAccidentalOffset, keyOffset as pitchKeyOffset, toMidi as pitchToMidi } from './pitch';
 
-/** 音级 1..7 相对主音的半音数（自然大调音阶） */
-const DEGREE_SEMITONE = [0, 2, 4, 5, 7, 9, 11];
 
 export interface TimelineEntry {
   eventId: string;
@@ -36,7 +35,7 @@ export const GRACE_TICKS = TICKS_PER_BEAT / 4;
 
 /** 升 / 降 / 还原记号 → 半音偏移。♯♭ 与 #b 同义 */
 export function accidentalOffset(acc?: Accidental): number {
-  return acc === '#' ? 1 : acc === 'b' ? -1 : 0;
+  return pitchAccidentalOffset(acc);
 }
 
 /**
@@ -55,13 +54,7 @@ export function accidentalOffset(acc?: Accidental): number {
  * 解析不出来返回 0（按 C 调），保留旧有的容错行为。
  */
 export function keyOffset(key: string): number {
-  const body = /1\s*=\s*(.+)$/.exec(key)?.[1] ?? key;
-  const m = /^\s*([#b♯♭]?)\s*([A-Ga-g])\s*([#b♯♭]?)/.exec(body);
-  if (!m) return 0;
-  const base: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
-  const acc = (c: string) => (c === '#' || c === '♯' ? 1 : c === 'b' || c === '♭' ? -1 : 0);
-  const off = (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
-  return off > 6 ? off - 12 : off;
+  return pitchKeyOffset(key);
 }
 
 /**
@@ -83,9 +76,7 @@ export function toMidi(
   key: string,
   accidental?: Accidental,
 ): number {
-  const semis =
-    DEGREE_SEMITONE[degree - 1] + keyOffset(key) + octave * 12 + accidentalOffset(accidental);
-  return 60 + semis;
+  return pitchToMidi(degree, octave, key, accidental);
 }
 
 /**

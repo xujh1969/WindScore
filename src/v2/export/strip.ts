@@ -9,12 +9,15 @@
  * 纯函数，Node 里可直接测（scripts/export-test.ts）。
  */
 
-import type { LayoutLine, LayoutResult } from '../layout';
+import type { LayoutLine } from '../layout';
 import type { TimelineEntry } from '../timeline';
+import type { ExportLayoutResult } from './render';
+import type { StaffLayout } from '../staff';
+import { staffCurveYBounds } from '../staffBounds';
 
 export interface Strip {
   /** 拉平后的排版：lines 保留（多声部上下叠放），x 已平移，title 清空 */
-  layout: LayoutResult;
+  layout: ExportLayoutResult;
   /** 长条总宽（像素） */
   width: number;
   /** 长条高（一个系统的高；多声部 = 该组所有行） */
@@ -23,7 +26,7 @@ export interface Strip {
 
 const SYSTEM_GAP = 24;
 
-export function buildStrip(layout: LayoutResult): Strip {
+export function buildStrip(layout: ExportLayoutResult): Strip {
   // 分系统：ensemble 填了 systems（行下标区间），直接用；
   // 单声部没有 systems → 每行自成一组
   const groups: LayoutLine[][] = layout.systems
@@ -35,26 +38,38 @@ export function buildStrip(layout: LayoutResult): Strip {
   let dx = 0;
   let maxBottom = 0;
   let index = 0;
+  const staffOffsets = new Map<number, { x: number; y: number; row: number; system: number }>();
 
-  for (const group of groups) {
-    const groupLines = group.filter((l) => l.items.length > 0);
+  for (const [system, group] of groups.entries()) {
+    const groupLines = layout.staff ? group : group.filter((l) => l.items.length > 0);
     if (groupLines.length === 0) continue;
-    const top = Math.min(...groupLines.map((l) => l.y)) - lineHeight / 2;
+    const staff = layout.staff;
+    const top = staff
+      ? (layout.systems?.[system]?.top ?? Math.min(...groupLines.map(l => {
+        const staffLine = layout.staff!.lines[layout.lines.indexOf(l)];
+        return (staffLine.labelY ?? staffLine.y - 4 * layout.staff!.sp) - layout.staff!.sp;
+      }))) - 100 * staff.glyph.fontSize / 21
+      : Math.min(...groupLines.map((l) => l.y)) - lineHeight / 2;
     for (const line of groupLines) {
       const out: LayoutLine = {
         ...line,
         index,
-        y: line.y - top + lineHeight / 2,
-        items: line.items.map((it) => ({ ...it, x: it.x + dx })),
+        y: line.y - top + (staff ? 0 : lineHeight / 2),
+        items: line.items.map((it) => ({ ...it, x: it.x + dx,
+          ...(it.dashXs ? { dashXs: it.dashXs.map(x => x + dx) } : {}),
+          ...(it.playXs ? { playXs: it.playXs.map(p => ({ ...p, x: p.x + dx })) } : {}),
+        })),
         beams: line.beams.map((b) => ({ ...b, x0: b.x0 + dx, x1: b.x1 + dx })),
         arcs: line.arcs.map((a) => ({ ...a, x0: a.x0 + dx, x1: a.x1 + dx })),
         badges: line.badges.map((b) => ({ ...b, x: b.x + dx })),
         tuplets: line.tuplets.map((t) => ({ ...t, x0: t.x0 + dx, x1: t.x1 + dx })),
+        lyricLines: line.lyricLines?.map(l => ({ ...l, x0: l.x0 + dx, x1: l.x1 + dx })),
         voltas: line.voltas.map((v) => ({ ...v, x0: v.x0 + dx, x1: v.x1 + dx })),
         ...(line.hairpins
           ? { hairpins: line.hairpins.map((h) => ({ ...h, x0: h.x0 + dx, x1: h.x1 + dx })) }
           : {}),
       };
+      staffOffsets.set(layout.lines.indexOf(line), { x: dx, y: out.y - line.y, row: index, system });
       lines.push(out);
       index += 1;
     }
@@ -69,11 +84,75 @@ export function buildStrip(layout: LayoutResult): Strip {
   }
 
   const width = Math.max(1, dx - SYSTEM_GAP);
-  const height = Math.ceil(maxBottom + lineHeight * 0.9);
+  let height = Math.ceil(maxBottom + lineHeight * 0.9);
+  if (layout.staff) {
+    const s = layout.staff;
+    for (const [row, d] of staffOffsets) {
+      const line = s.lines[row];
+      const bottoms = [line.y + 3 * s.sp];
+      for (const g of line.symbols) if (g.kind === 'note' || g.kind === 'rest') {
+        bottoms.push(g.y + s.sp, (g.beamEnd ?? g.y + (g.up ? -3.5 : 3.5) * s.sp) + s.sp);
+      }
+      for (const g of line.graces) bottoms.push(g.arcY, ...g.notes.map(n => n.y + s.sp));
+      for (const m of s.marks) if (m.line === row) bottoms.push(m.y + m.height);
+      for (const c of s.curves) if (c.line === row) bottoms.push(staffCurveYBounds(c).bottom + s.sp);
+      const lyricVerses = [...line.lyrics.map(l => l.verse), ...(line.lyricLines ?? []).map(l => l.verse)];
+      if (lyricVerses.length) bottoms.push((line.lyricY ?? line.y + 5.4 * s.sp) + Math.max(...lyricVerses) * 3 * s.sp + s.sp);
+      height = Math.max(height, Math.ceil(Math.max(...bottoms) + d.y + 3 * s.sp));
+    }
+  }
+  const staff = layout.staff ? stripStaff(layout.staff, staffOffsets, width, height) : undefined;
   return {
-    layout: { ...layout, lines, width, height, title: null, systems: undefined },
+    layout: { ...layout, lines, width, height, title: null, systems: undefined, ...(staff ? { staff } : {}) },
     width,
     height,
+  };
+}
+
+/** Translate the completed staff geometry with the same offsets as its source rows. */
+function stripStaff(staff: StaffLayout,
+  offsets: ReadonlyMap<number, { x: number; y: number; row: number; system: number }>,
+  width: number, height: number): StaffLayout {
+  return { ...staff, width, height, title: null,
+    lines: staff.lines.flatMap((line, i) => {
+      const d = offsets.get(i);
+      if (!d) return [];
+      return [{ ...line, y: line.y + d.y, system: d.system,
+        ...(line.contentX !== undefined ? { contentX: line.contentX + d.x } : {}),
+        ...(line.lyricY !== undefined ? { lyricY: line.lyricY + d.y } : {}),
+        ...(line.labelY !== undefined ? { labelY: line.labelY + d.y } : {}),
+        symbols: line.symbols.map(s => ({ ...s, x: s.x + d.x,
+          ...((s.kind === 'note' || s.kind === 'rest') ? { y: s.y + d.y,
+            ...(s.beamEnd !== undefined ? { beamEnd: s.beamEnd + d.y } : {}),
+            ...(s.playXs ? { playXs: s.playXs.map(p => ({ ...p, x: p.x + d.x })) } : {}),
+          } : {}),
+        })),
+        jumps: line.jumps?.map(j => ({ ...j, x: j.x + d.x, y: j.y + d.y })),
+        voltas: line.voltas?.map(v => ({ ...v, x0: v.x0 + d.x, x1: v.x1 + d.x, y: v.y + d.y })),
+        beams: line.beams.map(b => ({ ...b, x0: b.x0 + d.x, x1: b.x1 + d.x, y0: b.y0 + d.y, y1: b.y1 + d.y })),
+        tuplets: line.tuplets?.map(t => ({ ...t, x0: t.x0 + d.x, x1: t.x1 + d.x, y: t.y + d.y })),
+        lyrics: line.lyrics.map(l => ({ ...l, x: l.x + d.x })),
+        lyricLines: line.lyricLines?.map(l => ({ ...l, x0: l.x0 + d.x, x1: l.x1 + d.x })),
+        graces: line.graces.map(g => ({ ...g,
+          hostX: g.hostX + d.x, hostY: g.hostY + d.y,
+          beamY: g.beamY + d.y, arcY: g.arcY + d.y,
+          notes: g.notes.map(n => ({ ...n, x: n.x + d.x, y: n.y + d.y })),
+          arc: { ...g.arc, x0: g.arc.x0 + d.x, x1: g.arc.x1 + d.x,
+            y0: g.arc.y0 + d.y, y1: g.arc.y1 + d.y,
+            controlY0: g.arc.controlY0 + d.y, controlY1: g.arc.controlY1 + d.y },
+        })),
+      }];
+    }),
+    curves: staff.curves.flatMap(c => {
+      const d = offsets.get(c.line);
+      return d ? [{ ...c, line: d.row, x0: c.x0 + d.x, x1: c.x1 + d.x,
+        y0: c.y0 + d.y, y1: c.y1 + d.y,
+        controlY0: c.controlY0 + d.y, controlY1: c.controlY1 + d.y }] : [];
+    }),
+    marks: staff.marks.flatMap(m => {
+      const d = offsets.get(m.line);
+      return d ? [{ ...m, line: d.row, x: m.x + d.x, y: m.y + d.y }] : [];
+    }),
   };
 }
 
@@ -88,8 +167,13 @@ export interface StripXRange {
  * 时间线条目 → 长条上的 x 区间。与 video.ts 的 lineTickRanges 同口径，
  * 只是把「行基线 y」换成「条带 x」。
  */
-export function stripTickRanges(layout: LayoutResult, timeline: TimelineEntry[]): StripXRange[] {
+export function stripTickRanges(layout: ExportLayoutResult, timeline: TimelineEntry[]): StripXRange[] {
   const xOf = new Map<string, number>();
+  if (layout.staff) for (const line of layout.staff.lines) {
+    for (const s of line.symbols) if ((s.kind === 'note' || s.kind === 'rest') && !s.hidden) {
+      if (!xOf.has(s.eventId)) xOf.set(s.eventId, s.x);
+    }
+  }
   for (const line of layout.lines) {
     for (const it of line.items) {
       if (!xOf.has(it.eventId)) xOf.set(it.eventId, it.x);

@@ -18,6 +18,9 @@ import {
   footerText,
   paintExportPage,
   planScorePages,
+  prepareExportLayout,
+  type ExportLayoutResult,
+  type ExportNotation,
   type PageGeometry,
 } from './render';
 
@@ -75,9 +78,10 @@ export function exportLayoutFor(
   geo: PageGeometry,
   showTitle: boolean,
   unit?: number,
-): LayoutResult {
+  notation: ExportNotation = {},
+): ExportLayoutResult {
   const contentWidth = (geo.pageW - geo.marginX * 2) / geo.scale;
-  return exportLayout(score, { contentWidth, showTitle, ...(unit ? { unit } : {}) });
+  return exportLayout(score, { contentWidth, showTitle, ...(unit ? { unit } : {}), ...notation });
 }
 
 /** 排一次版并把行切页 */
@@ -86,13 +90,15 @@ export function planExport(
   geo: PageGeometry,
   showTitle: boolean,
   visibleLayout?: LayoutResult,
-): { layout: LayoutResult; plans: PagePlan[]; geo: PageGeometry } {
-  const layout = visibleLayout ? { ...visibleLayout, title: showTitle ? visibleLayout.title : null } : exportLayoutFor(score, geo, showTitle);
+  notation: ExportNotation = {},
+): { layout: ExportLayoutResult; plans: PagePlan[]; geo: PageGeometry } {
+  const base: ExportLayoutResult = visibleLayout ? { ...visibleLayout, title: showTitle ? visibleLayout.title : null } : exportLayoutFor(score, geo, showTitle, undefined, notation);
+  const layout = base.staff ? { ...base, staff: { ...base.staff, title: base.title } } : prepareExportLayout(score, base, notation);
   const fitted = visibleLayout ? { ...geo, scale: (geo.pageW - geo.marginX * 2) / layout.width } : geo;
   return { layout, plans: planScorePages(layout, fitted, showTitle), geo: fitted };
 }
 
-export interface PdfExportOptions {
+export interface PdfExportOptions extends ExportNotation {
   score: Score;
   /** 页面已经排好的谱面，保持每行内容与字形比例，仅适配纸张并分页。 */
   layout?: LayoutResult;
@@ -119,7 +125,7 @@ export interface PdfExportResult {
 export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportResult> {
   const paper = a4Geometry(opts.landscape ?? false, opts.dpi ?? 150, opts.scale ?? 1.55);
   const showTitle = opts.showTitle ?? true;
-  const { layout, plans, geo } = planExport(opts.score, paper, showTitle, opts.layout);
+  const { layout, plans, geo } = planExport(opts.score, paper, showTitle, opts.layout, opts);
   if (plans.length === 0) throw new Error('谱面是空的，没什么可导出的');
 
   const theme = exportTheme(opts.dark ?? false);

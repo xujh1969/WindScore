@@ -27,9 +27,10 @@ import {
   withDots,
 } from './ticks';
 import { normalizeKey } from './timeline';
+import { isStaffInstrument, type StaffInstrument, type StaffClefSetting } from './pitch';
 import { autoGroupBeats } from './edit';
 import { groupTicks, validMeter } from './meter';
-import { applyLyrics, lyricRows } from './lyrics';
+import { applyLyrics, lyricRows, applyLyricLinks, lyricLinkRows } from './lyrics';
 import { assembleParts, namespacePart, partScore, scoreParts } from './parts';
 import type {
   Accidental,
@@ -63,13 +64,13 @@ const TECHNIQUE_LETTER: Record<string, string> = {
   V: 'breath', // 换气 V（大写，避开低八度点 v）
   r: 'trill', // 颤音 tr
   f: 'flutter', // 花舌 *
-  d: 'da', // 打音 ♮
+  d: 'da', // 打音 扌
   m: 'mordentUp', // 上波音 ≈
   w: 'mordentDown', // 下波音 ≈（上下翻转）
   s: 'slideUp', // 上滑音 ↑
   x: 'slideDown', // 下滑音 ↓
-  q: 'bendUp', // 前弯音 ↗
-  h: 'bendDown', // 后弯音 ↘
+  q: 'bendUp', // 上弯音（向上折线箭头）
+  h: 'bendDown', // 下弯音（向下折线箭头）
 };
 
 /** 技法数据值 → 后缀字母（序列化用） */
@@ -135,7 +136,7 @@ export function parseDsl(text: string): ParseResult {
   if (!modern && /^@part\b/mi.test(text)) return { score: null, errors: ['多声部文件需要在谱头写 @format 3'] };
   if (!modern) return parseSingle(text);
   const header: string[] = [];
-  const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; lyricNames?: string[]; lines: string[] }[] = [];
+  const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; lyricNames?: string[]; staffInstrument?: StaffInstrument; staffClef?: StaffClefSetting; lines: string[] }[] = [];
   const errors: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -150,6 +151,11 @@ export function parseDsl(text: string): ParseResult {
       const block = blocks[blocks.length - 1];
       if (!block || !m) errors.push('声部试听设置应为 @mix 0.8 on all，并放在声部声明之后');
       else { block.gain = Number(m[1]); block.muted = m[2].toLowerCase() === 'off'; block.solo = m[3].toLowerCase() === 'solo'; }
+    } else if (/^@staff\b/i.test(line)) {
+      const block = blocks[blocks.length - 1];
+      const m = /^@staff\s+(\S+)\s+(auto|treble|bass)\s*$/i.exec(line);
+      if (!block || !m || !isStaffInstrument(m[1])) errors.push('五线谱设置应为 @staff concert auto（或 treble／bass），放在声部声明之后');
+      else { block.staffInstrument = m[1]; block.staffClef = m[2].toLowerCase() as StaffClefSetting; }
     } else if (/^@lyricnames\b/i.test(line)) {
       const block = blocks[blocks.length - 1];
       try {
@@ -183,8 +189,8 @@ export function parseDsl(text: string): ParseResult {
 }
 
 function normalizeModern(text: string): string {
-  return text.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词[1-6]:[^\n]*$)/m).map((segment) => {
-    if (segment.trim().startsWith('@') || segment.trim().startsWith('//') || /^歌词[1-6]:/.test(segment.trim())) return segment;
+  return text.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词(?:线)?[1-6]:[^\n]*$)/m).map((segment) => {
+    if (segment.trim().startsWith('@') || segment.trim().startsWith('//') || /^歌词(?:线)?[1-6]:/.test(segment.trim())) return segment;
     return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before: string, note: string, slashes: string) => `${before}${note}/${2 ** slashes.length}`)
       .replace(/<3:\s*([^<>]+)>/g, (full, body: string) => {
         const tokens = body.trim().split(/\s+/);
@@ -200,11 +206,22 @@ function parseSingle(text: string, modern = false): ParseResult {
   const body: string[] = [];
   const lyrics: string[] = [];
   const lyricNumbers = new Set<number>();
+  const lyricLinks: string[] = [];
+  const linkNumbers = new Set<number>();
 
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line === '---') continue;
     if (line.startsWith('//')) continue;
+    const link = /^歌词线([1-6]):\s*(.*)$/.exec(line);
+    if (link) {
+      if (!modern) errors.push('歌词线需要 @format 3');
+      const verse = Number(link[1]) - 1;
+      if (linkNumbers.has(verse)) errors.push(`歌词线 ${verse + 1} 重复`);
+      linkNumbers.add(verse);
+      lyricLinks[verse] = link[2];
+      continue;
+    }
     const lyric = /^歌词([1-6]):\s*(.*)$/.exec(line);
     if (lyric) {
       if (!modern) errors.push('歌词需要 @format 3');
@@ -806,6 +823,11 @@ function parseSingle(text: string, modern = false): ParseResult {
     score = applied.score;
     errors.push(...applied.errors);
   }
+  if (score && linkNumbers.size) {
+    const applied = applyLyricLinks(score, Array.from({ length: lyricLinks.length }, (_, i) => lyricLinks[i] ?? ''));
+    score = applied.score;
+    errors.push(...applied.errors);
+  }
   return {
     score,
     errors,
@@ -890,7 +912,8 @@ export function serializeDsl(score: Score): string {
     return `${header}\n\n${parts.map((part) => {
       const body = serializeSingle(partScore(score, part.id)).split('\n\n').slice(1).join('\n\n');
       const names = part.lyricNames?.length ? `\n@lyricNames ${JSON.stringify(part.lyricNames)}` : '';
-      return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${names}\n${body}`;
+      const staff = part.staffInstrument || part.staffClef ? `\n@staff ${part.staffInstrument ?? 'concert'} ${part.staffClef ?? 'auto'}` : '';
+      return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${staff}${names}\n${body}`;
     }).join('\n\n')}`;
   }
   return serializeSingle(score);
@@ -1073,5 +1096,6 @@ function serializeSingle(score: Score): string {
   }
 
   const rows = lyricRows(score).map((row, i) => `歌词${i + 1}: ${row}`);
+  rows.push(...lyricLinkRows(score).flatMap((row, i) => row ? [`歌词线${i + 1}: ${row}`] : []));
   return `${head.join('\n')}\n\n${out.join(' ')}\n${rows.length ? `${rows.join('\n')}\n` : ''}`;
 }

@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Score } from '../types';
 import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
-import { exportTheme, footerText, paintExportPage, type PageGeometry } from '../export/render';
+import { exportTheme, footerText, paintExportPage, prepareExportLayout, type ExportNotation, type PageGeometry } from '../export/render';
 import type { AudioStem } from '../audio';
 import type { TempoMap } from '../tempo';
 import type { TimelineEntry } from '../timeline';
@@ -23,7 +23,7 @@ import { VIDEO_RATIOS, recordSeconds, videoGeometry, videoLayoutFor, stripCanvas
 import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
 
-export interface ExportDialogProps {
+export interface ExportDialogProps extends ExportNotation {
   songName: string;
   /** 要导出的谱面（= 当前显示的那份） */
   score: Score;
@@ -72,7 +72,8 @@ function zoomedGeo(geo: PageGeometry, z: number): PageGeometry {
   };
 }
 
-export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', allowVideo = true, dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
+export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', notation = 'jianpu', staffPitchMode = 'concert', allowVideo = true, dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
+  const notationOptions = useMemo(() => ({ notation, staffPitchMode }), [notation, staffPitchMode]);
   const [partId, setPartId] = useState(initialPartId);
   const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
   const video = useMemo(() => partId ? { ...fullVideo, timeline: fullVideo.timeline.filter((e) => e.partId === partId), displayTimeline: fullVideo.displayTimeline.filter((e) => e.partId === partId) } : fullVideo, [fullVideo, partId]);
@@ -88,7 +89,15 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // PDF 选项
   const [landscape, setLandscape] = useState(false);
   const [dpi, setDpi] = useState<number>(150);
-  const pdfLayout = useMemo(() => partId === initialPartId && visibleLayout ? visibleLayout : layoutScore(score, visibleOptions ?? { contentWidth: 900 }), [score, partId, initialPartId, visibleLayout, visibleOptions]);
+  const pdfLayout = useMemo(() => {
+    const k = (visibleOptions?.fontSize ?? score.meta.fontSize ?? 21) / 21;
+    const base = partId === initialPartId && visibleLayout
+      ? visibleLayout
+      : layoutScore(score, { ...(visibleOptions ?? { contentWidth: 900 }),
+          ...(notation === 'staff' ? { padding: 96 * k, staffKeySpace: 104 * k, staffPitchMode } : { padding: 40, staffKeySpace: undefined, staffPitchMode: undefined }),
+        });
+    return prepareExportLayout(score, base, notationOptions);
+  }, [score, partId, initialPartId, visibleLayout, visibleOptions, notation, staffPitchMode, notationOptions]);
   const [showTitle, setShowTitle] = useState(true);
   const [showBars, setShowBars] = useState(fullScore.meta.showMeasureNumbers !== false);
   const [pdfPage, setPdfPage] = useState(0);
@@ -113,7 +122,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 没伴奏就别让用户选「伴奏」——导出来会是哑的
   const canRecord = video.stems.length > 0 && video.tempo !== null;
   const useAudio: 'stems' | 'synth' = canRecord && audio !== 'synth' ? 'stems' : 'synth';
-  const videoLayout = useMemo(() => videoLayoutFor(score, ratio, shortSide, showTitle), [score, ratio, shortSide, showTitle]);
+  const videoLayout = useMemo(() => videoLayoutFor(score, ratio, shortSide, showTitle, notationOptions), [score, ratio, shortSide, showTitle, notationOptions]);
 
   /** 页数 / 画面尺寸 / 时长都是纯计算，选项一动就能报出来（不用等真导出） */
   const preview = useMemo(() => {
@@ -213,6 +222,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
 
       const res = await exportScorePdfToFile({
         score,
+        ...notationOptions,
         name: exportName,
         landscape,
         dpi,
@@ -251,6 +261,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
 
       const res = await exportScoreVideoToFile({
         score,
+        ...notationOptions,
         name: exportName,
         mode: ratio === 'strip' ? 'strip' : 'page',
         layout: videoLayout,
@@ -272,6 +283,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         playStyle: video.playStyle,
         activePartId: partId || video.activePartId,
         showMeasureNumbers: showBars,
+        showTitle,
         onProgress: setProgress,
         cancelled: () => cancelRef.current,
       });
@@ -324,7 +336,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             {scoreParts(fullScore).map((p) => <option key={p.id} value={p.id}>{p.name} · 分谱</option>)}
           </select>
         </label> : null}
-        {tab === 'pdf' && preview.layoutError ? <p className="v2-exp-err" role="alert">{preview.layoutError}</p> : null}
+        {tab !== 'video' && preview.layoutError ? <p className="v2-exp-err" role="alert">{preview.layoutError}</p> : null}
 
         {tab === 'pdf' ? (
           <div className="v2-exp-pdf">
@@ -450,7 +462,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             <p className="v2-exp-hint">版面采用 C「大字紧排」，按所选比例排版，字号随分辨率等比缩放。</p>
             {ratio === 'strip' ? (
             <p className="v2-exp-hint">
-              滚动横幅：忽略换行 / 分页，整份简谱拉成一条横带随音乐从右向左移动。
+              滚动横幅：忽略换行 / 分页，整份曲谱拉成一条横带随音乐从右向左移动。
               宽度 = 下方数值；高度 = 一行谱（多声部为一组）。
               与演奏视频叠加时：深色底用「滤色（Screen）」模式，浅色底用「正片叠底（Multiply）」模式。
             </p>
@@ -610,7 +622,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               导出 PDF
             </button>
           ) : tab === 'image' ? (
-            <button className="v2-btn v2-btn--primary" onClick={doImage} disabled={busy}>导出 {imageFormat.toUpperCase()}</button>
+            <button className="v2-btn v2-btn--primary" onClick={doImage} disabled={busy || !!preview.layoutError}>导出 {imageFormat.toUpperCase()}</button>
           ) : (
             <button className="v2-btn v2-btn--primary" onClick={doVideo} disabled={busy}>
               导出视频

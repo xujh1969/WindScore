@@ -86,15 +86,19 @@ export function withConductor(score: Score, id: string): Score {
   if (!score.part || id === score.part.id) return target;
   const sourceMeasures = partMeasures(score.events);
   const targetMeasures = partMeasures(target.events);
-  const clean = target.events.filter((e) => e.kind !== 'jump').map((e): Event => {
+  const sourceHead = score.events.slice(0, score.events.findIndex((e) => 'ticks' in e));
+  const targetHead = target.events.slice(0, target.events.findIndex((e) => 'ticks' in e));
+  // 小节末线保留；同一边界后的额外结构线由首声部重建，避免反复同步时累加。
+  const keptBars = new Set(targetMeasures.map(m => target.events[m.to - 1]?.id));
+  const headBar = targetHead.find(e => e.kind === 'barline');
+  if (headBar) keptBars.add(headBar.id);
+  const clean = target.events.filter((e) => e.kind !== 'jump' && (e.kind !== 'barline' || keptBars.has(e.id))).map((e): Event => {
     if (e.kind !== 'barline') return e;
     const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
   const targetStarts = [0, ...targetMeasures.map((m) => m.to)];
-  const sourceHead = score.events.slice(0, score.events.findIndex((e) => 'ticks' in e));
-  const targetHead = target.events.slice(0, target.events.findIndex((e) => 'ticks' in e));
   for (let boundary = sourceStarts.length - 1; boundary >= 0; boundary--) {
     const at = sourceStarts[boundary];
     const src = boundary === 0 ? sourceHead.find((e) => e.kind === 'barline') : score.events[at - 1];
@@ -110,9 +114,9 @@ export function withConductor(score: Score, id: string): Score {
     }
     const jumps: Event[] = [];
     const following: Event[] = boundary === 0 ? sourceHead : [];
-    if (boundary > 0) for (let j = at; j < score.events.length && !('ticks' in score.events[j]) && score.events[j].kind !== 'barline'; j++) following.push(score.events[j]);
+    if (boundary > 0) for (let j = at; j < score.events.length && !('ticks' in score.events[j]); j++) following.push(score.events[j]);
     for (const e of following) {
-      if (e.kind === 'jump') jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
+      if (e.kind === 'jump' || e.kind === 'barline' && e.id !== src?.id) jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
     }
     if (jumps.length) clean.splice(Math.max(0, index + 1), 0, ...jumps);
   }

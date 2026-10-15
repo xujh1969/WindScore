@@ -607,10 +607,19 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     { contentWidth: 800 },
   );
   const PAD = 40;
+  /** 格子右缘：两端对齐的行都伸展到同一条线，用它判「对齐」 */
   const right = (ln: (typeof j.lines)[number]) => {
     const last = ln.items[ln.items.length - 1];
     return last.x + last.w;
   };
+  /**
+   * 墨迹右缘：**溢出**要用它判，不能看格子。
+   * 小节线画在格中心（paint 用 x + w/2），终止线 ‖ 的格子比单线宽 6px，
+   * 排版故意让它多探出 3px（fitSpacing 的 edge），好让终止线的墨迹中心
+   * 与别行的小节线落在同一条竖线上——格子探出去 3px，看得见的线并没有超。
+   */
+  const inkRight = (it: (typeof j.lines)[number]['items'][number]): number =>
+    it.kind === 'barline' ? it.x + it.w / 2 : it.x + it.w;
   j.lines.forEach((ln, idx) => {
     // 末行不对齐：内容少时硬拉会把间距拉得离谱，允许右边自然留白
     const isLast = idx === j.lines.length - 1;
@@ -623,13 +632,14 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     }
     check(
       `第 ${idx + 1} 行不溢出`,
-      ln.items.every((it) => it.x + it.w <= PAD + 720 + 2),
+      ln.items.every((it) => inkRight(it) <= PAD + 720 + 2),
     );
   });
+  // 末行没被拉伸：它的墨迹（终止线中心）停在右边界以内
   check(
     '末行允许不对齐',
-    right(j.lines[j.lines.length - 1]) < PAD + 720,
-    `右缘 ${right(j.lines[j.lines.length - 1]).toFixed(1)}`,
+    inkRight(j.lines[j.lines.length - 1].items.slice(-1)[0]) < PAD + 720,
+    `右缘 ${inkRight(j.lines[j.lines.length - 1].items.slice(-1)[0]).toFixed(1)}`,
   );
   check(
     '非末行右缘完全一致',

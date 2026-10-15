@@ -100,6 +100,8 @@ export interface NoteEvent extends BaseEvent {
   hairpinTo?: string;
   /** 逐音歌词，每个数组位置对应一段歌词；空串表示该段此音不唱字。 */
   lyrics?: string[];
+  /** 与 lyrics 相同段号；延唱标在后续空格，连字标在前一音节。 */
+  lyricLinks?: (LyricLink | null)[];
   /** 单音音色覆盖，MIDI program 0-127 */
   patch?: number;
   /**
@@ -108,6 +110,8 @@ export interface NoteEvent extends BaseEvent {
    */
   gray?: boolean;
 }
+
+export type LyricLink = 'extend' | 'hyphen';
 
 export interface RestEvent extends BaseEvent {
   kind: 'rest';
@@ -267,6 +271,9 @@ export interface PartInfo {
   solo?: boolean;
   /** 关联此演奏声部的歌词行名称；数组位置与音符 lyrics 段号一致。 */
   lyricNames?: string[];
+  /** 只决定五线谱的书写音高，不改变已有简谱的实际发声音高。 */
+  staffInstrument?: import('./pitch').StaffInstrument;
+  staffClef?: import('./pitch').StaffClefSetting;
 }
 
 export interface ScorePart extends PartInfo {

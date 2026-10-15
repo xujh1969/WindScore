@@ -3,6 +3,7 @@ import { assembleParts, scoreParts } from '../parts';
 import { lyricTrackNames } from '../lyrics';
 import { TrackDialog } from './TrackDialog';
 import type { PartInfo, Score } from '../types';
+import { STAFF_INSTRUMENTS, type StaffInstrument, type StaffClefSetting } from '../pitch';
 
 interface Props {
   score: Score;
@@ -70,7 +71,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
               <span className="v2-part-number">{i + 1}</span>{p.name}{p.muted ? <span className="v2-part-tag">静音</span> : p.solo ? <span className="v2-part-tag">独奏</span> : null}
             </button>
             {p.id === part.id && lyricVerse == null ? <div className="v2-part-actions">
-              <button className="v2-part-icon" aria-label={`配置声部：${p.name}`} title="配置声部" onClick={(e) => { dialogTrigger.current = e.currentTarget; setConfig({ id: p.id, name: p.name, gain: p.gain, muted: p.muted, solo: p.solo }); }}>
+              <button className="v2-part-icon" aria-label={`配置声部：${p.name}`} title="配置声部" onClick={(e) => { dialogTrigger.current = e.currentTarget; setConfig({ ...p }); }}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
               {!readOnly ? <button className="v2-part-icon v2-part-delete" disabled={parts.length === 1} aria-label={`删除声部：${p.name}`} title={parts.length === 1 ? '至少保留一个声部' : '删除声部'} onClick={(e) => { dialogTrigger.current = e.currentTarget; setRemoveId(p.id); }}>
@@ -100,7 +101,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
           e.stopPropagation();
           if (e.key === 'Escape') closeDialog();
           if (e.key === 'Tab') {
-            const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)'));
+            const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)'));
             const first = controls[0];
             const last = controls[controls.length - 1];
             if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
@@ -113,11 +114,14 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
             const name = config.name.trim();
             if (!name) return;
             const original = parts.find((p) => p.id === config.id);
-            onChange(assembleParts(score, parts.map((p) => p.id === config.id ? { ...p, ...config, name } : p)), undefined, name === original?.name);
+            onChange(assembleParts(score, parts.map((p) => p.id === config.id ? { ...p, ...config, name } : p)), undefined, name === original?.name && config.staffInstrument === original?.staffInstrument && config.staffClef === original?.staffClef);
             closeDialog();
           }}>
             <div className="v2-exp-body v2-part-settings">
               <label>声部名称<input autoFocus required disabled={readOnly} maxLength={32} value={config.name} onChange={(e) => setConfig({ ...config, name: e.target.value })} /></label>
+              <label>五线谱记谱乐器<select disabled={readOnly} value={config.staffInstrument ?? 'concert'} onChange={e => setConfig({ ...config, staffInstrument: e.target.value as StaffInstrument })}>{STAFF_INSTRUMENTS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
+              <label>五线谱谱号<select disabled={readOnly} value={config.staffClef ?? 'auto'} onChange={e => setConfig({ ...config, staffClef: e.target.value as StaffClefSetting })}><option value="auto">默认（高音优先，明确低音时切换）</option><option value="treble">高音谱号</option><option value="bass">低音谱号</option></select></label>
+              <p className="v2-exp-hint">记谱乐器与音色独立，只改变移调谱的写法。电吹管演奏时请核对设备的指法与移调设置。</p>
               <label>音量<span className="v2-part-volume"><input autoFocus={readOnly} type="range" min="0" max="1" step="0.05" value={config.gain} onChange={(e) => setConfig({ ...config, gain: Number(e.target.value) })} /><span>{Math.round(config.gain * 100)}%</span></span></label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.solo} onChange={(e) => setConfig({ ...config, solo: e.target.checked })} />独奏此声部</label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.muted} onChange={(e) => setConfig({ ...config, muted: e.target.checked })} />静音此声部</label>

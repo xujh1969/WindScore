@@ -9,16 +9,18 @@ export class SvgCanvas {
   textBaseline = 'alphabetic';
   lineWidth = 1;
   lineCap = 'butt';
+  lineJoin = 'miter';
+  globalAlpha = 1;
   private transform = '';
   private elements: string[] = [];
   private path: string[] = [];
   private point: [number, number] | null = null;
-  private stack: Array<{ fillStyle: string; strokeStyle: string; font: string; textAlign: string; textBaseline: string; lineWidth: number; lineCap: string; transform: string }> = [];
+  private stack: Array<{ fillStyle: string; strokeStyle: string; font: string; textAlign: string; textBaseline: string; lineWidth: number; lineCap: string; lineJoin: string; globalAlpha: number; transform: string }> = [];
   private measure = document.createElement('canvas').getContext('2d')!;
 
   save(): void {
-    const { fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, transform } = this;
-    this.stack.push({ fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, transform });
+    const { fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform } = this;
+    this.stack.push({ fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform });
   }
   restore(): void { const state = this.stack.pop(); if (state) Object.assign(this, state); }
   translate(x: number, y: number): void { this.transform += ` translate(${x} ${y})`; }
@@ -28,6 +30,7 @@ export class SvgCanvas {
     this.transform = `matrix(${a} ${b} ${c} ${d} ${e} ${f})`;
   }
   private emit(element: string): void {
+    if (this.globalAlpha !== 1) element = `<g opacity="${this.globalAlpha}">${element}</g>`;
     this.elements.push(this.transform ? `<g transform="${this.transform.trim()}">${element}</g>` : element);
   }
   measureText(text: string): TextMetrics { this.measure.font = this.font; return this.measure.measureText(text); }
@@ -76,8 +79,13 @@ export class SvgCanvas {
     this.path.push(`A${r} ${r} 0 0 ${ux * vy - uy * vx < 0 ? 1 : 0} ${end[0]} ${end[1]}`);
     this.point = end;
   }
-  fill(): void { this.emit(`<path d="${this.path.join(' ')}" fill="${escapeXml(this.fillStyle)}"/>`); }
-  stroke(): void { this.emit(`<path d="${this.path.join(' ')}" fill="none" stroke="${escapeXml(this.strokeStyle)}" stroke-width="${this.lineWidth}" stroke-linecap="${this.lineCap}"/>`); }
+  /** Path2D cannot expose its geometry; notation painters supply the original SVG data. */
+  drawSvgPath(d: string, fill: boolean, stroke: boolean): void {
+    if (fill) this.emit(`<path d="${escapeXml(d)}" fill="${escapeXml(this.fillStyle)}"/>`);
+    if (stroke) this.emit(`<path d="${escapeXml(d)}" fill="none" stroke="${escapeXml(this.strokeStyle)}" stroke-width="${this.lineWidth}" stroke-linecap="${this.lineCap}" stroke-linejoin="${this.lineJoin}"/>`);
+  }
+  fill(): void { this.drawSvgPath(this.path.join(' '), true, false); }
+  stroke(): void { this.drawSvgPath(this.path.join(' '), false, true); }
   toSvg(width: number, height: number, title: string): string {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><title>${escapeXml(title)}</title>${this.elements.join('')}</svg>`;
   }

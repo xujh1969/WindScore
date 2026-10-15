@@ -13,12 +13,17 @@ import {
   type LayoutOptions,
 } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout, type PlayStyle } from '../paint';
+import { buildStaffLayout, type StaffLayout } from '../staff';
+import { paintStaffLayout } from '../staffPaint';
+import { withStaffRows } from '../staffSpacing';
+import type { StaffPitchMode, StaffClef } from '../pitch';
 import { TICKS_PER_BEAT } from '../ticks';
 import { activeHeadsAt, activeMainAt, timelineTicks, type TimelineEntry } from '../timeline';
-import type { Score } from '../types';
+import type { Score, LyricLink } from '../types';
 import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
 import { lyricTrackNames } from '../lyrics';
+import { hitStaffClef } from '../staffSystems';
 
 /** 一次命中的结果，判定逻辑在 layout.pickAt（纯几何，可单测） */
 export type ScorePick = LayoutPick;
@@ -45,6 +50,12 @@ interface Props {
   onLayout?: (layout: LayoutResult, options: LayoutOptions) => void;
   /** 播放指示方式：head = 色块+竖线；band = 高亮条；ball = 跳跃光球 */
   playStyle?: PlayStyle;
+  /**
+   * 记谱法：jianpu = 简谱（缺省，原有行为）；
+   * staff = 五线谱（实验功能，由 experimental.ts 的开关打开才传进来）。
+   */
+  notation?: 'jianpu' | 'staff';
+  staffPitchMode?: StaffPitchMode;
   playing: boolean;
   clock: BeatClock;
   /** 对轨配对中：波形上点一下就是「把这根小节线绑到这一刻」 */
@@ -61,9 +72,10 @@ interface Props {
   onEnded: () => void;
   /** 点击标题旁的小铅笔：打开曲目信息编辑 */
   onEditTitle?: () => void;
+  onClefClick?: (partId: string, current: StaffClef) => void;
   /**点在谱面空白处（没命中任何音符 / 小节线）：用来退出曲目信息编辑 */
   onBlankClick?: () => void;
-  lyricEdit?: { partId: string; verse: number; startId?: string | null; session: number; onCommit: (id: string, word: string) => boolean; onInsertGap: (id: string) => boolean; onDelete: (id: string, offset: number) => boolean; onExit: () => void };
+  lyricEdit?: { partId: string; verse: number; startId?: string | null; session: number; onActivate: (id: string) => void; onLink: (id: string, link: LyricLink | null, word?: string) => boolean; onCommit: (id: string, word: string) => boolean; onInsertGap: (id: string) => boolean; onDelete: (id: string, offset: number) => boolean; onExit: () => void };
 }
 
 type Playhead = { eventId: string; frac: number } | null;
@@ -90,18 +102,25 @@ export function ScoreCanvas({
   pairing = false,
   onPickStart,
   playStyle = 'head',
+  notation = 'jianpu',
+  staffPitchMode = 'concert',
   playing,
   clock,
   getPlayTick,
   onPick,
   onEnded,
   onEditTitle,
+  onClefClick,
   onBlankClick,
   lyricEdit,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const layoutRef = useRef<LayoutResult | null>(null);
+  /** 五线谱排版（实验功能）：只在 notation === 'staff' 时才建、才用 */
+  const staffRef = useRef<StaffLayout | null>(null);
+  const staffBallPositionsRef = useRef<Map<string, { x: number; y: number }> | undefined>(undefined);
+  const staffErrorRef = useRef('');
   const [lyricLayout, setLyricLayout] = useState<LayoutResult | null>(null);
   const lyricInputs = useRef(new Map<string, HTMLInputElement>());
   const lyricFocusKey = useRef('');
@@ -113,6 +132,10 @@ export function ScoreCanvas({
   const lastBallTickRef = useRef<number | null>(null);
   /** 尾音余跳续跑的代次：effect 重跑（重新起播 / 换谱）时作废旧的续跑循环 */
   const ballFadeGen = useRef(0);
+  const playStyleRef = useRef(playStyle);
+  playStyleRef.current = playStyle;
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
   const [dragFrom, setDragFrom] = useState<ScorePick | null>(null);
   /** Shift 扩选的锚点：记住上一次普通点击的位置，Shift+点击选中两者之间 */
   const anchorRef = useRef<ScorePick | null>(null);
@@ -131,6 +154,25 @@ export function ScoreCanvas({
       const layout = layoutRef.current;
       const p = toLocal(clientX, clientY);
       if (!layout || !p) return null;
+      const staff = staffRef.current;
+      if (staff) {
+        let nearest: { index: number; partId?: string; distance: number } | undefined;
+        for (const [li, line] of staff.lines.entries()) for (const s of line.symbols) {
+          if ((s.kind !== 'note' && s.kind !== 'rest') || s.hidden) continue;
+          const dx = Math.abs(p.x - s.x), dy = Math.abs(p.y - s.y);
+          if (dx > Math.max(8, staff.sp) || dy > Math.max(8, staff.sp)) continue;
+          const item = layout.lines[li].items.find(it => it.eventId === s.eventId);
+          if (!item) continue;
+          const distance = dx * dx + dy * dy;
+          if (!nearest || distance < nearest.distance) nearest = { index: item.eventIndex, partId: line.partId, distance };
+        }
+        if (nearest) return { index: nearest.index, cursor: nearest.index + 1, mode: 'over', partId: nearest.partId };
+        for (const [li, line] of staff.lines.entries()) for (const group of line.graces) {
+          if (!group.notes.some(n => Math.abs(p.x - n.x) <= Math.max(6, staff.sp * .7) && Math.abs(p.y - n.y) <= Math.max(6, staff.sp * .7))) continue;
+          const host = layout.lines[li].items.find(it => it.eventId === group.hostId);
+          if (host) return { index: host.eventIndex, cursor: host.eventIndex + 1, mode: 'over', partId: line.partId };
+        }
+      }
       return pickAt(layout, p.x, p.y);
     },
     [toLocal],
@@ -145,6 +187,10 @@ export function ScoreCanvas({
     },
     [toLocal],
   );
+  const clefAtPointer = (clientX: number, clientY: number) => {
+    const point = toLocal(clientX, clientY);
+    return onClefClick && !lyricEdit && !pairing && staffRef.current && point ? hitStaffClef(staffRef.current, point.x, point.y) : null;
+  };
 
   // 谱面 / 选区 / 尺寸变化 → 重排并重绘
   /** 最近一帧的播放头：悬停重绘时照原样传回去，别把指示条画没了 */
@@ -179,24 +225,18 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     if (!ctx) return;
     const theme = dark ? DARK_THEME : LIGHT_THEME;
 
-    // 画布尺寸基准：**边框盒**（getBoundingClientRect），不能用 clientWidth /
-    // clientHeight——那两个值会被滚动条改变，而滚动条是否出现又取决于画布高度
-    // （layout.height + 32 常常恰好卡在临界点上）。两侧互相喂就形成
-    // ResizeObserver 重排循环：出现滚动条 → 变窄 → 重新换行 → 高度变化 →
-    // 滚动条消失 → 变宽 → …… 画面在两种排版之间来回跳（茉莉花实测踩中）。
-    // 边框盒不受滚动条影响，是稳定锚点；-2 = 上下 / 左右各 1px 边框。
-    const boxWidth = () => Math.max(1, wrap.getBoundingClientRect().width - 2);
+    // .v2-scroll 用 scrollbar-gutter: stable 预留滚动条槽，clientWidth 不再随
+    // 纵向滚动条显隐改变。排版与绘制共用实际可见宽度，保留完整的右侧页边距。
+    const boxWidth = () => Math.max(1, wrap.clientWidth);
     const boxHeight = () => Math.max(1, wrap.getBoundingClientRect().height - 2);
 
     const paint = (head: Playhead) => {
       const layout = layoutRef.current;
       if (!layout) return;
       headRef.current = head;
+      const currentStyle = playStyleRef.current;
       const dpr = window.devicePixelRatio || 1;
-      // 宽度钳到 clientWidth：竖滚动条出现时别让画布伸到它底下（否则横滚动条也来）。
-      // layout.width 恒等于 contentWidth（= boxWidth），画布永远不比可视区宽——
-      // 简谱自动适应宽度，只允许纵向滚动（这里曾是 Math.max，横滚动条回归的根源）
-      const w = Math.min(boxWidth(), Math.max(1, wrap.clientWidth));
+      const w = boxWidth();
       const h = Math.max(boxHeight(), layout.height + 32);
       const cw = Math.max(1, Math.floor(w * dpr));
       const ch = Math.max(1, Math.floor(h * dpr));
@@ -207,6 +247,32 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         canvas.style.height = `${h}px`;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
+      // 五线谱（实验功能）：独立的一条绘制路径；开关关着时这里永远不成立，
+      // 走的就是原来那份 paintLayout，现有行为不受影响
+      const staff = staffRef.current;
+      if (staffErrorRef.current) {
+        ctx.fillStyle = theme.bg;
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = theme.ink;
+        ctx.font = '16px "Microsoft YaHei", sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(staffErrorRef.current, 24, 40);
+        return;
+      }
+      if (staff) {
+        paintStaffLayout(ctx, staff, theme, {
+          playhead: head,
+          playheads: head ? headsRef.current : [],
+          focusId,
+          selectedIds,
+          height: h,
+          playStyle: currentStyle,
+          ball: currentStyle === 'ball' ? ballRef.current : null,
+          showTitleEdit: !!onEditTitle,
+          showMeasureNumbers: score.meta.showMeasureNumbers !== false,
+        });
+        return;
+      }
       paintLayout(ctx, layout, theme, {
         selectedIds,
         caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
@@ -214,8 +280,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         playheads: head ? headsRef.current : [],
         cue: cueRef.current,
         focusId,
-        playStyle,
-        ball: playStyle === 'ball' ? ballRef.current : null,
+        playStyle: currentStyle,
+        ball: currentStyle === 'ball' ? ballRef.current : null,
         showMeasureNumbers: score.meta.showMeasureNumbers !== false,
         showBreaks,
         height: h,
@@ -231,11 +297,37 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     };
 
     const relayout = () => {
-      const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing };
-      layoutRef.current = layoutScore(score, options);
-      onLayout?.(layoutRef.current, options);
-      setLyricLayout(layoutRef.current);
-      paint(null);
+      const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing,
+        ...(notation === 'staff' ? {
+          staffPitchMode,
+          padding: 96 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
+          staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
+        } : {}) };
+      let layout = layoutScore(score, options);
+      staffErrorRef.current = '';
+      staffRef.current = null;
+      staffBallPositionsRef.current = undefined;
+      if (notation === 'staff') {
+        try {
+          staffRef.current = buildStaffLayout(score, layout, staffPitchMode);
+          layout = withStaffRows(layout, staffRef.current);
+          const staff = staffRef.current;
+          const k = staff.glyph.fontSize / 21;
+          const positions = new Map<string, { x: number; y: number }>();
+          for (const line of staff.lines) {
+            if (activePartId && line.partId && line.partId !== activePartId) continue;
+            for (const s of line.symbols) if ((s.kind === 'note' || s.kind === 'rest') && !s.hidden) {
+              positions.set(s.eventId, { x: s.x, y: s.y - staff.sp * 0.36 - (3.7 + 3) * k });
+            }
+          }
+          staffBallPositionsRef.current = positions;
+        }
+        catch (e) { staffErrorRef.current = e instanceof Error ? e.message : String(e); }
+      }
+      layoutRef.current = layout;
+      onLayout?.(layout, options);
+      setLyricLayout(layout);
+      paint(playingRef.current ? headRef.current : null);
     };
 
     paintRef.current = paint;
@@ -246,7 +338,16 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     return () => ro.disconnect();
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, selectedIds, cursor, focusId, showCaret, showBreaks, playStyle, activePartId, onLayout]);
+  }, [score, dark, unit, fontSize, letterSpacing, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+
+  // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
+  useEffect(() => {
+    ++ballFadeGen.current;
+    ballRef.current = null;
+    trailRef.current.length = 0;
+    lastBallTickRef.current = null;
+    paintRef.current(headRef.current);
+  }, [playStyle]);
 
   const lastEditPosition = useRef('');
   useEffect(() => {
@@ -349,6 +450,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     const total = timelineTicks(timeline);
     let snapped = false;
     let trailStartTick: number | null = null;
+    let lastStyle = playStyleRef.current;
     // 起播即恢复自动跟随：用户手动滚过之后，本次播放期间不再抢控制权
     followRef.current = true;
 
@@ -367,12 +469,19 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       // 直接取会让指示条在每个倚音上从 0 重新扫一次（闪烁来回抖）
       const act = activeMainAt(timeline, tick);
       headsRef.current = activeHeadsAt(timeline, tick);
+      if (lastStyle !== playStyleRef.current) {
+        lastStyle = playStyleRef.current;
+        trailRef.current.length = 0;
+        lastBallTickRef.current = null;
+        ballRef.current = null;
+        trailStartTick = tick;
+      }
 
       // 播放光球：每帧按当前 tick 重算抛物线位置；拖尾跟随，跳转 / 起播时清空
-      if (playStyle === 'ball') {
+      if (playStyleRef.current === 'ball') {
         const layout = layoutRef.current;
         if (layout) {
-          const track = buildBallTrack(layout, timeline, activePartId);
+          const track = buildBallTrack(layout, timeline, activePartId, staffBallPositionsRef.current);
           const trail = trailRef.current;
           const lastT = lastBallTickRef.current;
           if (!track || trailStartTick === null || lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) {
@@ -449,7 +558,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         lastBallTickRef.current = null;
         paintRef.current(headRef.current);
       };
-      if (playStyle !== 'ball' || !fadeLayout || fadeTick === null) {
+      if (playingRef.current || playStyleRef.current !== 'ball' || !fadeLayout || fadeTick === null) {
         clear();
         return;
       }
@@ -466,7 +575,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         return;
       }
       const gen = ++ballFadeGen.current;
-      const fadeTrack = buildBallTrack(fadeLayout, timeline, activePartId);
+      const fadeTrack = buildBallTrack(fadeLayout, timeline, activePartId, staffBallPositionsRef.current);
       if (!fadeTrack) {
         clear();
         return;
@@ -487,7 +596,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       };
       requestAnimationFrame(step);
     };
-  }, [playing, timeline, clock, getPlayTick, onEnded, score, playStyle, activePartId]);
+  }, [playing, timeline, clock, getPlayTick, onEnded, score, activePartId]);
 
   return (
     <div
@@ -508,7 +617,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        aria-label="简谱谱面"
+        aria-label={notation === 'staff' ? '五线谱谱面，点击谱号可切换高低音谱号' : '简谱谱面'}
         onMouseMove={(e) => {
           const canvas = canvasRef.current;
           if (pairing) {
@@ -531,9 +640,19 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
             return;
           }
           // 小铅笔只有 18px，得给个手型才看得出能点
-          if (canvas) canvas.style.cursor = overPencil(e.clientX, e.clientY) ? 'pointer' : 'default';
+          const clef = clefAtPointer(e.clientX, e.clientY);
+          if (canvas) {
+            canvas.style.cursor = clef || overPencil(e.clientX, e.clientY) ? 'pointer' : 'default';
+            canvas.title = clef ? `点击切换为${clef.clef === 'bass' ? '高音' : '低音'}谱号（整个声部）` : '';
+          }
         }}
         onMouseDown={(e) => {
+          const clef = e.button === 0 ? clefAtPointer(e.clientX, e.clientY) : null;
+          if (clef) {
+            e.preventDefault();
+            onClefClick?.(clef.partId ?? activePartId ?? score.part?.id ?? '1', clef.clef);
+            return;
+          }
           if (overPencil(e.clientX, e.clientY)) {
             e.preventDefault();
             if (lyricEdit) {
@@ -594,8 +713,12 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
             const note = notes[index];
             if (!note) return null;
             const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
-            const y = line.y + ((line.hairpins?.length ? 64 : 44) + (lyricEdit.verse + 1) * 24) * k;
-            return <LyricCell key={it.eventId} value={note.lyrics?.[lyricEdit.verse] ?? ''} label={`${name} · 第 ${index + 1} 个音`} style={{ left: it.x + 4 * k + shift, top: y - 15 * k, width: Math.max(22 * k, it.w - shift - 8 * k), height: 30 * k, fontSize: 16 * k }}
+            const staffRow = notation === 'staff' ? staffRef.current?.lines.find(row => row.symbols.some(s => s.kind === 'note' && s.eventId === it.eventId)) : undefined;
+            const staffNote = staffRow?.symbols.find(s => s.kind === 'note' && s.eventId === it.eventId);
+            const y = staffRow ? (staffRow.lyricY ?? staffRow.y + 5.4 * staffRef.current!.sp) + lyricEdit.verse * 3 * staffRef.current!.sp
+              : line.y + ((line.hairpins?.length ? 64 : 44) + (lyricEdit.verse + 1) * 24) * k;
+            return <LyricCell key={it.eventId} value={note.lyrics?.[lyricEdit.verse] ?? ''} label={`${name} · 第 ${index + 1} 个音`} style={{ left: staffNote ? staffNote.x - 8 * k : it.x + 4 * k + shift, top: y - 15 * k, width: Math.max(22 * k, it.w - shift - 8 * k), height: 30 * k, fontSize: 16 * k }}
+              connection={note.lyricLinks?.[lyricEdit.verse]} onActivate={() => lyricEdit.onActivate(it.eventId)} onLink={(link, word) => lyricEdit.onLink(it.eventId, link, word)}
               register={(input) => { if (input) lyricInputs.current.set(it.eventId, input); else lyricInputs.current.delete(it.eventId); }}
               onCommit={(word) => lyricEdit.onCommit(it.eventId, word)} onInsertGap={() => lyricEdit.onInsertGap(it.eventId)} onDelete={(offset) => index + offset >= 0 && lyricEdit.onDelete(it.eventId, offset)} onExit={lyricEdit.onExit}
               onMove={(offset, atStart) => {

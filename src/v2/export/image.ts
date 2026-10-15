@@ -6,10 +6,9 @@
  * 连页脚、标题只在首页、深浅主题都相同。多页纵向拼接为一张（页间灰色分隔条）。
  */
 
-import type { LayoutResult } from '../layout';
 import type { PagePlan } from './pdf';
 import { saveBytesAsFile, type SaveResult } from '../io';
-import { exportTheme, footerText, paintExportPage, type PageGeometry } from './render';
+import { exportTheme, footerText, paintExportPage, type PageGeometry, type ExportLayoutResult } from './render';
 import { safeFileName } from './tasks';
 import { SvgCanvas } from './svg';
 
@@ -21,7 +20,7 @@ export async function exportScoreImageToFile(opts: {
   format: 'png' | 'svg';
   dark: boolean;
   showMeasureNumbers: boolean;
-  layout: LayoutResult;
+  layout: ExportLayoutResult;
   plans: PagePlan[];
   geo: PageGeometry;
 }): Promise<SaveResult> {

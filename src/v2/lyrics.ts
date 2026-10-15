@@ -1,8 +1,8 @@
-import type { NoteEvent, Score } from './types';
+import type { LyricLink, NoteEvent, Score } from './types';
 import { assembleParts, scoreParts } from './parts';
 
 export function lyricTrackNames(score: Pick<Score, 'events' | 'part'>): string[] {
-  const count = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? e.lyrics?.length ?? 0 : 0));
+  const count = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
   return Array.from({ length: count }, (_, i) => score.part?.lyricNames?.[i] ?? `第 ${i + 1} 段歌词`);
 }
 
@@ -16,10 +16,11 @@ export function removeLyricTrack(score: Score, partId: string, verse: number): S
     ...p,
     lyricNames: lyricTrackNames({ events: p.events, part: p }).filter((_, i) => i !== verse),
     events: p.events.map((e) => {
-      if (e.kind !== 'note' || !e.lyrics) return e;
-      const lyrics = e.lyrics.filter((_, i) => i !== verse);
-      const { lyrics: _old, ...base } = e;
-      return lyrics.some(Boolean) ? { ...base, lyrics } : base;
+      if (e.kind !== 'note') return e;
+      const lyrics = (e.lyrics ?? []).filter((_, i) => i !== verse);
+      const lyricLinks = (e.lyricLinks ?? []).filter((_, i) => i !== verse);
+      const { lyrics: _old, lyricLinks: _links, ...base } = e;
+      return { ...base, ...(lyrics.some(Boolean) ? { lyrics } : {}), ...(lyricLinks.some(Boolean) ? { lyricLinks } : {}) };
     }),
   } : p));
 }
@@ -38,8 +39,9 @@ export function configureLyricTrack(score: Score, partId: string, verse: number,
   const names = lyricTrackNames({ events: target.events, part: target });
   if (names.length >= 6) return { score, verse, error: '关联声部最多支持六条歌词行' };
   const words = source.events.filter((e): e is NoteEvent => e.kind === 'note').map((e) => e.lyrics?.[verse] ?? '');
+  const links = source.events.filter((e): e is NoteEvent => e.kind === 'note').map((e) => e.lyricLinks?.[verse] ?? null);
   const capacity = target.events.filter((e) => e.kind === 'note').length;
-  if (words.slice(capacity).some(Boolean)) return { score, verse, error: '关联声部的音符不足以容纳这些歌词，请先调整歌词或补充音符' };
+  if (words.slice(capacity).some(Boolean) || links.slice(capacity).some(Boolean)) return { score, verse, error: '关联声部的音符不足以容纳这些歌词，请先调整歌词或补充音符' };
   const next = removeLyricTrack(score, partId, verse);
   return { verse: names.length, score: assembleParts(next, scoreParts(next).map((p) => {
     if (p.id !== targetId) return p;
@@ -48,8 +50,11 @@ export function configureLyricTrack(score: Score, partId: string, verse: number,
       if (e.kind !== 'note') return e;
       const lyrics = [...(e.lyrics ?? [])];
       while (lyrics.length < names.length) lyrics.push('');
-      lyrics[names.length] = words[index++] ?? '';
-      return { ...e, lyrics };
+      lyrics[names.length] = words[index] ?? '';
+      const lyricLinks = [...(e.lyricLinks ?? [])];
+      while (lyricLinks.length < names.length) lyricLinks.push(null);
+      lyricLinks[names.length] = links[index++] ?? null;
+      return { ...e, lyrics, ...(lyricLinks.some(Boolean) ? { lyricLinks } : {}) };
     }) };
   })) };
 }
@@ -62,7 +67,12 @@ export function setLyricWord(score: Score, eventId: string, verse: number, word:
     lyrics[verse] = word;
     while (lyrics.length && !lyrics[lyrics.length - 1]) lyrics.pop();
     const { lyrics: _old, ...base } = e;
-    return lyrics.length ? { ...base, lyrics } : base;
+    const lyricLinks = [...(e.lyricLinks ?? [])];
+    if (word && lyricLinks[verse] === 'extend') lyricLinks[verse] = null;
+    if (!word && lyricLinks[verse] === 'hyphen') lyricLinks[verse] = null;
+    while (lyricLinks.length && !lyricLinks[lyricLinks.length - 1]) lyricLinks.pop();
+    const { lyricLinks: _links, ...clean } = base;
+    return { ...clean, ...(lyrics.length ? { lyrics } : {}), ...(lyricLinks.length ? { lyricLinks } : {}) };
   }) };
 }
 
@@ -71,16 +81,27 @@ export function lyricInputTokens(text: string): string[] {
   return (text.match(/\p{Script=Han}|[^\p{Script=Han}\s，。！？、；：]+|[ \t]/gu) ?? []).map((word) => /^[ \t]$/.test(word) ? '' : word);
 }
 
-function replaceLyricRow(score: Score, verse: number, words: string[]): Score {
+interface LyricSlot { word: string; link: LyricLink | null; }
+function lyricSlots(score: Score, verse: number): LyricSlot[] {
+  return score.events.filter((e): e is NoteEvent => e.kind === 'note').map(e => ({ word: e.lyrics?.[verse] ?? '', link: e.lyricLinks?.[verse] ?? null }));
+}
+const occupied = (slot: LyricSlot): boolean => !!(slot.word || slot.link);
+
+function replaceLyricRow(score: Score, verse: number, words: LyricSlot[]): Score {
   let index = 0;
   return { ...score, format: 3, events: score.events.map((e) => {
     if (e.kind !== 'note') return e;
     const lyrics = [...(e.lyrics ?? [])];
     while (lyrics.length <= verse) lyrics.push('');
-    lyrics[verse] = words[index++] ?? '';
+    const slot = words[index++] ?? { word: '', link: null };
+    lyrics[verse] = slot.word;
+    const lyricLinks = [...(e.lyricLinks ?? [])];
+    while (lyricLinks.length <= verse) lyricLinks.push(null);
+    lyricLinks[verse] = slot.link;
+    while (lyricLinks.length && !lyricLinks[lyricLinks.length - 1]) lyricLinks.pop();
     while (lyrics.length && !lyrics[lyrics.length - 1]) lyrics.pop();
-    const { lyrics: _old, ...base } = e;
-    return lyrics.length ? { ...base, lyrics } : base;
+    const { lyrics: _old, lyricLinks: _links, ...base } = e;
+    return { ...base, ...(lyrics.length ? { lyrics } : {}), ...(lyricLinks.length ? { lyricLinks } : {}) };
   }) };
 }
 
@@ -89,10 +110,10 @@ export function writeLyricInput(score: Score, eventId: string, verse: number, te
   if (tokens.length <= 1) return { score: setLyricWord(score, eventId, verse, tokens[0] ?? ''), count: 1 };
   const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
   const start = notes.findIndex((e) => e.id === eventId);
-  const words = notes.map((e) => e.lyrics?.[verse] ?? '');
+  const words = lyricSlots(score, verse);
   // 多出的字插入新位置，保留后续已有歌词；不覆盖或截断已有文字。
-  words.splice(start, 1, ...tokens);
-  if (tokens.length > notes.length - start || words.slice(notes.length).some(Boolean)) {
+  words.splice(start, 1, ...tokens.map(word => ({ word, link: null })));
+  if (tokens.length > notes.length - start || words.slice(notes.length).some(occupied)) {
     return { score, count: 0, error: '音符位置不足，未写入这段歌词。请补充音符或整理后续歌词后重试。' };
   }
   return { score: replaceLyricRow(score, verse, words.slice(0, notes.length)), count: tokens.length };
@@ -101,9 +122,9 @@ export function writeLyricInput(score: Score, eventId: string, verse: number, te
 export function insertLyricGap(score: Score, eventId: string, verse: number): { score: Score; error?: string } {
   const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
   const start = notes.findIndex((e) => e.id === eventId);
-  const words = notes.map((e) => e.lyrics?.[verse] ?? '');
-  words.splice(start, 0, '');
-  if (words.slice(notes.length).some(Boolean)) return { score, error: '末尾没有空位可顺延，未插入空位。请先补充音符或整理末尾歌词。' };
+  const words = lyricSlots(score, verse);
+  words.splice(start, 0, { word: '', link: null });
+  if (words.slice(notes.length).some(occupied)) return { score, error: '末尾没有空位可顺延，未插入空位。请先补充音符或整理末尾歌词。' };
   return { score: replaceLyricRow(score, verse, words.slice(0, notes.length)) };
 }
 
@@ -118,7 +139,7 @@ export function deleteLyricPosition(score: Score, eventId: string, verse: number
   const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
   const index = notes.findIndex((e) => e.id === eventId) + offset;
   if (index < 0) return score;
-  const words = notes.map((e) => e.lyrics?.[verse] ?? '');
+  const words = lyricSlots(score, verse);
   words.splice(index, 1);
   return replaceLyricRow(score, verse, words);
 }
@@ -153,5 +174,65 @@ export function applyLyrics(score: Score, rows: string[]): { score: Score; error
     while (lyrics.length && !lyrics[lyrics.length - 1]) lyrics.pop();
     const { lyrics: _lyrics, ...base } = e;
     return lyrics.length ? { ...base, lyrics } : base;
+  }) } };
+}
+
+export function setLyricLink(score: Score, eventId: string, verse: number, link: LyricLink | null): { score: Score; error?: string } {
+  const index = score.events.findIndex(e => e.id === eventId && e.kind === 'note');
+  const note = score.events[index];
+  if (!note || note.kind !== 'note') return { score };
+  if (link === 'extend') {
+    let continues = false;
+    for (const event of score.events.slice(0, index)) {
+      if (event.kind === 'rest') continues = false;
+      if (event.kind === 'note') continues = !!event.lyrics?.[verse] || continues && event.lyricLinks?.[verse] === 'extend';
+    }
+    if (note.lyrics?.[verse]) return { score, error: '延唱请标在后续空歌词格；有字的格子不会被覆盖。' };
+    if (!continues) return { score, error: '延唱前需要有歌词或连续延唱格，不能跨过休止或普通空位。' };
+  }
+  if (link === 'hyphen' && !note.lyrics?.[verse]) return { score, error: '连字请标在前一个有字的音节上。' };
+  return { score: { ...score, format: 3, events: score.events.map(e => {
+    if (e.kind !== 'note' || e.id !== eventId) return e;
+    const lyricLinks = [...(e.lyricLinks ?? [])];
+    while (lyricLinks.length <= verse) lyricLinks.push(null);
+    lyricLinks[verse] = link;
+    while (lyricLinks.length && !lyricLinks[lyricLinks.length - 1]) lyricLinks.pop();
+    const { lyricLinks: _links, ...base } = e;
+    return lyricLinks.length ? { ...base, lyricLinks } : base;
+  }) } };
+}
+
+export function lyricLinkRows(score: Score): string[] {
+  const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
+  return Array.from({ length: lyricTrackNames(score).length }, (_, verse) => notes.flatMap((n, i) => {
+    const link = n.lyricLinks?.[verse];
+    return link ? [`${i + 1}${link === 'extend' ? '~' : '-'}`] : [];
+  }).join(' '));
+}
+
+/** 单独保存连接元数据，不重新解释任何旧歌词文字。 */
+export function applyLyricLinks(score: Score, rows: string[]): { score: Score; errors: string[] } {
+  const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
+  const links = new Map<string, (LyricLink | null)[]>();
+  const errors: string[] = [];
+  rows.forEach((row, verse) => {
+    const used = new Set<number>();
+    for (const token of row.trim().split(/\s+/).filter(Boolean)) {
+      const match = /^([1-9]\d*)([~-])$/.exec(token);
+      const index = match ? Number(match[1]) - 1 : -1;
+      if (!match || !notes[index] || used.has(index)) { errors.push(`歌词线 ${verse + 1} 的位置无效或重复：${token}`); continue; }
+      used.add(index);
+      const value = links.get(notes[index].id) ?? [];
+      while (value.length <= verse) value.push(null);
+      value[verse] = match[2] === '~' ? 'extend' : 'hyphen';
+      links.set(notes[index].id, value);
+    }
+  });
+  if (errors.length) return { score, errors };
+  return { errors, score: { ...score, format: 3, events: score.events.map(e => {
+    if (e.kind !== 'note') return e;
+    const { lyricLinks: _old, ...base } = e;
+    const lyricLinks = links.get(e.id);
+    return lyricLinks ? { ...base, lyricLinks } : base;
   }) } };
 }

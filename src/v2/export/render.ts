@@ -13,11 +13,38 @@ import { layoutScore, type LayoutResult } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout, type PaintTheme } from '../paint';
 import type { Score } from '../types';
 import type { BallDraw } from '../ball';
+import { buildStaffLayout, type StaffLayout } from '../staff';
+import { paintStaffLayout } from '../staffPaint';
+import { withStaffRows } from '../staffSpacing';
+import type { StaffPitchMode } from '../pitch';
 import { planPages, type PageBand, type PagePlan } from './pdf';
 
 /** 导出的字体栈：跟界面一致，导出的谱面才像「同一款软件印出来的」 */
 export const EXPORT_FONT =
   "'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif";
+
+export interface ExportNotation {
+  notation?: 'jianpu' | 'staff';
+  staffPitchMode?: StaffPitchMode;
+}
+
+export interface ExportLayoutResult extends LayoutResult {
+  staff?: StaffLayout;
+}
+
+/** 只在准备导出时投影一次；分页和逐帧绘制复用最终坐标。 */
+export function prepareExportLayout(score: Score, base: LayoutResult, opts: ExportNotation = {}): ExportLayoutResult {
+  if (opts.notation !== 'staff') return base;
+  const staff = buildStaffLayout(score, base, opts.staffPitchMode ?? 'concert');
+  const layout = withStaffRows(base, staff);
+  const groups = base.systems ?? base.lines.map((_, i) => ({ from: i, to: i + 1, bracketX: 0 }));
+  return { ...layout, staff, systems: groups.map(group => ({ ...group,
+    top: (staff.lines[group.from].labelY ?? staff.lines[group.from].y - 4 * staff.sp) - staff.sp,
+    bottom: group.to < staff.lines.length
+      ? (staff.lines[group.to].labelY ?? staff.lines[group.to].y - 4 * staff.sp) - 3 * staff.sp
+      : staff.height - 3 * staff.sp,
+  })) };
+}
 
 /** 页面几何（全部单位是**像素**；scale 用来把谱面字号放大到纸面/视频的观感） */
 export interface PageGeometry {
@@ -42,19 +69,23 @@ export function exportTheme(dark: boolean): PaintTheme {
  */
 export function exportLayout(
   score: Score,
-  opts: { contentWidth: number; unit?: number; showTitle?: boolean },
-): LayoutResult {
-  return layoutScore(score, {
+  opts: { contentWidth: number; unit?: number; showTitle?: boolean } & ExportNotation,
+): ExportLayoutResult {
+  const k = (score.meta.fontSize ?? 21) / 21;
+  const base = layoutScore(score, {
     contentWidth: opts.contentWidth,
     ...(opts.unit !== undefined ? { unit: opts.unit } : {}),
     showTitle: opts.showTitle ?? true,
+    ...(opts.notation === 'staff' ? { padding: 96 * k, staffKeySpace: 104 * k, staffPitchMode: opts.staffPitchMode ?? 'concert' } : {}),
   });
+  return prepareExportLayout(score, base, opts);
 }
 
 /** 每页的可用纵向区间（排版坐标） */
 export function pageBands(geo: PageGeometry): { first: PageBand; rest: PageBand } {
-  const top = geo.marginTop / geo.scale;
-  const bottom = (geo.pageH - geo.marginBottom) / geo.scale;
+  // 绘制时已平移 marginTop；分页区间只包含版心，避免再算一次上边距。
+  const top = 0;
+  const bottom = (geo.pageH - geo.marginTop - geo.marginBottom) / geo.scale;
   return { first: { top, bottom }, rest: { top, bottom } };
 }
 
@@ -91,6 +122,9 @@ export function planScorePages(
       }
       if (system.from === from && system.bottom - system.top > band.bottom - band.top) {
         throw new Error('整组声部超出纸张高度，请在谱面中减小字号、增加每行小节数，或导出分谱');
+      }
+      if (system.from === from && system.bottom - offset > band.bottom) {
+        throw new Error('谱头和首组谱表超出页面高度，请关闭“包含标题”、导出分谱或调整谱面排版');
       }
     }
     pages.push({ from, to: layout.lines.length, offset });
@@ -138,7 +172,7 @@ export interface PagePaintOptions {
  */
 export function paintExportPage(
   ctx: CanvasRenderingContext2D,
-  layout: LayoutResult,
+  layout: ExportLayoutResult,
   theme: PaintTheme,
   plan: PagePlan,
   geo: PageGeometry,
@@ -153,7 +187,12 @@ export function paintExportPage(
   ctx.fillRect(0, 0, pageW, pageH);
 
   ctx.setTransform(scale, 0, 0, scale, marginX, originY + marginTop - plan.offset * scale);
-  paintLayout(
+  if (layout.staff) {
+    const staff = layout.staff;
+    paintStaffLayout(ctx, { ...staff,
+      title: plan.from === 0 ? layout.title : null,
+    }, theme, { background: false, lineRange: plan, showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false });
+  } else paintLayout(
     ctx,
     {
       ...layout,
@@ -187,7 +226,7 @@ function lineSlack(layout: LayoutResult): number {
 /** 视频一帧：整块画布底色 + 整份版面（纵向滚动 scrollY 像素）+ 播放头 + 进度条 */
 export function paintVideoFrame(
   ctx: CanvasRenderingContext2D,
-  layout: LayoutResult,
+  layout: ExportLayoutResult,
   theme: PaintTheme,
   opts: {
     canvasW: number;
@@ -218,29 +257,19 @@ export function paintVideoFrame(
   ctx.fillStyle = opts.bg ?? theme.bg;
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  if (opts.scrollX !== undefined) {
-    // 横向长条：长条高就是画面高，纵向不需要滚动
-    ctx.setTransform(scale, 0, 0, scale, -opts.scrollX, 0);
-    paintLayout(ctx, layout, theme, {
-      height: canvasH / scale,
-      playhead: opts.playhead ?? null,
-      playheads: opts.playheads,
-      playStyle: opts.playStyle ?? 'head',
-      ball: opts.ball,
-      showMeasureNumbers: opts.showMeasureNumbers ?? true,
-    });
-  } else {
-    ctx.setTransform(scale, 0, 0, scale, xOff, -scrollY);
-    paintLayout(ctx, layout, theme, {
-      // 底色填充要盖满整屏：paintLayout 只填 layout.width 宽
-      height: (canvasH + scrollY) / scale,
-      playhead: opts.playhead ?? null,
-      playheads: opts.playheads,
-      playStyle: opts.playStyle ?? 'head',
-      ball: opts.ball,
-      showMeasureNumbers: opts.showMeasureNumbers ?? true,
-    });
-  }
+  const horizontal = opts.scrollX !== undefined;
+  ctx.setTransform(scale, 0, 0, scale, horizontal ? -opts.scrollX! : xOff, horizontal ? 0 : -scrollY);
+  const paintOptions = {
+    height: (canvasH + (horizontal ? 0 : scrollY)) / scale,
+    playhead: opts.playhead ?? null,
+    playheads: opts.playheads,
+    playStyle: opts.playStyle ?? 'head',
+    ball: opts.ball,
+    showMeasureNumbers: opts.showMeasureNumbers ?? true,
+    showTitleEdit: false,
+  };
+  if (layout.staff) paintStaffLayout(ctx, layout.staff, opts.bg ? { ...theme, bg: opts.bg } : theme, paintOptions);
+  else paintLayout(ctx, layout, theme, paintOptions);
 
   if (opts.progress !== undefined) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);

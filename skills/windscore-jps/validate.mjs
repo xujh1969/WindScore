@@ -136,15 +136,18 @@ function withConductor(score2, id) {
   if (!score2.part || id === score2.part.id) return target;
   const sourceMeasures = partMeasures(score2.events);
   const targetMeasures = partMeasures(target.events);
-  const clean = target.events.filter((e) => e.kind !== "jump").map((e) => {
+  const sourceHead = score2.events.slice(0, score2.events.findIndex((e) => "ticks" in e));
+  const targetHead = target.events.slice(0, target.events.findIndex((e) => "ticks" in e));
+  const keptBars = new Set(targetMeasures.map((m) => target.events[m.to - 1]?.id));
+  const headBar = targetHead.find((e) => e.kind === "barline");
+  if (headBar) keptBars.add(headBar.id);
+  const clean = target.events.filter((e) => e.kind !== "jump" && (e.kind !== "barline" || keptBars.has(e.id))).map((e) => {
     if (e.kind !== "barline") return e;
     const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
   const targetStarts = [0, ...targetMeasures.map((m) => m.to)];
-  const sourceHead = score2.events.slice(0, score2.events.findIndex((e) => "ticks" in e));
-  const targetHead = target.events.slice(0, target.events.findIndex((e) => "ticks" in e));
   for (let boundary = sourceStarts.length - 1; boundary >= 0; boundary--) {
     const at = sourceStarts[boundary];
     const src = boundary === 0 ? sourceHead.find((e) => e.kind === "barline") : score2.events[at - 1];
@@ -160,9 +163,9 @@ function withConductor(score2, id) {
     }
     const jumps = [];
     const following = boundary === 0 ? sourceHead : [];
-    if (boundary > 0) for (let j = at; j < score2.events.length && !("ticks" in score2.events[j]) && score2.events[j].kind !== "barline"; j++) following.push(score2.events[j]);
+    if (boundary > 0) for (let j = at; j < score2.events.length && !("ticks" in score2.events[j]); j++) following.push(score2.events[j]);
     for (const e of following) {
-      if (e.kind === "jump") jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
+      if (e.kind === "jump" || e.kind === "barline" && e.id !== src?.id) jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
     }
     if (jumps.length) clean.splice(Math.max(0, index + 1), 0, ...jumps);
   }
@@ -184,6 +187,81 @@ function meterAt(score2, index) {
 }
 function groupTicks(beat) {
   return /^(6|9|12)\/8$/.test(beat) ? 72 : 48;
+}
+
+// src/v2/pitch.ts
+var LETTERS = "CDEFGAB";
+var NATURAL = [0, 2, 4, 5, 7, 9, 11];
+var MAJOR = [0, 2, 4, 5, 7, 9, 11];
+var STAFF_INSTRUMENTS = [
+  { id: "concert", label: "C \u8C03\uFF08\u65E0\u79FB\u8C03\uFF09", diatonic: 0, chromatic: 0 },
+  { id: "clarinet-bb", label: "B\u266D \u5355\u7C27\u7BA1", diatonic: -1, chromatic: -2 },
+  { id: "tenor-sax-bb", label: "B\u266D \u6B21\u4E2D\u97F3\u8428\u514B\u65AF", diatonic: -8, chromatic: -14 },
+  { id: "alto-sax-eb", label: "E\u266D \u4E2D\u97F3\u8428\u514B\u65AF", diatonic: -5, chromatic: -9 }
+];
+function isStaffInstrument(value) {
+  return STAFF_INSTRUMENTS.some((p) => p.id === value);
+}
+function instrumentOf(id) {
+  return STAFF_INSTRUMENTS.find((p) => p.id === id) ?? STAFF_INSTRUMENTS[0];
+}
+function accidentalOffset(acc) {
+  return acc === "#" ? 1 : acc === "b" ? -1 : 0;
+}
+function keyOffset(key) {
+  const body = /1\s*=\s*(.+)$/.exec(key)?.[1] ?? key;
+  const m = /^\s*([#b♯♭]?)\s*([A-Ga-g])\s*([#b♯♭]?)/.exec(body);
+  if (!m) return 0;
+  const base = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+  const acc = (c) => c === "#" || c === "\u266F" ? 1 : c === "b" || c === "\u266D" ? -1 : 0;
+  const off = (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
+  return off > 6 ? off - 12 : off;
+}
+function toMidi(degree, octave, key, accidental) {
+  return 60 + MAJOR[degree - 1] + keyOffset(key) + octave * 12 + accidentalOffset(accidental);
+}
+function pitchMidi(p) {
+  return 12 * (p.octave + 1) + NATURAL[p.step] + p.alter;
+}
+function keyTonic(key) {
+  const body = key.replace(/^\s*1\s*=\s*/, "");
+  const m = /^\s*([#b♯♭]{0,2})([A-Ga-g])([#b♯♭]{0,2})\s*$/.exec(body);
+  if (!m) return { step: 0, alter: 0, octave: 4 };
+  const mark = m[1] || m[3];
+  return { step: LETTERS.indexOf(m[2].toUpperCase()), alter: /[#♯]/.test(mark) ? mark.length : /[b♭]/.test(mark) ? -mark.length : 0, octave: 4 };
+}
+function legacyPitch(degree, octave, key, accidental) {
+  const step = (keyTonic(key).step + degree - 1) % 7;
+  const midi = toMidi(degree, octave, key, accidental);
+  const oct = Math.round((midi - 12 - NATURAL[step]) / 12);
+  return { step, octave: oct, alter: midi - (12 * (oct + 1) + NATURAL[step]) };
+}
+function transposePitch(p, diatonic, chromatic) {
+  const absolute = p.octave * 7 + p.step + diatonic;
+  const octave = Math.floor(absolute / 7);
+  const step = (absolute % 7 + 7) % 7;
+  return { step, octave, alter: pitchMidi(p) + chromatic - (12 * (octave + 1) + NATURAL[step]) };
+}
+function writtenPitch(p, mode, instrument) {
+  const t = instrumentOf(instrument);
+  return mode === "concert" ? p : transposePitch(p, -t.diatonic, -t.chromatic);
+}
+function writtenKey(key, mode, instrument) {
+  const p = writtenPitch(keyTonic(key), mode, instrument);
+  return `1=${(p.alter > 0 ? "#" : "b").repeat(Math.abs(p.alter))}${LETTERS[p.step]}`;
+}
+function keyAlter(key, step) {
+  const t = keyTonic(key);
+  const degree = (step - t.step + 7) % 7;
+  const diatonic = t.step + degree;
+  const natural = NATURAL[step] + (diatonic >= 7 ? 12 : 0);
+  return NATURAL[t.step] + t.alter + MAJOR[degree] - natural;
+}
+function accidentalGlyph(alter) {
+  if (alter === 0) return "\u266E";
+  if (alter === 2) return "\u{1D12A}";
+  if (alter === -2) return "\u{1D12B}";
+  return (alter > 0 ? "\u266F" : "\u266D").repeat(Math.abs(alter));
 }
 
 // src/v2/timeline.ts
@@ -291,7 +369,7 @@ function autoGroupBeats(score2) {
 
 // src/v2/lyrics.ts
 function lyricTrackNames(score2) {
-  const count = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? e.lyrics?.length ?? 0 : 0));
+  const count = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
   return Array.from({ length: count }, (_, i) => score2.part?.lyricNames?.[i] ?? `\u7B2C ${i + 1} \u6BB5\u6B4C\u8BCD`);
 }
 function lyricTokens(text2) {
@@ -332,9 +410,44 @@ function applyLyrics(score2, rows) {
     return lyrics.length ? { ...base, lyrics } : base;
   }) } };
 }
+function lyricLinkRows(score2) {
+  const notes = score2.events.filter((e) => e.kind === "note");
+  return Array.from({ length: lyricTrackNames(score2).length }, (_, verse) => notes.flatMap((n, i) => {
+    const link = n.lyricLinks?.[verse];
+    return link ? [`${i + 1}${link === "extend" ? "~" : "-"}`] : [];
+  }).join(" "));
+}
+function applyLyricLinks(score2, rows) {
+  const notes = score2.events.filter((e) => e.kind === "note");
+  const links = /* @__PURE__ */ new Map();
+  const errors = [];
+  rows.forEach((row, verse) => {
+    const used = /* @__PURE__ */ new Set();
+    for (const token of row.trim().split(/\s+/).filter(Boolean)) {
+      const match = /^([1-9]\d*)([~-])$/.exec(token);
+      const index = match ? Number(match[1]) - 1 : -1;
+      if (!match || !notes[index] || used.has(index)) {
+        errors.push(`\u6B4C\u8BCD\u7EBF ${verse + 1} \u7684\u4F4D\u7F6E\u65E0\u6548\u6216\u91CD\u590D\uFF1A${token}`);
+        continue;
+      }
+      used.add(index);
+      const value = links.get(notes[index].id) ?? [];
+      while (value.length <= verse) value.push(null);
+      value[verse] = match[2] === "~" ? "extend" : "hyphen";
+      links.set(notes[index].id, value);
+    }
+  });
+  if (errors.length) return { score: score2, errors };
+  return { errors, score: { ...score2, format: 3, events: score2.events.map((e) => {
+    if (e.kind !== "note") return e;
+    const { lyricLinks: _old, ...base } = e;
+    const lyricLinks = links.get(e.id);
+    return lyricLinks ? { ...base, lyricLinks } : base;
+  }) } };
+}
 
 // src/v2/dsl.ts
-var NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)$/;
+var NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
 var TECHNIQUE_LETTER = {
   V: "breath",
   // 换气 V（大写，避开低八度点 v）
@@ -343,7 +456,7 @@ var TECHNIQUE_LETTER = {
   f: "flutter",
   // 花舌 *
   d: "da",
-  // 打音 ♮
+  // 打音 扌
   m: "mordentUp",
   // 上波音 ≈
   w: "mordentDown",
@@ -353,9 +466,9 @@ var TECHNIQUE_LETTER = {
   x: "slideDown",
   // 下滑音 ↓
   q: "bendUp",
-  // 前弯音 ↗
+  // 上弯音（向上折线箭头）
   h: "bendDown"
-  // 后弯音 ↘
+  // 下弯音（向下折线箭头）
 };
 var TECHNIQUE_OF = Object.fromEntries(
   Object.entries(TECHNIQUE_LETTER).map(([letter, value]) => [value, letter])
@@ -428,6 +541,14 @@ function parseDsl(text2) {
         block.muted = m[2].toLowerCase() === "off";
         block.solo = m[3].toLowerCase() === "solo";
       }
+    } else if (/^@staff\b/i.test(line)) {
+      const block = blocks[blocks.length - 1];
+      const m = /^@staff\s+(\S+)\s+(auto|treble|bass)\s*$/i.exec(line);
+      if (!block || !m || !isStaffInstrument(m[1])) errors.push("\u4E94\u7EBF\u8C31\u8BBE\u7F6E\u5E94\u4E3A @staff concert auto\uFF08\u6216 treble\uFF0Fbass\uFF09\uFF0C\u653E\u5728\u58F0\u90E8\u58F0\u660E\u4E4B\u540E");
+      else {
+        block.staffInstrument = m[1];
+        block.staffClef = m[2].toLowerCase();
+      }
     } else if (/^@lyricnames\b/i.test(line)) {
       const block = blocks[blocks.length - 1];
       try {
@@ -460,8 +581,8 @@ function parseDsl(text2) {
   })), errors };
 }
 function normalizeModern(text2) {
-  return text2.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词[1-6]:[^\n]*$)/m).map((segment) => {
-    if (segment.trim().startsWith("@") || segment.trim().startsWith("//") || /^歌词[1-6]:/.test(segment.trim())) return segment;
+  return text2.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词(?:线)?[1-6]:[^\n]*$)/m).map((segment) => {
+    if (segment.trim().startsWith("@") || segment.trim().startsWith("//") || /^歌词(?:线)?[1-6]:/.test(segment.trim())) return segment;
     return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before, note, slashes) => `${before}${note}/${2 ** slashes.length}`).replace(/<3:\s*([^<>]+)>/g, (full, body) => {
       const tokens = body.trim().split(/\s+/);
       if (tokens.length !== 3 || !tokens.every((t) => /^[#b♯♭♮]?[0-7][v^]*[!=>@tkVrfdmwsxqh]*$/.test(t))) return full;
@@ -475,10 +596,21 @@ function parseSingle(text2, modern = false) {
   const body = [];
   const lyrics = [];
   const lyricNumbers = /* @__PURE__ */ new Set();
+  const lyricLinks = [];
+  const linkNumbers = /* @__PURE__ */ new Set();
   for (const raw of text2.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line === "---") continue;
     if (line.startsWith("//")) continue;
+    const link = /^歌词线([1-6]):\s*(.*)$/.exec(line);
+    if (link) {
+      if (!modern) errors.push("\u6B4C\u8BCD\u7EBF\u9700\u8981 @format 3");
+      const verse = Number(link[1]) - 1;
+      if (linkNumbers.has(verse)) errors.push(`\u6B4C\u8BCD\u7EBF ${verse + 1} \u91CD\u590D`);
+      linkNumbers.add(verse);
+      lyricLinks[verse] = link[2];
+      continue;
+    }
     const lyric = /^歌词([1-6]):\s*(.*)$/.exec(line);
     if (lyric) {
       if (!modern) errors.push("\u6B4C\u8BCD\u9700\u8981 @format 3");
@@ -531,8 +663,14 @@ function parseSingle(text2, modern = false) {
         }
         case "space": {
           const n = Number(v);
-          if (Number.isFinite(n) && n >= -10 && n <= 24) meta.letterSpacing = n;
-          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -10\u201324 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
+          if (Number.isFinite(n) && n >= -10 && n <= 20) meta.letterSpacing = n;
+          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -10\u201320 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
+          break;
+        }
+        case "linegap": {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 0 && n <= 48) meta.lineGap = n;
+          else errors.push(`\u884C\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A 0\u201348 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
           break;
         }
         case "measureno": {
@@ -573,7 +711,7 @@ function parseSingle(text2, modern = false) {
       errors.push(`\u65E0\u6CD5\u89E3\u6790\u7684\u8BB0\u53F7\uFF1A${core}`);
       return;
     }
-    const [, pre, digit, post, dots, div, dashes, tieMark, artic] = m;
+    const [, pre, digit, post, dots, div, dashes, tieMark, artic, custom] = m;
     let octave = 0;
     for (const c of pre + post) {
       if (c === "^") octave += 1;
@@ -633,6 +771,7 @@ function parseSingle(text2, modern = false) {
       if (tongue) note.tongue = tongue;
       if (gray) note.gray = true;
       if (techniques.length) note.techniques = techniques;
+      if (custom) note.mark = custom.slice(1, -1);
       if (gBefore?.length) note.graceBefore = gBefore;
       if (gAfter?.length) note.graceAfter = gAfter;
       ev = note;
@@ -880,6 +1019,10 @@ function parseSingle(text2, modern = false) {
           errors.push(
             `\u8DF3\u8F6C\u8BB0\u53F7\u65E0\u6CD5\u8BC6\u522B\uFF1A${raw}\uFF08\u53EF\u7528 $s=\u{1D10B} \xB7 $x=\u2295 \xB7 $t=To\u2295 \xB7 $f=Fine \xB7 $ds=D.S. \xB7 $dc=D.C.\uFF09`
           );
+        } else if (/^\[[^[\]]*\]?$/.test(raw)) {
+          errors.push(`\u81EA\u5B9A\u4E49\u8BB0\u53F7\u8981\u5199\u5728\u97F3\u7B26\u540E\u9762\uFF08\u5982 5[\u6ED1]\uFF09\uFF0C\u4E0D\u80FD\u5355\u72EC\u6210\u8BB0\u53F7\uFF1A${raw}`);
+        } else if (raw.endsWith("]") && NOTE_RE.test(raw)) {
+          pushTimed(raw, graceBefore, graceAfter);
         } else if (/[()\u4e00-\u9fff]/.test(raw)) {
           errors.push(
             `( ) \u9700\u8981\u6210\u5BF9\u5199\u5728\u540C\u4E00\u4E2A\u8BB0\u53F7\u91CC\uFF1A\u6807\u6CE8\u6BB5\u843D\u7528 (\u524D\u594F) \u8FD9\u79CD\u7EAF\u6587\u5B57\uFF1B\u8FDE\u97F3\u7EBF\u8981\u5305\u4F4F\u97F3\u7B26\uFF0C\u5982 (5 6 5)\u3002\u6536\u5230\u7684\u662F\uFF1A${raw}`
@@ -939,6 +1082,11 @@ function parseSingle(text2, modern = false) {
     score2 = applied.score;
     errors.push(...applied.errors);
   }
+  if (score2 && linkNumbers.size) {
+    const applied = applyLyricLinks(score2, Array.from({ length: lyricLinks.length }, (_, i) => lyricLinks[i] ?? ""));
+    score2 = applied.score;
+    errors.push(...applied.errors);
+  }
   return {
     score: score2,
     errors
@@ -980,9 +1128,10 @@ function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   const tong = n.tongue === "K" ? "k" : n.tongue === "T" ? "t" : "";
   const gray = n.gray ? "g" : "";
   const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? "").join("");
+  const cust = n.mark && /^[^[\]]{1,3}$/.test(n.mark) ? `[${n.mark}]` : "";
   const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join("")}}` : "";
   const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join("")}}` : "";
-  return `${gb}${body}${tieOut ? "~" : ""}${arts}${ferm}${tong}${tech}${gray}${ga}`;
+  return `${gb}${body}${tieOut ? "~" : ""}${arts}${ferm}${tong}${tech}${cust}${gray}${ga}`;
 }
 function serializeDsl(score2) {
   if (score2.part || score2.parts?.length) {
@@ -994,8 +1143,10 @@ ${parts.map((part) => {
       const body = serializeSingle(partScore(score2, part.id)).split("\n\n").slice(1).join("\n\n");
       const names = part.lyricNames?.length ? `
 @lyricNames ${JSON.stringify(part.lyricNames)}` : "";
+      const staff = part.staffInstrument || part.staffClef ? `
+@staff ${part.staffInstrument ?? "concert"} ${part.staffClef ?? "auto"}` : "";
       return `@part ${part.id} ${JSON.stringify(part.name)}
-@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${names}
+@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${staff}${names}
 ${body}`;
     }).join("\n\n")}`;
   }
@@ -1017,6 +1168,7 @@ function serializeSingle(score2) {
   }
   if (score2.meta.fontSize !== void 0) head.push(`@size ${score2.meta.fontSize}`);
   if (score2.meta.letterSpacing !== void 0) head.push(`@space ${score2.meta.letterSpacing}`);
+  if (score2.meta.lineGap !== void 0) head.push(`@lineGap ${score2.meta.lineGap}`);
   if (score2.meta.showMeasureNumbers === false) head.push("@measureNo off");
   const byId = new Map(score2.events.map((e) => [e.id, e]));
   const nextOf = /* @__PURE__ */ new Map();
@@ -1133,11 +1285,170 @@ function serializeSingle(score2) {
     }
   }
   const rows = lyricRows(score2).map((row, i) => `\u6B4C\u8BCD${i + 1}: ${row}`);
+  rows.push(...lyricLinkRows(score2).flatMap((row, i) => row ? [`\u6B4C\u8BCD\u7EBF${i + 1}: ${row}`] : []));
   return `${head.join("\n")}
 
 ${out.join(" ")}
 ${rows.length ? `${rows.join("\n")}
 ` : ""}`;
+}
+
+// src/v2/staffInk.ts
+function staffAccWidth(mark, sp, grace = false) {
+  if (!mark) return 0;
+  const count = mark === "\u{1D12A}" || mark === "\u{1D12B}" ? 1.4 : Array.from(mark).length;
+  return sp * ((grace ? 1.05 : 1.45) * count + 0.25);
+}
+function staffGraceInk(notes, glyph, key, mode, instrument, state) {
+  const sp = Math.max(6, glyph.fontSize / 2.8);
+  const pitchKey = writtenKey(key, mode, instrument);
+  let width = 0;
+  const placed = notes.map((note) => {
+    const pitch = writtenPitch(legacyPitch(note.degree, note.octave, key, note.accidental), mode, instrument);
+    const identity = `${pitch.step}:${pitch.octave}`;
+    const old = state.get(identity) ?? keyAlter(pitchKey, pitch.step);
+    const accMark = old === pitch.alter ? "" : accidentalGlyph(pitch.alter);
+    state.set(identity, pitch.alter);
+    const accW = staffAccWidth(accMark, sp, true);
+    const x = width + accW + glyph.graceW * 0.35;
+    width += glyph.graceW + accW;
+    return { pitch, accMark, x };
+  });
+  return { notes: placed, width };
+}
+function measureStaffInk(score2, glyph, mode) {
+  const instrument = score2.part?.staffInstrument;
+  const sp = Math.max(6, glyph.fontSize / 2.8);
+  const pitches = /* @__PURE__ */ new Map();
+  let key = score2.meta.key;
+  for (const event of score2.events) {
+    if (event.kind !== "note") continue;
+    key = event.keyChange ?? key;
+    pitches.set(event.id, writtenPitch(legacyPitch(event.degree, event.octave, key, event.accidental), mode, instrument));
+  }
+  const tiedInto = /* @__PURE__ */ new Set();
+  for (const event of score2.events) {
+    if (event.kind !== "note") continue;
+    const from = pitches.get(event.id);
+    for (const tie of event.ties ?? []) {
+      const to = pitches.get(tie.to);
+      if (tie.kind === "tie" && to && from.step === to.step && from.octave === to.octave && from.alter === to.alter) tiedInto.add(tie.to);
+    }
+  }
+  const result = /* @__PURE__ */ new Map();
+  const state = /* @__PURE__ */ new Map();
+  key = score2.meta.key;
+  for (const event of score2.events) {
+    if (event.kind === "barline") state.clear();
+    if (event.kind !== "note") continue;
+    if (event.keyChange) {
+      key = event.keyChange;
+      state.clear();
+    }
+    const before = staffGraceInk(event.graceBefore ?? [], glyph, key, mode, instrument, state).width;
+    const pitch = pitches.get(event.id);
+    const identity = `${pitch.step}:${pitch.octave}`;
+    const old = state.get(identity) ?? keyAlter(writtenKey(key, mode, instrument), pitch.step);
+    const mark = tiedInto.has(event.id) || old === pitch.alter && event.accidental !== "\u266E" ? "" : accidentalGlyph(pitch.alter);
+    if (!tiedInto.has(event.id)) state.set(identity, pitch.alter);
+    const after = staffGraceInk(event.graceAfter ?? [], glyph, key, mode, instrument, state).width;
+    result.set(event.id, {
+      accW: staffAccWidth(mark, sp),
+      before: before ? before + glyph.graceGap : 0,
+      after: after ? after + sp * 1.5 : 0
+    });
+  }
+  return result;
+}
+
+// src/v2/spacing.ts
+function balancedBreaks(units, available) {
+  const cost = new Array(units.length + 1).fill(Infinity);
+  const next = new Array(units.length).fill(0);
+  cost[units.length] = 0;
+  for (let from = units.length - 1; from >= 0; from--) {
+    const budget = Math.max(1, available - (units[from].lead ?? 0));
+    let ideal = 0;
+    let min = 0;
+    for (let to = from; to < units.length; to++) {
+      ideal += units[to].ideal;
+      min += units[to].min;
+      if (min > budget && to > from) break;
+      const last = to === units.length - 1;
+      const ratio = ideal / budget;
+      const ragged = (last || units[to].forced) && ratio < 0.6;
+      const stretch = Math.max(0, 1 / ratio - 1);
+      const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch) + 45 * Math.pow(Math.max(0, ratio - 1), 2) + (last ? 0 : units[to].penalty ?? 0);
+      if (rowCost + cost[to + 1] < cost[from]) {
+        cost[from] = rowCost + cost[to + 1];
+        next[from] = to + 1;
+      }
+      if (units[to].forced || min > budget) break;
+    }
+  }
+  const starts = [];
+  for (let at = 0; at < units.length; at = Math.max(at + 1, next[at])) starts.push(at);
+  return starts;
+}
+function fitSpacing(units, available, justify) {
+  const ideal = units.reduce((sum, u) => sum + u.ideal, 0);
+  const min = units.reduce((sum, u) => sum + u.min, 0);
+  if (ideal > available) {
+    const shrink = Math.min(1, (ideal - available) / Math.max(1, ideal - min));
+    return units.map((u) => u.ideal - (u.ideal - u.min) * shrink);
+  }
+  if (!justify) return units.map((u) => u.ideal);
+  const weight = units.reduce((sum, u) => sum + u.weight, 0);
+  return units.map((u) => u.ideal + (available - ideal) * u.weight / Math.max(1, weight));
+}
+function positionDashes(items, glyph) {
+  for (const item of items) {
+    if (item.dashXs || !item.dashes) continue;
+    const start = item.x + (item.accW ?? 0) + (item.graceInk ?? 0) + glyph.pad + glyph.nominalWidth + 5;
+    const cell = Math.max((item.x + item.w - 6 * glyph.fontSize / 21 - start) / item.dashes, glyph.dashW + 2);
+    item.dashXs = Array.from({ length: item.dashes }, (_, d) => start + cell * (d + 0.5));
+  }
+}
+function addPlaybackAnchors(lines, glyph) {
+  const systems = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const key = line.system ?? line.index;
+    const group = systems.get(key) ?? [];
+    group.push(line);
+    systems.set(key, group);
+  }
+  for (const group of systems.values()) {
+    const anchors = /* @__PURE__ */ new Map();
+    const spans = [];
+    const put = (tick, x, priority) => {
+      const old = anchors.get(tick);
+      if (!old || priority > old.priority) anchors.set(tick, { x, priority });
+    };
+    for (const line of group) {
+      positionDashes(line.items, glyph);
+      let tick = 0;
+      for (const item of line.items) {
+        if (item.kind === "barline") {
+          put(tick, item.x + item.w / 2, 0);
+          continue;
+        }
+        if (item.kind !== "note" && item.kind !== "rest") continue;
+        const x = item.x + (item.accW ?? 0) + (item.graceInk ?? 0);
+        put(tick, x, 2);
+        spans.push({ item, tick });
+        for (let d = 0; d < (item.dashXs?.length ?? 0); d++) {
+          put(tick + (d + 1) * TICKS_PER_BEAT, item.dashXs[d] - glyph.pad - glyph.nominalWidth / 2, 1);
+        }
+        tick += item.ticks ?? 0;
+        put(tick, item.x + item.w, -1);
+      }
+    }
+    const ordered = [...anchors].sort((a, b) => a[0] - b[0]);
+    for (const { item, tick } of spans) {
+      const end = tick + (item.ticks ?? 0);
+      item.playXs = ordered.filter(([t]) => t >= tick && t <= end).map(([t, p]) => ({ fraction: (t - tick) / Math.max(1, end - tick), x: p.x }));
+    }
+  }
 }
 
 // src/v2/ensembleLayout.ts
@@ -1166,6 +1477,8 @@ function layoutEnsemble(score2, opts, layoutSingle) {
   });
   const local = /* @__PURE__ */ new Map();
   const widths = [];
+  const densities = [];
+  const closingWidths = [];
   for (let mi = 0; mi < count; mi++) {
     const current = entries.flat().filter((e) => e.measure === mi);
     const end = Math.max(0, ...tables.map((ms) => ms[mi]?.ticks ?? 0));
@@ -1183,11 +1496,15 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       onsets.set(tick, x + pre + opening + lead);
       leads.set(tick, lead);
       const step = ticks[ti + 1] === void 0 ? 0 : ticks[ti + 1] - tick;
-      const ink = Math.max(0, ...here.filter((e) => e.item.kind === "note" || e.item.kind === "rest").map((e) => 26 * k + e.lead + (e.item.graceAfter?.length ?? 0) * measured[0].glyph.graceW));
-      x += pre + opening + Math.max(ink, step * (opts.unit ?? 1.3) + (step > 0 ? 8 * k : 0));
+      const ink = Math.max(0, ...here.filter((e) => e.item.kind === "note" || e.item.kind === "rest").map((e) => {
+        const item = e.item;
+        const lyric = Math.max(0, ...(item.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
+        return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k) + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
+      }));
+      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? 1.3) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === "barline" && e.tick > 0).map((e) => e.item.w));
-    const close = x;
+    const close = Math.max(x, 60 * k - barW);
     const preUsed = /* @__PURE__ */ new Map();
     for (const e of current) {
       const it = e.item;
@@ -1201,39 +1518,59 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       } else {
         const pi = entries.findIndex((list) => list.includes(e));
         const key = `${pi}:${e.tick}`;
-        const used2 = preUsed.get(key) ?? 0;
+        const used = preUsed.get(key) ?? 0;
         const preWidth = entries[pi].filter((a) => a.measure === mi && a.tick === e.tick && a.item.kind !== "note" && a.item.kind !== "rest" && a.item.kind !== "barline").reduce((sum, a) => sum + a.item.w, 0);
-        local.set(it.eventId, { x: onsets.get(e.tick) - (leads.get(e.tick) ?? 0) - preWidth + used2, w: it.w });
-        preUsed.set(key, used2 + it.w);
+        local.set(it.eventId, { x: onsets.get(e.tick) - (leads.get(e.tick) ?? 0) - preWidth + used, w: it.w });
+        preUsed.set(key, used + it.w);
       }
     }
     widths.push(Math.max(60 * k, close + barW));
+    closingWidths.push(barW);
+    densities.push(Math.pow(Math.max(1, ...entries.map((list) => list.filter((e) => e.measure === mi && (e.item.kind === "note" || e.item.kind === "rest")).length)), 1.5));
   }
   const systemOf = [];
   const offsetOf = [];
   const systemLead = [0];
   const systemMeter = [];
-  let system = 0;
-  let used = 0;
-  for (let mi = 0; mi < count; mi++) {
+  const units = widths.map((ideal, mi) => {
     const previous = mi > 0 ? singles[0].events[tables[0][mi - 1]?.to - 1] : void 0;
-    if (used > 0 && (used + widths[mi] > available - (systemLead[system] ?? 0) || previous?.kind === "barline" && previous.breakAfter)) {
-      system++;
-      used = 0;
-      const bar = previous && previous.kind === "barline" ? previous : void 0;
-      const lead = bar?.beatAfter ? METER_LEAD * k : 0;
-      systemLead[system] = lead;
-      systemMeter[system] = bar?.beatAfter ?? "";
+    const tail = singles[0].events[tables[0][mi]?.to - 1];
+    return {
+      ideal,
+      min: ideal,
+      weight: densities[mi],
+      lead: previous?.kind === "barline" && previous.beatAfter ? METER_LEAD * k : 0,
+      forced: tail?.kind === "barline" && !!tail.breakAfter
+    };
+  });
+  const starts = balancedBreaks(units, available);
+  const scales = [];
+  for (let si = 0; si < starts.length; si++) {
+    const from = starts[si];
+    const to = starts[si + 1] ?? count;
+    const previous = from > 0 ? singles[0].events[tables[0][from - 1]?.to - 1] : void 0;
+    systemLead[si] = units[from].lead;
+    systemMeter[si] = previous?.kind === "barline" ? previous.beatAfter ?? "" : "";
+    const budget = available - systemLead[si] + (closingWidths[to - 1] - 20 * k) / 2;
+    const natural = widths.slice(from, to).reduce((sum, w) => sum + w, 0);
+    const shortTail = (si === starts.length - 1 || units[to - 1].forced) && natural < budget * 0.6;
+    const fitted = fitSpacing(units.slice(from, to), budget, !shortTail);
+    let offset = 0;
+    for (let mi = from; mi < to; mi++) {
+      systemOf[mi] = si;
+      offsetOf[mi] = offset;
+      scales[mi] = (fitted[mi - from] - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi]);
+      offset += fitted[mi - from];
     }
-    systemOf.push(system);
-    offsetOf.push(used);
-    used += widths[mi];
   }
+  const system = starts.length - 1;
   const positions = /* @__PURE__ */ new Map();
   for (const list of entries) for (const e of list) {
     const p = local.get(e.item.eventId);
     const offset = left + (systemLead[systemOf[e.measure]] ?? 0) + offsetOf[e.measure];
-    positions.set(e.item.eventId, { x: offset + p.x, w: p.w, line: systemOf[e.measure], ...p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x) } : {} });
+    const scale = scales[e.measure];
+    const lead = e.item.kind === "note" || e.item.kind === "rest" ? e.lead : 0;
+    positions.set(e.item.eventId, { x: offset + (p.x + lead) * scale - lead, w: e.item.kind === "barline" && e.tick > 0 ? p.w : p.w * scale, line: systemOf[e.measure], ...p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {} });
   }
   const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
   const title = placed[0].title;
@@ -1273,7 +1610,56 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     }
     systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
   }
+  addPlaybackAnchors(lines, measured[0].glyph);
   return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24 };
+}
+
+// src/v2/lyricLines.ts
+function lyricTextWidth(text2, fontSize) {
+  return Array.from(text2).reduce((sum, ch) => sum + (/[^\x00-\xff]|[MWmw@%]/.test(ch) ? 1 : /[A-Z]/.test(ch) ? 0.8 : 0.65) * fontSize, 0);
+}
+function projectLyricLines(events, rows, fontSize) {
+  const result = rows.map(() => []);
+  const positions = new Map(rows.flatMap((row, ri) => row.notes.map((n) => [n.id, { ...n, row: ri }])));
+  const verses = Math.max(0, ...events.map((e) => e.kind === "note" ? e.lyricLinks?.length ?? 0 : 0));
+  const connect = (a, b, verse, kind, fromWord) => {
+    const start = a.x + (fromWord ? (a.widths[verse] ?? 0) * (a.leftAligned ? 1 : 0.5) + 0.18 * fontSize : a.leftAligned ? 0.5 * fontSize : 0);
+    const end = b.x + (kind === "extend" ? (b.leftAligned ? 0.85 : 0.35) * fontSize : -(b.leftAligned ? 0 : (b.widths[verse] ?? 0) / 2) - 0.18 * fontSize);
+    for (let row = a.row; row <= b.row; row++) {
+      const x0 = row === a.row ? start : rows[row].left;
+      const x1 = row === b.row ? end : rows[row].right;
+      if (x1 > x0) result[row].push({ x0, x1, verse, kind });
+    }
+  };
+  for (let verse = 0; verse < verses; verse++) {
+    let previous = null;
+    let hyphen = null;
+    for (const event of events) {
+      if (event.kind === "rest") {
+        previous = null;
+        hyphen = null;
+      }
+      if (event.kind !== "note") continue;
+      const at = positions.get(event.id);
+      if (!at) {
+        previous = null;
+        hyphen = null;
+        continue;
+      }
+      const word = event.lyrics?.[verse] ?? "";
+      const link = event.lyricLinks?.[verse];
+      if (word) {
+        if (hyphen) connect(hyphen, at, verse, "hyphen", true);
+        hyphen = link === "hyphen" ? at : null;
+        previous = { at, word: true };
+      } else if (link === "extend" && previous) {
+        connect(previous.at, at, verse, "extend", previous.word);
+        previous = { at, word: false };
+        hyphen = null;
+      } else previous = null;
+    }
+  }
+  return result;
 }
 
 // src/v2/layout.ts
@@ -1374,9 +1760,10 @@ function layoutScore(score2, opts) {
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
   const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? 0;
-  const verses = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? e.lyrics?.length ?? 0 : 0));
+  const verses = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
   const lyricBottom = (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 64 : 44) + verses * 24;
-  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 24 * k : 0), verses ? (lyricBottom + 8) * 2 * k : 0);
+  const lineGap = score2.meta.lineGap ?? 0;
+  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 24 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
   const padTop = 20;
   const padBottom = 24;
   const padding = opts.padding ?? 40;
@@ -1462,12 +1849,28 @@ function layoutScore(score2, opts) {
       if (chain.length >= 2) slurChains.push(chain);
     }
   }
-  const accWidthOf = (ev) => ev.kind === "note" && ev.accidental ? glyph.accW : 0;
+  const staffInk = opts.staffPitchMode ? measureStaffInk(score2, glyph, opts.staffPitchMode) : void 0;
+  const graceWidthOf = (ev) => {
+    if (ev.kind !== "note") return 0;
+    const ink = staffInk?.get(ev.id);
+    return ink ? ink.before + ink.after : ((ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0)) * glyph.graceW;
+  };
+  const accWidthOf = (ev) => ev.kind === "note" ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? opts.staffKeySpace ?? 0 : 0) : 0;
   const widths = score2.events.map((ev) => {
     let w = 0;
+    let min = 0;
     if (ev.kind === "note" || ev.kind === "rest") {
-      const graceCount = ev.kind === "note" ? (ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0) : 0;
-      w = Math.max(26 * k, ev.ticks * unit + 10 * k) + accWidthOf(ev) + graceCount * glyph.graceW + spacing;
+      const note = ev.kind === "note" ? ev : void 0;
+      const dashes = dashCountOf(ev.ticks, ev.dot ?? 0);
+      const dots = ev.dot ? 5 * k + (ev.dot - 1) * glyph.dotGap + glyph.dotR : 0;
+      const extension = dashes ? 5 * k + dashes * (glyph.dashW + 3 * k) : 0;
+      const lyric = Math.max(0, ...(note?.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
+      const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
+      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + 3 * k, lyric + 3 * k, mark + 3 * k) + accWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
+      w = Math.max(
+        min,
+        Math.max(26 * k, TICKS_PER_BEAT * unit * Math.sqrt(ev.ticks / TICKS_PER_BEAT) + 10 * k) + accWidthOf(ev) + graceWidthOf(ev) + spacing
+      );
     } else if (isBarrier(ev)) {
       const bar = ev;
       const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
@@ -1475,8 +1878,32 @@ function layoutScore(score2, opts) {
     } else if (ev.kind === "directive") {
       w = (ev.type === "paren" ? 15 : 26) * k + spacing;
     } else if (ev.kind === "jump") w = 26 * k + spacing;
-    return { ev, w: opts.positions?.get(ev.id)?.w ?? w };
+    return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
+  const measureUnit = (from, to) => {
+    const slice = widths.slice(from, to);
+    const ideal = slice.reduce((sum, it) => sum + it.w, 0);
+    const notes = slice.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest").length;
+    const previous = score2.events[from - 1];
+    const tail = score2.events[to - 1];
+    return {
+      ideal,
+      min: Math.max(ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
+      weight: Math.pow(Math.max(1, notes), 1.5),
+      lead: previous?.kind === "barline" && previous.beatAfter ? METER_LEAD * k : 0,
+      forced: tail?.kind === "barline" && !!tail.breakAfter,
+      penalty: slurCrossedBars.has(to - 1) ? 2 : 0
+    };
+  };
+  const measureCuts = [0];
+  for (let i = 0; i < widths.length; i++) {
+    const ev = widths[i].ev;
+    if (ev.kind !== "barline") continue;
+    const cut = ev.breakAfter ? i + 1 : ev.repeat === "start" || ev.volta ? i : i + 1;
+    if (cut > measureCuts[measureCuts.length - 1]) measureCuts.push(cut);
+  }
+  if (measureCuts[measureCuts.length - 1] !== widths.length) measureCuts.push(widths.length);
+  const flowUnits = measureCuts.slice(0, -1).map((from, i) => measureUnit(from, measureCuts[i + 1]));
   let starts = [0];
   let x = 0;
   let lastBar = -1;
@@ -1516,6 +1943,9 @@ function layoutScore(score2, opts) {
       const g = gid ? groupById.get(gid) : void 0;
       if (g && g.memberIds[g.memberIds.length - 1] === ev.id) lastGroupEnd = i + 1;
     }
+  }
+  if (!opts.positions && flowUnits.length && flowUnits.every((u) => u.min <= maxX - (u.lead ?? 0))) {
+    starts = balancedBreaks(flowUnits, maxX).map((i) => measureCuts[i]);
   }
   if (opts.positions) {
     starts = [0];
@@ -1597,13 +2027,29 @@ function layoutScore(score2, opts) {
       }
       if (e.kind === "barline" && seenTimed) measureNo += 1;
     }
-    const line = widths.slice(from, to);
-    const usedBars = line.reduce((a, x2) => a + (x2.ev.kind === "barline" ? x2.w : 0), 0);
-    const usedRest = line.reduce((a, x2) => a + x2.w, 0) - usedBars;
-    const isLast = li === starts.length - 1;
-    const stretch = opts.positions || isLast || usedRest <= 0 ? 1 : Math.max(1, (maxX - lead - usedBars) / usedRest);
+    const cuts = [from, ...measureCuts.filter((c) => c > from && c < to), to];
+    const units = cuts.slice(0, -1).map((a, i) => measureUnit(a, cuts[i + 1]));
+    const natural = units.reduce((sum, u) => sum + u.ideal, 0);
+    const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
+    const lastBar2 = widths[to - 1];
+    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - (20 * k + spacing)) / 2 : 0;
+    const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
+    const advances = /* @__PURE__ */ new Map();
+    if (!opts.positions) units.forEach((u, ui) => {
+      const members = widths.slice(cuts[ui], cuts[ui + 1]);
+      const timed = members.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest");
+      const weight = timed.reduce((sum, it) => sum + Math.sqrt(it.ev.ticks / TICKS_PER_BEAT), 0);
+      const slack = timed.reduce((sum, it) => sum + it.w - it.min, 0);
+      const delta = fitted[ui] - u.ideal;
+      members.forEach((it, index) => {
+        const flexible = it.ev.kind === "note" || it.ev.kind === "rest";
+        const share = delta >= 0 ? flexible ? Math.sqrt(it.ev.ticks / TICKS_PER_BEAT) / Math.max(1e-9, weight) : 0 : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
+        advances.set(cuts[ui] + index, it.w + delta * share);
+      });
+    });
     for (let i = from; i < to; i += 1) {
-      const { ev, w } = widths[i];
+      const { ev } = widths[i];
+      const w = advances.get(i) ?? widths[i].w;
       if (opts.positions) cx = opts.positions.get(ev.id)?.x ?? cx;
       if (ev.kind === "note" || ev.kind === "rest") {
         const item = {
@@ -1623,8 +2069,8 @@ function layoutScore(score2, opts) {
           item.octave = n.octave;
           if (n.accidental) {
             item.accidental = n.accidental;
-            item.accW = glyph.accW;
           }
+          if (accWidthOf(n)) item.accW = accWidthOf(n);
           const gid = groupOfEvent.get(n.id);
           const g = gid ? groupById.get(gid) : void 0;
           item.beams = g?.tuplet ? tupletBeamCount(g.totalTicks, g.tuplet) : beamCount(undotTicks(n.ticks, n.dot ?? 0));
@@ -1635,11 +2081,13 @@ function layoutScore(score2, opts) {
           if (n.keyChange) item.keyChange = n.keyChange;
           if (n.graceBefore?.length) {
             item.graceBefore = n.graceBefore;
-            item.graceInk = n.graceBefore.length * glyph.graceW + glyph.graceGap;
+            item.graceInk = staffInk?.get(n.id)?.before ?? n.graceBefore.length * glyph.graceW + glyph.graceGap;
           }
           if (n.graceAfter?.length) item.graceAfter = n.graceAfter;
+          if (staffInk) item.staffAfterInk = staffInk.get(n.id)?.after ?? 0;
           if (n.articulations?.includes("staccato")) item.staccato = true;
           if (n.techniques?.length) item.techniques = n.techniques;
+          if (n.mark) item.custom = n.mark;
           if (n.dynamic) item.dynamic = n.dynamic;
           if (n.hairpin && !n.hairpinTo) item.hairpin = n.hairpin;
           if (n.lyrics?.length) item.lyrics = n.lyrics;
@@ -1680,7 +2128,7 @@ function layoutScore(score2, opts) {
       } else if (ev.kind === "jump") {
         items.push({ eventId: ev.id, kind: "jump", eventIndex: i, x: cx, w, mark: ev.mark });
       }
-      cx += isBarrier(ev) ? w : w * stretch;
+      cx += w;
     }
     const badges = [];
     {
@@ -1732,16 +2180,20 @@ function layoutScore(score2, opts) {
     const tuplets = [];
     const itemById = new Map(items.map((it) => [it.eventId, it]));
     const seenGroups = /* @__PURE__ */ new Set();
+    const inkLeft = (m) => m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
+    const beamX0 = (m) => inkLeft(m) + 1.5;
+    const beamX1 = (m) => inkLeft(m) + glyph.nominalWidth - 0.5;
     for (const it of items) {
       if (it.kind !== "note" && it.kind !== "rest") continue;
       const gid = groupOfEvent.get(it.eventId);
       const g = gid ? groupById.get(gid) : void 0;
       if (!g) {
         if ((it.beams ?? 0) >= 1) {
-          const x12 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight);
-          beams.push({ x0: it.x + 2, x1: x12, level: 1, gray: it.gray });
-          if ((it.beams ?? 0) >= 2) beams.push({ x0: it.x + 2, x1: x12, level: 2, gray: it.gray });
-          if ((it.beams ?? 0) >= 3) beams.push({ x0: it.x + 2, x1: x12, level: 3, gray: it.gray });
+          const x02 = beamX0(it);
+          const x12 = beamX1(it);
+          beams.push({ x0: x02, x1: x12, level: 1, gray: it.gray });
+          if ((it.beams ?? 0) >= 2) beams.push({ x0: x02, x1: x12, level: 2, gray: it.gray });
+          if ((it.beams ?? 0) >= 3) beams.push({ x0: x02, x1: x12, level: 3, gray: it.gray });
         }
         continue;
       }
@@ -1752,9 +2204,8 @@ function layoutScore(score2, opts) {
       const groupGray = members.every((m) => m.gray);
       const first = members[0];
       const last = members[members.length - 1];
-      const rightOf = (m) => m.x + Math.min(m.w - 4 * k, glyph.glyphRight);
-      const x0 = first.x + 2;
-      const x1 = rightOf(last);
+      const x0 = beamX0(first);
+      const x1 = beamX1(last);
       if (g.tuplet) {
         for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level, gray: groupGray });
         tuplets.push({ x0, x1, text: String(g.tuplet) });
@@ -1771,13 +2222,14 @@ function layoutScore(score2, opts) {
           }
           let end = s;
           while (end < members.length && (members[end].beams ?? 0) >= level) end++;
-          beams.push({ x0: members[s].x + 2, x1: rightOf(members[end - 1]), level, gray: groupGray });
+          beams.push({ x0: beamX0(members[s]), x1: beamX1(members[end - 1]), level, gray: groupGray });
           s = end;
         }
       }
     }
     const arcs = [];
     const rightEdge = items.length ? items[items.length - 1].x + items[items.length - 1].w : padding;
+    const hasMarks = (m) => !!m.tongue || !!m.techniques?.length || !!m.custom || !!m.staccato || !!m.fermata;
     const pushStub = (it, cutBefore, cutAfter) => {
       const cx2 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight) / 2 + 2 * k;
       let x0;
@@ -1795,20 +2247,47 @@ function layoutScore(score2, opts) {
         return;
       }
       if (x1 - x0 < 10) return;
-      arcs.push({ x0, x1, lift: 11, kind: "slur", octaveUp: it.octave ?? 0 });
-    };
-    const pushArc = (a, b, chain2, kind) => {
-      const x0 = a.x + 5;
-      const x1 = b.x + Math.min(b.w - 4 * k, glyph.glyphRight);
-      const span = x1 - x0;
-      if (span < 10) return;
       arcs.push({
         x0,
         x1,
-        // 跨度越大弧越明显，但上限 16px，给上方的换气 / 吐音标记留位置
-        lift: kind === "slur" ? Math.min(16, 10 + span * 0.05) : 11,
+        lift: hasMarks(it) ? 11 : 6,
+        kind: "slur",
+        octaveUp: it.octave ?? 0,
+        tight: !hasMarks(it)
+      });
+    };
+    const pushArc = (a, b, chain2, kind) => {
+      const fromRight = inkLeft(a) + glyph.nominalWidth;
+      const toLeft = inkLeft(b);
+      const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
+      const x1 = toLeft - fromRight >= 10 ? toLeft : inkLeft(b) + glyph.nominalWidth;
+      const span = x1 - x0;
+      if (span < 10) return;
+      const tight = !chain2.some(hasMarks);
+      let nodes = chain2.length;
+      let beats = 0;
+      if (kind === "slur" && chain2.length > 1) {
+        const lo = Math.min(...chain2.map((i) => i.eventIndex));
+        const hi = Math.max(...chain2.map((i) => i.eventIndex));
+        for (const m of chain2) {
+          const ev = byId.get(m.eventId);
+          if (ev && "ticks" in ev) beats += ev.ticks;
+        }
+        for (let i = lo + 1; i < hi; i += 1) {
+          if (score2.events[i]?.kind === "barline") nodes += 1;
+        }
+      }
+      arcs.push({
+        x0,
+        x1,
+        // 跨度越大弧越明显，但整体压扁（用户实测：上限 16→12、基数 10→7），
+        // 给上方的换气 / 吐音标记留位置；tight 弧上限再压到 9（tie 5）
+        lift: kind === "slur" ? Math.min(tight ? 9 : 12, 7 + span * 0.04) : tight ? 5 : 11,
         kind,
-        octaveUp: chain2.reduce((m, i) => Math.max(m, i.octave ?? 0), 0)
+        octaveUp: chain2.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
+        flat: kind === "slur" && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
+        // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
+        tight
       });
     };
     for (const chain2 of slurChains) {
@@ -1832,13 +2311,14 @@ function layoutScore(score2, opts) {
         pushArc(it, target, [it, target], "tie");
       }
     }
+    positionDashes(items, glyph);
     const chain = [];
     const anchors = [];
     for (const it of items) {
       if (it.kind === "directive") continue;
       chain.push(it);
       anchors.push(
-        it.kind === "barline" ? it.x + it.w / 2 : it.x + 10 + (it.graceInk ?? 0)
+        it.kind === "barline" ? it.x + it.w / 2 : opts.staffPitchMode && (it.kind === "note" || it.kind === "rest") ? it.x + glyph.pad + glyph.nominalWidth / 2 + (it.accW ?? 0) + (it.graceInk ?? 0) : it.x + 10 + (it.graceInk ?? 0)
       );
     }
     for (let k2 = 0; k2 < chain.length; k2 += 1) {
@@ -1891,7 +2371,7 @@ function layoutScore(score2, opts) {
     }
     const length = segments.reduce((sum, s) => sum + Math.max(1, s.x1 - s.x0), 0);
     let done = 0;
-    const opening = (fraction) => 4 * k * (e.hairpin === "cresc" ? fraction : 1 - fraction);
+    const opening = (fraction) => 8 * k * (e.hairpin === "cresc" ? fraction : 1 - fraction);
     for (const s of segments) {
       const span = Math.max(1, s.x1 - s.x0);
       (lines[s.li].hairpins ??= []).push({ x0: s.x0, x1: s.x1, kind: e.hairpin, startOpen: opening(done / length), endOpen: opening((done + span) / length) });
@@ -1941,6 +2421,23 @@ function layoutScore(score2, opts) {
       }
     }
   }
+  addPlaybackAnchors(lines, glyph);
+  const lyricLines = projectLyricLines(score2.events, lines.map((line) => ({
+    left: line.items[0]?.x ?? padding,
+    right: Math.max(padding, ...line.items.map((it) => it.x + it.w)),
+    notes: line.items.filter((it) => it.kind === "note").map((it) => {
+      const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
+      return {
+        id: it.eventId,
+        x: it.x + 4 * k + shift,
+        leftAligned: true,
+        widths: (it.lyrics ?? []).map((word) => Math.min(lyricTextWidth(word, 16 * k), Math.max(16 * k, it.w - shift - 8 * k)))
+      };
+    })
+  })), 16 * k);
+  lines.forEach((line, i) => {
+    if (lyricLines[i].length) line.lyricLines = lyricLines[i];
+  });
   return {
     lines,
     unit,

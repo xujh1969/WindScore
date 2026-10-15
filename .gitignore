@@ -4,6 +4,8 @@ dist
 
 # 测试 / 诊断的临时产物
 .tmp*
+# 调参 / 验收用的静态样张（artifacts/*.png|svg）：本地生成，不入库
+artifacts/
 # 听音成谱已移除，本机若残留模型运行时目录仍不入库
 .lab-runtime/
 *.log

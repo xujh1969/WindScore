@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import molihua from '../../scores/molihua.jps?raw';
 import molihuaRepeat from '../../scores/molihua-repeat.jps?raw';
 import songbie from '../../scores/songbie.jps?raw';
@@ -8,10 +8,12 @@ import xiaoxingxing from '../../scores/xiaoxingxing.jps?raw';
 import ensembleDemo from '../../scores/ensemble-demo.jps?raw';
 import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
 import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
+import lyricConnectionsDemo from '../../scores/lyric-connections-demo.jps?raw';
 import quartetDemo from '../../scores/quartet-demo.jps?raw';
 import { meterAt } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
-import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput } from '../lyrics';
+import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, setLyricLink } from '../lyrics';
+import type { LyricLink } from '../types';
 import {
   annotationTextOf,
   parenFlagsOf,
@@ -79,7 +81,7 @@ import {
   saveScore,
   type OpenResult,
 } from '../io';
-import { ACCIDENTAL_GLYPH, TECHNIQUE_GLYPH } from '../paint';
+import { ACCIDENTAL_GLYPH, TECHNIQUE_GLYPH, TECHNIQUE_PATHS, TECHNIQUE_PATH_SCALE } from '../paint';
 import { loadSession, saveSession } from '../session';
 import { beamCount, durationTiers, TICKS_PER_BEAT, tupletBeamCount, undotTicks, withDots } from '../ticks';
 import { expandScore, measureAt } from '../expand';
@@ -107,6 +109,10 @@ import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
 import AudioWaveform from './AudioWaveform';
 import { isTimed } from '../types';
+import { useExp } from '../experimental';
+import { STAFF_INSTRUMENTS, type StaffPitchMode, type StaffInstrument, type StaffClefSetting, type StaffClef } from '../pitch';
+import { resolveStaffClef, suggestStaffClef } from '../staffClef';
+import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from '../musicSymbols';
 import { validateGroups } from '../validate';
 import { ScoreCanvas, type ScorePick } from './ScoreCanvas';
 import { LibraryScreen } from './LibraryScreen';
@@ -278,6 +284,7 @@ const BUILTIN: { name: string; text: string }[] = [
   { name: '欢乐颂（二重奏示例）', text: ensembleDemo },
   { name: '拍号与力度范围（重奏示例）', text: notationPhase2Demo },
   { name: '多段歌词（重奏示例）', text: lyricsDemo },
+  { name: '歌词延唱与英文连字', text: lyricConnectionsDemo },
   { name: '小星星（四声部示例）', text: quartetDemo },
 ];
 
@@ -389,7 +396,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   /** 整体视图：要么看简谱，要么看源码。源码不再塞在属性栏里。 */
   const [view, setView] = useState<'score' | 'source'>('score');
   const [helpOpen, setHelpOpen] = useState(false);
-  const [lyricSelection, setLyricSelection] = useState<{ partId: string; verse: number; session: number } | null>(null);
+  const [lyricSelection, setLyricSelection] = useState<{ partId: string; verse: number; session: number; startId?: string } | null>(null);
+  const [lyricCellId, setLyricCellId] = useState<string | null>(null);
   const [totalView, setTotalView] = useState(true);
   /**
    * 顶层模式：
@@ -444,6 +452,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       /* 隐私模式等存不了就算了 */
     }
   }, [playStyle]);
+  /** 保留已有的记谱法偏好存储，顶部按钮切换简谱／五线谱。 */
+  const [staffViewOn, setStaffViewOn] = useExp('staffView');
+  /** 记谱页 / 播放页共用的记谱法 */
+  const notation: 'jianpu' | 'staff' = staffViewOn ? 'staff' : 'jianpu';
+  const [staffPitchMode, setStaffPitchMode] = useState<StaffPitchMode>(() => localStorage.getItem('ws-staff-pitch-mode') === 'transposed' ? 'transposed' : 'concert');
+  const [staffSettingsOpen, setStaffSettingsOpen] = useState(false);
+  useEffect(() => { localStorage.setItem('ws-staff-pitch-mode', staffPitchMode); }, [staffPitchMode]);
   /** 对轨页「音轨分离工具下载」的说明弹窗 */
   const [tramaOpen, setTramaOpen] = useState(false);
   /**
@@ -588,7 +603,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, []);
   /**
    * 点击波形试听时放几拍就停（默认 8 拍）：找对齐点只需要听一小段，
-   * 一直放会盖住后面的操作。顶栏可改，记忆到 localStorage。
+   * 一直放会盖住后面的操作。波形上方工具栏可改，记忆到 localStorage。
    */
   const [previewBeats, setPreviewBeats] = useState(() => {
     const v = Number(localStorage.getItem('ws-preview-beats'));
@@ -1427,10 +1442,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // 前奏：谱面记的是从进唱开始，伴奏前面还整段前奏。
       // 从头播时把起播点推到音频 0 秒（secToTick 反查，通常为负 tick = 谱面起点之前），
       // 前奏就会照常放完再进谱面；关掉则老样子——从谱面起点直接开始
-      // playFromTick 未必正好 0（谱首有弱起 / 小节线时会落在第一拍内），
-      // 所以判据用「从开头附近起播」而不是严格等于 0
+      // 仅未点选音符、从谱面零拍起播时带前奏；选中首拍内的音也必须尊重其起点。
       const introTick =
-        playIntro && !activePlayPick && playFromTick <= TICKS_PER_BEAT
+        playIntro && !activePlayPick && snap.mode !== 'over' && playFromTick === 0
           ? Math.min(0, secToTick(audioTempo!, 0))
           : playFromTick;
       playerRef.current.startAudio({
@@ -1451,7 +1465,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.seek(playFromTick / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode]);
 
   // ── 跟着音乐打拍子定速度 ─────────────────────────────────────
   // 自动测速的失败模式是锁错倍频（17:8 就是 2.125 倍），数学上无法从错网格自救。
@@ -1619,7 +1633,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   /**
    * 播放 tick 的唯一出口：音频模式反查 secToTick（变速下唯一正确的做法），
-   * 合成音模式走 BeatClock。ScoreCanvas 每帧调一次。
+   * 合成音同样使用 Player 的 AudioContext 时钟；未播放时才回退 BeatClock。
    */
   const getPlayTick = useCallback((): number | null => {
     const t = playerRef.current.currentTick;
@@ -2201,12 +2215,53 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       playerRef.current.setPartGains(buildTimeline(expanded.score ?? next));
     }
   };
+  const staffPart = scoreParts(documentScore).find(p => p.id === activePartId)!;
+  const toggleStaffClef = (id: string, current: StaffClef) => {
+    const parts = scoreParts(documentScore);
+    const part = parts.find(p => p.id === id);
+    if (!part) return;
+    const clef = current === 'bass' ? 'treble' : 'bass';
+    changeParts(assembleParts(documentScore, parts.map(p => p.id === id ? { ...p, staffClef: clef } : p)));
+  };
+  const suggestBass = resolveStaffClef(staffPart, documentScore.meta.key, staffPitchMode) !== 'bass' && suggestStaffClef(staffPart, documentScore.meta.key, staffPitchMode) === 'bass';
+  const staffSettings = <div className="v2-meta" aria-label="五线谱记谱设置">
+    <div className="v2-exp-hint">当前声部：{staffPart.name}</div>
+    <label className="v2-meta-row"><span className="v2-meta-label">记谱乐器</span>
+      <select className="v2-meta-input" value={staffPart.staffInstrument ?? 'concert'} onChange={e => changeParts(assembleParts(documentScore, scoreParts(documentScore).map(p => p.id === activePartId ? { ...p, staffInstrument: e.target.value as StaffInstrument } : p)))}>
+        {STAFF_INSTRUMENTS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+      </select>
+    </label>
+    <label className="v2-meta-row"><span className="v2-meta-label">谱号</span>
+      <select className="v2-meta-input" value={staffPart.staffClef ?? 'auto'} onChange={e => changeParts(assembleParts(documentScore, scoreParts(documentScore).map(p => p.id === activePartId ? { ...p, staffClef: e.target.value as StaffClefSetting } : p)))}>
+        <option value="auto">默认（当前：{resolveStaffClef({ ...staffPart, staffClef: 'auto' }, documentScore.meta.key, staffPitchMode) === 'bass' ? '低音谱号' : '高音谱号'}）</option>
+        <option value="treble">高音谱号</option><option value="bass">低音谱号</option>
+      </select>
+    </label>
+    <p className="v2-exp-hint">乐器移调谱按所选乐器显示；实音谱保持实际音高。设置不改变播放音高，可撤销。</p>
+    <p className="v2-exp-hint">默认以高音为基准，只有持续处于明显低音区且加线大幅减少时采用低音。手动指定的谱号保持。</p>
+    {suggestBass ? <div className="v2-exp-hint">当前声部持续处于低音区，建议使用低音谱号。<button className="v2-btn" onClick={() => changeParts(assembleParts(documentScore, scoreParts(documentScore).map(p => p.id === activePartId ? { ...p, staffClef: 'bass' } : p)))}>应用低音谱号</button></div> : null}
+  </div>;
   const selectLyrics = (partId: string, verse: number | null) => {
+    setLyricCellId(null);
     stopPlay();
     setPending(null);
     setSnap((s) => ({ ...s, partId, anchor: null, ...(partId !== activePartId ? { cursor: 0, mode: 'insert' as const } : {}) }));
     setLyricSelection((previous) => verse === null ? null : { partId, verse, session: (previous?.session ?? 0) + 1 });
   };
+  const changeLyricLink = (id: string, link: LyricLink | null, word?: string): boolean => {
+    if (lyricVerse === null) return false;
+    const current = score.events.find(e => e.id === id);
+    const unchanged = current?.kind === 'note' && word === (current.lyrics?.[lyricVerse] ?? '');
+    const written = word === undefined || unchanged ? { score } : writeLyricInput(score, id, lyricVerse, word);
+    if ('error' in written && written.error) { setMsg(written.error); return false; }
+    const result = setLyricLink(written.score, id, lyricVerse, link);
+    if (result.error) { setMsg(result.error); return false; }
+    setMsg(''); setScore(result.score);
+    setLyricSelection(previous => previous ? { ...previous, startId: id, session: previous.session + 1 } : previous);
+    return true;
+  };
+  const lyricCell = score.events.find(e => e.kind === 'note' && e.id === lyricCellId);
+  const lyricConnection = lyricVerse !== null && lyricCell?.kind === 'note' ? lyricCell.lyricLinks?.[lyricVerse] : null;
 
   /** 演奏顺序里每一小节的起始 tick（`[小节1, 小节2, …]`）：录片段时按小节号换 tick */
   const measureTicks = useMemo(() => {
@@ -2543,13 +2598,20 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
         } else {
           setMsg(res.errors.length ? res.errors[0] : '解析失败');
-          return;
+          return false;
         }
       }
       setView(next);
+      return true;
     },
     [view, draft, serialized, stopPlay, commit],
   );
+
+  const chooseNotation = (staff: boolean, settings = false): void => {
+    if (!switchView('score')) return;
+    setStaffViewOn(staff);
+    if (settings) setStaffSettingsOpen(true);
+  };
 
   /** 源码视图的**实时**解析：编辑过程中错误列表跟着变，修好立即消失 */
   const draftParse = useMemo(() => (view === 'source' ? parseDsl(draft) : null), [view, draft]);
@@ -2716,26 +2778,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   </button>
                 </>
               ) : null}
-              {/* 点击波形试听放几拍就停（找对齐点听一小段就够，不用手动掐） */}
-              <label
-                className="v2-grace-check"
-                title="点击波形试听时放几拍就自动停；拍长按当前网格速度计算"
-              >
-                试听
-                <input
-                  className="v2-num"
-                  style={{ width: 44 }}
-                  type="number"
-                  min={1}
-                  max={64}
-                  value={previewBeats}
-                  onChange={(e) => {
-                    const v = Math.round(Number(e.target.value));
-                    if (Number.isFinite(v)) setPreviewBeats(Math.max(1, Math.min(64, v)));
-                  }}
-                />
-                拍
-              </label>
             </>
           ) : null}
           {mode !== 'play' && mode !== 'discover' ? <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button> : null}
@@ -2752,21 +2794,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         <div className="v2-play">
           <div className="v2-play-bar">
             {entry === 'play' ? (
-              <>
-                {/* 与编辑页顶栏那枚同款（.v2-home-btn），两入口长得一样 */}
-                <a className="v2-home-btn" href="./index.html" title="回到首页">
-                  ← 返回首页
-                </a>
                 <button
                   className="v2-btn"
                   onClick={() => setMode('discover')}
                   title="回到动态谱首页"
                 >
-                  ← 动态谱
+                  ← 返回动态谱
                 </button>
-              </>
             ) : null}
-            <span className="v2-play-title">
+            <span className="v2-play-title" title={score.meta.title || active}>
               {score.meta.title || active}
               {expandView && canExpandView ? (
                 <span className="v2-play-tag" title="反复与跳转已按顺序铺开，导出也用这份">
@@ -2862,6 +2898,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </button>
             </div>
             {/* 播放指示方式：原来只在记谱的属性栏里，播放时想换得切回去 */}
+            <div className="v2-view-switch" aria-label="播放谱式">
+              <button className={!staffViewOn ? 'v2-seg is-on' : 'v2-seg'} aria-pressed={!staffViewOn} onClick={() => setStaffViewOn(false)}>简谱</button>
+              <StaffViewButton active={staffViewOn} onSelect={() => setStaffViewOn(true)} onSettings={() => { setStaffViewOn(true); setStaffSettingsOpen(true); }} />
+            </div>
             <div className="v2-view-switch" title="播放时用哪种指示">
               <button
                 className={playStyle === 'head' ? 'v2-seg is-on' : 'v2-seg'}
@@ -2873,7 +2913,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <button
                 className={playStyle === 'band' ? 'v2-seg is-on' : 'v2-seg'}
                 onClick={() => setPlayStyle('band')}
-                title="从当前行行首开始、随音乐变宽的高亮条"
+                title={staffViewOn ? '贯穿谱表的窄竖高亮带，按节拍连续移动' : '从当前行行首开始、随音乐变宽的高亮条'}
               >
                 高亮条
               </button>
@@ -2944,10 +2984,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             </div>
           ) : null}
 
-          {documentScore.part ? <PartsPanel score={documentScore} activeId={activePartId} total={totalView} readOnly onSelect={selectPart} onTotal={setTotalView} onChange={changeParts} /> : null}
+          {scoreParts(documentScore).length > 1 ? <PartsPanel score={documentScore} activeId={activePartId} total={totalView} readOnly onSelect={selectPart} onTotal={setTotalView} onChange={changeParts} /> : null}
           <div className="v2-play-stage">
             <ScoreCanvas
               score={viewScore}
+              onClefClick={toggleStaffClef}
               activePartId={activePartId}
               dark={dark}
               unit={EDITOR_UNIT}
@@ -2957,6 +2998,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               cursor={0}
               timeline={displayTimeline}
               playStyle={playStyle}
+              notation={notation}
+              staffPitchMode={staffPitchMode}
               playing={playing}
               clock={clockRef.current}
               getPlayTick={getPlayTick}
@@ -2969,6 +3012,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           </div>
         </div>
       ) : null}
+
+      {(mode === 'play' || mode === 'score' || mode === 'align') && staffViewOn && staffSettingsOpen ? <StaffSettingsDialog onClose={() => setStaffSettingsOpen(false)}>
+        <div className="v2-view-switch" aria-label="五线谱音高显示">
+          <button className={staffPitchMode === 'concert' ? 'v2-seg is-on' : 'v2-seg'} aria-pressed={staffPitchMode === 'concert'} onClick={() => setStaffPitchMode('concert')}>实音谱</button>
+          <button className={staffPitchMode === 'transposed' ? 'v2-seg is-on' : 'v2-seg'} aria-pressed={staffPitchMode === 'transposed'} onClick={() => setStaffPitchMode('transposed')}>乐器移调谱</button>
+        </div>
+        {staffSettings}
+      </StaffSettingsDialog> : null}
 
       {/*
         导出弹窗：导出的是 `viewScore`——播放界面开着「展开反复」时，
@@ -2989,6 +3040,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
       {exportOpen ? (
         <ExportDialog
+          notation={notation}
+          staffPitchMode={staffPitchMode}
           songName={score.meta.title || active}
           score={mode === 'play' ? fullViewScore : documentScore}
           visibleLayout={mode === 'play' || view === 'score' ? visibleLayout.current?.layout : undefined}
@@ -3094,7 +3147,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 <button
                   className={playStyle === 'band' ? 'v2-seg is-on' : 'v2-seg'}
                   onClick={() => setPlayStyle('band')}
-                  title="从当前行行首开始、随音乐变宽的高亮条"
+                  title={staffViewOn ? '贯穿谱表的窄竖高亮带，按节拍连续移动' : '从当前行行首开始、随音乐变宽的高亮条'}
                 >
                   高亮条
                 </button>
@@ -3108,16 +3161,19 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               </div>
             </div>
 
-            {/* 简谱 / 源码整体切换：源码不是属性栏里的一个小格子，而是另一套视图 */}
-            <div className="v2-view-switch v2-hide-align">
+            {/* 记谱法与源码在同一处切换；动态谱生成页不显示源码入口。 */}
+            <div className="v2-view-switch" aria-label="曲谱视图">
               <button
-                className={view === 'score' ? 'v2-seg is-on' : 'v2-seg'}
-                onClick={() => switchView('score')}
+                className={view === 'score' && !staffViewOn ? 'v2-seg is-on' : 'v2-seg'}
+                aria-pressed={view === 'score' && !staffViewOn}
+                onClick={() => chooseNotation(false)}
               >
                 简谱
               </button>
+              <StaffViewButton active={view === 'score' && staffViewOn} onSelect={() => chooseNotation(true)} onSettings={() => chooseNotation(true, true)} />
               <button
-                className={view === 'source' ? 'v2-seg is-on' : 'v2-seg'}
+                className={view === 'source' ? 'v2-seg v2-hide-align is-on' : 'v2-seg v2-hide-align'}
+                aria-pressed={view === 'source'}
                 onClick={() => switchView('source')}
               >
                 源码
@@ -3146,6 +3202,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               {lyricVerse !== null ? <div className="v2-lyric-tools">
                 <strong>{lyricTrackNames(score)[lyricVerse]} · {score.part?.name ?? '声部 1'}</strong>
                 <span>{notes ? '中文词句自动分格 · 空格确认 / 补空位 · ← → 移动' : '当前声部没有音符，请结束歌词输入后先写旋律'}</span>
+                <button className={`v2-btn${lyricConnection === 'extend' ? ' is-on' : ''}`} aria-pressed={lyricConnection === 'extend'} disabled={!lyricCell} title="选中后续空歌词格，再点延唱（Ctrl+E）" onClick={() => lyricCellId && changeLyricLink(lyricCellId, 'extend')}>延唱</button>
+                <button className={`v2-btn${lyricConnection === 'hyphen' ? ' is-on' : ''}`} aria-pressed={lyricConnection === 'hyphen'} disabled={!lyricCell} title="选中前一个音节，再点连字（Ctrl+H）" onClick={() => lyricCellId && changeLyricLink(lyricCellId, 'hyphen')}>连字</button>
+                <button className="v2-btn" disabled={!lyricCell} title="只取消本格的连线标记（Ctrl+Shift+E）" onClick={() => lyricCellId && changeLyricLink(lyricCellId, null)}>取消连线</button>
                 <button className="v2-btn" onClick={() => setLyricSelection(null)}>结束歌词输入</button>
               </div> : null}
               {mode === 'align' && stems.length > 0 && analyzing ? (
@@ -3178,6 +3237,22 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                             ? `${tempoEst && appliedTempoEst === tempoEst ? '已自动识别 · ' : ''}当前网格 ${Math.round(tempoDraft.bpm)} 拍/分 · 已绑定 ${anchors.length} 处 · 点节奏线对齐，拖节奏线整组平移`
                             : '载入伴奏后自动测速 · 点节奏线 → 点谱面小节线完成对齐'}
                   </span>
+                  <label className="v2-grace-check v2-align-preview" title="点击波形试听时放几拍就自动停；拍长按当前网格速度计算">
+                    试听
+                    <input
+                      className="v2-num"
+                      style={{ width: 44 }}
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={previewBeats}
+                      onChange={(e) => {
+                        const v = Math.round(Number(e.target.value));
+                        if (Number.isFinite(v)) setPreviewBeats(Math.max(1, Math.min(64, v)));
+                      }}
+                    />
+                    拍
+                  </label>
                   {tapping ? (
                     <>
                       <button className="v2-btn" onClick={() => setTaps([])}>
@@ -3295,6 +3370,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               ) : null}
               <ScoreCanvas
                 score={totalView ? documentScore : score}
+                onClefClick={toggleStaffClef}
                 activePartId={activePartId}
                 dark={dark}
                 unit={EDITOR_UNIT}
@@ -3302,6 +3378,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 cursor={snap.cursor}
                 /* 记谱页永远画原谱 → 用原谱口径的时间线（展开视图是播放页的事） */
                 timeline={notationTimeline}
+                notation={notation}
+                staffPitchMode={staffPitchMode}
                 playing={playing}
                 clock={clockRef.current}
                 getPlayTick={getPlayTick}
@@ -3319,7 +3397,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 }}
                 onBlankClick={() => setSongInfoOpen(false)}
                 lyricEdit={lyricVerse !== null && !playing ? {
-                  partId: activePartId, verse: lyricVerse, startId: overId, session: lyricSelection!.session,
+                  partId: activePartId, verse: lyricVerse, startId: lyricSelection!.startId ?? overId, session: lyricSelection!.session,
+                  onActivate: setLyricCellId, onLink: changeLyricLink,
                   onCommit: (id, word) => {
                     const result = writeLyricInput(score, id, lyricVerse, word);
                     if (result.error) { setMsg(result.error); return false; }
@@ -3429,6 +3508,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             <p className="v2-hint">一次输入中文词句会逐字分到连续音符；新输入单字后按空格确认。回到已有歌词格按空格，会在该字前补一个空位，后续歌词顺延；空白格按空格跳过一音。</p>
             <p className="v2-hint">Tab / Enter / → 前进，Shift+Tab / ← 后退。音符位置不足时会提示，不会截断后续歌词。</p>
             <p className="v2-hint">退格删除选中的字；空白格或字前的光标按退格，删除前一位置（包括空位），后续歌词向前补齐。可以连续退格，也可撤销恢复。</p>
+            <p className="v2-hint">一字跨多音：选后续空格点「延唱」（Ctrl+E）；英文音节连接：选前一音节点「连字」（Ctrl+H）。「取消连线」（Ctrl+Shift+E）只清除当前标记。延唱格显示「延」，退格会删除该格；休止会打断连接。</p>
             <p className="v2-hint">输入法选字期间不会跳音。离开输入格写入歌词，点击「结束歌词输入」或按 Esc 回到写谱。</p>
           </div> : <>
           {/*
@@ -3653,7 +3733,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                         title={tip}
                         onClick={() => setScore(toggleJumpAfterBarline(score, barlineFocus.id, jumpAfterFocus === mark ? null : mark))}
                       >
-                        {label}
+                        {mark === 'segno' ? <><span style={{ fontFamily: MUSIC_SYMBOL_FONT, fontSize: '1.2em', lineHeight: 1, verticalAlign: '-0.12em' }}>{SEGNO_SYMBOL}</span> 起点</> : label}
                       </button>
                     ))}
                   </div>
@@ -4096,8 +4176,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                             (focus.techniques ?? []).includes(value) ? 'v2-btn is-on' : 'v2-btn'
                           }
                           onClick={() => setScore(toggleTechnique(score, focus.id, value))}
-                          title={g.path ? `${g.label}，谱面标作波音记号（锯齿加中缝竖线）` : `${g.label}，谱面标作 ${g.mark}`}
+                          title={g.path ? `${g.label}，谱面使用与此图标一致的记号` : `${g.label}，谱面标作 ${g.mark}`}
                         >
+                          {g.path ? <svg width={20 * TECHNIQUE_PATH_SCALE[g.path]} height={18 * TECHNIQUE_PATH_SCALE[g.path]} viewBox="-10 -9 20 18" aria-hidden="true" style={{ verticalAlign: 'middle', marginRight: 4 }}>
+                            <path d={TECHNIQUE_PATHS[g.path].d} transform={TECHNIQUE_PATHS[g.path].flip ? 'scale(1 -1)' : undefined} fill={TECHNIQUE_PATHS[g.path].fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={TECHNIQUE_PATHS[g.path].strokeWidth} strokeLinejoin={TECHNIQUE_PATHS[g.path].fill ? 'round' : 'miter'} strokeLinecap={TECHNIQUE_PATHS[g.path].fill ? 'round' : 'butt'} />
+                          </svg> : null}
                           {g.label}
                         </button>
                       ))}
@@ -5068,6 +5151,42 @@ function eventLabel(e: Event): string {
     default:
       return '记号';
   }
+}
+
+function StaffViewButton({ active, onSelect, onSettings }: { active: boolean; onSelect: () => void; onSettings: () => void }) {
+  return <div className={active ? 'v2-staff-choice is-on' : 'v2-staff-choice'}>
+    <button className="v2-seg" aria-pressed={active} onClick={onSelect}>五线谱</button>
+    <button className="v2-seg v2-staff-gear" aria-label="五线谱设置" aria-haspopup="dialog" onClick={onSettings} title="五线谱设置：实音／移调、记谱乐器、谱号">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9.5 2h5l.6 2.5 1.8 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.8 1-.6 2.5h-5l-.6-2.5-1.8-1-2.5.7-2.5-4.4L4 13v-2L2.1 9.2l2.5-4.4 2.5.7 1.8-1z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+    </button>
+  </div>;
+}
+
+function StaffSettingsDialog({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const opener = useRef(document.activeElement as HTMLElement | null);
+  useEffect(() => {
+    const el = dialog.current!;
+    el.showModal();
+    return () => {
+      el.close();
+      if (opener.current?.isConnected) opener.current.focus({ preventScroll: true });
+    };
+  }, []);
+  return <dialog ref={dialog} className="v2-exp v2-part-dialog v2-staff-dialog" aria-label="五线谱设置"
+    onKeyDown={e => e.stopPropagation()}
+    onCancel={e => { e.preventDefault(); onClose(); }}
+    onClick={e => {
+      if (e.target !== e.currentTarget) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) onClose();
+    }}>
+    <div className="v2-exp-head"><strong>五线谱设置</strong><button className="v2-btn" onClick={onClose}>完成</button></div>
+    {children}
+  </dialog>;
 }
 
 function trimTick(tick: number): string {

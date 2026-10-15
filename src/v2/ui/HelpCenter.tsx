@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import guide from '../../../docs/user-guide.md?raw';
 import './help.css';
 
-const ids = ['quick-start', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'export', 'jps', 'faq'];
+const ids = ['quick-start', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'staff', 'export', 'jps', 'faq'];
 const topics = guide.split('\n## ').slice(1).map((part, i) => {
   const end = part.indexOf('\n');
   return { id: ids[i], title: part.slice(0, end).trim(), body: part.slice(end).trim() };

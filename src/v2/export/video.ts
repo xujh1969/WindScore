@@ -7,7 +7,7 @@
 
 import { layoutScore, type LayoutResult } from "../layout";
 import type { Score } from '../types';
-import type { PageGeometry } from "./render";
+import { prepareExportLayout, type ExportLayoutResult, type ExportNotation, type PageGeometry } from "./render";
 import type { AudioStem } from "../audio";
 import type { TempoMap } from "../tempo";
 import { tickToSec } from "../tempo";
@@ -203,16 +203,18 @@ export function videoGeometry(
 }
 
 /** 与已确认的 C 样张一致；按画幅排版，不沿用网页的行宽。 */
-export function videoLayoutFor(score: Score, ratio: VideoRatio, shortSide: number, showTitle: boolean): LayoutResult {
+export function videoLayoutFor(score: Score, ratio: VideoRatio, shortSide: number, showTitle: boolean, notationOptions: ExportNotation = {}): ExportLayoutResult {
   const { geo } = videoGeometry(ratio, shortSide);
-  return layoutScore(score, {
+  const layout = layoutScore(score, {
     contentWidth: (geo.pageW - geo.marginX * 2) / geo.scale,
     fontSize: 21,
     unit: 0.42,
     letterSpacing: -8,
-    padding: 0,
+    padding: notationOptions.notation === 'staff' ? 96 : 0,
+    ...(notationOptions.notation === 'staff' ? { staffKeySpace: 104, staffPitchMode: notationOptions.staffPitchMode ?? 'concert' } : {}),
     showTitle,
   });
+  return prepareExportLayout(score, layout, notationOptions);
 }
 
 /**

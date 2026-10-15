@@ -5,6 +5,9 @@
  * 竖向度量统一收在这里，改版式只动这一组常量。
  */
 
+import { playbackX } from './spacing';
+import { paintLyricLines } from './lyricLines';
+import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
 import {
   clusterSpan,
   SCORE_START_ID,
@@ -19,61 +22,77 @@ import type { Accidental, GraceNote } from './types';
 /** 数据值 → 谱面字形（属性面板的按钮也用这一份，避免两处各写一套） */
 export const ACCIDENTAL_GLYPH: Record<Accidental, string> = { '#': '♯', b: '♭', '♮': '♮' };
 
+/** 用户提供的波音 SVG：等比缩至 14px 宽并居中，保留填充曲线的粗细变化。 */
+// 加宽两段粗笔画，再用同色描边增强细线和末端的小字号可见性。
+const mordentPath = 'M -6.7348 1.3655 C -6.0189 0.2254 -5.0114 -2.108 -4.0038 -2.4792 C -3.2083 -2.9564 -2.572 -2.6383 -2.2008 -1.7898 C -1.7235 -0.6761 -1.75 1.1799 -0.6894 1.7898 C -0.053 2.161 0.4242 1.286 0.9545 0.0928 C 1.75 -1.7102 2.0947 -2.6383 2.9697 -2.5852 C 4.0833 -2.6383 4.1364 -0.8087 4.5076 0.1723 C 4.9318 1.4716 5.4886 2.108 6.2045 1.233 C 6.4697 0.8617 6.6023 0.2254 6.7348 -0.7292 C 6.5227 0.7557 6.0455 2.2405 5.3295 2.3996 C 4.0038 2.6648 3.6061 0.9413 3.2614 -0.1989 C 2.8636 -1.4451 2.9962 -2.0814 2.3864 -1.7898 C 1.7235 -1.392 1.1402 0.411 0.3712 1.4981 C -0.3712 2.7178 -1.7765 2.7443 -2.3598 1.3125 C -2.9697 0.0133 -3.0758 -1.8693 -3.3144 -2.0284 C -4.4015 -2.4792 -5.5152 0.3049 -6.7348 1.3655 Z';
+const bendDownPath = 'M -7 0 L -2 -5 L 7 6 M 2 4 L 7 6 L 6 1';
+/** Canvas 与属性按钮共用路径；上下版本只做垂直镜像。 */
+export const TECHNIQUE_PATHS: Record<'mordentUp' | 'mordentDown' | 'bendUp' | 'bendDown', { d: string; fill: boolean; flip: boolean; strokeWidth: number }> = {
+  mordentUp: { d: mordentPath, fill: true, flip: false, strokeWidth: 0.85 },
+  mordentDown: { d: mordentPath, fill: true, flip: true, strokeWidth: 0.85 },
+  bendUp: { d: bendDownPath, fill: false, flip: true, strokeWidth: 1.5 },
+  bendDown: { d: bendDownPath, fill: false, flip: false, strokeWidth: 1.5 },
+};
+type TechniquePath = keyof typeof TECHNIQUE_PATHS;
+export const TECHNIQUE_PATH_SCALE: Record<TechniquePath, number> = {
+  mordentUp: 0.99,
+  mordentDown: 0.99,
+  bendUp: 0.64,
+  bendDown: 0.64,
+};
+const techniquePathCache = new Map<TechniquePath, Path2D>();
+
+/** Keep the original vector data available to the SVG export canvas. */
+export function paintTechniqueGeometry(ctx: CanvasRenderingContext2D, path: TechniquePath): void {
+  const shape = TECHNIQUE_PATHS[path];
+  const vector = ctx as CanvasRenderingContext2D & { drawSvgPath?: (d: string, fill: boolean, stroke: boolean) => void };
+  if (vector.drawSvgPath) {
+    vector.drawSvgPath(shape.d, shape.fill, shape.strokeWidth > 0);
+    return;
+  }
+  let geometry = techniquePathCache.get(path);
+  if (!geometry) {
+    geometry = new Path2D(shape.d);
+    techniquePathCache.set(path, geometry);
+  }
+  if (shape.fill) ctx.fill(geometry);
+  if (shape.strokeWidth > 0) ctx.stroke(geometry);
+}
+
 /**
  * 电吹管技法记号：数据值 → 谱面字形。
  * DSL 后缀字母见 dsl.ts 的 TECHNIQUE_LETTER，两处通过数据值（键）对应。
- * flip = 上下翻转；path = 不用字符、改走专用路径绘制（见 drawMordent）。
+ * flip = 上下翻转；path = 不用字符、改走专用折线路径绘制。
  */
 export const TECHNIQUE_GLYPH: Record<
   string,
-  { mark: string; label: string; flip?: boolean; path?: 'mordentUp' | 'mordentDown' }
+  { mark: string; label: string; flip?: boolean; path?: TechniquePath }
 > = {
   breath: { mark: 'V', label: '换气' },
   trill: { mark: 'tr', label: '颤音' },
   flutter: { mark: '*', label: '花舌' },
   da: { mark: '扌', label: '打音' },
-  // 波音不用字符 ≈（太扁太圆，出不来装饰音的锐利感）——走 drawMordent
-  // 的路径画法：锯齿 + 中缝竖线，上波音竖线上伸、下波音下伸。
-  // mark 仍填 ≈ 仅供横向占位测量（≈ 的字宽 ≈ 路径宽）
+  // 波音按用户提供的 SVG 填充曲线绘制，不带中间竖线。
   mordentUp: { mark: '≈', label: '上波音', path: 'mordentUp' },
   mordentDown: { mark: '≈', label: '下波音', path: 'mordentDown' },
   slideUp: { mark: '↑', label: '上滑音' },
   slideDown: { mark: '↓', label: '下滑音' },
-  bendUp: { mark: '↗', label: '前弯音' },
-  bendDown: { mark: '↘', label: '后弯音' },
+  bendUp: { mark: '↗', label: '上弯音', path: 'bendUp' },
+  bendDown: { mark: '↘', label: '下弯音', path: 'bendDown' },
 };
 
-/**
- * 波音记号（上波音 / 下波音）：标准的「锯齿 + 中缝竖线」装饰音画法。
- * 以 (cx, cy) 为锯齿中心：宽 13px、高 4.4px 的三峰折线；竖线从中缝
- * 穿出——上波音向上伸、下波音向下伸（两种波音一眼可分）。
- * 颜色取调用方已设好的 fillStyle（与吐音 / 花舌等记号同色）。
- */
-function drawMordent(ctx: CanvasRenderingContext2D, cx: number, cy: number, up: boolean): void {
+/** 颜色随调用方，尺寸随谱面字号，避免导出大字时记号仍停留在 13px。 */
+function drawTechniquePath(ctx: CanvasRenderingContext2D, cx: number, cy: number, path: TechniquePath, scale: number): void {
   ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale * TECHNIQUE_PATH_SCALE[path], scale * TECHNIQUE_PATH_SCALE[path]);
+  const shape = TECHNIQUE_PATHS[path];
+  if (shape.flip) ctx.scale(1, -1);
   ctx.strokeStyle = ctx.fillStyle;
-  ctx.lineWidth = 1.3;
-  ctx.lineJoin = 'miter';
-  const w = 6.5; // 半宽
-  const h = 2.2; // 锯齿半高
-  ctx.beginPath();
-  ctx.moveTo(cx - w, cy + h);
-  ctx.lineTo(cx - w * 0.55, cy - h);
-  ctx.lineTo(cx - w * 0.15, cy + h);
-  ctx.lineTo(cx + w * 0.2, cy - h);
-  ctx.lineTo(cx + w * 0.6, cy + h);
-  ctx.lineTo(cx + w, cy - h);
-  ctx.stroke();
-  // 中缝竖线：从锯齿中心穿出，上波音朝上、下波音朝下
-  ctx.beginPath();
-  if (up) {
-    ctx.moveTo(cx, cy - h - 3.5);
-    ctx.lineTo(cx, cy + h - 1);
-  } else {
-    ctx.moveTo(cx, cy - h + 1);
-    ctx.lineTo(cx, cy + h + 3.5);
-  }
-  ctx.stroke();
+  ctx.lineWidth = shape.strokeWidth;
+  ctx.lineJoin = shape.fill ? 'round' : 'miter';
+  ctx.lineCap = shape.fill ? 'round' : 'butt';
+  paintTechniqueGeometry(ctx, path);
   ctx.restore();
 }
 
@@ -462,7 +481,7 @@ function hexA(hex: string, a: number): string {
  * 浅色主题 = 彩色点 + 阴影，**没有光晕**——白底下发光只会是一片白，
  * 光圈也会糊掉音符，阴影才既看得见又不吵。
  */
-function drawPlayBall(
+export function drawPlayBall(
   ctx: CanvasRenderingContext2D,
   b: { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] },
   theme: PaintTheme,
@@ -524,6 +543,15 @@ function drawPlayBall(
     ctx.shadowBlur = 0;
   }
   ctx.globalAlpha = 1; // 渐隐后还原，别污染后续绘制
+}
+
+/** 简谱与五线谱共用谱头，字号跟随同一套版式度量。 */
+export function paintScoreTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, glyph: GlyphMetrics, theme: PaintTheme, showEdit: boolean): void {
+  applyMetrics(glyph);
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  paintTitle(ctx, t, theme, showEdit);
+  ctx.restore();
 }
 
 function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme, showEdit: boolean): void {
@@ -748,7 +776,7 @@ function paintLine(
     // 用字形宽的话块长短只跟字形走，声部之间参差不齐。选中 / 焦点框仍用
     // noteBox（那里必须与命中感知区一致，见 noteBox 的注释）
     const b = { x: headItem.x, w: headItem.w };
-    const px = b.x + b.w * (playhead?.frac ?? 0);
+    const px = playbackX(headItem, playhead?.frac ?? 0);
     if (o.playStyle === 'band') {
       // 行进度条：从行首生长到播放位置，宽度随节奏变化。
       // 比跳动的色块更好跟——一块连续变宽的区域，余光就能看见进度
@@ -961,7 +989,7 @@ function paintLine(
     drawGlyph(ctx, it, y, theme);
   }
 
-  // 跳转记号（L2）：𝄋（画成 $ 样）/ ⊕ / To ⊕ / D.S. / D.C. / Fine —— 画在谱行上方。
+  // 跳转记号（L2）：𝄋 / ⊕ / To ⊕ / D.S. / D.C. / Fine —— 画在谱行上方。
   // 与换气 / 吐音同层但横向落在小节线附近，实际很少打架
   ctx.font = M.markFont;
   ctx.textAlign = 'center';
@@ -969,7 +997,7 @@ function paintLine(
     if (it.kind !== 'jump') continue;
     const label =
       it.mark === 'segno'
-        ? '$'
+        ? SEGNO_SYMBOL
         : it.mark === 'coda'
           ? '⊕'
           : it.mark === 'tocoda'
@@ -980,13 +1008,14 @@ function paintLine(
                 ? 'D.C.'
                 : 'Fine';
     ctx.fillStyle = theme.ink;
+    ctx.font = it.mark === 'segno' ? `${Math.round(17 * M.k)}px ${MUSIC_SYMBOL_FONT}` : M.markFont;
     ctx.fillText(label, it.x + it.w / 2, y - M.markTop);
   }
+  ctx.font = M.markFont;
 
-  // 播放头竖线：走完高亮框的宽度（进度条模式不需要——条的右缘就是位置）。
-  // 框已改用时值格宽，竖线在整个时值格内扫动——长音的进度一眼可读
+  // 播放头按节奏锚点连续前进，长音内部经过增时线，最后接到下一音的拍位。
   if (headItem && playhead && o.playStyle === 'head') {
-    const px = headItem.x + headItem.w * playhead.frac;
+    const px = playbackX(headItem, playhead.frac);
     ctx.fillStyle = theme.playhead;
     ctx.fillRect(Math.round(px), y - M.barHalf, 2, M.barHalf * 2);
   }
@@ -1010,7 +1039,7 @@ function paintLine(
       color: string;
       flip?: boolean;
       dot?: boolean;
-      path?: 'mordentUp' | 'mordentDown';
+      path?: TechniquePath;
     }[] = [];
     if (it.tongue) run.push({ mark: it.tongue, color: theme.tongue });
     if (it.staccato) run.push({ mark: '·', color: theme.ink }); // 断音 / 顿音：小圆点
@@ -1029,7 +1058,9 @@ function paintLine(
     // （用户实测：贴 5px 太挤、抬 15px 又顶到连音线，取中间）。
     // 有高八度点的音，整行再上移到点之上；有转调记号的音同理
     // （转调文字已相应抬高，见上）
-    const markHalf = 4.2; // 12px 记号的墨迹半高
+    const markHalf = Math.max(...run.map(r => r.path
+      ? (r.path === 'bendUp' || r.path === 'bendDown' ? 6.8 : 3.6) * TECHNIQUE_PATH_SCALE[r.path]
+      : 4.2)) * M.k;
     const markGap = 10 * M.k; // 记号墨底与数字墨顶的净距
     let baseY = y - 0.35 * 21 * M.k - markGap - markHalf;
     if ((it.octave ?? 0) > 0) {
@@ -1037,7 +1068,7 @@ function paintLine(
       baseY = Math.min(baseY, dotTop - markGap - markHalf);
     }
     const widths = run.map((r) =>
-      r.path ? 13 : ctx.measureText(r.mark).width,
+      r.path ? 16 * M.k * TECHNIQUE_PATH_SCALE[r.path] : ctx.measureText(r.mark).width,
     );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
     let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
@@ -1048,8 +1079,7 @@ function paintLine(
       // 弧线字形压在基线以上，抬高一点才给正下方的圆点留出位置
       const my = baseY - (r.dot ? 3 : 0);
       if (r.path) {
-        // 路径字形（波音）：锯齿中心对齐记号行的墨迹中心
-        drawMordent(ctx, tx, my, r.path === 'mordentUp');
+        drawTechniquePath(ctx, tx, my, r.path, M.k);
       } else if (r.flip) {
         ctx.save();
         ctx.translate(tx, my);
@@ -1158,6 +1188,9 @@ function paintLine(
     it.lyrics.forEach((word, verse) => { if (word) ctx.fillText(word, it.x + 4 * M.k + shift, lyricY + (verse + 1) * 24 * M.k, Math.max(16 * M.k, it.w - shift - 8 * M.k)); });
   }
   ctx.font = M.font;
+
+  ctx.strokeStyle = theme.ink;
+  paintLyricLines(ctx, line.lyricLines, verse => lyricY + (verse + 1) * 24 * M.k, 16 * M.k);
 
   // 连线（上方弧线）。带技法记号：抬高 5px 给记号行让位；
   // 没带（layout 标记 tight）：反过来下压 5px，弧线贴着音符画——

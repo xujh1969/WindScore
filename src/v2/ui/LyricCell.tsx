@@ -1,10 +1,12 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { flushSync } from 'react-dom';
 import { lyricInputTokens } from '../lyrics';
+import type { LyricLink } from '../types';
 
 /** 真正的文本输入框，让中文输入法完成选字后再处理跳音。 */
-export function LyricCell({ value, label, style, register, onCommit, onInsertGap, onDelete, onMove, onExit }: {
+export function LyricCell({ value, connection, label, style, register, onActivate, onLink, onCommit, onInsertGap, onDelete, onMove, onExit }: {
   value: string; label: string; style: CSSProperties;
+  connection?: LyricLink | null; onActivate: () => void; onLink: (link: LyricLink | null, word: string) => boolean;
   register: (input: HTMLInputElement | null) => void;
   onCommit: (value: string) => boolean; onInsertGap: () => boolean; onDelete: (offset: number) => boolean; onMove: (offset: number, atStart?: boolean) => void; onExit: () => void;
 }) {
@@ -37,8 +39,8 @@ export function LyricCell({ value, label, style, register, onCommit, onInsertGap
       skipBlur.current = false;
     });
   };
-  return <input ref={register} className="v2-lyric-cell" aria-label={label} aria-invalid={invalid || undefined} style={style} value={draft} placeholder="·" autoComplete="off" spellCheck={false}
-    onFocus={(e) => e.currentTarget.select()}
+  return <input ref={register} className="v2-lyric-cell" aria-label={`${label}${connection === 'extend' ? ' · 延唱' : connection === 'hyphen' ? ' · 连字' : ''}`} title="Ctrl+E 延唱 · Ctrl+H 连字 · Ctrl+Shift+E 取消连线" aria-invalid={invalid || undefined} style={style} value={draft} placeholder={connection === 'extend' ? '延' : '·'} autoComplete="off" spellCheck={false}
+    onFocus={(e) => { e.currentTarget.select(); onActivate(); }}
     onChange={(e) => {
       const word = e.currentTarget.value;
       if (composing.current || (e.nativeEvent as InputEvent).isComposing) { setDraft(word); edited.current = true; return; }
@@ -69,13 +71,18 @@ export function LyricCell({ value, label, style, register, onCommit, onInsertGap
       e.stopPropagation();
       if (composing.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       if (completedComposition.current !== null) return;
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && ['e', 'h'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        onLink(e.key.toLowerCase() === 'h' ? 'hyphen' : e.shiftKey ? null : 'extend', e.currentTarget.value);
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey || (e.key === ' ' && e.shiftKey)) return;
       if (e.key === 'Backspace') {
         const input = e.currentTarget;
         const start = input.selectionStart ?? 0;
         const end = input.selectionEnd ?? start;
-        const previous = !input.value || (start === 0 && end === 0);
-        const clearsCell = (start === 0 && end === input.value.length) || (start === end && start === input.value.length && Array.from(input.value).length === 1);
+        const previous = !input.value && connection !== 'extend' || !!input.value && start === 0 && end === 0;
+        const clearsCell = connection === 'extend' && !input.value || (start === 0 && end === input.value.length) || (start === end && start === input.value.length && Array.from(input.value).length === 1);
         if (previous || clearsCell) {
           e.preventDefault();
           if (previous && !save(input.value)) return;

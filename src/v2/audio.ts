@@ -106,11 +106,13 @@ export class Player {
   /** 音频模式下的当前音频位置（秒）；合成音 / 未播放时 null */
   get currentSec(): number | null {
     if (!this.ctx || !this.audioMode) return null;
-    return this.ctx.currentTime - this.when + this.startSec;
+    return Math.max(0, this.ctx.currentTime - this.when) + this.startSec;
   }
 
-  /** 音频模式下的当前 tick（secToTick 反查；可能为负） */
+  /** 两种模式都以实际发声的 AudioContext 为时钟，保留任意起播 tick。 */
   get currentTick(): number | null {
+    if (!this.ctx) return null;
+    if (!this.audioMode) return this.fromTick + Math.max(0, this.ctx.currentTime - this.startedAt) * this.ticksPerSec;
     const sec = this.currentSec;
     if (sec === null || !this.tempo) return null;
     return secToTick(this.tempo, sec);
@@ -184,7 +186,7 @@ export class Player {
     this.audioMode = true;
     this.endedCb = onEnded ?? null;
 
-    const startSec = tickToSec(tempo, fromTick);
+    const startSec = Math.max(0, tickToSec(tempo, fromTick));
     this.startSec = startSec;
     this.when = ctx.currentTime + START_LEAD;
     const lead = (performance.now() - calledAt) / 1000 + START_LEAD;

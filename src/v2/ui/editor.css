@@ -337,6 +337,7 @@ body {
 .v2-scroll {
   scrollbar-color: var(--muted) transparent;
   scrollbar-width: thin;
+  scrollbar-gutter: stable;
 }
 
 .v2-scroll::-webkit-scrollbar {
@@ -982,6 +983,7 @@ details.v2-side-block[open] > summary::before {
   background: var(--muted);
   flex: 0 0 auto;
 }
+.v2-align-preview { flex-shrink: 0; white-space: nowrap; }
 .v2-align-status.is-active .v2-align-dot,
 .v2-align-status.is-busy .v2-align-dot {
   background: var(--accent);
@@ -1354,6 +1356,8 @@ details.v2-side-block[open] > summary::before {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   height: 100%;
   padding: 12px 20px 16px;
 }
@@ -1361,11 +1365,25 @@ details.v2-side-block[open] > summary::before {
 .v2-play-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
-  /* 字号 / 字距滑杆加进来后变长了：窄窗口允许换行，别硬挤 */
-  flex-wrap: wrap;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
+
+.v2-play-bar > .v2-btn,
+.v2-play-bar > .v2-play-adj { flex-shrink: 0; }
+.v2-play-bar .v2-seg { padding-inline: 10px; white-space: nowrap; }
+.v2-play-bar > .v2-play-title { min-width: 0; flex: 0 1 auto; }
+.v2-staff-choice { display: flex; }
+.v2-staff-choice.is-on { background: var(--accent); }
+.v2-staff-choice.is-on .v2-seg { color: var(--surface); }
+.v2-staff-choice > .v2-seg:first-child { padding-right: 10px; }
+.v2-staff-choice > .v2-staff-gear { position: relative; display: grid; place-items: center; padding-inline: 8px; }
+.v2-staff-gear::before { content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: currentColor; opacity: .3; }
+.v2-staff-gear:hover { background: var(--accent-soft); }
+.v2-staff-choice.is-on .v2-staff-gear:hover { color: var(--accent); }
 
 /* 弹窗里的外链：主题色 + 下划线，长网址允许换行 */
 .v2-exp-link {
@@ -1512,6 +1530,7 @@ details.v2-side-block[open] > summary::before {
 .v2-play-stage {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   /* 必须是 flex 列：里面的 .v2-scroll 靠 flex:1 + min-height:0 拿到「视口高度」，
      才有 overflow:auto 可滚。之前这里是普通块 + overflow:hidden，
      .v2-scroll 被撑到整份谱面那么高、直接被裁掉——于是播放前滚不动、
@@ -2311,6 +2330,9 @@ details.v2-side-block[open] > summary::before {
 .v2-part-volume input { width: 90px; accent-color: var(--accent); }
 .v2-part-volume span { min-width: 32px; font-family: var(--mono); }
 .v2-part-dialog { width: min(420px, 100%); }
+.v2-staff-dialog { max-width: calc(100vw - 48px); max-height: calc(100dvh - 48px); font: inherit; }
+.v2-staff-dialog:not([open]) { display: none; }
+.v2-staff-dialog::backdrop { background: rgba(0, 0, 0, 0.42); }
 .v2-part-dialog .v2-exp-head { justify-content: space-between; }
 .v2-part-settings { padding: 8px 0 18px; gap: 18px; }
 .v2-part-settings label { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

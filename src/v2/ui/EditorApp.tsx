@@ -546,6 +546,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [shiftLabel, setShiftLabel] = useState('');
   /** 无伴奏播放的「调与速度」弹窗（齿轮入口） */
   const [paramOpen, setParamOpen] = useState(false);
+  /** 弹窗内的草稿值：点「确认」才应用到播放，× 关闭即放弃 */
+  const [draftTranspose, setDraftTranspose] = useState(0);
+  const [draftSpeed, setDraftSpeed] = useState(1);
   /** align.json 里的 curve 形式（变速歌）；恒定歌走下面三个标量 */
   const [tempoOverride, setTempoOverride] = useState<TempoMap | null>(null);
   /** 恒定 BPM 三参数：BPM / 音频网格相位 / 谱面原点（拍） */
@@ -3094,7 +3097,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <div className="v2-param" role="dialog" aria-label="调与速度">
                 <div className="v2-param-head">
                   <span className="v2-param-title">调与速度</span>
-                  <button className="v2-param-close" onClick={() => setParamOpen(false)} aria-label="关闭">
+                  <button className="v2-param-close" onClick={() => setParamOpen(false)} aria-label="关闭（不应用修改）">
                     ×
                   </button>
                 </div>
@@ -3102,19 +3105,19 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   <span className="v2-param-label">调</span>
                   <button
                     className="v2-tr-btn"
-                    onClick={() => changeTranspose(transpose - 1)}
-                    disabled={transpose <= -MAX_SEMITONES || shifting}
+                    onClick={() => setDraftTranspose(Math.max(-MAX_SEMITONES, draftTranspose - 1))}
+                    disabled={draftTranspose <= -MAX_SEMITONES || shifting}
                     title="降半音"
                   >
                     −
                   </button>
                   <output className="v2-param-out">
-                    {transpose === 0 ? '原调' : `${transpose > 0 ? '+' : ''}${transpose} 半音`}
+                    {draftTranspose === 0 ? '原调' : `${draftTranspose > 0 ? '+' : ''}${draftTranspose} 半音`}
                   </output>
                   <button
                     className="v2-tr-btn"
-                    onClick={() => changeTranspose(transpose + 1)}
-                    disabled={transpose >= MAX_SEMITONES || shifting}
+                    onClick={() => setDraftTranspose(Math.min(MAX_SEMITONES, draftTranspose + 1))}
+                    disabled={draftTranspose >= MAX_SEMITONES || shifting}
                     title="升半音"
                   >
                     ＋
@@ -3124,35 +3127,46 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   <span className="v2-param-label">速</span>
                   <button
                     className="v2-tr-btn"
-                    onClick={() => changeSpeed(+(speed - SPEED_STEP).toFixed(2))}
-                    disabled={speed <= MIN_SPEED || shifting}
+                    onClick={() => setDraftSpeed(Math.max(MIN_SPEED, +(draftSpeed - SPEED_STEP).toFixed(2)))}
+                    disabled={draftSpeed <= MIN_SPEED || shifting}
                     title={`减速 ${SPEED_STEP}`}
                   >
                     −
                   </button>
-                  <output className="v2-param-out">{speed === 1 ? '原速' : `${speed.toFixed(2)}×`}</output>
+                  <output className="v2-param-out">{draftSpeed === 1 ? '原速' : `${draftSpeed.toFixed(2)}×`}</output>
                   <button
                     className="v2-tr-btn"
-                    onClick={() => changeSpeed(+(speed + SPEED_STEP).toFixed(2))}
-                    disabled={speed >= MAX_SPEED || shifting}
+                    onClick={() => setDraftSpeed(Math.min(MAX_SPEED, +(draftSpeed + SPEED_STEP).toFixed(2)))}
+                    disabled={draftSpeed >= MAX_SPEED || shifting}
                     title={`加速 ${SPEED_STEP}`}
                   >
                     ＋
                   </button>
                 </div>
                 <p className="v2-param-note">
-                  作用于当前播放：伴奏离线处理（首次需几秒，之后秒开），合成音即时生效。点谱面标题右侧的齿轮可随时打开。
+                  点「确认」后作用于当前播放：伴奏离线处理（首次需几秒，之后秒开），合成音即时生效；关闭弹窗不应用。
                 </p>
                 <div className="v2-param-foot">
                   <button
                     className="v2-param-reset"
                     onClick={() => {
-                      changeTranspose(0);
-                      changeSpeed(1);
+                      setDraftTranspose(0);
+                      setDraftSpeed(1);
                     }}
-                    disabled={transpose === 0 && speed === 1}
+                    disabled={draftTranspose === 0 && draftSpeed === 1}
                   >
                     恢复默认
+                  </button>
+                  <button
+                    className="v2-param-apply"
+                    onClick={() => {
+                      changeTranspose(draftTranspose);
+                      changeSpeed(draftSpeed);
+                      setParamOpen(false);
+                    }}
+                    disabled={shifting || (draftTranspose === transpose && draftSpeed === speed)}
+                  >
+                    确认
                   </button>
                 </div>
               </div>
@@ -3182,7 +3196,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               focusId={activePlayPick?.id ?? null}
               onLayout={rememberLayout}
               // 谱面标题右侧的齿轮 = 调与速度的统一入口（此前播放页没接这个回调，齿轮是死的）
-              onEditTitle={() => setParamOpen(true)}
+              onEditTitle={() => {
+                setDraftTranspose(transpose);
+                setDraftSpeed(speed);
+                setParamOpen(true);
+              }}
             />
           </div>
         </div>

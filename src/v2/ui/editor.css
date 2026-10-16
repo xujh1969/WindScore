@@ -1535,8 +1535,10 @@ details.v2-side-block[open] > summary::before {
 
 .v2-param-foot {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
 }
 
@@ -1544,17 +1546,37 @@ details.v2-side-block[open] > summary::before {
   padding: 2px 4px;
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--muted);
   cursor: pointer;
   font-size: 12px;
 }
 
 .v2-param-reset:hover:not(:disabled) {
-  text-decoration: underline;
+  color: var(--text);
 }
 
 .v2-param-reset:disabled {
   color: var(--muted);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.v2-param-apply {
+  padding: 4px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.v2-param-apply:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.v2-param-apply:disabled {
+  opacity: 0.45;
   cursor: default;
 }
 

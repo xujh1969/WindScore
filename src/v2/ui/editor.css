@@ -1406,7 +1406,7 @@ details.v2-side-block[open] > summary::before {
 }
 
 .v2-play-adj input[type='range'] {
-  width: 76px;
+  width: 51px;
 }
 
 .v2-play-adj output {
@@ -1414,7 +1414,8 @@ details.v2-side-block[open] > summary::before {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
-  text-align: right;
+  /* 数值紧贴左侧滑杆；min-width 只为右侧 ⟲ 不随位数跳动 */
+  text-align: left;
 }
 
 .v2-play-reset {
@@ -1424,6 +1425,137 @@ details.v2-side-block[open] > summary::before {
   color: var(--muted);
   cursor: pointer;
   font-size: 13px;
+}
+
+/* 升降调步进按钮：与滑杆组同高的小方块 */
+.v2-tr-btn {
+  padding: 0 8px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.v2-tr-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.v2-tr-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 调 / 速的数值显示：定宽，数值变长变短都不推挤两侧按钮 */
+.v2-param-out {
+  min-width: 72px;
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* 调 / 速弹窗：紧凑小卡片，贴内容定宽，不留大片空位 */
+.v2-param {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(288px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  color: var(--text);
+}
+
+.v2-param-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.v2-param-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.v2-param-close {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.v2-param-close:hover {
+  color: var(--text);
+}
+
+.v2-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 行首标签：定宽（只作用于标签，别压到提示文字） */
+.v2-param-label {
+  flex: none;
+  width: 1.4em;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 数值占满标签与按钮之间的空间并居中：卡片宽度稳定，按钮贴两端 */
+.v2-param-row .v2-param-out {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.v2-param-row .v2-tr-btn {
+  flex: none;
+}
+
+/* 提示文字：横排占满剩余宽度 */
+.v2-param-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.v2-param-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.v2-param-reset {
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.v2-param-reset:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.v2-param-reset:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .v2-play-reset:hover {
@@ -1480,6 +1612,48 @@ details.v2-side-block[open] > summary::before {
   border-radius: 999px;
   color: var(--warn);
   font-size: 10px;
+}
+
+/* 变调/变速处理的等待遮罩：盖住整屏中央弹卡片，明确「正在干活」 */
+.v2-shift-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 18, 0.38);
+}
+
+.v2-shift-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-ui);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+.v2-shift-spin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--muted);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: v2-spin 0.8s linear infinite;
+}
+
+@keyframes v2-spin {
+  to { transform: rotate(360deg); }
+}
+
+.v2-shift-note {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 /* 试听停止键：浮在波形正中，半透明圆钮。

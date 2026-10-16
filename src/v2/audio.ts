@@ -30,6 +30,8 @@ export interface AudioStartOptions {
   stems: AudioStem[];
   /** 伴奏之上是否叠合成音 */
   synth?: boolean;
+  /** 整体升降调（半音）：伴奏走离线变调 buffer，合成声部在这里按频率偏移，两层保持同调 */
+  semitones?: number;
   onEnded?: () => void;
 }
 
@@ -83,6 +85,8 @@ export class Player {
   private partBuses = new Map<string, GainNode>();
   private endedCb: (() => void) | null = null;
   private tempo: TempoMap | null = null;
+  /** 整体升降调（半音）：只作用于合成声部的振荡器频率；伴奏变调在 buffer 层完成 */
+  private semitones = 0;
 
   /** 播放中热切某条 stem 的音量（30ms 平滑，不会「啪」地一声） */
   setStemGain(index: number, value: number): void {
@@ -122,10 +126,11 @@ export class Player {
    * 合成音起播。返回真实起播延迟（秒）：建 AudioContext 与解算要时间，
    * 调用方要拿它对轨（例如把波形标定的起点往后挪）。
    */
-  start(timeline: TimelineEntry[], bpm: number, fromTick = 0): number {
+  start(timeline: TimelineEntry[], bpm: number, fromTick = 0, semitones = 0): number {
     this.stop();
     if (timeline.length === 0) return 0;
     claimAudio(this);
+    this.semitones = semitones;
     const first = timeline.findIndex((e) => e.endTick > fromTick);
     if (first < 0) return 0;
 
@@ -171,9 +176,10 @@ export class Player {
    */
   startAudio(opts: AudioStartOptions): number {
     this.stop();
-    const { timeline, tempo, fromTick, stems, synth, onEnded } = opts;
+    const { timeline, tempo, fromTick, stems, synth, semitones, onEnded } = opts;
     if (timeline.length === 0 || stems.length === 0) return 0;
     claimAudio(this);
+    this.semitones = semitones ?? 0;
 
     const first = timeline.findIndex((e) => e.endTick > fromTick);
     if (first < 0) return 0;
@@ -264,6 +270,7 @@ export class Player {
     this.index = 0;
     this.audioMode = false;
     this.tempo = null;
+    this.semitones = 0;
     releaseAudio(this);
   }
 
@@ -282,7 +289,7 @@ export class Player {
     dyn = 1,
     dynTo = dyn,
   ): void {
-    const freq = 440 * 2 ** ((midi - 69) / 12);
+    const freq = 440 * 2 ** ((midi - 69 + this.semitones) / 12);
     const end = Math.max(t1, t0 + 0.06);
     const rel = Math.max(t0 + 0.03, end - 0.05);
 

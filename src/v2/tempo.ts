@@ -123,6 +123,23 @@ export function secToTick(map: TempoMap, sec: number): number {
   return (secToBeat(map, sec) - map.scoreOriginBeat) * TICKS_PER_BEAT;
 }
 
+/**
+ * 倍速播放的时间轴整体缩放：factor > 1 加速（所有时刻缩短为 1/factor）。
+ *
+ * WSOLA 变速后的伴奏时长 = 原时长 / factor，谱面 tick ↔ 秒 的换算必须同步
+ * 除以 factor，否则指示条与合成声部会跟伴奏脱节。谱面域的量
+ * （scoreOriginBeat，拍与拍之间的 tick 关系）不动，只缩放音频域的时刻。
+ */
+export function scaleTempo(map: TempoMap, factor: number): TempoMap {
+  if (factor === 1) return map;
+  if (!Number.isFinite(factor) || factor <= 0) throw new Error(`倍速非法：${factor}`);
+  if (map.kind === 'constant') {
+    // sec = phaseSec + beat × 60/bpm，整体除以 factor：bpm × factor、phaseSec / factor
+    return { kind: 'constant', bpm: map.bpm * factor, phaseSec: map.phaseSec / factor, scoreOriginBeat: map.scoreOriginBeat };
+  }
+  return { kind: 'curve', beatTimes: map.beatTimes.map((t) => t / factor), scoreOriginBeat: map.scoreOriginBeat };
+}
+
 // ── 锚点 → 变速曲线（M13 的数据通路，手工锚点校正的落点） ──────────
 
 export interface Anchor {

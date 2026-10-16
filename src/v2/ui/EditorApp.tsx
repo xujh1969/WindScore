@@ -103,7 +103,7 @@ import {
   timelineTicks,
 } from '../timeline';
 import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, GraceNote, JumpMark, Score } from '../types';
-import { beatToSec, secToBeat, constantTempo, curveFromAnchors, secToTick, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
+import { beatToSec, secToBeat, constantTempo, curveFromAnchors, scaleTempo as scaleTempoMap, secToTick, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
 import { detectVocalEntry, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
@@ -126,6 +126,14 @@ import { buildPack, packFileName } from './packBundle';
 import { upsertLibrary, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
+import { pitchShiftStems } from '../pitchClient';
+
+/** 变调锁死区间（半音）：±3 内无明显失真，放宽到 ±5 大调性移动也够用，再远「橡皮音」明显 */
+const MAX_SEMITONES = 5;
+/** 变速锁死区间（倍）：±25% 内听感最佳，0.60–1.40 覆盖慢练 / 快跟的实用范围 */
+const MIN_SPEED = 0.6;
+const MAX_SPEED = 1.4;
+const SPEED_STEP = 0.05;
 
 /** 变音记号按钮：本位（无记号）在前，其余按升降序 */
 const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'b', '♮'];
@@ -528,6 +536,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   // ─────────── 音频对齐（M9/M11）：真实音频 + TempoMap 驱动指示条 ───────────
   const [stems, setStems] = useState<{ name: string; buffer: AudioBuffer; on: boolean }[]>([]);
+  /** 整体升降调（半音）：伴奏离线 WSOLA 变调 + 合成声部同步移调，播放页练习用 */
+  const [transpose, setTranspose] = useState(0);
+  /** 倍速（变速不变调）：伴奏 WSOLA 拉伸 + TempoMap 整体缩放，合成声部走 bpm × speed */
+  const [speed, setSpeed] = useState(1);
+  /** 变调离线处理进行中（首次换调要算几秒，结果进会话缓存后秒开） */
+  const [shifting, setShifting] = useState(false);
+  /** 变调/变速弹层文案：当前正在处理什么（给等待遮罩用） */
+  const [shiftLabel, setShiftLabel] = useState('');
+  /** 无伴奏播放的「调与速度」弹窗（齿轮入口） */
+  const [paramOpen, setParamOpen] = useState(false);
   /** align.json 里的 curve 形式（变速歌）；恒定歌走下面三个标量 */
   const [tempoOverride, setTempoOverride] = useState<TempoMap | null>(null);
   /** 恒定 BPM 三参数：BPM / 音频网格相位 / 谱面原点（拍） */
@@ -1427,32 +1445,58 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     return from >= total ? 0 : from;
   }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId, activePlayPick]);
 
-  const startPlayNow = useCallback(() => {
+  const startPlayNow = useCallback(async (fromOverride?: number) => {
     if (documentScore.parts?.length && expansion.errors.length) { setMsg(`重奏暂不能播放：${expansion.errors[0]}`); return; }
     if (timeline.length === 0) return;
     previewRef.current.stop(); // 试听与谱面播放互斥
     setPreviewing(false);
     const bpm = score.meta.bpm;
+    const from = fromOverride ?? playFromTick;
     // 音频模式：stem + TempoMap 齐备且用户选了「伴奏音频」。
     // **记谱页除外**：那里只放合成 MIDI——编辑时听的是「谱面写对了没有」，
     // 伴奏是对轨后的成品，混进来只会干扰；想跟伴奏去播放页，那边有开关。
     // 对轨页仍放伴奏（对齐本来就要听着伴奏调）。
     // 谱尾行为（指导书 §9.3）：音频比谱长时，指示条到尾就停，音频继续放完。
     if (playSource === 'audio' && audioReady && mode !== 'score') {
+      // 升降调 + 倍速：伴奏走离线 WSOLA（组合结果进会话缓存，命中即秒开）；
+      // 处理失败降级按原调原速放，不拦播放
+      let useStems = stems;
+      if (transpose !== 0 || speed !== 1) {
+        setShifting(true);
+        const what = [
+          transpose !== 0 ? `变调 ${transpose > 0 ? '+' : ''}${transpose} 半音` : '',
+          speed !== 1 ? `变速 ${speed.toFixed(2)}×` : '',
+        ].filter(Boolean).join('、');
+        setAudioMsg(`正在${what}，首次处理需要几秒…`);
+        setShiftLabel(`正在${what}`);
+        try {
+          const buffers = await pitchShiftStems(stems, transpose, speed);
+          useStems = buffers.map((buffer, i) => ({ ...stems[i]!, buffer }));
+          setAudioMsg('');
+        } catch (err) {
+          setAudioMsg(`变调/变速处理失败，按原样播放：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setShifting(false);
+          setShiftLabel('');
+        }
+      }
+      // 倍速下 tick↔秒 换算整体缩放，指示条与合成声部才跟得上变快的伴奏
+      const playTempo = speed === 1 ? audioTempo! : scaleTempoMap(audioTempo!, speed);
       // 前奏：谱面记的是从进唱开始，伴奏前面还整段前奏。
       // 从头播时把起播点推到音频 0 秒（secToTick 反查，通常为负 tick = 谱面起点之前），
       // 前奏就会照常放完再进谱面；关掉则老样子——从谱面起点直接开始
       // 仅未点选音符、从谱面零拍起播时带前奏；选中首拍内的音也必须尊重其起点。
       const introTick =
-        playIntro && !activePlayPick && snap.mode !== 'over' && playFromTick === 0
-          ? Math.min(0, secToTick(audioTempo!, 0))
-          : playFromTick;
+        playIntro && !activePlayPick && snap.mode !== 'over' && from === 0
+          ? Math.min(0, secToTick(playTempo, 0))
+          : from;
       playerRef.current.startAudio({
         timeline,
-        tempo: audioTempo!,
+        tempo: playTempo,
         fromTick: introTick,
-        stems: stems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
+        stems: useStems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
         synth: false,
+        semitones: transpose,
         onEnded: () => setPlaying(false),
       });
       setPlaying(true);
@@ -1460,12 +1504,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     }
     // 先起音频、拿到它真正发声的时刻，再让时钟对齐到那个时刻起跑。
     // 顺序不能反：AudioContext 初始化有耗时，时钟先跑就会跑到声音前面。
-    const lead = playerRef.current.start(timeline, bpm, playFromTick);
-    clockRef.current.setBpm(bpm);
-    clockRef.current.seek(playFromTick / TICKS_PER_BEAT);
+    const lead = playerRef.current.start(timeline, bpm * speed, from, transpose);
+    clockRef.current.setBpm(bpm * speed);
+    clockRef.current.seek(from / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed]);
 
   // ── 跟着音乐打拍子定速度 ─────────────────────────────────────
   // 自动测速的失败模式是锁错倍频（17:8 就是 2.125 倍），数学上无法从错网格自救。
@@ -1622,14 +1666,56 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const startPlayRef = useRef(startPlayNow);
   startPlayRef.current = startPlayNow;
-  const startPlay = useCallback(() => {
+  const startPlay = useCallback((fromOverride?: number) => {
     if (!shouldWaitForAudio(playSource, restoring)) {
-      startPlayRef.current();
+      void startPlayRef.current(fromOverride);
       return;
     }
     setAudioMsg('伴奏正在从本地恢复，稍等一下就按伴奏放…');
-    void waitRestore().then(() => startPlayRef.current());
+    void waitRestore().then(() => startPlayRef.current(fromOverride));
   }, [playSource, restoring, waitRestore]);
+
+  /**
+   * 播放中改调：记下当前 tick，停掉，再从原位置带新调起播（听感上是「无缝换调」，
+   * 实际是重启——WSOLA 变调只能整段离线做，热改不可能）。缓存命中时只有一瞬。
+   */
+  const changeTranspose = useCallback(
+    (v: number) => {
+      const nv = Math.max(-MAX_SEMITONES, Math.min(MAX_SEMITONES, v));
+      if (nv === transpose) return;
+      setTranspose(nv);
+      if (playerRef.current.isPlaying) {
+        const at = getPlayTick() ?? 0;
+        stopPlay();
+        startPlayRef.current(at);
+      }
+    },
+    // getPlayTick 声明在后面（TDZ），不能进依赖数组；它依赖为空、身份恒定，引用不会过期
+    [transpose, stopPlay],
+  );
+
+  /** 播放中改倍速：同换调——记 tick、停、从原位置带新速重启（伴奏要重新 WSOLA，缓存命中即秒回） */
+  const changeSpeed = useCallback(
+    (v: number) => {
+      const nv = Math.round(Math.max(MIN_SPEED, Math.min(MAX_SPEED, v)) * 100) / 100;
+      if (nv === speed) return;
+      setSpeed(nv);
+      if (playerRef.current.isPlaying) {
+        const at = getPlayTick() ?? 0;
+        stopPlay();
+        startPlayRef.current(at);
+      }
+    },
+    [speed, stopPlay],
+  );
+
+  // 调 / 速是播放页的练习参数，离开播放页就还原——别让它悄悄带进编辑/对轨
+  useEffect(() => {
+    if (mode !== 'play') {
+      setTranspose(0);
+      setSpeed(1);
+    }
+  }, [mode]);
 
   /**
    * 播放 tick 的唯一出口：音频模式反查 secToTick（变速下唯一正确的做法），
@@ -2985,6 +3071,93 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           ) : null}
 
           {scoreParts(documentScore).length > 1 ? <PartsPanel score={documentScore} activeId={activePartId} total={totalView} readOnly onSelect={selectPart} onTotal={setTotalView} onChange={changeParts} /> : null}
+          {/* 变调/变速离线处理的等待遮罩：首次换参要算几秒，给个明确的「正在干活」反馈 */}
+          {shifting ? (
+            <div className="v2-shift-mask" role="alert" aria-live="polite">
+              <div className="v2-shift-card">
+                <span className="v2-shift-spin" aria-hidden="true" />
+                <div>
+                  <div>{shiftLabel || '正在处理音频'}</div>
+                  <div className="v2-shift-note">首次处理需要几秒，相同参数之后秒开</div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {/* 无伴奏播放的调/速弹窗：改完即时生效（播放中会从当前位置带新参数重启） */}
+          {paramOpen ? (
+            <div
+              className="v2-exp-mask"
+              onPointerDown={(e) => {
+                if (e.target === e.currentTarget) setParamOpen(false);
+              }}
+            >
+              <div className="v2-param" role="dialog" aria-label="调与速度">
+                <div className="v2-param-head">
+                  <span className="v2-param-title">调与速度</span>
+                  <button className="v2-param-close" onClick={() => setParamOpen(false)} aria-label="关闭">
+                    ×
+                  </button>
+                </div>
+                <div className="v2-param-row">
+                  <span className="v2-param-label">调</span>
+                  <button
+                    className="v2-tr-btn"
+                    onClick={() => changeTranspose(transpose - 1)}
+                    disabled={transpose <= -MAX_SEMITONES || shifting}
+                    title="降半音"
+                  >
+                    −
+                  </button>
+                  <output className="v2-param-out">
+                    {transpose === 0 ? '原调' : `${transpose > 0 ? '+' : ''}${transpose} 半音`}
+                  </output>
+                  <button
+                    className="v2-tr-btn"
+                    onClick={() => changeTranspose(transpose + 1)}
+                    disabled={transpose >= MAX_SEMITONES || shifting}
+                    title="升半音"
+                  >
+                    ＋
+                  </button>
+                </div>
+                <div className="v2-param-row">
+                  <span className="v2-param-label">速</span>
+                  <button
+                    className="v2-tr-btn"
+                    onClick={() => changeSpeed(+(speed - SPEED_STEP).toFixed(2))}
+                    disabled={speed <= MIN_SPEED || shifting}
+                    title={`减速 ${SPEED_STEP}`}
+                  >
+                    −
+                  </button>
+                  <output className="v2-param-out">{speed === 1 ? '原速' : `${speed.toFixed(2)}×`}</output>
+                  <button
+                    className="v2-tr-btn"
+                    onClick={() => changeSpeed(+(speed + SPEED_STEP).toFixed(2))}
+                    disabled={speed >= MAX_SPEED || shifting}
+                    title={`加速 ${SPEED_STEP}`}
+                  >
+                    ＋
+                  </button>
+                </div>
+                <p className="v2-param-note">
+                  作用于当前播放：伴奏离线处理（首次需几秒，之后秒开），合成音即时生效。点谱面标题右侧的齿轮可随时打开。
+                </p>
+                <div className="v2-param-foot">
+                  <button
+                    className="v2-param-reset"
+                    onClick={() => {
+                      changeTranspose(0);
+                      changeSpeed(1);
+                    }}
+                    disabled={transpose === 0 && speed === 1}
+                  >
+                    恢复默认
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className="v2-play-stage">
             <ScoreCanvas
               score={viewScore}
@@ -3008,6 +3181,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               showCaret={false}
               focusId={activePlayPick?.id ?? null}
               onLayout={rememberLayout}
+              // 谱面标题右侧的齿轮 = 调与速度的统一入口（此前播放页没接这个回调，齿轮是死的）
+              onEditTitle={() => setParamOpen(true)}
             />
           </div>
         </div>
@@ -3113,7 +3288,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               ) : null}
               <button
                 className={`v2-btn ${playing ? 'is-on' : ''}`}
-                onClick={playing ? stopPlay : startPlay}
+                onClick={() => (playing ? stopPlay() : startPlay())}
                 disabled={timeline.length === 0}
                 title={playing ? '停止' : '播放'}
               >

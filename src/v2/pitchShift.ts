@@ -38,11 +38,10 @@ export function timeStretch(x: Float32Array, alpha: number): Float32Array {
   if (Math.abs(alpha - 1) < 1e-6) return x.slice();
   const N = x.length;
   const ha = HS / alpha;
-  // 自适应搜索窗：δ = ±(HS − ha) 的候选是「与上一帧完美续接」的解，得分恒为全局最大。
-  // 若把它留在窗内，搜索会反复锁上去又跌回来（δ 在 ±TOL 与 0 之间跳），
-  // 相邻帧重复覆盖约半个窗口——听感是「两个声音叠着放」（0.2.43 实测踩到）。
-  // 把它排除在外（留 20% 余量），搜索只在窗内做周期对齐，消耗速率严格 = ha。
-  const tolEff = Math.min(TOL, Math.max(24, Math.abs(HS - ha) * 0.8));
+  // 搜索窗保持满 ±TOL：窗内的「完美续接」解虽然偶尔让帧间消耗抖动，
+  // 但它保证交叉淡化两侧相位连续——实测缩小窗口换来的梳状滤波远更难听
+  //（0.2.43 曾用自适应窗导致音质明显劣化，已回退）。防「双重声」靠的是
+  // 下面 nominal 独立推进（δ 不累积）这一条。
   const outLen = Math.ceil(N * alpha);
   const y = new Float32Array(outLen + FRAME);
   const wsum = new Float32Array(outLen + FRAME);
@@ -67,8 +66,8 @@ export function timeStretch(x: Float32Array, alpha: number): Float32Array {
       // 平局会选最早的候选（δ = -TOL），与周期信号的系统性偏移一起造成漂移
       let best = center;
       let bestScore = 0;
-      const lo = Math.max(0, center - tolEff);
-      const hi = Math.min(N - FRAME, center + tolEff);
+      const lo = Math.max(0, center - TOL);
+      const hi = Math.min(N - FRAME, center + TOL);
       for (let cand = lo; cand <= hi; cand += COARSE) {
         let score = 0;
         for (let i = 0; i < HS; i += 1) score += x[cand + i]! * x[natStart + i]!;
@@ -97,7 +96,7 @@ export function timeStretch(x: Float32Array, alpha: number): Float32Array {
     // 锁在 δ ≈ HS − ha，分析指针每帧多走约 150 采样，片段被反复重播，
     // 听感就是「两个声音一起放」（0.2.43 实测踩到）
     nominal += ha;
-    if (nominal + FRAME + tolEff > N) break;
+    if (nominal + FRAME + TOL > N) break;
   }
 
   // 归一化：修掉首尾未叠满的窗缘

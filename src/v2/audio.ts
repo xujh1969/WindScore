@@ -150,7 +150,9 @@ export class Player {
         const at = this.startedAt + (from - this.fromTick) / this.ticksPerSec;
         if (at > until) break;
         const endAt = this.startedAt + (e.endTick - this.fromTick) / this.ticksPerSec;
-        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) this.tone(ctx, e.midi, at, endAt, e.gain, e.partId);
+        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) {
+          this.tone(ctx, e.midi, at, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1);
+        }
         this.index += 1;
       }
       const lastEnd = timelineTicks(this.timeline);
@@ -225,7 +227,8 @@ export class Player {
         if (t0 > until) break;
         const t1 = at(e.endTick);
         if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0) && t1 > this.ctx.currentTime) {
-          this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1, e.gain, e.partId);
+          this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1, e.gain, e.partId,
+            e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1);
         }
         this.index += 1;
       }
@@ -264,8 +267,21 @@ export class Player {
     releaseAudio(this);
   }
 
-  /** 一个音：三角波 + 20ms 淡入 / 末尾 50ms 淡出 */
-  private tone(ctx: AudioContext, midi: number, t0: number, t1: number, gain = 1, partId?: string): void {
+  /**
+   * 一个音：三角波 + 20ms 淡入 / 末尾 50ms 淡出。
+   * `dyn`／`dynTo` 是力度与渐强渐弱的包络（F06）：两者不同就在音符内部
+   * 线性推进，于是长音听起来是连续涨落；相等时与原来的恒音量完全一致。
+   */
+  private tone(
+    ctx: AudioContext,
+    midi: number,
+    t0: number,
+    t1: number,
+    gain = 1,
+    partId?: string,
+    dyn = 1,
+    dynTo = dyn,
+  ): void {
     const freq = 440 * 2 ** ((midi - 69) / 12);
     const end = Math.max(t1, t0 + 0.06);
     const rel = Math.max(t0 + 0.03, end - 0.05);
@@ -275,10 +291,10 @@ export class Player {
     osc.frequency.value = freq;
 
     const g = ctx.createGain();
-    const envelopeGain = partId ? 1 : gain;
+    const base = partId ? 1 : gain;
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(this.gain * envelopeGain, t0 + 0.02);
-    g.gain.setValueAtTime(this.gain * envelopeGain, rel);
+    g.gain.linearRampToValueAtTime(this.gain * base * dyn, t0 + 0.02);
+    g.gain.linearRampToValueAtTime(this.gain * base * dynTo, rel);
     g.gain.linearRampToValueAtTime(0, end);
 
     osc.connect(g);

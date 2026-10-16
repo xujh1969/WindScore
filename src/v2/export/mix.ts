@@ -84,7 +84,18 @@ export function mixStems(opts: {
  * 而且逐样本可测。startSec / endSec 相对视频 0 点。
  */
 export function synthNotes(opts: {
-  notes: readonly { startSec: number; endSec: number; midi: number; gain?: number }[];
+  /**
+   * `dyn` / `dynTo`：力度与渐强渐弱的包络（与实时播放同一口径，见 timeline）。
+   * 两者不同就在音符内部线性推进——导出的视频里也能听出渐强渐弱。
+   */
+  notes: readonly {
+    startSec: number;
+    endSec: number;
+    midi: number;
+    gain?: number;
+    dyn?: number;
+    dynTo?: number;
+  }[];
   durationSec: number;
   sampleRate: number;
   gain?: number;
@@ -97,7 +108,9 @@ export function synthNotes(opts: {
   const attack = Math.max(1, Math.round(0.02 * sr));
 
   for (const note of opts.notes) {
-    const notePeak = peak * (note.gain ?? 1);
+    const base = peak * (note.gain ?? 1);
+    const notePeak = base * (note.dyn ?? 1);
+    const noteEnd = base * (note.dynTo ?? note.dyn ?? 1);
     const t0 = Math.round(note.startSec * sr);
     const t1 = Math.max(t0 + Math.round(0.06 * sr), Math.round(note.endSec * sr));
     const rel = Math.max(t0 + Math.round(0.03 * sr), t1 - Math.round(0.05 * sr));
@@ -105,12 +118,18 @@ export function synthNotes(opts: {
     const to = Math.min(mix.length, t1);
     if (to <= from) continue;
     const step = 440 * 2 ** ((note.midi - 69) / 12) / sr; // 每样本的相位增量
+    const swellFrom = t0 + attack;
+    const swellSpan = Math.max(1, rel - swellFrom);
     for (let i = from; i < to; i += 1) {
       const at = i - t0;
-      // 包络：淡入 → 保持 → 淡出
+      // 包络：淡入 →（渐强/渐弱推进）→ 淡出
       let env = notePeak;
       if (at < attack) env = (notePeak * at) / attack;
-      else if (i > rel) env = (notePeak * (t1 - i)) / Math.max(1, t1 - rel);
+      else if (i > rel) env = (noteEnd * (t1 - i)) / Math.max(1, t1 - rel);
+      else if (noteEnd !== notePeak) {
+        const u = Math.min(1, Math.max(0, (i - swellFrom) / swellSpan));
+        env = notePeak + (noteEnd - notePeak) * u;
+      }
       // 三角波：0 → 1 → 0
       const tri = 1 - 4 * Math.abs(((at * step) % 1) - 0.5);
       const v = env * tri;

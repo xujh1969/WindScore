@@ -26,15 +26,31 @@ export function accidentalOffset(acc?: Accidental): number {
   return acc === '#' ? 1 : acc === 'b' ? -1 : 0;
 }
 
+/**
+ * 调号字符串 → 主音音名 / 偏移 的缓存。
+ * 这两个函数用正则解析 `1=G` 这类文本，而它们在排版里是**每颗音**都要调几次
+ * （音高、临时变音、调号…）。实测 2000 小节的谱上这两处连同正则吃掉三成以上
+ * CPU——全曲调号就那么几个，缓存一次即可（key 字符串是不可变的，安全）。
+ */
+const TONIC_CACHE = new Map<string, SpelledPitch>();
+const OFFSET_CACHE = new Map<string, number>();
+
 /** 保留旧行为：主音落在离 C4 最近的八度，G 为 G3。 */
 export function keyOffset(key: string): number {
+  const cached = OFFSET_CACHE.get(key);
+  if (cached !== undefined) return cached;
   const body = /1\s*=\s*(.+)$/.exec(key)?.[1] ?? key;
   const m = /^\s*([#b♯♭]?)\s*([A-Ga-g])\s*([#b♯♭]?)/.exec(body);
-  if (!m) return 0;
+  if (!m) {
+    OFFSET_CACHE.set(key, 0);
+    return 0;
+  }
   const base: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
   const acc = (c: string) => (c === '#' || c === '♯' ? 1 : c === 'b' || c === '♭' ? -1 : 0);
   const off = (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
-  return off > 6 ? off - 12 : off;
+  const out = off > 6 ? off - 12 : off;
+  OFFSET_CACHE.set(key, out);
+  return out;
 }
 export function toMidi(degree: number, octave: number, key: string, accidental?: Accidental): number {
   return 60 + MAJOR[degree - 1] + keyOffset(key) + octave * 12 + accidentalOffset(accidental);
@@ -43,11 +59,23 @@ export function pitchMidi(p: SpelledPitch): number {
   return 12 * (p.octave + 1) + NATURAL[p.step] + p.alter;
 }
 export function keyTonic(key: string): SpelledPitch {
+  const cached = TONIC_CACHE.get(key);
+  if (cached) return cached;
   const body = key.replace(/^\s*1\s*=\s*/, '');
   const m = /^\s*([#b♯♭]{0,2})([A-Ga-g])([#b♯♭]{0,2})\s*$/.exec(body);
-  if (!m) return { step: 0, alter: 0, octave: 4 };
+  if (!m) {
+    const fallback: SpelledPitch = { step: 0, alter: 0, octave: 4 };
+    TONIC_CACHE.set(key, fallback);
+    return fallback;
+  }
   const mark = m[1] || m[3];
-  return { step: LETTERS.indexOf(m[2].toUpperCase()), alter: /[#♯]/.test(mark) ? mark.length : /[b♭]/.test(mark) ? -mark.length : 0, octave: 4 };
+  const out: SpelledPitch = {
+    step: LETTERS.indexOf(m[2].toUpperCase()),
+    alter: /[#♯]/.test(mark) ? mark.length : /[b♭]/.test(mark) ? -mark.length : 0,
+    octave: 4,
+  };
+  TONIC_CACHE.set(key, out);
+  return out;
 }
 export function legacyPitch(degree: number, octave: number, key: string, accidental?: Accidental): SpelledPitch {
   const step = (keyTonic(key).step + degree - 1) % 7;

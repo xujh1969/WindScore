@@ -109,6 +109,9 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
       endSec: clock.secondsOf(e.endTick),
       midi: e.midi as number,
       gain: e.gain,
+      // 力度与渐强渐弱：与实时播放同一套包络，导出成品里也听得出来
+      dyn: e.dyn,
+      dynTo: e.dynTo,
     }))
     .filter((n) => n.endSec > 0 && n.startSec < seconds);
   return synthNotes({ notes, durationSec: seconds, sampleRate: MIX_RATE });

@@ -16,13 +16,13 @@ import { staffAccWidth, staffGraceInk } from './staffInk';
 import { positionStaffTuplets } from './staffTuplets';
 import { placeStaffGrace, type StaffGraceGroup } from './staffGrace';
 import { buildStaffMarks, type StaffMark } from './staffMarks';
-import { accidentalGlyph, instrumentOf, keyAlter, keyFifths, keyTonic, legacyPitch, writtenKey, writtenPitch, type StaffPitchMode, type StaffClef } from './pitch';
+import { accidentalGlyph, instrumentOf, keyAlter, keyFifths, keyTonic, legacyPitch, writtenKey, writtenPitch, type SpelledPitch, type StaffPitchMode, type StaffClef } from './pitch';
 import { scoreParts } from './parts';
 import { resolveStaffClef } from './staffClef';
 import { lyricTextWidth, projectLyricLines, type LyricLine } from './lyricLines';
 import { staffContentRight } from './staffBounds';
 import { TICKS_PER_BEAT } from './ticks';
-import type { Accidental, JumpMark, Score } from './types';
+import type { Accidental, BeatGroup, JumpMark, Score } from './types';
 
 /** 符干长度：一个八度 = 7 个半格 */
 export const STEM_OCT = 7;
@@ -124,6 +124,8 @@ export interface StaffLineData {
   lyrics: StaffLyric[];
   lyricY?: number;
   labelY?: number;
+  /** 小节号基线的墨迹中心（在谱表上方让出的一条专属带）；关闭小节号时没有 */
+  measureY?: number;
   graces: StaffGraceGroup[];
   jumps?: StaffJump[];
   voltas?: StaffVolta[];
@@ -141,6 +143,11 @@ export interface StaffLayout {
   title: LayoutResult['title'];
   /** 拍号（如 "4/4"），画在第一行行首 */
   beat: string;
+  /**
+   * 是否画小节号（取自 `meta.showMeasureNumbers`，默认开）。
+   * 排版层就要知道——它决定要不要给小节号那条带留行距，绘制层再按此画。
+   */
+  showMeasureNumbers: boolean;
 }
 
 /** 谱表第 step 格的 y：整体以**行中线**为谱表中心线对称 */
@@ -227,25 +234,23 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
   const lines: StaffLineData[] = [];
   const parts = scoreParts(score);
   const clefs = new Map(parts.map(part => [part.id, resolveStaffClef(part, score.meta.key, mode)]));
-  const keys = new Map<string, string>();
-  const meters = new Map<string, string>();
-  const accidentals = new Map<string, Map<string, number>>();
-
-  for (const line of layout.lines) {
-    const part = parts.find(p => p.id === line.partId) ?? parts[0];
-    let curKey = keys.get(part.id) ?? score.meta.key;
-    let curBeat = meters.get(part.id) ?? score.meta.beat;
-    const lineBeat = curBeat;
-    const clef = clefs.get(part.id)!;
-    const clefOffset = clef === 'bass' ? 12 : 0;
-    const lineKey = writtenKey(curKey, mode, part.staffInstrument);
-    const state = accidentals.get(part.id) ?? new Map<string, number>();
-    accidentals.set(part.id, state);
+  /**
+   * 每个声部只需算一次的派生数据：**必须放在行循环外**。
+   * 原来 `sourceEvents` / `pitches` / `tiedInto` 是每行重算一遍全声部事件，
+   * 行数 × 事件数 就是平方级——实测 2000 小节的谱光排版要 2.9 秒。
+   * 这些数据只跟声部与移调模式有关，与行无关，按声部缓存即可。
+   */
+  const partData = new Map<string, {
+    sourceEvents: Map<string, (typeof parts)[number]['events'][number]>;
+    pitches: Map<string, SpelledPitch>;
+    tiedInto: Set<string>;
+  }>();
+  for (const part of parts) {
     const sourceEvents = new Map(part.events.map(e => [e.id, e]));
     // Resolve ties against each event's own key, including changes across lines.
     // Explicit ♮ retains legacyPitch's old source-sound semantics; this layer
     // only decides which written accidental to show and never changes playback.
-    const pitches = new Map<string, ReturnType<typeof writtenPitch>>();
+    const pitches = new Map<string, SpelledPitch>();
     let eventKey = score.meta.key;
     for (const event of part.events) {
       if (event.kind !== 'note') continue;
@@ -261,6 +266,24 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
         if (tie.kind === 'tie' && to && from.step === to.step && from.octave === to.octave && from.alter === to.alter) tiedInto.add(tie.to);
       }
     }
+    partData.set(part.id, { sourceEvents, pitches, tiedInto });
+  }
+  const partById = new Map(parts.map(part => [part.id, part]));
+  const keys = new Map<string, string>();
+  const meters = new Map<string, string>();
+  const accidentals = new Map<string, Map<string, number>>();
+
+  for (const line of layout.lines) {
+    const part = (line.partId ? partById.get(line.partId) : undefined) ?? parts[0];
+    let curKey = keys.get(part.id) ?? score.meta.key;
+    let curBeat = meters.get(part.id) ?? score.meta.beat;
+    const lineBeat = curBeat;
+    const clef = clefs.get(part.id)!;
+    const clefOffset = clef === 'bass' ? 12 : 0;
+    const lineKey = writtenKey(curKey, mode, part.staffInstrument);
+    const state = accidentals.get(part.id) ?? new Map<string, number>();
+    accidentals.set(part.id, state);
+    const { sourceEvents, tiedInto } = partData.get(part.id)!;
     const symbols: StaffSymbol[] = [];
     const lyrics: StaffLyric[] = [];
     const beams: StaffBeam[] = [];
@@ -275,8 +298,14 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
      * 五线谱的符杠惯例也是一拍一连——不按拍断的话整小节的音连成
      * 一条长杠，斜得像滑梯（用户截图实测）。
      */
+    /**
+     * 音 → 所属拍内组。两个索引一次建好：原来每颗音都 `(part.groups).find(...)`，
+     * 长谱上是 O(音×组)——实测 2000 小节光排版就要 7 秒。
+     */
     const groupOf = new Map<string, string>();
+    const groupById = new Map<string, BeatGroup>();
     for (const grp of part.groups ?? []) {
+      groupById.set(grp.id, grp);
       for (const id of grp.memberIds) groupOf.set(id, grp.id);
     }
 
@@ -336,7 +365,8 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
       run = [];
     };
 
-    for (const it of line.items) {
+    for (let ii = 0; ii < line.items.length; ii += 1) {
+      const it = line.items[ii]!;
       if (it.kind === 'barline') {
         flush();
         state.clear();
@@ -350,7 +380,14 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
         });
         if (it.beatAfter) {
           curBeat = it.beatAfter;
-          if (line.items.slice(line.items.indexOf(it) + 1).some(next => next.kind === 'note' || next.kind === 'rest')) symbols.push({ kind: 'meter', x: it.x + it.w / 2 + sp * 0.4, beat: curBeat });
+          // 只看剩下的项里还有没有音符——原来用 indexOf + slice 拷一遍数组，
+          // 每根小节线一次，长谱上是平方级开销
+          let hasNext = false;
+          for (let j = ii + 1; j < line.items.length; j += 1) {
+            const nxt = line.items[j]!;
+            if (nxt.kind === 'note' || nxt.kind === 'rest') { hasNext = true; break; }
+          }
+          if (hasNext) symbols.push({ kind: 'meter', x: it.x + it.w / 2 + sp * 0.4, beat: curBeat });
         }
         continue;
       }
@@ -365,7 +402,8 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
       const x = it.x + g.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + g.nominalWidth / 2;
       const ticks = it.ticks ?? TICKS_PER_BEAT;
       const dots = it.dot ?? 0;
-      const group = (part.groups ?? []).find(group => group.id === groupOf.get(it.eventId));
+      const gid0 = groupOf.get(it.eventId);
+      const group = gid0 === undefined ? undefined : groupById.get(gid0);
       const duration = ticks / (dots === 1 ? 1.5 : dots === 2 ? 1.75 : 1);
       const baseTicks = group?.tuplet ? duration * group.tuplet / 2 ** Math.floor(Math.log2(group.tuplet)) : duration;
 
@@ -524,6 +562,7 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
     glyph: layout.glyph,
     title: layout.title,
     beat: score.meta.beat,
+    showMeasureNumbers: score.meta.showMeasureNumbers !== false,
   };
   for (const part of parts) {
     const rows = lines.filter(line => (line.partId ?? parts[0].id) === part.id);

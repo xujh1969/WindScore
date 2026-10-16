@@ -155,6 +155,24 @@ function drawStaffLine(
     ctx.fillText(den ?? '4', kx + sp * 0.7, yAt(2));
   }
 
+  /**
+   * 小节号：写在谱表上方那条专属带里（排版层按开关留好位置，见 staffSpacing）。
+   * 以前 `showMeasureNumbers` 传进五线谱却没人读，曲谱设置里开关对它无效。
+   * 数字跟着小节线的墨迹中心——与简谱同一口径（谱面开头那根边界线不编号）。
+   */
+  if (staff.showMeasureNumbers && o.showMeasureNumbers !== false && line.measureY !== undefined) {
+    ctx.save();
+    ctx.font = `600 ${Math.round(sp * 1.25)}px ${FAM}`;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const s of line.symbols) {
+      if (s.kind !== 'barline' || s.measure === undefined) continue;
+      ctx.fillText(String(s.measure), s.x, line.measureY);
+    }
+    ctx.restore();
+  }
+
   // 小节线 / 反复记号
   for (const s of line.symbols) {
     if (s.kind === 'barline') drawBarline(ctx, s, bottom, sp, theme);

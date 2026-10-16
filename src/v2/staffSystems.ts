@@ -76,7 +76,10 @@ export function paintStaffSystems(ctx: CanvasRenderingContext2D, staff: StaffLay
     const top = rows[0].line.y - 2 * sp;
     const bottom = rows[rows.length - 1].line.y + 2 * sp;
     const k = staff.glyph.fontSize / 21;
-    const x = staffLeft - 10 * k;
+    // 与简谱同一套相对几何：弯钩在内容左 14k、细线在内容左 10k（线穿过弯钩）。
+    // 原来细线画在 staffLeft（谱线起点）上，谱号紧跟其后，直接叠在高音/低音谱号上
+    const x = staffLeft - 14 * k;
+    const barX = staffLeft - 10 * k;
     ctx.save();
     ctx.fillStyle = theme.ink;
     ctx.beginPath();
@@ -92,8 +95,8 @@ export function paintStaffSystems(ctx: CanvasRenderingContext2D, staff: StaffLay
     ctx.strokeStyle = theme.ink;
     ctx.lineWidth = Math.max(1, k);
     ctx.beginPath();
-    ctx.moveTo(staffLeft, top);
-    ctx.lineTo(staffLeft, bottom);
+    ctx.moveTo(barX, top);
+    ctx.lineTo(barX, bottom);
     ctx.stroke();
     ctx.restore();
   }

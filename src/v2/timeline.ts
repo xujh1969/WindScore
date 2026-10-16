@@ -24,6 +24,16 @@ export interface TimelineEntry {
   grace?: boolean;
   partId?: string;
   gain?: number;
+  /**
+   * 力度乘数：音符的力度记号（pp…ff）乘上它所在的渐强/渐弱范围在**起音时刻**
+   * 的取值。1 = 不变。
+   */
+  dyn?: number;
+  /**
+   * 本音**结束**时刻的力度乘数。与 `dyn` 不同即这条音内部线性推进——
+   * 一个长音横跨半个渐强范围时，听起来是连续渐强，不是逐音跳档。
+   */
+  dynTo?: number;
 }
 
 /**
@@ -32,6 +42,19 @@ export interface TimelineEntry {
  * 主音太短时按「主音至少保留一半」压缩，避免倚音把主音吃光。
  */
 export const GRACE_TICKS = TICKS_PER_BEAT / 4;
+
+/** 力度档位 → 播放音量乘数（mf 为基准的常用比例） */
+const DYNAMIC_GAIN: Record<string, number> = {
+  pp: 0.35,
+  p: 0.5,
+  mp: 0.65,
+  mf: 0.82,
+  f: 0.92,
+  ff: 1,
+};
+/** 渐强的起点、渐弱的终点（相对该音自身力度） */
+const CRESC_LO = 0.6;
+const DIM_LO = 0.5;
 
 /** 升 / 降 / 还原记号 → 半音偏移。♯♭ 与 #b 同义 */
 export function accidentalOffset(acc?: Accidental): number {
@@ -102,6 +125,43 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
   }
   const out: TimelineEntry[] = [];
   const byId = new Map(score.events.map((e) => [e.id, e]));
+
+  /**
+   * 力度与渐强渐弱 → 音量包络（F06）。
+   * 以前 `hairpin` 只是记谱（画个楔形），合成播放完全没反应；现在按范围生成乘数：
+   * 渐强从 0.6 线性推到 1、渐弱从 1 推到 0.5，**按 tick 而非按音推进**——
+   * 一个长音横跨范围的一半时，它自己那一截里也在连续涨落，不是逐音跳档。
+   * 与音符自身的力度档位相乘（p 段里的渐强不会比 f 段响），
+   * 声部音量 / 静音 / 独奏仍走 entry.gain，两层互不干扰。
+   */
+  const tickOf = new Map<string, { start: number; end: number }>();
+  {
+    let t = 0;
+    for (const ev of score.events) {
+      if (ev.kind !== 'note' && ev.kind !== 'rest') continue;
+      if (ev.kind === 'note') tickOf.set(ev.id, { start: t, end: t + ev.ticks });
+      t += ev.ticks;
+    }
+  }
+  const hairpins: { start: number; end: number; kind: 'cresc' | 'dim'; level: number }[] = [];
+  for (const ev of score.events) {
+    if (ev.kind !== 'note' || !ev.hairpin || !ev.hairpinTo) continue;
+    const a = tickOf.get(ev.id);
+    const b = tickOf.get(ev.hairpinTo);
+    if (!a || !b || b.end <= a.start) continue;
+    // 范围起点当时的力度：范围里没另标力度的音沿用它。
+    // 否则 `p cresc[…]` 只有首音是 p、后面按 1.0 走，渐强变成「从极弱冲到最强」
+    hairpins.push({ start: a.start, end: b.end, kind: ev.hairpin, level: DYNAMIC_GAIN[ev.dynamic ?? ''] ?? 1 });
+  }
+  /** 某 tick 所属的渐变范围；不在任何范围里 = undefined */
+  const rangeAt = (t: number) => hairpins.find((h) => t >= h.start && t <= h.end);
+  /** 某 tick 落在渐变范围里的位置 → 乘数；不在任何范围里 = 1 */
+  const hairpinFactor = (t: number): number => {
+    const h = rangeAt(t);
+    if (!h) return 1;
+    const p = Math.min(1, Math.max(0, (t - h.start) / Math.max(1, h.end - h.start)));
+    return h.kind === 'cresc' ? CRESC_LO + (1 - CRESC_LO) * p : 1 - (1 - DIM_LO) * p;
+  };
   /** 条目 id：口径由 opts.ids 决定 */
   const eid = (ev: { id: string; originId?: string }): string =>
     opts.ids === 'own' ? ev.id : (ev.originId ?? ev.id);
@@ -131,6 +191,12 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     // 转调：到达这个音符起，后面的音都改用新调（含这个音自己）
     if (ev.keyChange) curKey = ev.keyChange;
 
+    // 本音的力度包络：力度档位 × 渐强/渐弱在本音起止时刻的取值。
+    // 本音没标力度但落在某个渐变范围里 → 沿用该范围起点的力度（见 hairpins）
+    const level = DYNAMIC_GAIN[ev.dynamic ?? ''] ?? rangeAt(tick)?.level ?? 1;
+    const dyn = level * hairpinFactor(tick);
+    const dynTo = level * hairpinFactor(tick + ev.ticks);
+
     // ── 倚音 ──
     // 不占时值：从主音时值里切。前倚音占开头、后倚音占结尾，主音至少留一半。
     const gBefore = ev.graceBefore ?? [];
@@ -150,6 +216,8 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
           octave: g.octave,
           midi: toMidi(g.degree, g.octave, curKey, g.accidental),
           grace: true,
+          // 倚音短到不需要内部推进，取主音起音时刻的力度即可
+          dyn: level * hairpinFactor(gs),
         });
         gs += each;
       }
@@ -163,6 +231,7 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
           octave: g.octave,
           midi: toMidi(g.degree, g.octave, curKey, g.accidental),
           grace: true,
+          dyn: level * hairpinFactor(gs),
         });
         gs += each;
       }
@@ -198,6 +267,9 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       mainEntry.midi === toMidi(ev.degree, ev.octave, curKey, ev.accidental)
     ) {
       mainEntry.endTick = tick + ev.ticks;
+      // 合并进长音后，包络终点跟着延到这一颗的末尾——跨小节的渐强
+      // 不会被延音线切成两段
+      mainEntry.dynTo = dynTo;
       tick += ev.ticks;
       chainTailId = ev.id; // 链尾前移：下一颗音要查这一颗的 ties
       continue;
@@ -211,6 +283,8 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       degree: ev.degree,
       octave: ev.octave,
       midi: toMidi(ev.degree, ev.octave, curKey, ev.accidental),
+      dyn,
+      dynTo,
     });
     tick += ev.ticks;
     chainTailId = ev.id;

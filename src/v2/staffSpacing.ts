@@ -1,10 +1,29 @@
 /** 根据五线谱墨迹占用扩展行距；不改横坐标、音高或演奏时间。 */
 import type { LayoutResult } from './layout';
 import type { StaffLayout } from './staff';
+import type { StaffCurve } from './staffCurves';
+import type { StaffMark } from './staffMarks';
 import { staffCurveYBounds } from './staffBounds';
 
 export function spaceStaffLines(staff: StaffLayout): void {
   const sp = staff.sp;
+  /**
+   * 记号 / 连线按行**分桶**后再用：原来每行都 `staff.marks.filter(...)` 全表扫一遍，
+   * 行数和记号数一起涨就是 O(行×记号)——实测 2000 小节的谱要 7 秒（简谱排版只要 72ms）。
+   * 分一次桶，整段变成线性。
+   */
+  const marksByLine = new Map<number, StaffMark[]>();
+  for (const m of staff.marks) {
+    const bucket = marksByLine.get(m.line);
+    if (bucket) bucket.push(m);
+    else marksByLine.set(m.line, [m]);
+  }
+  const curvesByLine = new Map<number, StaffCurve[]>();
+  for (const c of staff.curves) {
+    const bucket = curvesByLine.get(c.line);
+    if (bucket) bucket.push(c);
+    else curvesByLine.set(c.line, [c]);
+  }
   let previousBottom = staff.title?.height ?? 12;
   staff.lines.forEach((line, index) => {
     let top = line.y - 3.5 * sp;
@@ -22,16 +41,25 @@ export function spaceStaffLines(staff: StaffLayout): void {
       top = Math.min(top, group.beamY - sp * .4, ...group.notes.map(n => n.y - sp));
       bottom = Math.max(bottom, group.arcY);
     }
-    const marks = staff.marks.filter(m => m.line === index);
+    const marks = marksByLine.get(index) ?? [];
     for (const mark of marks) {
       top = Math.min(top, mark.y);
       bottom = Math.max(bottom, mark.y + mark.height);
     }
-    const curves = staff.curves.filter(c => c.line === index);
+    const curves = curvesByLine.get(index) ?? [];
     for (const c of curves) {
       const bounds = staffCurveYBounds(c);
       top = Math.min(top, bounds.top - sp * .2);
       bottom = Math.max(bottom, bounds.bottom + sp * .2);
+    }
+    /**
+     * 小节号带：紧贴谱表上方（在跳转记号 / 房子之下，不跟它们抢位置）。
+     * 只在开关打开时留——关掉就别白占行距。数字中心离谱表顶线 0.9sp，
+     * 上下各留约 0.7sp，不压第一线上的音。
+     */
+    if (staff.showMeasureNumbers && line.symbols.some(s => s.kind === 'barline' && s.measure)) {
+      line.measureY = top - 0.9 * sp;
+      top = line.measureY - 0.7 * sp;
     }
     // Keep conductor structures above all notes, graces, annotations and curves.
     const jumps = line.jumps ?? [];
@@ -57,6 +85,7 @@ export function spaceStaffLines(staff: StaffLayout): void {
     line.y += dy;
     line.labelY += dy;
     line.lyricY += dy;
+    if (line.measureY !== undefined) line.measureY += dy;
     for (const s of line.symbols) if (s.kind === 'note' || s.kind === 'rest') {
       s.y += dy;
       if (s.beamEnd !== undefined) s.beamEnd += dy;

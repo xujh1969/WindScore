@@ -9,6 +9,8 @@
 import { shouldWaitForAudio } from '../src/v2/ui/playGate';
 import { Player } from '../src/v2/audio';
 import { constantTempo } from '../src/v2/tempo';
+import { buildTimeline } from '../src/v2/timeline';
+import { parseDsl } from '../src/v2/dsl';
 
 let failed = 0;
 function check(name: string, ok: boolean, extra = ''): void {
@@ -71,6 +73,44 @@ console.log('[播放 · 音频时钟与任意起点]');
     if (previous === undefined) delete globals.window;
     else globals.window = previous;
   }
+}
+
+console.log('\n[播放 · 力度与渐强渐弱包络]');
+{
+  const dyn = (src: string): { from: number; to: number }[] =>
+    buildTimeline(parseDsl(src).score!)
+      .filter((e) => e.midi !== null && !e.grace)
+      .map((e) => ({ from: e.dyn ?? 1, to: e.dynTo ?? e.dyn ?? 1 }));
+
+  // 渐强：起点 0.6 → 终点 1，逐音连续（不是跳档）
+  const cresc = dyn('@format 3\n@beat 4/4\n\ncresc[ 5 6 7 1^ ]hairpin ||\n');
+  check('渐强从 0.6 走到 1', cresc.length === 4 && Math.abs(cresc[0].from - 0.6) < 0.01 && Math.abs(cresc[3].to - 1) < 0.01);
+  check(
+    '渐强逐音连续（前一音终点 = 后一音起点）',
+    cresc.every((d, i) => i === 0 || Math.abs(d.from - cresc[i - 1].to) < 0.01),
+  );
+  // 渐弱：反过来
+  const dim = dyn('@format 3\n@beat 4/4\n\ndim[ 5 6 7 1^ ]hairpin ||\n');
+  check('渐弱从 1 走到 0.5', dim.length === 4 && Math.abs(dim[0].from - 1) < 0.01 && Math.abs(dim[3].to - 0.5) < 0.01);
+  // 长音横跨范围：自己那一截内连续推进（不是整段一个音量）
+  const long = dyn('@format 3\n@beat 4/4\n\ncresc[ 5-- 6 ]hairpin ||\n');
+  check('长音内部也连续推进', long.length === 2 && long[0].from < long[0].to && Math.abs(long[0].to - long[1].from) < 0.01);
+  // 力度档位本身
+  const levels = dyn('@beat 4/4\n\np 5 f 6 mp 7 ff 1^ ||\n');
+  check(
+    '力度档位进包络（p 0.5 / f 0.92 / mp 0.65 / ff 1）',
+    levels.length === 4 &&
+      Math.abs(levels[0].from - 0.5) < 0.01 &&
+      Math.abs(levels[1].from - 0.92) < 0.01 &&
+      Math.abs(levels[2].from - 0.65) < 0.01 &&
+      Math.abs(levels[3].from - 1) < 0.01,
+  );
+  // p 段里的渐强不能冲到最强：范围继承起始力度
+  const soft = dyn('@format 3\n@beat 4/4\n\np cresc[ 5 6 7 1^ ]hairpin ||\n');
+  check('p 段内的渐强不会冲到最强（终点 ≈ 0.5）', Math.abs(soft[3].to - 0.5) < 0.01, String(soft[3].to));
+  // 没有记号时完全不变（老谱面不会被改响度）
+  const plain = dyn('@beat 4/4\n\n5 6 7 1^ ||\n');
+  check('无力度记号 → 包络恒为 1', plain.every((d) => d.from === 1 && d.to === 1));
 }
 
 console.log(failed === 0 ? '\n播放检查全部通过' : `\n播放检查失败 ${failed} 项`);

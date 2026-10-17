@@ -152,6 +152,11 @@ export interface PlacedTuplet {
   x0: number;
   x1: number;
   text: string;
+  /**
+   * 贴近模式：组内没有气息 / 技法记号、也没有连线经过时，
+   * 弧线降到与连线同高（紧挨音符），不必停在标记行（用户实测要求）。
+   */
+  low?: boolean;
 }
 
 /** 跳房子的括线：从 `[1]` 那根小节线拉到房子的收尾处，里面写遍数 */
@@ -1251,6 +1256,17 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         if (!target) continue; // 跨行连线由 §7.3 约束 3 处理（M7）
         pushArc(it, target, [it, target], 'tie');
       }
+    }
+
+    // 连音弧贴近音符：组内没有任何气息 / 技法记号、也没有连线经过时，
+    // 不必停在标记行——降到与连线端点同高（紧挨音符上方，用户实测要求）。
+    // 有记号（弧要给记号让位）或有连线（会撞弧）就保持原来的标记行高度。
+    for (const t of tuplets) {
+      const marked = items.some(
+        (it) => (it.kind === 'note' || it.kind === 'rest') && it.x + it.w >= t.x0 && it.x <= t.x1 && hasMarks(it),
+      );
+      const crossed = arcs.some((a) => a.x0 <= t.x1 && a.x1 >= t.x0);
+      if (!marked && !crossed) t.low = true;
     }
 
     // 命中框：按字形锚点做 Voronoi 划分，每个音符的可点区域以字形为中心。

@@ -1234,7 +1234,9 @@ function paintLine(
   ctx.lineWidth = 1.2;
   ctx.textAlign = 'center';
   for (const t of line.tuplets) {
-    const ends = y - M.markTop;
+    // low：组内没有气息 / 技法记号、也没有连线经过 → 与连线端点同高，
+    // 紧挨音符（tight 连线的端点 = y − arcBase + 5k）；否则停在标记行给记号让位
+    const ends = t.low ? y - M.arcBase + 5 * M.k : y - M.markTop;
     // 弧顶抬高一点（用户要求）：数字与弧线一起离开下一层的标记行，
     // 断口才对准数字的竖向中点，而不是压在数字的下半截
     const apex = ends - 12;

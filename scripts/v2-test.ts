@@ -1354,6 +1354,11 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
         Math.abs(a.x0 - (it.x + 5)) < 2 && a.x1 >= c.x + c.w - 1,
         `x0=${a.x0.toFixed(1)} x1=${a.x1.toFixed(1)} 簇=[${c.x.toFixed(1)},${(c.x + c.w).toFixed(1)}]`,
       );
+      check(
+        `第 ${i + 1} 行短弧是水平直线（延续到下一行的读法）`,
+        !!a.flat && !!a.straight,
+        `flat=${a.flat} straight=${a.straight}`,
+      );
     });
   }
 }

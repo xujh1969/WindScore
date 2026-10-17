@@ -1202,15 +1202,22 @@ function paintLine(
     const ay = y - base + (a.tight ? 5 * M.k : -5 * M.k) - a.octaveUp * M.octaveStep;
     ctx.beginPath();
     if (a.flat) {
-      // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，
-      // 既压上方标记又笨拙。端弧的控制点取在与直线**同一高度**，
-      // 弧线在接缝处的切线才是水平的，衔接才平滑（控制点偏低会有折角）
       const endW = Math.min(12 * M.k, (a.x1 - a.x0) / 4);
       const top = ay - a.lift;
-      ctx.moveTo(a.x0, ay);
-      ctx.quadraticCurveTo(a.x0 + endW * 0.35, top, a.x0 + endW, top);
-      ctx.lineTo(a.x1 - endW, top);
-      ctx.quadraticCurveTo(a.x1 - endW * 0.35, top, a.x1, ay);
+      if (a.straight) {
+        // 断行短弧：一条水平直线——它是同一根连线延续到下一行的那一段，
+        // 两端下垂的小弧会让它看起来像一条独立弧线（用户实测要求）
+        ctx.moveTo(a.x0, top);
+        ctx.lineTo(a.x1, top);
+      } else {
+        // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，
+        // 既压上方标记又笨拙。端弧的控制点取在与直线**同一高度**，
+        // 弧线在接缝处的切线才是水平的，衔接才平滑（控制点偏低会有折角）
+        ctx.moveTo(a.x0, ay);
+        ctx.quadraticCurveTo(a.x0 + endW * 0.35, top, a.x0 + endW, top);
+        ctx.lineTo(a.x1 - endW, top);
+        ctx.quadraticCurveTo(a.x1 - endW * 0.35, top, a.x1, ay);
+      }
     } else {
       ctx.moveTo(a.x0, ay);
       ctx.quadraticCurveTo((a.x0 + a.x1) / 2, ay - a.lift * 2, a.x1, ay);

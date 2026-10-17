@@ -126,6 +126,12 @@ export interface PlacedArc {
    */
   flat?: boolean;
   /**
+   * 断行短弧：画成**一条水平直线**（不带两端的下垂小弧）。
+   * 短弧是同一根连线被断行切开的延续段，水平的直线读作「延长到下一行」；
+   * 带端弧的画法看起来像一条独立的弧线，体现不出延续（用户实测要求）。
+   */
+  straight?: boolean;
+  /**
    * 贴近模式：弧线覆盖的音符**都没有**气息技法符号（吐音 / 技法 / 断音 /
    * 延长音 / 自定义记号）时为 true——绘制层据此省掉为记号行预留的抬升，
    * 弧线贴着音符画；只要有一个音带符号，整条弧仍抬在记号行之上。
@@ -1147,19 +1153,18 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x0 = inkLeft(it);
       const x1 = clusterRight(it);
       if (x1 - x0 < 10) return;
-      const ev = byId.get(it.eventId);
-      const ticks = ev && 'ticks' in ev ? (ev as { ticks: number }).ticks : 0;
-      // 长音成员与整条连线同口径画平线（2--- 拱弧会很高很难看）
-      const flat = ticks > 3 * TICKS_PER_BEAT;
-      // tight 弧贴近音符，拱高也压小，弧顶才不会扫到下方的数字
+      // 短弧画成一条**水平直线**：它是同一根连线被断行切开的延续段，
+      // 直线才读得出「延长到下一行」，带端弧看起来像一条独立的弧线（用户实测）。
+      // 高度与整条平线连线同口径（7 + 跨度×0.04，上限随技法记号让位），接缝才齐平
       arcs.push({
         x0,
         x1,
-        lift: hasMarks(it) ? 11 : 6,
+        lift: Math.min(hasMarks(it) ? 12 : 9, 7 + (x1 - x0) * 0.04),
         kind: 'slur',
         octaveUp: it.octave ?? 0,
         tight: !hasMarks(it),
-        flat,
+        flat: true,
+        straight: true,
       });
     };
 

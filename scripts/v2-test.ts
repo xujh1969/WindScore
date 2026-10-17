@@ -25,6 +25,7 @@ import {
   nominalInk,
   pickAt,
 } from '../src/v2/layout';
+import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
 import {
   applyTier as applyTierOp,
@@ -1246,6 +1247,34 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 }
 
 {
+  // 跨小节长音连线（`(2--- | 2---)`）：弧必须从第一个 2 一直盖到第二小节**最后一个
+  // 增时线**。旧实现取末音数字**左缘**，弧停在第二个 2 之前，第二小节整段时值露在外面。
+  console.log('\n[连线：跨小节长音的末端覆盖增时线]');
+  const s = parseDsl('@beat 4/4\n\n(2--- | 2---) ||\n').score!;
+  const L = layoutScore(s, { contentWidth: 1400 });
+  const arc = L.lines.flatMap((l) => l.arcs).find((a) => a.kind === 'slur');
+  const notes = L.lines.flatMap((l) => l.items).filter((it) => it.kind === 'note');
+  check('跨小节长音连出了一条弧', !!arc && notes.length === 2, `arc=${!!arc} notes=${notes.length}`);
+  if (arc && notes.length === 2) {
+    const first = notes[0]!;
+    const last = notes[1]!;
+    const lastCluster = clusterSpan(last);
+    const lastRight = lastCluster.x + lastCluster.w; // 数字 + 附点 + 增时线的右缘
+    const firstInkR = first.x + 5 + (first.accW ?? 0) + (first.graceInk ?? 0) + 13;
+    check(
+      '弧尾盖到末音最后一个增时线',
+      arc.x1 >= lastRight - 1,
+      `x1=${arc.x1.toFixed(1)} 簇右缘=${lastRight.toFixed(1)}`,
+    );
+    check(
+      '弧首从首音数字右缘起',
+      Math.abs(arc.x0 - firstInkR) < 2,
+      `x0=${arc.x0.toFixed(1)} 首音数字右缘=${firstInkR.toFixed(1)}`,
+    );
+  }
+}
+
+{
   // 字间距：unit 越大，音符格越宽，断行点也跟着变
   const { score } = parseDsl(readFileSync(join(DIR, 'molihua.jps'), 'utf-8'));
   const tight = layoutScore(score!, { contentWidth: 1000, unit: 0.9 });
@@ -1863,16 +1892,19 @@ const blank = (): Score => ({
   const lay = layoutScore(slurred, { contentWidth: 1000 });
   const arcs = lay.lines.flatMap((l) => l.arcs);
   check('3 个音的连音线只画 1 条弧（不是 2 条重叠）', arcs.length === 1, `arcs=${arcs.length}`);
-  // 弧从首音数字**右上**起到末音数字**左上**止：两端不压数字
-  // （墨迹：pad 5 起笔、标称宽 13 —— x0 落在首音 x+18 附近，x1 落在末音 x+5 附近）
-  const notes = lay.lines[0].items.filter((i) => i.kind === 'note');
+  // 端点：首音数字墨迹**右缘** → 末音整个字形簇（数字+附点+增时线）的**右缘**。
+  // 早期版本取末音数字左缘，跨小节长音（2---|2---）会把第二小节整段时值露在连线外。
+  const notes = lay.lines[0].items.filter((i) => i.kind === 'note') as PlacedItem[];
   const a0 = arcs[0];
+  const firstInkR = notes[0]!.x + 5 + (notes[0]!.accW ?? 0) + (notes[0]!.graceInk ?? 0) + 13;
+  const lastCluster = clusterSpan(notes[2]!);
+  const lastRight = lastCluster.x + lastCluster.w;
   check(
-    '弧从首音数字右上方起、到末音数字左上方止',
-    a0.x0 >= notes[0].x + 10 && a0.x0 <= notes[0].x + 24 &&
-      a0.x1 >= notes[2].x && a0.x1 <= notes[2].x + 10,
-    `x0=${a0.x0.toFixed(1)} x1=${a0.x1.toFixed(1)}`,
+    '弧从首音数字右缘起、到末音字形簇右缘止',
+    Math.abs(a0.x0 - firstInkR) < 2 && Math.abs(a0.x1 - lastRight) < 2,
+    `x0=${a0.x0.toFixed(1)} 首音右缘=${firstInkR.toFixed(1)} x1=${a0.x1.toFixed(1)} 末音簇右缘=${lastRight.toFixed(1)}`,
   );
+  check('弧不倒挂（x1 > x0）', a0.x1 > a0.x0 + 10, `x0=${a0.x0.toFixed(1)} x1=${a0.x1.toFixed(1)}`);
 }
 
 {

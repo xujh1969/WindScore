@@ -1058,6 +1058,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
     const beamX0 = (m: PlacedItem) => inkLeft(m) + 1.5;
     const beamX1 = (m: PlacedItem) => inkLeft(m) + glyph.nominalWidth - 0.5;
+    /** 整个字形簇（数字 + 附点 + 增时线）的右缘：连线末端要盖到最后一个增时线 */
+    const clusterRight = (m: PlacedItem): number => {
+      const s = clusterSpan(m, glyph.nominalWidth, glyph);
+      return s.x + s.w;
+    };
 
     for (const it of items) {
       if (it.kind !== 'note' && it.kind !== 'rest') continue;
@@ -1115,6 +1120,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       }
     }
 
+    // 增时线的真实横坐标要先算出来：连线端点要盖到**最后一个增时线**，
+    // 而 clusterSpan 没有 dashXs 时只能退回墨迹右缘（会停在末音数字后面）。
+    // positionDashes 幂等（已有 dashXs 就跳过），提前调用不会重复计算。
+    positionDashes(items, glyph);
+
     const arcs: PlacedArc[] = [];
     const rightEdge = items.length
       ? items[items.length - 1].x + items[items.length - 1].w
@@ -1144,7 +1154,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         x1 = Math.min(rightEdge, cx + 48 * k);
       } else if (cutBefore) {
         x0 = Math.max(padding, cx - 48 * k);
-        x1 = cx;
+        // 断行后的尾段：也要盖到末音最后一个增时线，与整条连线同口径
+        x1 = Math.min(rightEdge, clusterRight(it));
       } else {
         return;
       }
@@ -1166,14 +1177,17 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       chain: PlacedItem[],
       kind: 'slur' | 'tie',
     ): void => {
-      // 端点 = 首音数字墨迹**右缘** → 末音数字墨迹**左缘**：弧线从第一个音的
-      // 右上方拱到最后一个音的左上方，两端不压在数字上（用户要求）。
-      // 复用减时线的 inkLeft（与绘制层数字起笔公式一致，变音/倚音自动对准）。
-      // 两音贴得太近（负字间距）时中间放不下弧，退回盖过两端数字的整段画法
+      // 端点 = 首音数字墨迹**右缘** → 末音**整个字形簇（含增时线）的右缘**：
+      // 跨小节的连线要一直盖到第二小节最后一个增时线（`2---|2---|` 用户要求），
+      // 停在末音数字左缘会把第二小节整段时值露在连线外。
+      // 复用减时线的 inkLeft（与绘制层数字起笔公式一致，变音/倚音自动对准）；
+      // 簇右缘用 clusterSpan——与选中框 / 命中测试同口径，附点与增时线都算进去。
+      // 两音贴得太近（负字间距）时中间放不下弧，起点退回首音数字左缘整段盖过。
       const fromRight = inkLeft(a) + glyph.nominalWidth;
       const toLeft = inkLeft(b);
+      const toRight = clusterRight(b);
       const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
-      const x1 = toLeft - fromRight >= 10 ? toLeft : inkLeft(b) + glyph.nominalWidth;
+      const x1 = toRight;
       const span = x1 - x0;
       if (span < 10) return;
       // tight（链上无技法记号）弧贴近音符，拱高上限也压小：
@@ -1241,7 +1255,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 命中框：按字形锚点做 Voronoi 划分，每个音符的可点区域以字形为中心。
     // 直接用音符的时值宽度当命中框会有问题：长音（比如 1· 占 103px）的框会
     // 吞掉后面紧邻音符字形左侧的一小段，导致那个音很难被单独选中。
-    positionDashes(items, glyph);
+    // （dashXs 已在弧线计算前由 positionDashes 填好，这里不再重复调用）
     const chain: PlacedItem[] = [];
     const anchors: number[] = [];
     for (const it of items) {

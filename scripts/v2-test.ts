@@ -1275,6 +1275,43 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 }
 
 {
+  // 多声部：在二声部小节线**旁边**点一下 = 在**本声部**插入音符。
+  // 旧实现把插入点也做了「指挥映射」（拍号 / 反复归首声部管），
+  // 圆号末尾空小节旁点一下，光标会跳进小号声部（用户实测）。
+  console.log('\n[多声部：小节线旁的插入点留在本声部]');
+  const p1 = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 6 7 8 ||\n').score!;
+  const p2 = parseDsl('@beat 4/4\n\n1 2 3 4 | 0 0 0 0 ||\n').score!;
+  // 声部事件 id 必须唯一（真实 app 里 addPart 用 p2:e1… 前缀），否则命中表会串声部
+  const ids2 = new Map(p2.events.map((e) => [e.id, `h${e.id}`]));
+  const events2 = p2.events.map((e) => ({ ...e, id: ids2.get(e.id)! }));
+  const ensemble = { ...p1, parts: [{ id: 'horn', name: '圆号', gain: 1, events: events2, groups: p2.groups }] };
+  const L = layoutScore(ensemble, { contentWidth: 1000 });
+  const hornLines = L.lines.filter((ln) => ln.partId === 'horn');
+  check('重奏布局有圆号行', hornLines.length >= 1, `lines=${hornLines.length}`);
+  const horn = hornLines[0]!;
+  // 第一小节末的小节线（行首没有小节线，跳过第一个 item）
+  const bar = horn.items.find((it) => it.kind === 'barline' && it.x > horn.items[0]!.x + 10);
+  check('找到圆号的小节线', !!bar);
+  if (bar) {
+    // +6：出「选线」的 ±5 区，但仍在小节线的 Voronoi 格内（再远就归后面的音了）
+    const beside = pickAt(L, bar.x + bar.w / 2 + 6, horn.y);
+    check(
+      '点在小节线旁 = 本声部（圆号）插入点',
+      beside?.mode === 'insert' && beside.partId === 'horn',
+      JSON.stringify(beside),
+    );
+    check(
+      '插入下标 = 这根小节线之后',
+      beside?.index === bar.eventIndex && beside.cursor === bar.eventIndex + 1,
+      `index=${beside?.index} cursor=${beside?.cursor} bar=${bar.eventIndex}`,
+    );
+    // 点线正中仍是「选线」：拍号 / 反复 / 房子归首声部管
+    const mid = pickAt(L, bar.x + bar.w / 2, horn.y);
+    check('点线正中仍选中线', mid?.mode === 'over', JSON.stringify(mid));
+  }
+}
+
+{
   // 字间距：unit 越大，音符格越宽，断行点也跟着变
   const { score } = parseDsl(readFileSync(join(DIR, 'molihua.jps'), 'utf-8'));
   const tight = layoutScore(score!, { contentWidth: 1000, unit: 0.9 });

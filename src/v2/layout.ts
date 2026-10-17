@@ -1644,22 +1644,22 @@ function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | 
     if (!it) continue;
 
     if (it.kind === 'barline') {
-      // 多声部：一律落到首声部同一时间点的那根线（反复 / 拍号 / 房子归首声部管）
-      const cb = conductorBarline(it, line);
-      const bar = cb.it;
-      const barLine = cb.line;
-      const owner = barLine.partId ? { partId: barLine.partId } : {};
       // 点竖线 = **选中这条线**（反复 / 终止线 / 房子都是它的属性，点它才能改）。
+      // 多声部：选中时落到首声部同一时间点的那根线（拍号 / 反复 / 房子归首声部管）。
       // 线的两侧留作插入点：只有正中那一小条是「选线」，免得想插音却选中了线。
-      const mid = bar.x + bar.w / 2;
+      // 插入时必须留在**被点击的声部**：不能被指挥映射拽到首声部——
+      // 否则在圆号末尾的空小节后点一下，光标会跳进小号声部（用户实测）。
+      const mid = it.x + it.w / 2;
       if (x >= mid - 5 && x <= mid + 5) {
-        return { index: bar.eventIndex, mode: 'over', cursor: bar.eventIndex + 1, ...owner };
+        const cb = conductorBarline(it, line);
+        const owner = cb.line.partId ? { partId: cb.line.partId } : {};
+        return { index: cb.it.eventIndex, mode: 'over', cursor: cb.it.eventIndex + 1, ...owner };
       }
       return {
-        index: bar.eventIndex,
+        index: it.eventIndex,
         mode: 'insert',
-        cursor: x < mid ? bar.eventIndex : bar.eventIndex + 1,
-        ...owner,
+        cursor: x < mid ? it.eventIndex : it.eventIndex + 1,
+        ...(line.partId ? { partId: line.partId } : {}),
       };
     }
 

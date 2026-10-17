@@ -1456,8 +1456,11 @@ export function caretAt(
     return { x: (prevEdge + nextEdge) / 2, y: line.y };
   }
 
-  // 光标在谱末：贴在最后一个记号之后
-  const last = layout.lines[layout.lines.length - 1];
+  // 光标在谱末：贴在**最后一个有记号的行**的末尾。
+  // 多声部里本声部结束后的那些系统，该声部行是空的（没有 item），
+  // 直接取最后一行会把光标画到整曲最后一行的声部名左边（用户实测）。
+  const last = [...layout.lines].reverse().find((line) => line.items.length > 0)
+    ?? layout.lines[layout.lines.length - 1];
   if (!last) return null;
   const lastItem = last.items[last.items.length - 1];
   if (!lastItem) return { x: 40, y: last.y };

@@ -1312,6 +1312,29 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 }
 
 {
+  // 多声部里某个声部提前结束时，后面系统的该声部行是空的。
+  // 光标在声部末尾（下标越过了所有 item）时，旧逻辑回退到「最后一行」——
+  // 空行没有 item，光标就被画到整曲最后一行的声部名左边（用户实测）。
+  console.log('\n[光标：声部提前结束时不跑到整曲最后一行]');
+  const p1 = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 6 7 8 | 1 2 3 4 | 5 6 7 8 ||\n').score!;
+  const p2 = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  const ids2 = new Map(p2.events.map((e) => [e.id, `h${e.id}`]));
+  const ensemble = { ...p1, parts: [{ id: 'horn', name: '圆号', gain: 1, events: p2.events.map((e) => ({ ...e, id: ids2.get(e.id)! })), groups: p2.groups }] };
+  const L = layoutScore(ensemble, { contentWidth: 400 });
+  const hornLines = L.lines.filter((ln) => ln.partId === 'horn');
+  check('圆号后面几个系统是空行', hornLines.some((ln) => ln.items.length === 0), `hornLines=${hornLines.length}`);
+  const editable = { ...L, lines: hornLines };
+  const caret = caretAt(editable, p2.events.length); // 光标在圆号谱末
+  const lastNonEmpty = [...hornLines].reverse().find((ln) => ln.items.length > 0)!;
+  const tail = lastNonEmpty.items[lastNonEmpty.items.length - 1]!;
+  check(
+    '光标落在圆号最后一行内容之后（不是整曲最后一行）',
+    !!caret && caret.y === lastNonEmpty.y && caret.x > tail.x,
+    `caret=${JSON.stringify(caret)} 末行 y=${lastNonEmpty.y} 行末 x=${tail.x.toFixed(1)}`,
+  );
+}
+
+{
   // 连线被断行切断、本行只剩一个成员时的「短弧」：
   // 早期是固定 ±26/±48px 的小弧，长音（2---）盖不住增时线，
   // 起点还会退到 padding——总谱里谱行左缘在声部名右边，弧会伸到括号外（用户实测）。

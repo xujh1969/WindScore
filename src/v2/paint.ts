@@ -1219,7 +1219,9 @@ function paintLine(
   }
 
   // 连音标号：组上方一条向下弯的弧线，**中间断开**、断口里写数字（3 / 6 …）——
-  // 这才是简谱/五线谱的标准画法，数字悬在整条弧外面的画法没人这么记
+  // 这才是简谱/五线谱的标准画法，数字悬在整条弧外面的画法没人这么记。
+  // 两段是**同一条抛物线**在数字两侧的部分（不是两条独立的小弧）：
+  // 切点处切线方向连续，延长线在弧顶相交——看起来就是一条被数字断开的弧。
   ctx.font = M.badgeFont;
   ctx.strokeStyle = theme.curve;
   ctx.lineWidth = 1.2;
@@ -1230,14 +1232,20 @@ function paintLine(
     const cx = (t.x0 + t.x1) / 2;
     const gap = Math.min(ctx.measureText(t.text).width / 2 + 5, (t.x1 - t.x0) * 0.3);
     ctx.fillStyle = theme.ink;
-    // 左右两段弧线，中间给数字让位
+    // 抛物线 y(x)：两端 ends、顶点 apex（x 二次曲线的贝塞尔表示里 x 与参数线性，
+    // 所以任意子区间都能用「中点控制点」精确重建同一条曲线）
+    const half = (t.x1 - t.x0) / 2;
+    const yAt = (x: number) => ends - (ends - apex) * (1 - ((x - cx) / half) ** 2);
+    const seg = (xa: number, xb: number): void => {
+      const ya = yAt(xa);
+      const yb = yAt(xb);
+      const mx = (xa + xb) / 2;
+      ctx.moveTo(xa, ya);
+      ctx.quadraticCurveTo(mx, 2 * yAt(mx) - (ya + yb) / 2, xb, yb);
+    };
     ctx.beginPath();
-    ctx.moveTo(t.x0, ends);
-    ctx.quadraticCurveTo((t.x0 + cx) / 2, apex, cx - gap, ends - 4);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(t.x1, ends);
-    ctx.quadraticCurveTo((t.x1 + cx) / 2, apex, cx + gap, ends - 4);
+    seg(t.x0, cx - gap);
+    seg(cx + gap, t.x1);
     ctx.stroke();
     // 数字坐在断口正中，与弧线同高
     ctx.fillText(t.text, cx, apex + 3);

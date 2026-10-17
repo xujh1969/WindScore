@@ -1235,7 +1235,9 @@ function paintLine(
   ctx.textAlign = 'center';
   for (const t of line.tuplets) {
     const ends = y - M.markTop;
-    const apex = ends - 9;
+    // 弧顶抬高一点（用户要求）：数字与弧线一起离开下一层的标记行，
+    // 断口才对准数字的竖向中点，而不是压在数字的下半截
+    const apex = ends - 12;
     const cx = (t.x0 + t.x1) / 2;
     const gap = Math.min(ctx.measureText(t.text).width / 2 + 5, (t.x1 - t.x0) * 0.3);
     ctx.fillStyle = theme.ink;
@@ -1254,8 +1256,10 @@ function paintLine(
     seg(t.x0, cx - gap);
     seg(cx + gap, t.x1);
     ctx.stroke();
-    // 数字坐在断口正中，与弧线同高
-    ctx.fillText(t.text, cx, apex + 3);
+    // 数字坐在断口正中：基线按**字形实际墨高**下推半格，
+    // 弧线断口正好穿过数字竖向中点（不随字体字号漂移）
+    const ascent = ctx.measureText(t.text).actualBoundingBoxAscent || 8;
+    ctx.fillText(t.text, cx, apex + ascent / 2);
   }
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.muted;

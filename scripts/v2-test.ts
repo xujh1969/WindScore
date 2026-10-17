@@ -1312,6 +1312,30 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 }
 
 {
+  // 连线被断行切断、本行只剩一个成员时的「短弧」：
+  // 早期是固定 ±26/±48px 的小弧，长音（2---）盖不住增时线，
+  // 起点还会退到 padding——总谱里谱行左缘在声部名右边，弧会伸到括号外（用户实测）。
+  console.log('\n[连线：断行短弧盖住本行成员的增时线]');
+  const s = parseDsl('@beat 4/4\n\n(2--- | 5---) ||\n').score!;
+  const L = layoutScore(s, { contentWidth: 300 }); // 窄画布迫使两个长音换行
+  check('窄画布断成两行', L.lines.length === 2, `lines=${L.lines.length}`);
+  const arcs = L.lines.flatMap((l) => l.arcs).filter((a) => a.kind === 'slur');
+  check('两行各补出一段短弧', arcs.length === 2, `arcs=${arcs.length}`);
+  const wrapped = L.lines.map((l) => l.items.find((it) => it.kind === 'note')).filter(Boolean) as PlacedItem[];
+  if (arcs.length === 2 && wrapped.length === 2) {
+    wrapped.forEach((it, i) => {
+      const c = clusterSpan(it);
+      const a = arcs[i]!;
+      check(
+        `第 ${i + 1} 行短弧从数字起、盖到最后一个增时线`,
+        Math.abs(a.x0 - (it.x + 5)) < 2 && a.x1 >= c.x + c.w - 1,
+        `x0=${a.x0.toFixed(1)} x1=${a.x1.toFixed(1)} 簇=[${c.x.toFixed(1)},${(c.x + c.w).toFixed(1)}]`,
+      );
+    });
+  }
+}
+
+{
   // 字间距：unit 越大，音符格越宽，断行点也跟着变
   const { score } = parseDsl(readFileSync(join(DIR, 'molihua.jps'), 'utf-8'));
   const tight = layoutScore(score!, { contentWidth: 1000, unit: 0.9 });

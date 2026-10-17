@@ -1126,9 +1126,6 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     positionDashes(items, glyph);
 
     const arcs: PlacedArc[] = [];
-    const rightEdge = items.length
-      ? items[items.length - 1].x + items[items.length - 1].w
-      : padding;
 
     /**
      * 音符上方是否画了「气息与技法」记号（吐音 T/K、技法、断音 ·、
@@ -1138,28 +1135,22 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       !!m.tongue || !!(m.techniques?.length) || !!m.custom || !!m.staccato || !!m.fermata;
 
     /**
-     * 连线被断行切断、且这一行只剩一个成员时，朝延续方向补一段短弧。
+     * 连线被断行切断、且这一行只剩一个成员时，在本成员上方补一段弧。
      * 少了这段，跨小节 / 跨行的连线会整条凭空消失——
      * (3 | 3) 这种跨小节连线正好会掉进这个情况。
+     * 弧盖住**这个成员的整个字形簇**（数字+附点+增时线）：早期用固定
+     * ±26/±48px 的短弧，长音（2---）盖不住增时线；起点往左退时还会
+     * 退到 padding——总谱里谱行左缘在声部名右侧，弧会伸到括号外（用户实测）。
      */
     const pushStub = (it: PlacedItem, cutBefore: boolean, cutAfter: boolean): void => {
-      const cx = it.x + Math.min(it.w - 4 * k, glyph.glyphRight) / 2 + 2 * k;
-      let x0: number;
-      let x1: number;
-      if (cutBefore && cutAfter) {
-        x0 = cx - 26 * k;
-        x1 = cx + 26 * k;
-      } else if (cutAfter) {
-        x0 = cx;
-        x1 = Math.min(rightEdge, cx + 48 * k);
-      } else if (cutBefore) {
-        x0 = Math.max(padding, cx - 48 * k);
-        // 断行后的尾段：也要盖到末音最后一个增时线，与整条连线同口径
-        x1 = Math.min(rightEdge, clusterRight(it));
-      } else {
-        return;
-      }
+      if (!cutBefore && !cutAfter) return;
+      const x0 = inkLeft(it);
+      const x1 = clusterRight(it);
       if (x1 - x0 < 10) return;
+      const ev = byId.get(it.eventId);
+      const ticks = ev && 'ticks' in ev ? (ev as { ticks: number }).ticks : 0;
+      // 长音成员与整条连线同口径画平线（2--- 拱弧会很高很难看）
+      const flat = ticks > 3 * TICKS_PER_BEAT;
       // tight 弧贴近音符，拱高也压小，弧顶才不会扫到下方的数字
       arcs.push({
         x0,
@@ -1168,6 +1159,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         kind: 'slur',
         octaveUp: it.octave ?? 0,
         tight: !hasMarks(it),
+        flat,
       });
     };
 

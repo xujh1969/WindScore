@@ -84,6 +84,7 @@ import {
   withDots,
 } from '../src/v2/ticks';
 import { expandScore } from '../src/v2/expand';
+import { ensembleIssues } from '../src/v2/parts';
 import { audioKey, clearAlign, loadAlign, saveAlign } from '../src/v2/ui/alignStore';
 import { gridSkipOf, snapBeatToGrid } from '../src/v2/ui/AudioWaveform';
 import { crc32, unzip, zipStore } from '../src/v2/pack';
@@ -1309,6 +1310,21 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     const mid = pickAt(L, bar.x + bar.w / 2, horn.y);
     check('点线正中仍选中线', mid?.mode === 'over', JSON.stringify(mid));
   }
+}
+
+{
+  // 声部**提前结束**是合法写法（红旗颂的圆号只写了前 12 小节，后面归别的乐器）。
+  // 以前 ensembleIssues 把「小节数不一致」一律判错，expandScore 就返回 null，
+  // 播放入口直接掐掉——整首曲子一点声音都没有（用户实测）。
+  console.log('\n[重奏：声部提前结束不该掐掉播放]');
+  const p1 = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 6 7 8 | 1 2 3 4 ||\n').score!;
+  const p2 = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  const ids2 = new Map(p2.events.map((e) => [e.id, `h${e.id}`]));
+  const ensemble = { ...p1, parts: [{ id: 'horn', name: '圆号', gain: 1, events: p2.events.map((e) => ({ ...e, id: ids2.get(e.id)! })), groups: p2.groups }] };
+  const issues = ensembleIssues(ensemble);
+  check('圆号提前结束不报对齐错误', issues.length === 0, issues.join(' / '));
+  const exp = expandScore(ensemble);
+  check('重奏仍能展开成线性谱（播放不被掐）', !!exp.score && exp.errors.length === 0, exp.errors.join(' / '));
 }
 
 {

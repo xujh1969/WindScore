@@ -72,7 +72,12 @@ export function ensembleIssues(score: Score): string[] {
   const out: string[] = [];
   parts.slice(1).forEach((p, pi) => {
     const current = measures[pi + 1];
-    if (current.length !== measures[0].length) out.push(`${p.name}有 ${current.length} 小节，${parts[0].name}有 ${measures[0].length} 小节`);
+    // 声部**提前结束**（小节数比首声部少）是合法写法——圆号只有前 12 小节，
+    // 后面整段都是别的乐器。只要求它与首声部**前 N 小节逐小节对齐**：
+    // 多出来（说明边界错开了）或重叠段拍数不一致才报错。
+    if (current.length > measures[0].length) {
+      out.push(`${p.name}有 ${current.length} 小节，比${parts[0].name}的 ${measures[0].length} 小节多`);
+    }
     current.forEach((m, i) => {
       if (measures[0][i] && m.ticks !== measures[0][i].ticks) out.push(`${p.name}第 ${i + 1} 小节为 ${m.ticks / TICKS_PER_BEAT} 拍，与${parts[0].name}不一致`);
     });
@@ -118,7 +123,9 @@ export function withConductor(score: Score, id: string): Score {
     for (const e of following) {
       if (e.kind === 'jump' || e.kind === 'barline' && e.id !== src?.id) jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
     }
-    if (jumps.length) clean.splice(Math.max(0, index + 1), 0, ...jumps);
+    // 声部提前结束时，首声部后面的边界在本声部里没有对应的线：
+    // 那些跳转记号无处可挂（index < 0 会插到谱面最前面，位置全乱），直接跳过
+    if (jumps.length && index >= 0) clean.splice(index + 1, 0, ...jumps);
   }
   return { ...target, events: clean };
 }

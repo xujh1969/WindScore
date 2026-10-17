@@ -126,11 +126,12 @@ export interface PlacedArc {
    */
   flat?: boolean;
   /**
-   * 断行短弧：画成**一条水平直线**（不带两端的下垂小弧）。
-   * 短弧是同一根连线被断行切开的延续段，水平的直线读作「延长到下一行」；
-   * 带端弧的画法看起来像一条独立的弧线，体现不出延续（用户实测要求）。
+   * 断行短弧的**断口端**：该端不画端弧，平线直接画到弧顶高度为止——
+   * 读作「连线从这里延续到下一行 / 上一行」（用户实测要求）。
+   * 另一端照常保留端弧：前一段留左端弧、后一段留右端弧。
    */
-  straight?: boolean;
+  openStart?: boolean;
+  openEnd?: boolean;
   /**
    * 贴近模式：弧线覆盖的音符**都没有**气息技法符号（吐音 / 技法 / 断音 /
    * 延长音 / 自定义记号）时为 true——绘制层据此省掉为记号行预留的抬升，
@@ -1153,8 +1154,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x0 = inkLeft(it);
       const x1 = clusterRight(it);
       if (x1 - x0 < 10) return;
-      // 短弧画成一条**水平直线**：它是同一根连线被断行切开的延续段，
-      // 直线才读得出「延长到下一行」，带端弧看起来像一条独立的弧线（用户实测）。
+      // 短弧画成平线（长音拱弧会太高），但**只有断口那一端是平的**：
+      // 前一段（链首在本行）留左端弧、右端断开；后一段（链尾在本行）左端断开、
+      // 留右端弧——两端弧都留会看成一条独立弧线，两端都平又看不出延续（用户实测）。
       // 高度与整条平线连线同口径（7 + 跨度×0.04，上限随技法记号让位），接缝才齐平
       arcs.push({
         x0,
@@ -1164,7 +1166,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         octaveUp: it.octave ?? 0,
         tight: !hasMarks(it),
         flat: true,
-        straight: true,
+        // 中间段（前后都断）两端都平；只有一侧断就只开那一侧
+        ...(cutBefore ? { openStart: true } : {}),
+        ...(cutAfter ? { openEnd: true } : {}),
       });
     };
 

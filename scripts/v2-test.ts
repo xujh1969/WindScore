@@ -1354,10 +1354,15 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
         Math.abs(a.x0 - (it.x + 5)) < 2 && a.x1 >= c.x + c.w - 1,
         `x0=${a.x0.toFixed(1)} x1=${a.x1.toFixed(1)} 簇=[${c.x.toFixed(1)},${(c.x + c.w).toFixed(1)}]`,
       );
+      // 前一段（链首）：左端弧保留、右端是断口；后一段（链尾）：左端是断口、右端弧保留
+      const wantOpenStart = i > 0;
+      const wantOpenEnd = i === 0;
       check(
-        `第 ${i + 1} 行短弧是水平直线（延续到下一行的读法）`,
-        !!a.flat && !!a.straight,
-        `flat=${a.flat} straight=${a.straight}`,
+        `第 ${i + 1} 行短弧只在断口那一端平，另一端留端弧`,
+        !!a.flat &&
+          !!a.openStart === wantOpenStart &&
+          !!a.openEnd === wantOpenEnd,
+        `flat=${a.flat} openStart=${a.openStart} openEnd=${a.openEnd}`,
       );
     });
   }

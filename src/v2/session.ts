@@ -18,6 +18,13 @@ export interface Session {
   name: string;
   /** 上次保存过的真实路径；浏览器端或从未保存过时为 null */
   path: string | null;
+  /**
+   * 这份谱是**曲库里哪一条**（从曲库点「对轨 / 播放」进来时记下）。
+   * 要跨页面带走：曲库页点进 align.html / play.html 是另开一个页面，
+   * 那边靠会话恢复内容，不带上 id 的话保存就认不出「来自曲库」，
+   * 会去弹「另存为」。
+   */
+  libraryId?: string | null;
   /** 写入时间戳 */
   at: number;
 }
@@ -36,6 +43,7 @@ export function parseSession(raw: string | null): Session | null {
       text: v.text,
       name: typeof v.name === 'string' ? v.name : '上次编辑',
       path: typeof v.path === 'string' && v.path ? v.path : null,
+      libraryId: typeof v.libraryId === 'string' && v.libraryId ? v.libraryId : null,
       at: typeof v.at === 'number' ? v.at : 0,
     };
   } catch {
@@ -51,7 +59,12 @@ export function loadSession(): Session | null {
   }
 }
 
-export function saveSession(s: { text: string; name: string; path: string | null }): void {
+export function saveSession(s: {
+  text: string;
+  name: string;
+  path: string | null;
+  libraryId?: string | null;
+}): void {
   try {
     localStorage.setItem(KEY, JSON.stringify({ ...s, at: Date.now() }));
   } catch {

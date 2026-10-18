@@ -1000,7 +1000,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   /** 载入一份内容，并把「已保存」基准对齐到它 */
   const load = useCallback(
-    (name: string, text: string, file: string | null = null) => {
+    (name: string, text: string, file: string | null = null, fromLibraryId: string | null = null) => {
       const res = parseDsl(text);
       if (!res.score) return;
       setLyricSelection(null);
@@ -1017,7 +1017,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setActive(name);
       setPath(file);
       setFileHandle(null); // 会话恢复没有句柄：这一轮保存仍走下载
-      setLibraryId(null);
+      setLibraryId(fromLibraryId);
       setSavedRev(0);
       stopPlay();
     },
@@ -1030,7 +1030,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     if (s) {
       const res = parseDsl(s.text);
       if (res.score) {
-        load(s.name, s.text, s.path);
+        load(s.name, s.text, s.path, s.libraryId ?? null);
         setMsg('已恢复上次编辑的内容');
         return;
       }
@@ -1260,7 +1260,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       if (entry === 'app') { loadLibraryItem(item, 'align'); return; }
       const res = fromText(item.text, item.name);
       if (!res.score) { setMsg(`${item.name} 解析失败，请先修正谱面`); return; }
-      saveSession({ text: item.text, name: res.name, path: null });
+      // 带上 libraryId：align.html 那边靠会话恢复内容，认得出来自曲库才不会去另存文件
+      saveSession({ text: item.text, name: res.name, path: null, libraryId: item.id });
       window.location.href = './align.html';
     },
     [entry, loadLibraryItem],
@@ -2746,10 +2747,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   // 存内容不存路径，所以两端行为一致，也不怕文件被移走。
   useEffect(() => {
     const t = window.setTimeout(() => {
-      saveSession({ text: serialized, name: active, path });
+      saveSession({ text: serialized, name: active, path, libraryId });
     }, 600);
     return () => window.clearTimeout(t);
-  }, [serialized, active, path]);
+  }, [serialized, active, path, libraryId]);
 
   const applyDraft = () => {
     const res = parseDsl(draft);

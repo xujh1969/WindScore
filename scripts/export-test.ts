@@ -212,7 +212,7 @@ console.log('[导出 · 视频比例]');
 
   const vg = videoGeometry('r9x16', 1080);
   check('视频版面按画布尺寸给', vg.geo.pageW === 1080 && vg.geo.pageH === 1920);
-  check('视频字号随短边放大', vg.geo.scale > 1.4 && vg.geo.scale < 1.9, String(vg.geo.scale));
+  check('视频字号随短边放大', vg.geo.scale > 1.9 && vg.geo.scale < 2.3, String(vg.geo.scale));
   check('文件名去掉非法字符', safeFileName('灰姑娘/复:印') === '灰姑娘_复_印', safeFileName('灰姑娘/复:印'));
 }
 
@@ -238,9 +238,15 @@ console.log('[导出 · 滚动跟随]');
   const h = 200;
   check('开头不滚（内容还没超过屏高）', scrollTargetY(ranges, 0, 1, h, 86) === 0);
   check('第二行滚到屏上 38% 处', Math.abs(scrollTargetY(ranges, 100, 1, h, 86) - 60) < 0.01);
-  // 行内插值：走到本行一半时应当比行首低一点点，滚动看起来才连续
-  const mid = scrollTargetY(ranges, 150, 1, h, 86);
-  check('行内按进度插值', mid > 60 && mid < 90, String(mid));
+  // 本行前 60% 停住，后 40% smoothstep 滑向下一行——
+  // 旧版「匀速爬半行 + 换行瞬间跳剩下半行」在多声部（一行很高）会突然大跳
+  const mid = scrollTargetY(ranges, 130, 1, h, 86); // p=0.3 → 停在本行
+  check('行内前段停在本行', mid === 60, String(mid));
+  const late = scrollTargetY(ranges, 180, 1, h, 86); // p=0.8 → 滑过一半
+  check('行尾平滑滑向下一行', late > 60 && late < 146, String(late));
+  const justBefore = scrollTargetY(ranges, 199.9, 1, h, 86);
+  const atNext = scrollTargetY(ranges, 200, 1, h, 86);
+  check('换行瞬间滚动量连续（不跳）', Math.abs(justBefore - atNext) < 0.5, `${justBefore.toFixed(2)} vs ${atNext.toFixed(2)}`);
   check('缩放越大滚得越远', scrollTargetY(ranges, 200, 2, h, 86) > scrollTargetY(ranges, 200, 1, h, 86));
   check('没有版面就不滚', scrollTargetY([], 100, 1, h, 86) === 0);
 }

@@ -123,14 +123,17 @@ export function lineTickRanges(
 
 /**
  * 目标滚动量（像素）：让当前行停在画面上方 38% 处。
- * 行与行之间按进度插值，滚动看起来是连续的，不会一格一格跳。
+ * 本行时间的**前 60% 停在本行**，后 40% 用 smoothstep 平滑滑向下一行——
+ * 旧版「行内匀速爬半行 + 换行瞬间跳剩下半行」在多声部上会突然大跳
+ * （一个系统四行谱 ~370px，瞬移 ~185px，眼睛追不上，用户实测）。
+ * 现在换行前后滚动量连续，滑多远由 smoothstep 缓入缓出，视觉上平稳。
  */
 export function scrollTargetY(
   ranges: readonly LineTickRange[],
   tick: number,
   scale: number,
   viewportH: number,
-  lineHeight = 0,
+  _lineHeight = 0,
 ): number {
   if (ranges.length === 0) return 0;
   let y = ranges[0]!.y;
@@ -139,10 +142,14 @@ export function scrollTargetY(
     if (tick < r.from) break;
     const next = ranges[i + 1];
     if (!next || tick < next.from) {
-      const p = next
-        ? Math.max(0, Math.min(1, (tick - r.from) / Math.max(1, next.from - r.from)))
-        : 0;
-      y = r.y + p * lineHeight * 0.5;
+      y = r.y;
+      if (next) {
+        const span = Math.max(1, next.from - r.from);
+        const p = Math.max(0, Math.min(1, (tick - r.from) / span));
+        const q = p <= 0.6 ? 0 : (p - 0.6) / 0.4;
+        const ease = q * q * (3 - 2 * q);
+        y = r.y + ease * (next.y - r.y);
+      }
       break;
     }
     y = r.y;

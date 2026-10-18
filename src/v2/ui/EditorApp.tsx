@@ -1107,6 +1107,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   );
 
   const onSave = useCallback(async () => {
+    const t0 = performance.now();
     const cur = snap.score;
     // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
     const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
@@ -1114,23 +1115,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setMsg('保存取消');
       return;
     }
+    const wrote = performance.now() - t0;
+    if (wrote > 800) console.debug(`[save] 写文件耗时 ${(wrote / 1000).toFixed(1)}s`, r);
     // 浏览器端「另存为」拿到的句柄要记住：下次按保存就是静默覆盖这一个文件
     if (r.handle) setFileHandle(r.handle);
     if (r.path && !r.inPlace) setPath(r.path);
     setSavedRev(snap.rev);
-    // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
-    // 只写文件不入库的话，回曲库看到的还是改前的那份。
-    // 没连曲库文件夹时 upsertLibrary 返回 null，忽略即可。
     const name = cur.meta.title || active || '未命名';
-    const inLibrary = upsertLibrary(name, serializeDsl(cur));
     setMsg(
       (r.inPlace && r.path
         ? `已写回原文件 ${nameOf(r.path)}（下次保存仍改这一个文件）`
         : r.path
           ? `已保存到 ${nameOf(r.path)}`
           : '已导出到浏览器下载目录（此浏览器不支持原地写回：需 Chrome / Edge 桌面版，且地址是 https 或 localhost）') +
-        (inLibrary ? `，并更新曲库「${name}」` : ''),
+        (wrote > 800 ? `（写文件 ${(wrote / 1000).toFixed(1)}s）` : ''),
     );
+    // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
+    // 只写文件不入库的话，回曲库看到的还是改前的那份。
+    // 这一步要扫全库 + 通知所有订阅者（曲库列表整片重画），放在点击处理里
+    // 会把「保存成功」的提示一起拖住（实测 10s 才见提示）；挪到下一拍，
+    // 提示先出，曲库随后补上。没连曲库文件夹时 upsertLibrary 返回 null，忽略。
+    window.setTimeout(() => {
+      const inLibrary = upsertLibrary(name, serializeDsl(cur));
+      if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
+    }, 0);
   }, [snap, active, fileHandle]);
 
   /**

@@ -126,7 +126,7 @@ import { isTauri } from '../io';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
 import { buildPack, packFileName } from './packBundle';
-import { upsertLibrary, type LibraryItem } from './libraryStore';
+import { updateLibraryItem, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
@@ -404,6 +404,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 没有（<input> 选的、新建的、Safari / Firefox）就退回下载。
    */
   const [fileHandle, setFileHandle] = useState<FsFileHandle | null>(null);
+  /**
+   * 当前这份谱是**曲库里哪一条**（从曲库打开时才记下 id）。
+   * 保存只回写这一条：从磁盘打开 / 新建的谱不碰曲库——
+   * 按歌名同步会默默塞进曲库，还会盖掉同名却是另一首的曲子。
+   */
+  const [libraryId, setLibraryId] = useState<string | null>(null);
   const [past, setPast] = useState<Snap[]>([]);
   const [future, setFuture] = useState<Snap[]>([]);
   const [pending, setPending] = useState<{ ids: string[]; ticks: number; cands: TierCandidate[] } | null>(
@@ -1009,6 +1015,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setActive(name);
       setPath(file);
       setFileHandle(null); // 会话恢复没有句柄：这一轮保存仍走下载
+      setLibraryId(null);
       setSavedRev(0);
       stopPlay();
     },
@@ -1035,7 +1042,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   // 还会把分轨重复解码一遍（表现为载入音频后长时间卡住才见波形）。
 
   const adopt = useCallback(
-    (res: OpenResult) => {
+    (res: OpenResult, fromLibraryId: string | null = null) => {
       if (!res.score) {
         setMsg(res.errors.length ? `打开失败：${res.errors[0]}` : '解析失败');
         return;
@@ -1054,6 +1061,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setActive(res.name);
       setPath(res.path);
       setFileHandle(res.handle ?? null);
+      setLibraryId(fromLibraryId);
       setSavedRev(0);
       setMsg(`已打开 ${res.name}`);
       stopPlay();
@@ -1080,6 +1088,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     setActive('新建谱面');
     setPath(null);
     setFileHandle(null);
+    setLibraryId(null);
     setSavedRev(0);
     setMsg('已新建空白谱面');
     stopPlay();
@@ -1156,17 +1165,24 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 这一步要扫全库 + 通知所有订阅者（曲库列表整片重画），放在点击处理里
     // 会把「保存成功」的提示一起拖住（实测 10s 才见提示）；挪到下一拍，
     // 提示先出，曲库随后补上。没连曲库文件夹时 upsertLibrary 返回 null，忽略。
+    // 只有**这份谱本来就是从曲库打开的**才回写那一条（按 id，不按歌名）；
+    // 从磁盘打开 / 新建的只写文件，曲库不动——既不会误伤同名曲，也省掉整库写盘
+    const libId = libraryId;
+    if (!libId) {
+      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（写文件 ${(wrote / 1000).toFixed(1)}s；未改动曲库）`, true);
+      return;
+    }
     showSaveToast('正在保存…', '正在同步曲库');
     // 留一拍让「已写回」先画出来（setTimeout 0 可能抢在 React 重画之前跑）
     window.setTimeout(() => {
       const t1 = performance.now();
-      const inLibrary = upsertLibrary(name, serializeDsl(cur));
+      const inLibrary = updateLibraryItem(libId, serializeDsl(cur));
       const tLib = performance.now() - t1;
-      console.debug(`[save] 曲库同步 ${tLib.toFixed(0)}ms`, { name, inLibrary: !!inLibrary });
+      console.debug(`[save] 曲库同步 ${tLib.toFixed(0)}ms`, { libId, inLibrary });
       if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
       showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（写文件 ${(wrote / 1000).toFixed(1)}s / 曲库 ${(tLib / 1000).toFixed(1)}s）`, true);
     }, 150);
-  }, [snap, active, fileHandle, showSaveToast]);
+  }, [snap, active, fileHandle, libraryId, showSaveToast]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -1216,7 +1232,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         setMsg(`${item.name} 解析失败——曲库里这份内容有问题，建议删除后重新导入`);
         return false;
       }
-      adopt(res);
+      adopt(res, item.id); // 记下来自曲库哪一条：保存时按 id 回写这一条
       setMode(target);
       return true;
     },

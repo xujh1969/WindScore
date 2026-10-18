@@ -348,6 +348,20 @@ export function setFavorite(id: string, on: boolean): boolean {
   );
 }
 
+/**
+ * 按**条目 id**回写内容（保存时用）。
+ * 与 upsertLibrary 的区别：它只改「这一条」，不会按歌名新建 / 覆盖——
+ * 保存一份从磁盘打开的谱时，不该悄悄塞进曲库，更不该盖掉同名但另一首的曲子。
+ */
+export function updateLibraryItem(id: string, text: string, now = Date.now()): boolean {
+  const items = readLibrary();
+  const target = items.find((it) => it.id === id);
+  if (!target) return false;
+  return writeLibrary(
+    items.map((it) => (it.id === id ? { ...it, text, updatedAt: now, meta: metaOfText(text, it.name) } : it)),
+  );
+}
+
 /** 重命名；目标名已被别人占用时不动，返回 false 让界面提示 */
 export function renameLibraryItem(id: string, name: string, now = Date.now()): boolean {
   const nm = normalizeName(name);

@@ -1135,9 +1135,31 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   const onSave = useCallback(async () => {
     const t0 = performance.now();
+    const cur = snap.score;
+    const name = cur.meta.title || active || '未命名';
+    /**
+     * 从**曲库**打开的谱（对轨页点进来的）：保存 = 直接写回曲库那一条，
+     * **不再落一份 .jps**——曲库本身就是它的存放处，再存一份文件是多余动作
+     * （还要弹「另存为」）。要文件用「导出 / 打包」。
+     */
+    if (libraryId) {
+      setMsg('保存中…');
+      showSaveToast('正在保存…', '正在写入曲库');
+      const okLib = updateLibraryItem(libraryId, serializeDsl(cur));
+      const tLib = performance.now() - t0;
+      console.debug(`[save] 只写曲库 ${tLib.toFixed(0)}ms`, { libraryId, okLib });
+      if (!okLib) {
+        setMsg('曲库里已没有这一条，保存失败');
+        showSaveToast('保存失败', '曲库条目已不存在', true);
+        return;
+      }
+      setSavedRev(snap.rev);
+      setMsg(`已更新曲库「${name}」（未生成文件）`);
+      showSaveToast('保存成功', `曲库「${name}」（${(tLib / 1000).toFixed(1)}s）`, true);
+      return;
+    }
     setMsg('保存中…');
     showSaveToast('正在保存…', '正在写入文件');
-    const cur = snap.score;
     // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
     const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
     if (!r.ok) {
@@ -1151,7 +1173,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     if (r.handle) setFileHandle(r.handle);
     if (r.path && !r.inPlace) setPath(r.path);
     setSavedRev(snap.rev);
-    const name = cur.meta.title || active || '未命名';
     setMsg(
       (r.inPlace && r.path
         ? `已写回原文件 ${nameOf(r.path)}（下次保存仍改这一个文件）`
@@ -1160,14 +1181,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           : '已导出到浏览器下载目录（此浏览器不支持原地写回：需 Chrome / Edge 桌面版，且地址是 https 或 localhost）') +
         (wrote > 800 ? `（写文件 ${(wrote / 1000).toFixed(1)}s）` : ''),
     );
-    // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
-    // 只写文件不入库的话，回曲库看到的还是改前的那份。
-    // 这一步要扫全库 + 通知所有订阅者（曲库列表整片重画），放在点击处理里
-    // 会把「保存成功」的提示一起拖住（实测 10s 才见提示）；挪到下一拍，
-    // 提示先出，曲库随后补上。没连曲库文件夹时 upsertLibrary 返回 null，忽略。
-    // 只有**这份谱本来就是从曲库打开的**才回写那一条（按 id，不按歌名）；
-    // 从磁盘打开 / 新建的只写文件，曲库不动——既不会误伤同名曲，也省掉整库写盘
-    const libId = libraryId;
     // 写文件的分段：序列化 / 等另存为对话框 / 真正写入（写入慢或对话框慢一眼看得出）
     const ms = r.ms;
     const seg = ms
@@ -1175,20 +1188,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         (ms.pick !== undefined ? ` / 等对话框 ${(ms.pick / 1000).toFixed(1)}s` : '') +
         ` / 写入 ${(ms.write / 1000).toFixed(1)}s`
       : `写文件 ${(wrote / 1000).toFixed(1)}s`;
-    if (!libId) {
-      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}；未改动曲库）`, true);
-      return;
-    }
-    showSaveToast('正在保存…', '正在同步曲库');
-    // 留一拍让「已写回」先画出来（setTimeout 0 可能抢在 React 重画之前跑）
-    window.setTimeout(() => {
-      const t1 = performance.now();
-      const inLibrary = updateLibraryItem(libId, serializeDsl(cur));
-      const tLib = performance.now() - t1;
-      console.debug(`[save] 曲库同步 ${tLib.toFixed(0)}ms`, { libId, inLibrary });
-      if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
-      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg} / 曲库 ${(tLib / 1000).toFixed(1)}s）`, true);
-    }, 150);
+    // 走到这里说明这份谱不是从曲库来的：只写文件，曲库不动
+    showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}；未改动曲库）`, true);
   }, [snap, active, fileHandle, libraryId, showSaveToast]);
 
   /**
@@ -2915,7 +2916,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   存 .jps 文件，并同步回曲库；未保存的改动会标出来 */}
               <button
                 className="v2-btn"
-                title={`把当前谱面存成 .jps（含在「简谱编辑」页签里的修改），并更新曲库${dirty ? '；有未保存的改动' : ''}`}
+                title={
+                  libraryId
+                    ? `把修改写回曲库「${active}」（这份谱是从曲库打开的，不再另存 .jps）${dirty ? '；有未保存的改动' : ''}`
+                    : `把当前谱面存成 .jps（含在「简谱编辑」页签里的修改）${dirty ? '；有未保存的改动' : ''}`
+                }
                 onClick={() => void onSave()}
                 disabled={score.events.length === 0}
               >

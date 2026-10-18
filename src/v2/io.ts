@@ -10,12 +10,34 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 }
 
+/**
+ * File System Access API 的文件句柄（Chrome / Edge 桌面版）。
+ * TS 的 lib.dom 里没有这套类型，这里只声明用得到的最小面——
+ * 有了它，浏览器里也能**原地写回**打开的那个文件，不必每次都下载新副本。
+ */
+export interface FsFileHandle {
+  name: string;
+  getFile(): Promise<File>;
+  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>;
+  queryPermission?(desc: { mode: 'readwrite' }): Promise<PermissionState>;
+  requestPermission?(desc: { mode: 'readwrite' }): Promise<PermissionState>;
+}
+
+type FsWindow = Window & {
+  showOpenFilePicker?: (opts?: {
+    multiple?: boolean;
+    types?: { description: string; accept: Record<string, string[]> }[];
+  }) => Promise<FsFileHandle[]>;
+};
+
 export interface OpenResult {
   name: string;
   score: Score | null;
   errors: string[];
   /** 真实文件路径；浏览器下用文件选择框，拿不到路径 */
   path: string | null;
+  /** 浏览器下用 File System Access API 打开时拿到的句柄（之后可原地写回） */
+  handle?: FsFileHandle | null;
 }
 
 export interface SaveResult {
@@ -24,14 +46,44 @@ export interface SaveResult {
   path: string | null;
 }
 
+/** 浏览器是否支持「打开时拿到句柄、之后原地写回」（Chrome / Edge 桌面版） */
+export function canWriteInPlace(): boolean {
+  return typeof window !== 'undefined' && typeof (window as FsWindow).showOpenFilePicker === 'function';
+}
+
 /**
  * 保存。
- * Tauri 下弹保存对话框并拿到真实路径；浏览器下退化为下载。
- * 调用方不要假设浏览器返回的那个名字是路径——它只是建议文件名。
+ * Tauri 下弹保存对话框并拿到真实路径；浏览器下**有句柄就原地写回**打开的那个
+ * 文件（File System Access API），没有句柄才退化成下载。
+ * 调用方不要假设浏览器返回的那个名字是路径——它只是建议文件名 / 句柄名。
  */
-export async function saveScore(score: Score, suggested: string): Promise<SaveResult> {
+export async function saveScore(
+  score: Score,
+  suggested: string,
+  handle: FsFileHandle | null = null,
+): Promise<SaveResult> {
   if (score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
-  return saveTextAsFile(serializeDsl(score), suggested);
+  const text = serializeDsl(score);
+  if (handle && (await writeToHandle(handle, text))) return { ok: true, path: handle.name };
+  return saveTextAsFile(text, suggested);
+}
+
+/** 原地写回：权限没给或被拒就返回 false（调用方退回下载，不静默失败） */
+async function writeToHandle(handle: FsFileHandle, text: string): Promise<boolean> {
+  try {
+    const perm = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
+    if (perm === 'prompt' && handle.requestPermission) {
+      if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return false;
+    } else if (perm !== 'granted') {
+      return false;
+    }
+    const w = await handle.createWritable();
+    await w.write(text);
+    await w.close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 二进制落盘的默认参数（曲库打包 = .wspack） */
@@ -98,6 +150,24 @@ export async function saveTextAsFile(text: string, suggested: string): Promise<S
   // 立即 revoke 会让部分浏览器取消下载，等一拍再释放
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
   return { ok: true, path: null };
+}
+
+/**
+ * 浏览器下打开（File System Access API）：除了内容还拿到**文件句柄**，
+ * 之后按保存就是改原文件本身，不再每次下载一个新副本。
+ * 用户取消会抛 AbortError——调用方据此决定要不要回退到 <input>。
+ */
+export async function openScoreViaFsAccess(): Promise<OpenResult | null> {
+  if (!canWriteInPlace()) return null;
+  const win = window as FsWindow;
+  const picked = await win.showOpenFilePicker!({
+    multiple: false,
+    types: [{ description: 'WindScore 谱面', accept: { 'text/plain': ['.jps', '.txt'] } }],
+  });
+  const handle = picked?.[0];
+  if (!handle) return null;
+  const text = await (await handle.getFile()).text();
+  return { ...fromText(text, handle.name.replace(/\.(jps|txt)$/i, '')), handle };
 }
 
 /** 打开（仅 Tauri；浏览器用 <input type="file">） */

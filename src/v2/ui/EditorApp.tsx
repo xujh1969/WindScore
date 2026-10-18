@@ -77,8 +77,10 @@ import {
   fromText,
   nameOf,
   openScoreViaDialog,
+  openScoreViaFsAccess,
   saveBytesAsFile,
   saveScore,
+  type FsFileHandle,
   type OpenResult,
 } from '../io';
 import { ACCIDENTAL_GLYPH, TECHNIQUE_GLYPH, TECHNIQUE_PATHS, TECHNIQUE_PATH_SCALE } from '../paint';
@@ -395,6 +397,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const [savedRev, setSavedRev] = useState(0);
   /** 真实文件路径。Tauri 才拿得到；浏览器端始终为 null */
   const [path, setPath] = useState<string | null>(null);
+  /**
+   * 浏览器端用 File System Access API 打开时拿到的文件句柄。
+   * 有它时「保存」= 原地写回打开的那个文件（不下载新副本）；
+   * 没有（<input> 选的、新建的、Safari / Firefox）就退回下载。
+   */
+  const [fileHandle, setFileHandle] = useState<FsFileHandle | null>(null);
   const [past, setPast] = useState<Snap[]>([]);
   const [future, setFuture] = useState<Snap[]>([]);
   const [pending, setPending] = useState<{ ids: string[]; ticks: number; cands: TierCandidate[] } | null>(
@@ -981,6 +989,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setPending(null);
       setActive(name);
       setPath(file);
+      setFileHandle(null); // 会话恢复没有句柄：这一轮保存仍走下载
       setSavedRev(0);
       stopPlay();
     },
@@ -1025,6 +1034,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setPending(null);
       setActive(res.name);
       setPath(res.path);
+      setFileHandle(res.handle ?? null);
       setSavedRev(0);
       setMsg(`已打开 ${res.name}`);
       stopPlay();
@@ -1050,6 +1060,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     setPending(null);
     setActive('新建谱面');
     setPath(null);
+    setFileHandle(null);
     setSavedRev(0);
     setMsg('已新建空白谱面');
     stopPlay();
@@ -1068,8 +1079,17 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   const onOpen = useCallback(async () => {
     const res = await openScoreViaDialog();
-    if (res) adopt(res);
-    else fileRef.current?.click(); // 浏览器预览：退化成文件选择框
+    if (res) { adopt(res); return; }
+    // 浏览器预览：优先 File System Access API（拿到句柄，之后能原地写回）；
+    // 不支持（Safari / Firefox）或出别的错时才退回 <input> 选择框。
+    // 用户在系统对话框里取消会抛 AbortError——那就什么都不做，别再弹一次选择框。
+    try {
+      const via = await openScoreViaFsAccess();
+      if (via) { adopt(via); return; }
+    } catch (e) {
+      if ((e as { name?: string })?.name === 'AbortError') return;
+    }
+    fileRef.current?.click();
   }, [adopt]);
 
   const onFilePicked = useCallback(
@@ -1084,12 +1104,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   const onSave = useCallback(async () => {
     const cur = snap.score;
-    const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`);
+    // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
+    const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
     if (!r.ok) {
       setMsg('保存取消');
       return;
     }
-    if (r.path) setPath(r.path);
+    if (r.path && !fileHandle) setPath(r.path);
     setSavedRev(snap.rev);
     // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
     // 只写文件不入库的话，回曲库看到的还是改前的那份。
@@ -1102,7 +1123,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         : '已导出到浏览器下载目录（网页端拿不到文件路径）') +
         (inLibrary ? `，并更新曲库「${name}」` : ''),
     );
-  }, [snap, active]);
+  }, [snap, active, fileHandle]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -2744,11 +2765,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           </span>
         </div>
         {/* 曲目信息只在谱面标题块 + 曲目信息面板出现，工具栏不再重复一遍 */}
-        <div className="v2-file" title={path ?? '当前内容还没落到文件里'}>
+        <div className="v2-file" title={path ?? fileHandle?.name ?? '当前内容还没落到文件里'}>
           <span className={dirty ? 'v2-file-badge is-dirty' : 'v2-file-badge'}>
             {dirty ? '● 有未保存的改动' : '已保存'}
           </span>
-          <span className="v2-file-name">{path ? nameOf(path) : '未保存到文件'}</span>
+          <span className="v2-file-name">{(path ?? fileHandle?.name) ? nameOf(path ?? fileHandle!.name!) : '未保存到文件'}</span>
         </div>
         {/* 谱面校验：挪到工具栏正中。通过时只显示一行字，有问题才可点开明细 */}
         <div className="v2-head-check">

@@ -618,10 +618,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     for (const t of saveToastTimers.current) window.clearTimeout(t);
     saveToastTimers.current = [];
     setSaveToast({ text, body, done, fade: false });
-    // 成功：先亮出对勾 1s，再淡出（fade 类晚一步加，才有过渡）
+    // 成功：先亮出对勾，再淡出（fade 类晚一步加，才有过渡）。
+    // 副标题带耗时时多留一会儿，慢的时候才来得及看清楚。
+    const hold = body ? 2200 : 1000;
     if (done) {
-      saveToastTimers.current.push(window.setTimeout(() => setSaveToast((p) => (p ? { ...p, fade: true } : null)), 1000));
-      saveToastTimers.current.push(window.setTimeout(() => setSaveToast(null), 1450));
+      saveToastTimers.current.push(window.setTimeout(() => setSaveToast((p) => (p ? { ...p, fade: true } : null)), hold));
+      saveToastTimers.current.push(window.setTimeout(() => setSaveToast(null), hold + 450));
     }
   }, []);
   useEffect(() => () => { for (const t of saveToastTimers.current) window.clearTimeout(t); }, []);
@@ -1173,14 +1175,6 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     if (r.handle) setFileHandle(r.handle);
     if (r.path && !r.inPlace) setPath(r.path);
     setSavedRev(snap.rev);
-    setMsg(
-      (r.inPlace && r.path
-        ? `已写回原文件 ${nameOf(r.path)}（下次保存仍改这一个文件）`
-        : r.path
-          ? `已保存到 ${nameOf(r.path)}`
-          : '已导出到浏览器下载目录（此浏览器不支持原地写回：需 Chrome / Edge 桌面版，且地址是 https 或 localhost）') +
-        (wrote > 800 ? `（写文件 ${(wrote / 1000).toFixed(1)}s）` : ''),
-    );
     // 写文件的分段：序列化 / 等另存为对话框 / 真正写入（写入慢或对话框慢一眼看得出）
     const ms = r.ms;
     const seg = ms
@@ -1188,8 +1182,17 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         (ms.pick !== undefined ? ` / 等对话框 ${(ms.pick / 1000).toFixed(1)}s` : '') +
         ` / 写入 ${(ms.write / 1000).toFixed(1)}s`
       : `写文件 ${(wrote / 1000).toFixed(1)}s`;
+    // 分段也写进状态栏：浮层一秒多就淡出，慢的时候来不及看，状态栏会一直留着
+    setMsg(
+      (r.inPlace && r.path
+        ? `已写回原文件 ${nameOf(r.path)}（下次保存仍改这一个文件）`
+        : r.path
+          ? `已保存到 ${nameOf(r.path)}`
+          : '已导出到浏览器下载目录（此浏览器不支持原地写回：需 Chrome / Edge 桌面版，且地址是 https 或 localhost）') +
+        `（${seg}；未改动曲库）`,
+    );
     // 走到这里说明这份谱不是从曲库来的：只写文件，曲库不动
-    showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}；未改动曲库）`, true);
+    showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}）`, true);
   }, [snap, active, fileHandle, libraryId, showSaveToast]);
 
   /**

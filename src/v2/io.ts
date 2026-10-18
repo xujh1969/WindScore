@@ -122,20 +122,31 @@ async function pickSaveHandle(suggested: string): Promise<FsFileHandle | null> {
   }
 }
 
-/** 原地写回：权限没给或被拒就返回 false（调用方退回下载，不静默失败） */
+/**
+ * 已经写成功过的句柄：下次不用再走 queryPermission / requestPermission 那一问一答，
+ * 直接开写（浏览器这趟往返在部分机器上要几十到几百毫秒，且每次保存都要走）。
+ * 写失败就把缓存撤掉，退回完整的权限流程。
+ */
+const grantedHandles = new WeakSet<FsFileHandle>();
+
+/** 原地写回：权限没给或被拒就返回 false（调用方退回下载 / 另存为，不静默失败） */
 async function writeToHandle(handle: FsFileHandle, text: string): Promise<boolean> {
   try {
-    const perm = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
-    if (perm === 'prompt' && handle.requestPermission) {
-      if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return false;
-    } else if (perm !== 'granted') {
-      return false;
+    if (!grantedHandles.has(handle)) {
+      const perm = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
+      if (perm === 'prompt' && handle.requestPermission) {
+        if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return false;
+      } else if (perm !== 'granted') {
+        return false;
+      }
     }
     const w = await handle.createWritable();
     await w.write(text);
     await w.close();
+    grantedHandles.add(handle);
     return true;
   } catch {
+    grantedHandles.delete(handle);
     return false;
   }
 }

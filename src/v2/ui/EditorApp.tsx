@@ -2809,7 +2809,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   setExportOpen(true);
                 }}
               >
-                导出 PDF
+                导出
               </button>
               <button className="v2-btn" onClick={undo} disabled={!past.length}>
                 撤销

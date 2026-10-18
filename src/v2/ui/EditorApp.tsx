@@ -442,6 +442,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     return saved === 'align' || saved === 'library' || saved === 'play' ? saved : 'score';
   });
   /**
+   * 播放页左上角「返回」该回哪：从曲库点歌进来 → 回曲库；从动态谱首页进来 → 回动态谱
+   * （play.html 独立入口还会额外给一个回落地页的「返回首页」）。
+   * 与对轨页那个 backFrom 分开记：两屏的来路互不相干。
+   */
+  const [playFrom, setPlayFrom] = useState<'library' | 'discover'>(
+    localStorage.getItem('ws-mode') === 'library' ? 'library' : 'discover',
+  );
+
+  /**
    * 单功能页左上角「返回」该回哪：从曲库点「对轨」进来 → 回曲库；从首页进来 → 回首页。
    * 优先用导航时打的**一次性标记**（sessionStorage，跨页面但同标签页有效，读完即清）；
    * 没有标记（比如直接输网址、或刷新过）就退而看当前谱是不是来自曲库（会话里的 libraryId）。
@@ -1279,9 +1288,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   );
   const playLibraryItem = useCallback(
     (item: LibraryItem) => {
+      // 记下是从哪一屏点进播放的：播放页左上角就按它显示「返回曲库」还是「返回动态谱 / 首页」
+      setPlayFrom(mode === 'library' ? 'library' : 'discover');
       loadLibraryItem(item, 'play');
     },
-    [loadLibraryItem],
+    [loadLibraryItem, mode],
   );
   const editLibraryItem = useCallback(
     (item: LibraryItem) => {
@@ -3023,15 +3034,34 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       {mode === 'play' ? (
         <div className="v2-play">
           <div className="v2-play-bar">
-            {entry === 'play' ? (
+            {/*
+              返回哪一屏看**来路**：从曲库点歌进来就回曲库（别把人甩回首页），
+              从动态谱首页进来就回那里；play.html 是独立入口，再补一个回落地页的「返回首页」。
+            */}
+            {playFrom === 'library' ? (
+                <button
+                  className="v2-btn"
+                  onClick={() => setMode('library')}
+                  title="回到曲库"
+                >
+                  ← 返回曲库
+                </button>
+            ) : (
+              <>
+                {entry === 'play' ? (
+                  <a className="v2-btn" href="./index.html" title="回到首页">
+                    ← 返回首页
+                  </a>
+                ) : null}
                 <button
                   className="v2-btn"
                   onClick={() => setMode('discover')}
                   title="回到动态谱首页"
                 >
-                  ← 返回动态谱
+                  {entry === 'play' ? '动态谱' : '← 返回动态谱'}
                 </button>
-            ) : null}
+              </>
+            )}
             <span className="v2-play-title" title={score.meta.title || active}>
               {score.meta.title || active}
               {expandView && canExpandView ? (

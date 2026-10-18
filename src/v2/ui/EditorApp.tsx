@@ -1168,8 +1168,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 只有**这份谱本来就是从曲库打开的**才回写那一条（按 id，不按歌名）；
     // 从磁盘打开 / 新建的只写文件，曲库不动——既不会误伤同名曲，也省掉整库写盘
     const libId = libraryId;
+    // 写文件的分段：序列化 / 等另存为对话框 / 真正写入（写入慢或对话框慢一眼看得出）
+    const ms = r.ms;
+    const seg = ms
+      ? `序列化 ${(ms.serialize / 1000).toFixed(1)}s` +
+        (ms.pick !== undefined ? ` / 等对话框 ${(ms.pick / 1000).toFixed(1)}s` : '') +
+        ` / 写入 ${(ms.write / 1000).toFixed(1)}s`
+      : `写文件 ${(wrote / 1000).toFixed(1)}s`;
     if (!libId) {
-      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（写文件 ${(wrote / 1000).toFixed(1)}s；未改动曲库）`, true);
+      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}；未改动曲库）`, true);
       return;
     }
     showSaveToast('正在保存…', '正在同步曲库');
@@ -1180,7 +1187,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       const tLib = performance.now() - t1;
       console.debug(`[save] 曲库同步 ${tLib.toFixed(0)}ms`, { libId, inLibrary });
       if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
-      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（写文件 ${(wrote / 1000).toFixed(1)}s / 曲库 ${(tLib / 1000).toFixed(1)}s）`, true);
+      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg} / 曲库 ${(tLib / 1000).toFixed(1)}s）`, true);
     }, 150);
   }, [snap, active, fileHandle, libraryId, showSaveToast]);
 

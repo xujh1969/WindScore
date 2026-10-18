@@ -52,6 +52,13 @@ export interface SaveResult {
   inPlace?: boolean;
   /** 浏览器端「另存为」拿到的新句柄：调用方记住它，下次就能静默覆盖 */
   handle?: FsFileHandle | null;
+  /**
+   * 分段耗时（ms）：定位「保存慢」到底慢在哪。
+   * pick = 等系统「另存为」对话框的时间（属用户操作时间，不是计算慢）。
+   */
+  ms?: { serialize: number; write: number; pick?: number };
+  /** 这次是不是**弹了另存为对话框**才拿到落点 */
+  viaDialog?: boolean;
 }
 
 /** 浏览器是否支持「打开时拿到句柄、之后原地写回」（Chrome / Edge 桌面版） */
@@ -75,22 +82,30 @@ export async function saveScore(
   const t0 = performance.now();
   const text = serializeDsl(score);
   const tSer = performance.now() - t0;
-  // ① 有句柄（用「打开」进来的，或上次另存过）→ 直接改原文件
+  // ① 有句柄（用「打开」进来的，或上次另存过）→ 直接改原文件，全程无对话框
   if (handle) {
+    const t1 = performance.now();
     const ok = await writeToHandle(handle, text);
-    console.debug(`[io] 序列化 ${tSer.toFixed(0)}ms；原地写回 ${ok ? '成功' : '失败'} ${(performance.now() - t0).toFixed(0)}ms`, handle.name);
-    if (ok) return { ok: true, path: handle.name, inPlace: true };
+    const write = performance.now() - t1;
+    console.debug(`[io] 序列化 ${tSer.toFixed(0)}ms；原地写回 ${ok ? '成功' : '失败'} ${write.toFixed(0)}ms`, handle.name);
+    if (ok) return { ok: true, path: handle.name, inPlace: true, ms: { serialize: tSer, write } };
   }
   // ② 没句柄但浏览器支持 → 弹一次「存到哪」，拿到句柄后这次就写进去，
   //    调用方记住它，之后按保存都是静默覆盖（不用每次都下载新副本）
+  const t2 = performance.now();
   const picked = await pickSaveHandle(suggested);
-  console.debug(`[io] 另存为对话框 ${(performance.now() - t0).toFixed(0)}ms，拿到句柄=${!!picked}`);
-  if (picked && (await writeToHandle(picked, text))) {
-    return { ok: true, path: picked.name, inPlace: true, handle: picked };
+  const pick = performance.now() - t2;
+  console.debug(`[io] 另存为对话框 ${pick.toFixed(0)}ms，拿到句柄=${!!picked}`);
+  if (picked) {
+    const t3 = performance.now();
+    if (await writeToHandle(picked, text)) {
+      return { ok: true, path: picked.name, inPlace: true, handle: picked, viaDialog: true, ms: { serialize: tSer, write: performance.now() - t3, pick } };
+    }
   }
+  const t4 = performance.now();
   const r = await saveTextAsFile(text, suggested);
-  console.debug(`[io] 下载落盘 ${(performance.now() - t0).toFixed(0)}ms`);
-  return r;
+  console.debug(`[io] 下载落盘 ${(performance.now() - t4).toFixed(0)}ms`);
+  return { ...r, ms: { serialize: tSer, write: performance.now() - t4 } };
 }
 
 /** 浏览器「另存为」：拿一个可写句柄；不支持 / 用户取消 → null */

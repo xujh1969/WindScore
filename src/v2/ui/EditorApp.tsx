@@ -74,6 +74,7 @@ import { BeatClock as Clock } from '../clock';
 import { Player } from '../audio';
 import { DEFAULT_META, parseDsl, renderNoteToken, serializeDsl } from '../dsl';
 import {
+  canWriteInPlace,
   fromText,
   nameOf,
   openScoreViaDialog,
@@ -1089,6 +1090,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     } catch (e) {
       if ((e as { name?: string })?.name === 'AbortError') return;
     }
+    // 走到这里说明拿不到文件句柄（Safari / Firefox，或地址不是 https / localhost）：
+    // 先说清楚，免得用户以为保存会改原文件
+    if (!canWriteInPlace()) setMsg('此浏览器不支持直接写回原文件，保存会下载一个新副本（用 Chrome / Edge 桌面版或装桌面版可原地保存）');
     fileRef.current?.click();
   }, [adopt]);
 
@@ -1110,7 +1114,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setMsg('保存取消');
       return;
     }
-    if (r.path && !fileHandle) setPath(r.path);
+    // 浏览器端「另存为」拿到的句柄要记住：下次按保存就是静默覆盖这一个文件
+    if (r.handle) setFileHandle(r.handle);
+    if (r.path && !r.inPlace) setPath(r.path);
     setSavedRev(snap.rev);
     // 顺手同步回曲库：对轨屏也能改谱（补前奏 / 间奏），
     // 只写文件不入库的话，回曲库看到的还是改前的那份。
@@ -1118,9 +1124,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const name = cur.meta.title || active || '未命名';
     const inLibrary = upsertLibrary(name, serializeDsl(cur));
     setMsg(
-      (r.path
-        ? `已保存到 ${nameOf(r.path)}`
-        : '已导出到浏览器下载目录（网页端拿不到文件路径）') +
+      (r.inPlace && r.path
+        ? `已写回原文件 ${nameOf(r.path)}（下次保存仍改这一个文件）`
+        : r.path
+          ? `已保存到 ${nameOf(r.path)}`
+          : '已导出到浏览器下载目录（此浏览器不支持原地写回：需 Chrome / Edge 桌面版，且地址是 https 或 localhost）') +
         (inLibrary ? `，并更新曲库「${name}」` : ''),
     );
   }, [snap, active, fileHandle]);

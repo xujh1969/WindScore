@@ -28,6 +28,10 @@ type FsWindow = Window & {
     multiple?: boolean;
     types?: { description: string; accept: Record<string, string[]> }[];
   }) => Promise<FsFileHandle[]>;
+  showSaveFilePicker?: (opts?: {
+    suggestedName?: string;
+    types?: { description: string; accept: Record<string, string[]> }[];
+  }) => Promise<FsFileHandle>;
 };
 
 export interface OpenResult {
@@ -44,6 +48,10 @@ export interface SaveResult {
   ok: boolean;
   /** 真实落盘路径。浏览器只能触发下载，拿不到路径，为 null */
   path: string | null;
+  /** 是不是**原地写回了原文件**（区别于下载一个新副本） */
+  inPlace?: boolean;
+  /** 浏览器端「另存为」拿到的新句柄：调用方记住它，下次就能静默覆盖 */
+  handle?: FsFileHandle | null;
 }
 
 /** 浏览器是否支持「打开时拿到句柄、之后原地写回」（Chrome / Edge 桌面版） */
@@ -64,8 +72,29 @@ export async function saveScore(
 ): Promise<SaveResult> {
   if (score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
   const text = serializeDsl(score);
-  if (handle && (await writeToHandle(handle, text))) return { ok: true, path: handle.name };
+  // ① 有句柄（用「打开」进来的，或上次另存过）→ 直接改原文件
+  if (handle && (await writeToHandle(handle, text))) return { ok: true, path: handle.name, inPlace: true };
+  // ② 没句柄但浏览器支持 → 弹一次「存到哪」，拿到句柄后这次就写进去，
+  //    调用方记住它，之后按保存都是静默覆盖（不用每次都下载新副本）
+  const picked = await pickSaveHandle(suggested);
+  if (picked && (await writeToHandle(picked, text))) {
+    return { ok: true, path: picked.name, inPlace: true, handle: picked };
+  }
   return saveTextAsFile(text, suggested);
+}
+
+/** 浏览器「另存为」：拿一个可写句柄；不支持 / 用户取消 → null */
+async function pickSaveHandle(suggested: string): Promise<FsFileHandle | null> {
+  const win = window as FsWindow;
+  if (typeof win.showSaveFilePicker !== 'function') return null;
+  try {
+    return await win.showSaveFilePicker({
+      suggestedName: suggested,
+      types: [{ description: 'WindScore 谱面', accept: { 'text/plain': ['.jps'] } }],
+    });
+  } catch {
+    return null; // 用户在系统对话框里取消
+  }
 }
 
 /** 原地写回：权限没给或被拒就返回 false（调用方退回下载，不静默失败） */

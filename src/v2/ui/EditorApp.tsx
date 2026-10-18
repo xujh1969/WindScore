@@ -3047,20 +3047,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   ← 返回曲库
                 </button>
             ) : (
-              <>
-                {entry === 'play' ? (
-                  <a className="v2-btn" href="./index.html" title="回到首页">
-                    ← 返回首页
-                  </a>
-                ) : null}
                 <button
                   className="v2-btn"
                   onClick={() => setMode('discover')}
                   title="回到动态谱首页"
                 >
-                  {entry === 'play' ? '动态谱' : '← 返回动态谱'}
+                  {/* play.html 的首屏就是动态谱首页，那里才算「首页」；
+                      落地页的入口本来就做在动态谱首页上，这里不再挂第二个返回 */}
+                  {entry === 'play' ? '← 返回首页' : '← 返回动态谱'}
                 </button>
-              </>
             )}
             <span className="v2-play-title" title={score.meta.title || active}>
               {score.meta.title || active}

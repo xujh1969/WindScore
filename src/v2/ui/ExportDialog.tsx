@@ -37,6 +37,12 @@ export interface ExportDialogProps extends ExportNotation {
   onClose: () => void;
   /** 开始导出前先停掉正在进行的播放（录视频时播放器由录制器接管） */
   onBegin?: () => void;
+  /**
+   * 导出结束（成功 / 取消 / 失败）后回调，用来在主界面弹结果浮层。
+   * 弹窗里那行小字只在你还盯着弹窗时有用，关掉就什么都没了；
+   * 视频导出动辄几十秒，结果必须在外面也说一声。
+   */
+  onDone?: (note: string, ok: boolean) => void;
   video: {
     timeline: TimelineEntry[];
     /** 画的是原谱时传映射回原谱 id 的那份时间线，指示才对得上谱面 */
@@ -72,7 +78,7 @@ function zoomedGeo(geo: PageGeometry, z: number): PageGeometry {
   };
 }
 
-export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', notation = 'jianpu', staffPitchMode = 'concert', allowVideo = true, dark, onClose, onBegin, video: fullVideo }: ExportDialogProps) {
+export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', notation = 'jianpu', staffPitchMode = 'concert', allowVideo = true, dark, onClose, onBegin, onDone, video: fullVideo }: ExportDialogProps) {
   const notationOptions = useMemo(() => ({ notation, staffPitchMode }), [notation, staffPitchMode]);
   const [partId, setPartId] = useState(initialPartId);
   const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
@@ -208,10 +214,14 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     cancelRef.current = false;
     try {
       onBegin?.();
-      setNote(await task());
+      const note = await task();
+      setNote(note);
+      onDone?.(note, !/^已取消/.test(note));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const why = e instanceof Error ? e.message : String(e);
+      setError(why);
       setNote('');
+      onDone?.(why, false);
     } finally {
       setBusy(false);
     }

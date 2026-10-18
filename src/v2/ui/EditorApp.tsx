@@ -119,6 +119,7 @@ import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from '../musicSymbols';
 import { validateGroups } from '../validate';
 import { ScoreCanvas, type ScorePick } from './ScoreCanvas';
 import { LibraryScreen } from './LibraryScreen';
+import { ToastView, useToast } from './toast';
 import { LibrarySetupDialog } from './LibrarySetupDialog';
 import { initStore } from './storeInit';
 import { defaultLibraryPath, isLibraryConfigured, onStoreBackendChange } from './storeBackend';
@@ -618,32 +619,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 绑定成功的弹窗（toast）：几秒后自动收起，点一下也能关。
    * key 用时间戳——连续绑两个锚点时强制重新挂动画、重置计时
    */
-  const [bindToast, setBindToast] = useState<{ title: string; body: string; key: number } | null>(null);
-  useEffect(() => {
-    if (!bindToast) return;
-    const t = window.setTimeout(() => setBindToast(null), 4500);
-    return () => window.clearTimeout(t);
-  }, [bindToast]);
   /**
-   * 保存进度浮层：正在保存（转圈）→ 保存成功（对勾）→ 淡出。
-   * 分阶段写出来是为了**看得见卡在哪一步**（写文件 / 同步曲库），
-   * 慢的时候不用去翻控制台。done=true 时 1.2s 后自己淡出。
+   * 通用提示浮层（src/v2/ui/toast.tsx）：绑定成功、保存进度、打包、导出、
+   * 节拍分析、出错提示全都走它，样式与淡出时序只有一处实现。
    */
-  const [saveToast, setSaveToast] = useState<{ text: string; body: string; done: boolean; fade: boolean } | null>(null);
-  const saveToastTimers = useRef<number[]>([]);
-  const showSaveToast = useCallback((text: string, body = '', done = false) => {
-    for (const t of saveToastTimers.current) window.clearTimeout(t);
-    saveToastTimers.current = [];
-    setSaveToast({ text, body, done, fade: false });
-    // 成功：先亮出对勾，再淡出（fade 类晚一步加，才有过渡）。
-    // 副标题带耗时时多留一会儿，慢的时候才来得及看清楚。
-    const hold = body ? 2200 : 1000;
-    if (done) {
-      saveToastTimers.current.push(window.setTimeout(() => setSaveToast((p) => (p ? { ...p, fade: true } : null)), hold));
-      saveToastTimers.current.push(window.setTimeout(() => setSaveToast(null), hold + 450));
-    }
-  }, []);
-  useEffect(() => () => { for (const t of saveToastTimers.current) window.clearTimeout(t); }, []);
+  const { toast, progress: toastProgress, ok: toastOk, fail: toastFail, info: toastInfo, hide: toastHide } = useToast();
   const [previewing, setPreviewing] = useState(false);
   const previewRef = useRef<AudioPreview>(new AudioPreview());
   /**
@@ -763,6 +743,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setAnalyzing(true);
       setTempoEst(null);
       setAudioMsg(`${prefix}正在分析全曲节拍…`);
+      // 分析是几秒级的长活儿，且结果直接改速度：成没成要弹出来
+      toastProgress('正在分析节拍…', fixedBpm ? `按 ${fixedBpm.toFixed(1)} BPM 重算` : '全曲节拍估计');
+      const t0 = performance.now();
       try {
         const est = await analyzeBeats(src, {
           noteOnsets: scoreNoteOnsets(snap.score),
@@ -775,9 +758,26 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         const vocal = stems.find((s) => /vocal|人声|voice/i.test(s.name));
         setVocalSec(vocal ? detectVocalEntry(vocal.buffer) : null);
         setAudioMsg(est ? '' : `${prefix}没有足够的节奏证据，请使用打拍定速。`);
+        if (controller.signal.aborted) {
+          toastHide();
+        } else if (est) {
+          toastOk(
+            '对齐已应用',
+            `BPM ${est.bpm.toFixed(1)} · 相位 ${est.phaseSec.toFixed(2)}s` +
+              (est.originBeat === null ? '' : ` · 开头对位 ${est.originBeat.toFixed(2)} 拍`) +
+              `（${((performance.now() - t0) / 1000).toFixed(1)}s）`,
+          );
+        } else {
+          toastFail('没估出速度', '节奏证据不足，请用打拍定速');
+        }
         return est;
       } catch (error) {
-        if (!controller.signal.aborted) setAudioMsg(`节拍分析失败：${error instanceof Error ? error.message : String(error)}`);
+        if (!controller.signal.aborted) {
+          setAudioMsg(`节拍分析失败：${error instanceof Error ? error.message : String(error)}`);
+          toastFail('节拍分析失败', error instanceof Error ? error.message : String(error));
+        } else {
+          toastHide();
+        }
         return null;
       } finally {
         if (analysisRef.current === controller) setAnalyzing(false);
@@ -1049,6 +1049,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       if (res.score) {
         load(s.name, s.text, s.path, s.libraryId ?? null);
         setMsg('已恢复上次编辑的内容');
+        // 进来就看到一份谱面会让人发懵，说明一下它是上次没存完的草稿
+        toastInfo('已恢复上次编辑的内容', s.name);
         return;
       }
     }
@@ -1064,6 +1066,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     (res: OpenResult, fromLibraryId: string | null = null) => {
       if (!res.score) {
         setMsg(res.errors.length ? `打开失败：${res.errors[0]}` : '解析失败');
+        toastFail('打开失败', res.errors[0] ?? '这份内容解析不了');
         return;
       }
       setLyricSelection(null);
@@ -1163,27 +1166,27 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
      */
     if (libraryId) {
       setMsg('保存中…');
-      showSaveToast('正在保存…', '正在写入曲库');
+      toastProgress('正在保存…', '正在写入曲库');
       const okLib = updateLibraryItem(libraryId, serializeDsl(cur));
       const tLib = performance.now() - t0;
       console.debug(`[save] 只写曲库 ${tLib.toFixed(0)}ms`, { libraryId, okLib });
       if (!okLib) {
         setMsg('曲库里已没有这一条，保存失败');
-        showSaveToast('保存失败', '曲库条目已不存在', true);
+        toastFail('保存失败', '曲库里已没有这一条');
         return;
       }
       setSavedRev(snap.rev);
       setMsg(`已更新曲库「${name}」（未生成文件）`);
-      showSaveToast('保存成功', `曲库「${name}」（${(tLib / 1000).toFixed(1)}s）`, true);
+      toastOk('保存成功', `曲库「${name}」（${(tLib / 1000).toFixed(1)}s）`);
       return;
     }
     setMsg('保存中…');
-    showSaveToast('正在保存…', '正在写入文件');
+    toastProgress('正在保存…', '正在写入文件');
     // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
     const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
     if (!r.ok) {
       setMsg('保存取消');
-      showSaveToast('保存已取消', '', true);
+      toastInfo('保存已取消');
       return;
     }
     const wrote = performance.now() - t0;
@@ -1209,8 +1212,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         `（${seg}；未改动曲库）`,
     );
     // 走到这里说明这份谱不是从曲库来的：只写文件，曲库不动
-    showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（${seg}）`, true);
-  }, [snap, active, fileHandle, libraryId, showSaveToast]);
+    toastOk('保存成功', `${nameOf(r.path ?? '') || name}（${seg}）`);
+  }, [snap, active, fileHandle, libraryId, toastProgress, toastOk, toastFail, toastInfo]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -1225,12 +1228,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       return;
     }
     const name = cur.meta.title && cur.meta.title !== DEFAULT_META.title ? cur.meta.title : active;
+    const t0 = performance.now();
+    // 打包要压缩整首伴奏，慢操作：先把「正在打包」摆出来，别让人以为点空了
+    toastProgress('正在打包…', '读取伴奏分轨');
     const audio = stemKeysRef.current.map((key, i) => ({ key, name: stems[i]?.name ?? key }));
     const files: { name: string; file: File }[] = [];
     for (const ref of audio) {
       const f = await getAudio(ref.key);
       if (f) files.push({ name: ref.name, file: f });
     }
+    toastProgress('正在打包…', `压缩谱面 + ${files.length} 条伴奏`);
     const align: AlignPersist = {
       version: 1,
       audio,
@@ -1241,13 +1248,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     };
     const bytes = await buildPack({ name, text, align, stems: files });
     const r = await saveBytesAsFile(bytes, packFileName(name));
-    setMsg(
-      !r.ok
-        ? '打包取消'
-        : `已打包 ${packFileName(name)}：谱面 + ${files.length} 条伴奏 + 标定` +
-            (files.length ? '' : '（当前没有伴奏，只有谱面与标定）'),
-    );
-  }, [snap.score, active, stems, tempoDraft, anchors, tempoOverride, playSource]);
+    const secs = (performance.now() - t0) / 1000;
+    const detail = `谱面 + ${files.length} 条伴奏 + 标定` + (files.length ? '' : '（当前没有伴奏，只有谱面与标定）');
+    setMsg(!r.ok ? '打包取消' : `已打包 ${packFileName(name)}：${detail}`);
+    if (!r.ok) {
+      toastInfo('打包已取消');
+      return;
+    }
+    toastOk('打包成功', `${packFileName(name)} · ${detail}（${secs.toFixed(1)}s / ${(bytes.byteLength / 1048576).toFixed(1)}MB）`);
+  }, [snap.score, active, stems, tempoDraft, anchors, tempoOverride, playSource, toastProgress, toastOk, toastInfo]);
 
   /**
    * 从曲库点开一首：与 adopt 同口径（换谱即换歌，旧伴奏 / 标定作废）。
@@ -1258,6 +1267,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       const res = fromText(item.text, item.name);
       if (!res.score) {
         setMsg(`${item.name} 解析失败——曲库里这份内容有问题，建议删除后重新导入`);
+        // 状态栏那行小字太容易漏：打开失败必须拦在眼前
+        toastFail(`${item.name} 打不开`, '曲库里这份内容有问题，建议删除后重新导入');
         return false;
       }
       adopt(res, item.id); // 记下来自曲库哪一条：保存时按 id 回写这一条
@@ -1581,6 +1592,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       let useStems = stems;
       if (transpose !== 0 || speed !== 1) {
         setShifting(true);
+        const tShift = performance.now();
         const what = [
           transpose !== 0 ? `变调 ${transpose > 0 ? '+' : ''}${transpose} 半音` : '',
           speed !== 1 ? `变速 ${speed.toFixed(2)}×` : '',
@@ -1591,8 +1603,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           const buffers = await pitchShiftStems(stems, transpose, speed);
           useStems = buffers.map((buffer, i) => ({ ...stems[i]!, buffer }));
           setAudioMsg('');
+          // 首次处理要几秒，处理完得说一声：不说的话用户以为还是原调原速
+          toastOk('已应用伴奏处理', `${what}（${((performance.now() - tShift) / 1000).toFixed(1)}s）`);
         } catch (err) {
           setAudioMsg(`变调/变速处理失败，按原样播放：${err instanceof Error ? err.message : String(err)}`);
+          toastFail('变调 / 变速失败', '按原调原速播放');
         } finally {
           setShifting(false);
           setShiftLabel('');
@@ -2113,11 +2128,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       setAudioMsg(`已绑定：${detail}${inspection}。${extra}`);
       // 绑定是低频而关键的一步，成没成必须**弹出来**说——
       // 光靠侧栏底部那行小字，眼睛还在谱面上根本注意不到
-      setBindToast({
-        title: check?.warning ? '已绑定 · 拍数需要核对' : '绑定成功',
-        body: `${detail}${inspection}${extra ? `。${extra}` : ''}`,
-        key: Date.now(),
-      });
+      if (check?.warning) {
+        toastFail('已绑定 · 拍数需要核对', `${detail}${inspection}${extra ? `。${extra}` : ''}`);
+      } else {
+        toastOk('绑定成功', `${detail}${inspection}${extra ? `。${extra}` : ''}`);
+      }
       previewRef.current.stop();
       setPreviewing(false);
     },
@@ -3373,6 +3388,11 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           onBegin={() => {
             // 录视频时播放器由录制器接管，先把界面这套停掉，免得两套时钟同时跑
             if (playing) stopPlay();
+          }}
+          // 导出（尤其视频）动辄几十秒：结果在外面也弹一层，关掉弹窗后仍看得见
+          onDone={(note, ok) => {
+            if (ok) toastOk('导出完成', note);
+            else toastFail('导出失败', note);
           }}
           video={{
             displayTimeline: mode === 'play' ? displayTimeline : notationTimeline,
@@ -5030,7 +5050,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         <LibraryScreen
           onOpen={playLibraryItem}
           onEdit={editLibraryItem}
-          onNotify={setMsg}
+          // 曲库的通知（导入 / 删除 / 建库）以前只进状态栏，眼睛在列表上时根本看不见；
+          // 这些是低频而重要的动作，同时弹一层。成败语义 LibraryScreen 没区分，统一按中性提示
+          onNotify={(m) => {
+            setMsg(m);
+            toastInfo(m);
+          }}
           msg={msg}
           readOnly={entry === 'play'}
           {...(entry === 'play' ? { onBackHome: () => setMode('discover') } : {})}
@@ -5078,42 +5103,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       ) : null}
 
       {/*
-        绑定成功的确认弹窗：浮在顶部正中，几秒后自己收起，点一下也能关。
-        不做成带确定按钮的模态框——绑定锚点是连续动作（绑一个再看下一个），
-        每次都要点「确定」会把节奏打断；但「成没成」必须一眼可见
+        通用提示浮层：绑定成功、保存进度、打包 / 导出、节拍分析、出错提示都走它。
+        浮在顶部正中、几秒后自己淡出，点一下也能关。
+        不做成带确定按钮的模态框——这些多是连续动作，每次点「确定」会把节奏打断；
+        但「成没成 / 正在干什么」必须一眼可见。
       */}
-      {bindToast ? (
-        <div className="v2-toast" key={bindToast.key} role="status" onClick={() => setBindToast(null)}>
-          <span className="v2-toast-icon" aria-hidden>
-            ✓
-          </span>
-          <span className="v2-toast-text">
-            <b>{bindToast.title}</b>
-            <span>{bindToast.body}</span>
-          </span>
-        </div>
-      ) : null}
+      <ToastView toast={toast} onDismiss={toastHide} />
 
-      {/*
-        保存进度浮层：进行中转圈、成功换对勾并自动淡出。
-        副标题写明当前阶段（写文件 / 同步曲库）与各自耗时——
-        慢的时候一眼看出卡在哪一步，不用去翻控制台。
-      */}
-      {saveToast ? (
-        <div
-          className={`v2-toast${saveToast.fade ? ' is-fade' : saveToast.done ? '' : ' is-saving'}`}
-          role="status"
-          aria-live="polite"
-        >
-          <span className="v2-toast-icon" aria-hidden>
-            {saveToast.done ? '✓' : ''}
-          </span>
-          <span className="v2-toast-text">
-            <b>{saveToast.text}</b>
-            {saveToast.body ? <span>{saveToast.body}</span> : null}
-          </span>
-        </div>
-      ) : null}
     </div>
   );
 }

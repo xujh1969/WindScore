@@ -2042,7 +2042,8 @@ details.v2-side-block[open] > summary::before {
   position: fixed;
   top: 18px;
   left: 50%;
-  z-index: 60;
+  /* 高于导出 / 变调这些遮罩（z-index 80）：导出完成的结果要盖在弹窗之上才看得见 */
+  z-index: 90;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2093,20 +2094,32 @@ details.v2-side-block[open] > summary::before {
   color: var(--ok);
 }
 
-/* ── 保存进度（复用 toast 的位置与版式）──
-   保存要走「写文件 → 同步曲库」两步，快的谱眨眼就完，慢的能到好几秒；
-   进度浮层把**当前卡在哪一步**写出来，既给反馈也便于定位慢在哪。
-   进行中用中性描边 + 转圈；成功才换成对勾（绿）并自动消隐。 */
-.v2-toast.is-saving {
+/* ── 通用提示浮层的三种语气（样式由 src/v2/ui/toast.tsx 统一渲染）──
+   进行中（is-busy）：中性描边 + 转圈，副标题写当前阶段，一直显示到被收尾；
+   出错（is-err）：红色描边 + 感叹号，停留更久，免得一闪就过；
+   成功 / 中性：绿色对勾（默认样式）。淡出统一走 is-fade。 */
+.v2-toast.is-busy {
   border-color: var(--border);
   cursor: default;
 }
 
-.v2-toast.is-saving .v2-toast-icon {
+.v2-toast.is-busy .v2-toast-icon {
   background: transparent;
   border: 2px solid var(--muted);
   border-top-color: var(--accent);
   animation: v2-spin 0.8s linear infinite;
+}
+
+.v2-toast.is-err {
+  border-color: var(--warn);
+}
+
+.v2-toast.is-err .v2-toast-icon {
+  background: var(--warn);
+}
+
+.v2-toast.is-err .v2-toast-text b {
+  color: var(--warn);
 }
 
 .v2-toast.is-fade {

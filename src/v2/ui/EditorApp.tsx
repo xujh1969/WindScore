@@ -440,6 +440,23 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const saved = localStorage.getItem('ws-mode');
     return saved === 'align' || saved === 'library' || saved === 'play' ? saved : 'score';
   });
+  /**
+   * 单功能页左上角「返回」该回哪：从曲库点「对轨」进来 → 回曲库；从首页进来 → 回首页。
+   * 优先用导航时打的**一次性标记**（sessionStorage，跨页面但同标签页有效，读完即清）；
+   * 没有标记（比如直接输网址、或刷新过）就退而看当前谱是不是来自曲库（会话里的 libraryId）。
+   */
+  const [backFrom] = useState<'library' | 'home'>(() => {
+    try {
+      const v = sessionStorage.getItem('ws-back-from');
+      if (v === 'library' || v === 'home') {
+        sessionStorage.removeItem('ws-back-from');
+        return v;
+      }
+    } catch {
+      /* 隐私模式：读不到就按首页算 */
+    }
+    return loadSession()?.libraryId ? 'library' : 'home';
+  });
   useEffect(() => {
     localStorage.setItem('ws-mode', mode);
     if (mode === 'align' && view === 'source') setView('score'); // 对轨只认谱面视图
@@ -1262,6 +1279,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       if (!res.score) { setMsg(`${item.name} 解析失败，请先修正谱面`); return; }
       // 带上 libraryId：align.html 那边靠会话恢复内容，认得出来自曲库才不会去另存文件
       saveSession({ text: item.text, name: res.name, path: null, libraryId: item.id });
+      // 一次性标记：告诉 align.html 左上角「返回」该回曲库（不是首页）
+      try {
+        sessionStorage.setItem('ws-back-from', 'library');
+      } catch {
+        /* 写不进去也不要拦着跳转 */
+      }
       window.location.href = './align.html';
     },
     [entry, loadLibraryItem],
@@ -2827,9 +2850,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             它的返回入口做在播放界面里，见 DiscoverScreen.homeHref 与播放工具条。
           */}
           {entry === 'editor' || entry === 'align' || entry === 'library' ? (
-            <a className="v2-home-btn" href="./index.html" title="回到首页">
-              ← 返回首页
-            </a>
+            entry === 'align' && backFrom === 'library' ? (
+              // 从曲库点「对轨」进来的：一步回曲库，别把人甩到首页再点一次
+              <a className="v2-home-btn" href="./library.html" title="回到曲库">
+                ← 返回曲库
+              </a>
+            ) : (
+              <a className="v2-home-btn" href="./index.html" title="回到首页">
+                ← 返回首页
+              </a>
+            )
           ) : null}
           <span className="v2-brand-name">
             WindScore <span className="v2-brand-tag">{entry === 'align' ? '动态谱生成' : entry === 'editor' ? '简谱编辑' : '写谱器'}</span>

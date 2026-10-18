@@ -2122,6 +2122,23 @@ details.v2-side-block[open] > summary::before {
   color: var(--warn);
 }
 
+.v2-toast-action {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.v2-toast-action:hover {
+  background: var(--accent);
+  color: var(--surface);
+}
+
 .v2-toast.is-fade {
   opacity: 0;
   transition: opacity 0.35s ease-out;

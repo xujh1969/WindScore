@@ -21,6 +21,7 @@ import {
   describeMeta,
   importLibrary,
   removeLibraryItem,
+  restoreLibraryItem,
   flushLibraryWrites,
   renameLibraryItem,
   searchLibrary,
@@ -43,6 +44,16 @@ interface Props {
   /** 进对轨编辑这首（配伴奏 / 调标定） */
   onEdit: (item: LibraryItem) => void;
   onNotify: (msg: string) => void;
+  /**
+   * 带动作按钮的提示（删除后的撤销）。onNotify 只显示一行字，
+   * 而「误删了还能救回来」这种必须给人点一下的机会。
+   */
+  onToast?: (
+    kind: 'info' | 'success' | 'error',
+    text: string,
+    body: string | undefined,
+    action?: { label: string; onClick: () => void },
+  ) => void;
   /** 全局消息（导入 / 打包的结果就显示在这）：编辑器的底栏这一屏看不到，得自己带一条 */
   msg?: string;
   /**
@@ -54,7 +65,7 @@ interface Props {
   onBackHome?: () => void;
 }
 
-export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackHome }: Props) {
+export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly, onBackHome }: Props) {
   /** 订阅式曲库：水合完成 / 任何写入（包括别的页面改的）都会让这里重读 */
   const items = useLibraryItems();
   // 后端状态（连接 / 待授权）变化时重渲染，让存储位置的徽标跟上
@@ -333,7 +344,9 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackH
                   <button
                     className="v2-btn is-danger"
                     onClick={async () => {
-                      if (!removeLibraryItem(it.id)) {
+                      const backup = it;
+                      setConfirming(null);
+                      if (!removeLibraryItem(backup.id)) {
                         onNotify('删除未保存，请检查曲库存储是否可用');
                         return;
                       }
@@ -341,8 +354,19 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, msg, readOnly, onBackH
                         await flushLibraryWrites();
                       } catch {
                         onNotify('曲库文件写入失败，请检查文件夹权限后重试保存');
+                        return;
                       }
-                      setConfirming(null);
+                      // 删都删了，给个 7 秒的后悔药：误触一次不至于整首重导
+                      onToast?.('info', `已删除「${backup.name}」`, '几秒内可撤销', {
+                        label: '撤销',
+                        onClick: () => {
+                          if (!restoreLibraryItem(backup)) {
+                            onNotify(`撤销失败：${backup.name} 放不回去了`);
+                            return;
+                          }
+                          onNotify(`已恢复「${backup.name}」`);
+                        },
+                      });
                     }}
                   >
                     是

@@ -5096,6 +5096,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             setMsg(m);
             toastInfo(m);
           }}
+          onToast={(kind, text, body, action) => {
+            setMsg(text);
+            if (kind === 'error') toastFail(text, body, action);
+            else if (kind === 'success') toastOk(text, body, action);
+            else toastInfo(text, body, action);
+          }}
           msg={msg}
           readOnly={entry === 'play'}
           {...(entry === 'play' ? { onBackHome: () => setMode('discover') } : {})}

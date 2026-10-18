@@ -22,6 +22,10 @@ export interface ToastState {
   text: string;
   /** 副标题：细节或分段耗时，可空 */
   body?: string;
+  /** 可点的动作按钮（删除撤销、重试之类） */
+  action?: { label: string; onClick: () => void };
+  /** 停留毫秒数；带动作的默认留更久，才来得及点 */
+  holdMs?: number;
   /** 淡出中（动画用，组件内部推进，外部不用管） */
   fade: boolean;
   /** 每次显示都换，用来重放入场动画 */
@@ -33,11 +37,11 @@ export interface ToastApi {
   /** 进行中：转圈，直到被收尾 */
   progress: (text: string, body?: string) => void;
   /** 成功：对勾后自动淡出 */
-  ok: (text: string, body?: string) => void;
+  ok: (text: string, body?: string, action?: ToastState['action']) => void;
   /** 失败 / 警告：红色，停留更久 */
-  fail: (text: string, body?: string) => void;
+  fail: (text: string, body?: string, action?: ToastState['action']) => void;
   /** 中性提示 */
-  info: (text: string, body?: string) => void;
+  info: (text: string, body?: string, action?: ToastState['action']) => void;
   hide: () => void;
 }
 
@@ -57,14 +61,14 @@ export function useToast(): ToastApi {
   useEffect(() => clearTimers, [clearTimers]);
 
   const fire = useCallback(
-    (kind: ToastKind, text: string, body?: string) => {
+    (kind: ToastKind, text: string, body?: string, action?: ToastState['action']) => {
       clearTimers();
       seq.current += 1;
-      setToast({ kind, text, body, fade: false, key: seq.current });
+      setToast({ kind, text, body, action, fade: false, key: seq.current });
       // 进行中不自动消失：等调用方用 ok / fail 收尾
       if (kind === 'progress') return;
-      // 带副标题（通常是分段耗时）时多留一会儿，才来得及看清
-      const hold = kind === 'error' ? 4000 : body ? 2200 : 1200;
+      // 带动作（撤销 / 重试）的留久一点，才来得及点；带副标题的也多留一会儿
+      const hold = action ? 7000 : kind === 'error' ? 4000 : body ? 2200 : 1200;
       timers.current.push(
         window.setTimeout(() => setToast((p) => (p ? { ...p, fade: true } : null)), hold),
       );
@@ -81,9 +85,9 @@ export function useToast(): ToastApi {
   return {
     toast,
     progress: useCallback((text: string, body?: string) => fire('progress', text, body), [fire]),
-    ok: useCallback((text: string, body?: string) => fire('success', text, body), [fire]),
-    fail: useCallback((text: string, body?: string) => fire('error', text, body), [fire]),
-    info: useCallback((text: string, body?: string) => fire('info', text, body), [fire]),
+    ok: useCallback((text: string, body?: string, action?: ToastState['action']) => fire('success', text, body, action), [fire]),
+    fail: useCallback((text: string, body?: string, action?: ToastState['action']) => fire('error', text, body, action), [fire]),
+    info: useCallback((text: string, body?: string, action?: ToastState['action']) => fire('info', text, body, action), [fire]),
     hide,
   };
 }
@@ -118,6 +122,18 @@ export function ToastView({
         <b>{toast.text}</b>
         {toast.body ? <span>{toast.body}</span> : null}
       </span>
+      {toast.action ? (
+        <button
+          type="button"
+          className="v2-toast-action"
+          onClick={(e) => {
+            e.stopPropagation(); // 别顺手把浮层也关了
+            toast.action!.onClick();
+          }}
+        >
+          {toast.action.label}
+        </button>
+      ) : null}
     </div>
   );
 }

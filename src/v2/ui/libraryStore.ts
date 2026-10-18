@@ -337,6 +337,18 @@ export function removeLibraryItem(id: string): boolean {
   return false;
 }
 
+/**
+ * 撤销删除：把刚删掉的那条原样放回去（id、名字、收藏、时间戳都不动）。
+ * 删除是低频但不可逆的操作，撤销窗口就那几秒，所以直接用内存里留存的 item。
+ */
+export function restoreLibraryItem(item: LibraryItem): boolean {
+  deletedIds.delete(item.id); // 撤销 = 这条不再算「被删」，否则导入 / 同步时又被当成已删剔除
+  const items = readLibrary();
+  if (items.some((it) => it.id === item.id)) return true; // 已经在了（重复点撤销）
+  const next = [...items, item].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  return writeLibrary(next);
+}
+
 /** 收藏 / 取消收藏（动态谱首页的「我的收藏」） */
 export function setFavorite(id: string, on: boolean): boolean {
   const items = readLibrary();

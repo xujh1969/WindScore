@@ -1108,6 +1108,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   const onSave = useCallback(async () => {
     const t0 = performance.now();
+    setMsg('保存中…');
     const cur = snap.score;
     // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
     const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
@@ -1116,7 +1117,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       return;
     }
     const wrote = performance.now() - t0;
-    if (wrote > 800) console.debug(`[save] 写文件耗时 ${(wrote / 1000).toFixed(1)}s`, r);
+    console.debug(`[save] 写文件 ${wrote.toFixed(0)}ms`, { inPlace: r.inPlace, path: r.path, handle: !!r.handle });
     // 浏览器端「另存为」拿到的句柄要记住：下次按保存就是静默覆盖这一个文件
     if (r.handle) setFileHandle(r.handle);
     if (r.path && !r.inPlace) setPath(r.path);
@@ -1135,10 +1136,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 这一步要扫全库 + 通知所有订阅者（曲库列表整片重画），放在点击处理里
     // 会把「保存成功」的提示一起拖住（实测 10s 才见提示）；挪到下一拍，
     // 提示先出，曲库随后补上。没连曲库文件夹时 upsertLibrary 返回 null，忽略。
+    // 留一拍让「已写回」先画出来（setTimeout 0 可能抢在 React 重画之前跑）
     window.setTimeout(() => {
+      const t1 = performance.now();
       const inLibrary = upsertLibrary(name, serializeDsl(cur));
+      console.debug(`[save] 曲库同步 ${(performance.now() - t1).toFixed(0)}ms`, { name, inLibrary: !!inLibrary });
       if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
-    }, 0);
+    }, 150);
   }, [snap, active, fileHandle]);
 
   /**

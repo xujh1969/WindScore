@@ -71,16 +71,26 @@ export async function saveScore(
   handle: FsFileHandle | null = null,
 ): Promise<SaveResult> {
   if (score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
+  // 计时只为定位「保存慢」到底慢在哪一步（浏览器里用户等对话框的时间也算在内）
+  const t0 = performance.now();
   const text = serializeDsl(score);
+  const tSer = performance.now() - t0;
   // ① 有句柄（用「打开」进来的，或上次另存过）→ 直接改原文件
-  if (handle && (await writeToHandle(handle, text))) return { ok: true, path: handle.name, inPlace: true };
+  if (handle) {
+    const ok = await writeToHandle(handle, text);
+    console.debug(`[io] 序列化 ${tSer.toFixed(0)}ms；原地写回 ${ok ? '成功' : '失败'} ${(performance.now() - t0).toFixed(0)}ms`, handle.name);
+    if (ok) return { ok: true, path: handle.name, inPlace: true };
+  }
   // ② 没句柄但浏览器支持 → 弹一次「存到哪」，拿到句柄后这次就写进去，
   //    调用方记住它，之后按保存都是静默覆盖（不用每次都下载新副本）
   const picked = await pickSaveHandle(suggested);
+  console.debug(`[io] 另存为对话框 ${(performance.now() - t0).toFixed(0)}ms，拿到句柄=${!!picked}`);
   if (picked && (await writeToHandle(picked, text))) {
     return { ok: true, path: picked.name, inPlace: true, handle: picked };
   }
-  return saveTextAsFile(text, suggested);
+  const r = await saveTextAsFile(text, suggested);
+  console.debug(`[io] 下载落盘 ${(performance.now() - t0).toFixed(0)}ms`);
+  return r;
 }
 
 /** 浏览器「另存为」：拿一个可写句柄；不支持 / 用户取消 → null */

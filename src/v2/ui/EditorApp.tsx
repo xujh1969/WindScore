@@ -452,20 +452,30 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   /**
    * 单功能页左上角「返回」该回哪：从曲库点「对轨」进来 → 回曲库；从首页进来 → 回首页。
-   * 优先用导航时打的**一次性标记**（sessionStorage，跨页面但同标签页有效，读完即清）；
-   * 没有标记（比如直接输网址、或刷新过）就退而看当前谱是不是来自曲库（会话里的 libraryId）。
+   * 以**真实来路**为准：跳转进来的话 referrer 就是上一页（从曲库来 = library.html）。
+   * 刷新 / 直接输网址时 referrer 会变成自己或为空，这时才用上次记住的来路
+   * （sessionStorage，同标签页有效）——刷新前后按钮不会变。
+   * 早先拿会话里的 libraryId 兜底是错的：那份草稿可能来自上一天的曲库操作，
+   * 于是从首页进也被判成「来自曲库」（用户实测）。
    */
   const [backFrom] = useState<'library' | 'home'>(() => {
     try {
-      const v = sessionStorage.getItem('ws-back-from');
-      if (v === 'library' || v === 'home') {
-        sessionStorage.removeItem('ws-back-from');
-        return v;
-      }
+      const here = location.pathname;
+      const ref = document.referrer;
+      const navigated = !!ref && !ref.includes(here); // 真·跳转，不是刷新 / 直接输网址
+      const from: 'library' | 'home' = navigated
+        ? ref.includes('library.html')
+          ? 'library'
+          : 'home'
+        : sessionStorage.getItem('ws-back-from') === 'library'
+          ? 'library'
+          : 'home';
+      sessionStorage.setItem('ws-back-from', from);
+      return from;
     } catch {
-      /* 隐私模式：读不到就按首页算 */
+      /* 隐私模式读不到存储：按首页算，宁可回落地页也不会走错 */
+      return 'home';
     }
-    return loadSession()?.libraryId ? 'library' : 'home';
   });
   useEffect(() => {
     localStorage.setItem('ws-mode', mode);

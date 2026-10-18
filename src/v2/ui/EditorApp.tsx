@@ -601,6 +601,24 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     const t = window.setTimeout(() => setBindToast(null), 4500);
     return () => window.clearTimeout(t);
   }, [bindToast]);
+  /**
+   * 保存进度浮层：正在保存（转圈）→ 保存成功（对勾）→ 淡出。
+   * 分阶段写出来是为了**看得见卡在哪一步**（写文件 / 同步曲库），
+   * 慢的时候不用去翻控制台。done=true 时 1.2s 后自己淡出。
+   */
+  const [saveToast, setSaveToast] = useState<{ text: string; body: string; done: boolean; fade: boolean } | null>(null);
+  const saveToastTimers = useRef<number[]>([]);
+  const showSaveToast = useCallback((text: string, body = '', done = false) => {
+    for (const t of saveToastTimers.current) window.clearTimeout(t);
+    saveToastTimers.current = [];
+    setSaveToast({ text, body, done, fade: false });
+    // 成功：先亮出对勾 1s，再淡出（fade 类晚一步加，才有过渡）
+    if (done) {
+      saveToastTimers.current.push(window.setTimeout(() => setSaveToast((p) => (p ? { ...p, fade: true } : null)), 1000));
+      saveToastTimers.current.push(window.setTimeout(() => setSaveToast(null), 1450));
+    }
+  }, []);
+  useEffect(() => () => { for (const t of saveToastTimers.current) window.clearTimeout(t); }, []);
   const [previewing, setPreviewing] = useState(false);
   const previewRef = useRef<AudioPreview>(new AudioPreview());
   /**
@@ -1109,11 +1127,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const onSave = useCallback(async () => {
     const t0 = performance.now();
     setMsg('保存中…');
+    showSaveToast('正在保存…', '正在写入文件');
     const cur = snap.score;
     // 有句柄 = 浏览器里也能直接改原文件；没有就下载一份（网页端拿不到路径）
     const r = await saveScore(cur, `${cur.meta.title || '未命名'}.jps`, fileHandle);
     if (!r.ok) {
       setMsg('保存取消');
+      showSaveToast('保存已取消', '', true);
       return;
     }
     const wrote = performance.now() - t0;
@@ -1136,14 +1156,17 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     // 这一步要扫全库 + 通知所有订阅者（曲库列表整片重画），放在点击处理里
     // 会把「保存成功」的提示一起拖住（实测 10s 才见提示）；挪到下一拍，
     // 提示先出，曲库随后补上。没连曲库文件夹时 upsertLibrary 返回 null，忽略。
+    showSaveToast('正在保存…', '正在同步曲库');
     // 留一拍让「已写回」先画出来（setTimeout 0 可能抢在 React 重画之前跑）
     window.setTimeout(() => {
       const t1 = performance.now();
       const inLibrary = upsertLibrary(name, serializeDsl(cur));
-      console.debug(`[save] 曲库同步 ${(performance.now() - t1).toFixed(0)}ms`, { name, inLibrary: !!inLibrary });
+      const tLib = performance.now() - t1;
+      console.debug(`[save] 曲库同步 ${tLib.toFixed(0)}ms`, { name, inLibrary: !!inLibrary });
       if (inLibrary) setMsg((prev) => `${prev}，并更新曲库「${name}」`);
+      showSaveToast('保存成功', `${nameOf(r.path ?? '') || name}（写文件 ${(wrote / 1000).toFixed(1)}s / 曲库 ${(tLib / 1000).toFixed(1)}s）`, true);
     }, 150);
-  }, [snap, active, fileHandle]);
+  }, [snap, active, fileHandle, showSaveToast]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -5005,6 +5028,27 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           <span className="v2-toast-text">
             <b>{bindToast.title}</b>
             <span>{bindToast.body}</span>
+          </span>
+        </div>
+      ) : null}
+
+      {/*
+        保存进度浮层：进行中转圈、成功换对勾并自动淡出。
+        副标题写明当前阶段（写文件 / 同步曲库）与各自耗时——
+        慢的时候一眼看出卡在哪一步，不用去翻控制台。
+      */}
+      {saveToast ? (
+        <div
+          className={`v2-toast${saveToast.fade ? ' is-fade' : saveToast.done ? '' : ' is-saving'}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="v2-toast-icon" aria-hidden>
+            {saveToast.done ? '✓' : ''}
+          </span>
+          <span className="v2-toast-text">
+            <b>{saveToast.text}</b>
+            {saveToast.body ? <span>{saveToast.body}</span> : null}
           </span>
         </div>
       ) : null}

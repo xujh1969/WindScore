@@ -2875,7 +2875,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
             play.html 的顶栏整行不显示（独立入口，播放页自带工具条），
             它的返回入口做在播放界面里，见 DiscoverScreen.homeHref 与播放工具条。
           */}
-          {entry === 'editor' || entry === 'align' || entry === 'library' ? (
+          {/*
+            返回按钮**整屏只能有一个**：播放屏（播放工具条）与动态谱首页（DiscoverScreen）
+            各自带了自己的返回，这一层再显示就两个「返回」并排，不知该点哪个。
+            所以这两个模式下顶栏的返回让位给屏内那一个。
+          */}
+          {mode !== 'play' && mode !== 'discover' && (entry === 'editor' || entry === 'align' || entry === 'library') ? (
             entry === 'align' && backFrom === 'library' ? (
               // 从曲库点「对轨」进来的：一步回曲库，别把人甩到首页再点一次
               <a className="v2-home-btn" href="./library.html" title="回到曲库">
@@ -3052,9 +3057,9 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                   onClick={() => setMode('discover')}
                   title="回到动态谱首页"
                 >
-                  {/* play.html 的首屏就是动态谱首页，那里才算「首页」；
-                      落地页的入口本来就做在动态谱首页上，这里不再挂第二个返回 */}
-                  {entry === 'play' ? '← 返回首页' : '← 返回动态谱'}
+                  {/* 文案只写**来路那一屏的名字**：「首页」这个称呼留给落地页
+                      （index.html，动态谱首页上有它的入口），两处同名会指到不同地方 */}
+                  ← 返回动态谱
                 </button>
             )}
             <span className="v2-play-title" title={score.meta.title || active}>

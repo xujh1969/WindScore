@@ -233,6 +233,10 @@ export async function exportScoreVideoToFile(
     ext: res.ext,
     mime: res.ext === "mp4" ? "video/mp4" : "video/webm",
     label: res.ext === "mp4" ? "MP4 视频" : "WebM 视频",
+    // 写盘阶段也要有进度：视频几十上百 MB，写的时候不吭声会被当成卡死（用户实测）
+    onWriteProgress: (done, total) => {
+      opts.onProgress?.(0.97 + 0.03 * (done / Math.max(1, total)));
+    },
   });
   return {
     ...saved,

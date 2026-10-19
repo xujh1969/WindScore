@@ -9,7 +9,7 @@
   },
   "package": {
     "productName": "WindScore",
-    "version": "0.2.73"
+    "version": "0.2.74"
   },
   "tauri": {
     "allowlist": {

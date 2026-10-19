@@ -1,6 +1,6 @@
 [package]
 name = "windscore"
-version = "0.2.73"
+version = "0.2.74"
 description = "WindScore · 电吹管动态谱"
 authors = ["AYOU"]
 edition = "2021"
@@ -19,6 +19,8 @@ tauri = { version = "1.6", features = [ "shell-open",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 视频导出的分块写盘：JS 侧把字节转 base64 走 IPC，Rust 解码后写文件
+base64 = "0.21"
 
 [features]
 # 生产构建时启用，避免依赖本地 dev server

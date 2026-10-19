@@ -155,6 +155,11 @@ async function writeToHandle(handle: FsFileHandle, text: string): Promise<boolea
 export interface BytesFileOptions {
   /** 扩展名（不含点），默认 wspack */
   ext?: string;
+  /**
+   * 写盘进度（Tauri 分块写时按字节报；浏览器下载没有进度，不回调）。
+   * 视频几十上百 MB，没有这条进度用户会以为卡死。
+   */
+  onWriteProgress?: (done: number, total: number) => void;
   /** MIME，默认按 zip */
   mime?: string;
   /** 保存对话框里的过滤器名 */
@@ -171,13 +176,29 @@ export async function saveBytesAsFile(
   const mime = opts.mime ?? 'application/zip';
   if (isTauri()) {
     const dialog = await import('@tauri-apps/api/dialog');
-    const fs = await import('@tauri-apps/api/fs');
+    const { invoke } = await import('@tauri-apps/api/tauri');
     const path = await dialog.save({
       defaultPath: suggested,
       filters: [{ name: opts.label ?? 'WindScore 打包', extensions: [ext] }],
     });
     if (!path) return { ok: false, path: null };
-    await fs.writeBinaryFile(path, bytes);
+    // 不用 fs.writeBinaryFile：它把整个字节按 **JSON 数字数组** 走 IPC，
+    // 视频几百 MB 的 JSON 会把 WebView 主线程冻住几分钟（用户实测：选完
+    // 保存位置就卡死）。改为分块 base64 → Rust 命令解码写盘，界面保持响应。
+    const CHUNK = 3 * 1024 * 1024; // 3MB 原始字节 ≈ 4MB base64，一趟能扛住
+    const writeChunk = (data: Uint8Array, create: boolean, append: boolean): Promise<void> =>
+      invoke('write_file_chunk', { path, dataBase64: toBase64(data), create, append });
+    if (bytes.length === 0) {
+      await writeChunk(new Uint8Array(0), true, false);
+      return { ok: true, path };
+    }
+    let first = true;
+    for (let off = 0; off < bytes.length; off += CHUNK) {
+      const end = Math.min(off + CHUNK, bytes.length);
+      await writeChunk(bytes.subarray(off, end), first, !first);
+      first = false;
+      opts.onWriteProgress?.(end, bytes.length);
+    }
     return { ok: true, path };
   }
 
@@ -190,6 +211,16 @@ export async function saveBytesAsFile(
   a.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
   return { ok: true, path: null };
+}
+
+/** Uint8Array → base64（分块调用，别一次 btoa 几百 MB） */
+function toBase64(bytes: Uint8Array): string {
+  let out = '';
+  const STEP = 0x8000; // String.fromCharCode 一次喂太多会爆栈
+  for (let i = 0; i < bytes.length; i += STEP) {
+    out += String.fromCharCode(...bytes.subarray(i, i + STEP));
+  }
+  return btoa(out);
 }
 
 /** 把一段文本直接存成文件（曲库导出用：手上只有文本，不一定有 Score 对象） */

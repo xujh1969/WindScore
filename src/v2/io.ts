@@ -131,6 +131,8 @@ const grantedHandles = new WeakSet<FsFileHandle>();
 
 /** 原地写回：权限没给或被拒就返回 false（调用方退回下载 / 另存为，不静默失败） */
 async function writeToHandle(handle: FsFileHandle, text: string): Promise<boolean> {
+  const t0 = performance.now();
+  let label = '权限';
   try {
     if (!grantedHandles.has(handle)) {
       const perm = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
@@ -140,12 +142,23 @@ async function writeToHandle(handle: FsFileHandle, text: string): Promise<boolea
         return false;
       }
     }
+    const t1 = performance.now();
+    label = '打开写入流';
     const w = await handle.createWritable();
+    const t2 = performance.now();
+    label = '写入 + 关闭';
     await w.write(text);
     await w.close();
+    const t3 = performance.now();
+    // 分段打出来才能定位「保存 7 秒」卡在哪一环：
+    //   权限慢 = 浏览器的一问一答；打开/写入慢 = 磁盘慢或杀软 / 同步工具在拖
+    console.debug(
+      `[io] 写回分段 ${handle.name}：权限 ${(t1 - t0).toFixed(0)}ms / 打开写入流 ${(t2 - t1).toFixed(0)}ms / 写入+关闭 ${(t3 - t2).toFixed(0)}ms`,
+    );
     grantedHandles.add(handle);
     return true;
-  } catch {
+  } catch (e) {
+    console.debug(`[io] 写回失败（${label} 阶段）`, e);
     grantedHandles.delete(handle);
     return false;
   }

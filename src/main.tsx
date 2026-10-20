@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EditorApp, type Entry } from './v2/ui/EditorApp';
 import { HelpPage } from './v2/ui/HelpCenter';
+import { AndroidApp } from './v2/ui/AndroidApp';
 import './v2/ui/editor.css';
 
 // 入口识别：HTML 上用 body 的 data-entry 声明（editor / align / library / play / help）。
@@ -12,6 +13,6 @@ const el = document.getElementById('root');
 if (!el) throw new Error('#root not found');
 createRoot(el).render(
   <StrictMode>
-    {entry === 'help' ? <HelpPage /> : <EditorApp entry={entry as Entry} />}
+    {entry === 'android' ? <AndroidApp /> : entry === 'help' ? <HelpPage /> : <EditorApp entry={entry as Entry} />}
   </StrictMode>,
 );

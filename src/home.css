@@ -1,11 +1,11 @@
 /*
  * 首页（启动页）样式。
  *
- * 设计取向：一屏读完。品牌沿用既有身份：深墨蓝底 + 金色强调（与 home-bg.svg
- * 的五线谱剪影同源），系统字栈（离线 exe 不能拉 webfont）。中心构图是启动页
+ * 设计取向：一屏读完。晨光草叶背景、暖白底与深绿强调，
+ * 系统字栈（离线 exe 不能拉 webfont）。中心构图是启动页
  * 的本分：LOGO、一句话、四个入口。
  *
- * 规则锁：按钮一律全圆角（pill），面板 / LOGO 底 14px；金色是页面唯一强调色；
+ * 规则锁：按钮一律全圆角（pill），面板 / LOGO 底 14px；绿色强调操作，标志保留原有金色；
  * 入场动画只做一次且尊重 prefers-reduced-motion。
  */
 
@@ -13,8 +13,8 @@ body.ws-home {
   margin: 0;
   min-height: 100%;
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
-  color: #f2f3f7;
-  background: #080c22;
+  color: #253b2e;
+  background: #f6f4e9;
 }
 
 /*
@@ -27,13 +27,13 @@ body.ws-home * {
   box-sizing: border-box;
 }
 
-/* 背景图铺满固定：五线谱剪影 + 暗角，任何屏幕上文字对比度都够（WCAG AA） */
+/* PC 与安卓共用晨光草叶背景；暖白遮罩保证文字对比度。 */
 .ws-home-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background-image: linear-gradient(180deg, rgba(5, 6, 15, 0.2), rgba(5, 6, 15, 0.74)),
-    url('/home-bg.svg');
+  background-image: linear-gradient(90deg, rgba(250, 248, 240, .3), rgba(250, 248, 240, .5)),
+    url('/home-botanical.png');
   background-size: cover;
   background-position: center;
 }
@@ -72,7 +72,7 @@ body.ws-home * {
   letter-spacing: 0.42em;
   /* 字距拉开后右边会多出空白，居中要跟着补偿 */
   text-indent: 0.42em;
-  color: rgba(217, 178, 60, 0.85);
+  color: #536f4e;
 }
 
 .ws-home-title {
@@ -81,7 +81,7 @@ body.ws-home * {
   font-weight: 700;
   line-height: 1.16;
   letter-spacing: 0.02em;
-  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.6);
 }
 
 .ws-home-title-en {
@@ -91,19 +91,19 @@ body.ws-home * {
   font-weight: 600;
   letter-spacing: 0.16em;
   text-indent: 0.16em;
-  color: #f4e3b2;
+  color: #526e45;
 }
 
 .ws-home-sub {
   margin: 16px 0 0;
   font-size: 15px;
   line-height: 1.7;
-  color: rgba(233, 236, 245, 0.78);
+  color: #53664f;
 }
 
 /* ── 四个入口按钮 ──
-   主按钮：金底墨字（金底配白字对比度不够，墨字 8:1+）；
-   副按钮：描边幽灵，白字。按钮沿用 pill 形。 */
+   主按钮：深绿底、暖白字；
+   副按钮：浅色底、深绿描边与文字。按钮沿用 pill 形。 */
 .ws-home-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -156,32 +156,32 @@ body.ws-home * {
 }
 
 .ws-btn:focus-visible {
-  outline: 2px solid #f4e3b2;
+  outline: 2px solid #32664d;
   outline-offset: 3px;
 }
 
 .ws-btn-primary {
-  border: 1px solid #d9b23c;
-  background: #d9b23c;
-  color: #0b0e1e;
-  box-shadow: 0 10px 30px rgba(217, 178, 60, 0.24);
+  border: 1px solid #32664d;
+  background: #32664d;
+  color: #fffefa;
+  box-shadow: 0 10px 30px rgba(39, 69, 43, 0.14);
 }
 
 .ws-btn-primary:hover {
-  background: #e6c356;
-  border-color: #e6c356;
-  box-shadow: 0 12px 34px rgba(217, 178, 60, 0.32);
+  background: #244f3b;
+  border-color: #244f3b;
+  box-shadow: 0 12px 34px rgba(39, 69, 43, 0.2);
 }
 
 .ws-btn-ghost {
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.06);
-  color: #f2f3f7;
+  border: 1px solid rgba(57, 84, 48, 0.3);
+  background: rgba(255, 254, 247, 0.7);
+  color: #365137;
 }
 
 .ws-btn-ghost:hover {
-  border-color: rgba(217, 178, 60, 0.7);
-  background: rgba(255, 255, 255, 0.1);
+  border-color: #526e45;
+  background: rgba(255, 254, 247, 0.95);
 }
 
 /* ── 页脚 ── */
@@ -193,7 +193,7 @@ body.ws-home * {
   margin: 0;
   font-size: 13px;
   letter-spacing: 0.08em;
-  color: rgba(226, 230, 240, 0.55);
+  color: #607154;
 }
 
 /* 版本号：等宽、更淡一档，是给人核对用的，不抢署名 */
@@ -202,7 +202,7 @@ body.ws-home * {
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-size: 11.5px;
   letter-spacing: 0.06em;
-  color: rgba(226, 230, 240, 0.38);
+  color: #68775c;
 }
 
 /* ── 入场：只做一次的淡入上移，四层各差一拍 ──

@@ -1,90 +1,77 @@
-# WindScore Android App Interface Design
+# WindScore 安卓应用界面设计
 
-Date: 2026-10-20
+日期：2026-10-20
 
-## Goal
+## 产品目标
 
-Design an Android-first WindScore experience for phones and tablets used during practice and performance. The first release focuses on browsing the local dynamic-score library and playing scores. It does not provide score editing, accompaniment alignment, or export.
+为手机和平板提供适合练习、演出的独立安卓界面。首版围绕本地曲库检索和动态谱播放展开，包含静态社区与个人页。安卓播放页只负责看谱和演奏。
 
-## Selected product structure
+## 页面与导航
 
-Use a three-item bottom navigation for **曲库**, **社区**, and **我的**. The library is the launch destination. Opening a song pushes a dedicated, immersive player screen; the player hides bottom navigation and keeps a top return control. Community and My remain lightweight destinations that return to the library through bottom navigation or Android Back.
+采用「曲库 / 社区 / 我的」三项底部导航。曲库是启动后的默认页面；点击歌曲进入独立沉浸播放器，播放器隐藏底部主导航，顶部可返回曲库。手机和平板均支持横竖屏，不强制旋转。
 
-Alternatives considered:
+### 启动画面
 
-1. **Three-tab library app with immersive player (selected):** fast access to the three destinations and maximum score area during playback.
-2. **A launch dashboard with separate feature cards:** familiar to the desktop home page, but adds a step before the primary task.
-3. **Tablet master-detail split view:** keeps the library visible while viewing a score, but reduces score space and makes the tablet player differ from the phone player.
+展示 WindScore 标志、软件名称及 Slogan「随时看谱，练习演出更从容」。本地曲库初始化期间显示，加载完成立即进入曲库，不要求点击，也不追加固定等待时间。
 
-## Screen designs
+### 曲库
 
-### 1. Launch splash
+页面顶部标题为 WindScore-曲库（社区和个人页对应 WindScore-社区、WindScore-我的），不再单设曲库标题区或 Slogan。紧接搜索框和「我的收藏」筛选按钮，下方按拼音排序显示单列歌曲列表；数量位于“全部乐谱/收藏的乐谱”右侧。列表在平板上居中，最大内容宽度 760 CSS px。普通操作提示三秒自动关闭，确认与设置窗口保留手动交互。
 
-Show the existing WindScore icon/wordmark, app name, and the slogan **“随时看谱，练习演出更从容”**. The splash is a loading transition, not a destination: remain visible while local library data initializes, then enter the library automatically. Do not require a tap or add a fixed delay after loading completes.
+搜索同时匹配曲库名称和谱面标题，支持汉字、无声调全拼、带声调拼音及首字母，不区分大小写，忽略拼音中的空格。无结果时显示查询词及更换关键词的提示。
 
-### 2. Library
+每行显示曲名、已有调号、拍号、BPM、收藏状态星标及省略号菜单。词曲作者、推荐音色、难度不显示空占位。星标仅指示状态，只有菜单中的「收藏 / 取消收藏」修改收藏。菜单另提供删除，删除前必须出现带曲名的确认对话框。
 
-The library screen is the default destination and the app's home. Its hierarchy is:
+搜索框旁的收藏按钮点亮后只显示已收藏曲目，取消后恢复全部曲目。空曲库直接提供「导入乐谱」操作，与「我的 → 曲库管理」共用同一导入流程。
 
-1. Search field at the top.
-2. A favorites filter beside the search field. Active state limits results to favorites; inactive state shows all songs.
-3. A single-column, pinyin-sorted song list.
-4. Persistent bottom navigation: 曲库 / 社区 / 我的.
+### 播放器
 
-Search matches Chinese text, tone-insensitive full Mandarin pinyin, and pinyin initials against both the library name and score title. Search is case-insensitive and ignores spaces in pinyin queries. A no-results message includes the submitted query.
+点击歌曲直接进入播放器。顶部显示返回及歌曲名。谱面铺满播放页，底部进度与播放控件以整幅半透明磨砂层覆盖在谱面上；工具层无圆角卡片外壳和阴影，显示/消隐不改变谱面可用宽度及排版。
 
-Each song row shows the song name and the score's available key, meter, and BPM. Future metadata (lyricist/composer, recommended timbre, and difficulty) is not shown as blank placeholders until the product has data for it. The star is a non-interactive favorite-state indicator. The ellipsis menu contains 收藏 / 取消收藏 and 删除. Deleting opens a confirmation that names the song before removal.
+底部包括可拖动进度、居中的播放/暂停图标、从头重放和设置。播放状态下五秒无交互消隐控件；暂停时保持可见。控件隐藏时第一次点击只负责唤回，再次点击谱面才定位播放位置。
 
-When the library is empty, show a direct **导入乐谱** action that opens the same `.wspack` import flow available from My > 曲库管理. On narrow screens the list fills the available width with comfortable side insets. On wider screens, keep a single column centered at a maximum content width of 760 CSS px rather than stretching rows across the tablet.
+双指缩放直接调整字号，字号改变后立即按当前屏幕宽度重新断行。画布宽度始终等于屏幕可用宽度，双击恢复谱面原字号。允许纵向滚动阅读，安卓页面不显示横向滚动条，也不以横向拖动查看作为放大后的阅读方式。窄屏简化谱头附加说明，保留曲名、调号、拍号和速度。
 
-### 3. Player
+设置在手机上采用底部弹层，平板采用居中的紧凑对话框，包括：简谱/五线谱、伴奏/合成音、字号、字距、光标/高亮条/光球、原谱/展开重复、升降调及速度。
 
-Selecting a song opens the player immediately. The score occupies the space between the top bar and the bottom control area. The top bar contains a return-to-library control and song title. The player supports Jianpu and staff notation; Jianpu is the entry default and notation switching lives in Settings.
+每次打开歌曲重置为简谱、原谱定义的字号与字距、默认光标、零升降调、1x 速度；有反复结构时默认展开。有可用伴奏时自动选择伴奏，否则使用合成音。手动覆盖只影响本次播放。
 
-The bottom toolbar contains a seekable progress bar, a centered play/pause control, a replay-from-start control, and Settings. While playback is active, hide the bottom toolbar after five seconds without interaction. Paused playback keeps the toolbar visible. If the toolbar is hidden, the first screen tap reveals it; once visible, tapping the score moves the play position. The player keeps the display awake only while playback is active in the foreground.
+已确认的多声部显示策略：窄屏（小于 760 CSS px）默认显示主旋律，可在设置中切换各分谱；宽屏默认显示总谱，也可选择分谱。显示选择不改变实际播放的声部。用户已于 2026-10-20 确认手机默认主旋律、通过设置切换分谱的方案。
 
-Use the device's current orientation and available dimensions. Portrait and landscape both remain supported without forcing rotation. The score area can be pinched to zoom, scrolled vertically, and double-tapped to return to fitted width. On wider tablet screens, preserve the same single-score focus rather than showing a library split pane.
+前台播放时保持屏幕常亮，暂停、离开播放页或进入后台时释放。Android 使用原生常亮标志；浏览器支持时使用 Screen Wake Lock API。
 
-The Settings surface is a bottom sheet on phones and a centered compact dialog on tablets. It includes:
+### 社区
 
-- Notation: Jianpu / staff.
-- Audio source: automatic choice on entry (accompaniment when available, otherwise synthesized score), with a manual override.
-- Display: font size, spacing, and cursor style.
-- Score order: original / expanded repeats.
-- Playback: transposition and speed.
+显示静态「社区即将开放」页面，保留底部主导航，可直接返回曲库。不显示假帖子或暗示已可使用的社区操作。
 
-Starting a song resets playback settings to defaults: score-defined font size and spacing, Jianpu, the default cursor style, zero semitone shift, and 1x speed. Scores with repeat structures start in expanded-repeat view. Audio source is chosen automatically for each song unless changed during that playback session.
+### 我的
 
-The Android player does not expose editing, alignment, or export actions.
+首次启动生成并保存随机数字用户名，展示本地静态资料，不提供注册。页面提供“从本地导入乐曲”“从网络传入乐曲”两个按钮；前者打开系统文件选择器，导入 `.wspack` 中的谱面、伴奏和标定，并反馈处理状态与结果。
 
-### 4. Community
+网络传入打开完整独立页面，左上角返回“我的”，隐藏底部主导航。用电脑/手机连接图、三步状态和地址卡片展示服务启停、连接及入库结果，每批最多九个 `.wspack`。返回“我的”保留服务；切到曲库或社区时自动停用；切到聊天软件发送地址则保留同一会话。前台保持亮屏，停用、退出或网络变化时停止接收。详细规则见 [局域网上传设计](2026-10-20-lan-upload-design.md)。
 
-Show a centered, static **“社区即将开放”** message. Keep the three-item bottom navigation visible with 社区 selected. Do not show sample posts or controls that imply active community functionality.
+同名导入保留两个条目，采用「歌名 (2)」「歌名 (3)」等可用编号，不覆盖原有曲目。
 
-### 5. My
+曲目“…”菜单另提供“重命名”，弹窗预填当前名称，拒绝空名称和与其他条目重名。保存后按新名称排序，保留条目 ID、收藏及伴奏/标定关联；电脑曲库使用同一关联迁移流程。上传服务运行时先停用服务再重命名，避免正在导入时占用同一名称。
 
-Show a static profile summary with a random numeric username generated on first launch and persisted locally, plus a **曲库管理** action. The profile does not create accounts or imply registration. Library management opens the Android system file picker for `.wspack` import and reports import progress and result.
+## 视觉与主题
 
-If an imported song's name already exists, keep both entries and append the next available number, such as `歌名 (2)` or `歌名 (3)`. Never overwrite an existing library entry automatically.
+采用暖白、鼠尾草绿与深墨绿的清雅视觉体系。首页背景为晨光草叶图，保留足够留白和文字对比；同一背景同步用于 PC 首页，并同步调整 PC 文字与按钮配色。
 
-## Navigation and responsive behavior
+曲库顶栏提供太阳/月亮切换。首次启动跟随系统主题，用户选择后保存本地偏好，覆盖曲库、社区、个人页、播放页和所有弹层。深色模式降低背景图亮度，并保持谱面和控件可读。
 
-- Cold launch: Splash → Library.
-- Library row: Player; Android Back or the top return control returns to Library.
-- Bottom navigation switches between Library, Community, and My. Community and My both provide an immediate path back to Library.
-- Use responsive CSS dimensions and safe-area insets rather than device-specific fixed canvases. Keep touch controls comfortably tappable and ensure the player toolbar does not cover score content.
-- Library stays a centered single column on tablets. Player keeps the score as the primary full-screen content in both orientations.
+布局使用响应式宽度和系统安全区，触控目标至少 44 CSS px。主信息层级、字号、间距、图标、色彩及组件状态保持一致。
 
-## Scope and known implementation gap
+## 浏览器预览与运行端
 
-The Android shell already launches the library page and bridges file selection into the system picker. The existing library search matches names/titles as text; pinyin query matching is new work. The selected Android scope excludes editor, alignment, and export.
+新增 `android.html` 作为浏览器与 Android WebView 共用的独立入口。Android 壳冷启动加载该页面，文件选择器继续桥接安卓系统选文件。
 
-## Design acceptance criteria
+`android.html?preview=1` 提供示例曲目。示例收藏、删除和导入只影响本次内存预览；预览包的伴奏也只在内存恢复，不写入真实曲库。普通 `android.html` 使用当前浏览器或设备的持久化曲库。
 
-- A user can launch into the library, search by Hanzi/full pinyin/initials, filter favorites, import a package, and open a score without passing through a feature dashboard.
-- Favorite status is visible at a glance, and only the ellipsis menu changes it.
-- Deletion requires explicit confirmation; duplicate import preserves both copies with a numeric suffix.
-- Playback has a clear seek, play/pause, replay, and settings path, with controls hiding and returning exactly as specified.
-- The same navigation model works on phone and tablet; portrait and landscape preserve readable score content and reachable controls.
-- Community is clearly marked as unavailable, and My remains explicitly local/static.
+视觉和主要交互通过浏览器响应式模式提前检查。Android 原生文件选择、返回和常亮能力另做原生构建与必要的端侧检查。
 
+## 维护与验收
+
+所有代码变化按根目录 `AGENTS.md` 检查浏览器、Android 与 Tauri 的同步范围。共用谱面、时间轴、音频和存储实现，平台差异集中在界面外壳和平台能力适配。
+
+验收覆盖启动到曲库、汉字/拼音检索、收藏筛选及菜单、删除确认、导入与同名保留、播放/暂停续播、重放、进度定位、设置、五秒消隐、深浅主题，以及手机/平板横竖屏的布局。

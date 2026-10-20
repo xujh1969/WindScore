@@ -19,6 +19,8 @@
 | `align.html` | **动态谱生成**：配伴奏、对齐节奏与打包 |
 | `library.html` | **曲库管理**：导入、打包分享、重命名、删除 |
 | `play.html` | **动态谱演奏**：曲库查询 + 播放（只放不编） |
+| `android.html` | **安卓独立入口**（`AndroidApp`）：曲库 / 社区 / 我的 + 传曲，WebView 冷启动加载它 |
+| `public/windscore-upload.html` | 电脑上传页，由手机原生 HTTP 服务直接提供（非 Vite 入口，浏览器 `?demo=1` 预览） |
 
 编辑、动态谱生成和曲库管理页提供「← 返回首页」。动态谱首页可返回首页；进入歌曲播放后仅保留「← 返回动态谱」，播放工具栏保持单行，窄屏可横向滚动。
 
@@ -156,7 +158,7 @@ npm run build:skill # 重新打包 skill 里的独立校验器（改了 dsl/vali
 
 ### 版本号
 
-当前版本号基线 **0.2.40**，显示在落地页页脚；工作区新功能尚未发布。通过以下脚本统一递增版本：
+当前工作区版本 **0.2.79**，显示在落地页页脚及安卓“我的”页。每次交付代码修改必须递增版本，通过以下脚本统一处理：
 
 ```bash
 npm run version              # 递增修订号
@@ -164,9 +166,32 @@ node scripts/bump-version.mjs minor   # 递增次版本号
 node scripts/bump-version.mjs major   # 递增主版本号
 ```
 
-脚本会同步 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 三处（安装包文件名里的版本来自它们）。落地页的显示由 Vite 把 `%APP_VERSION%` 注入，不需要手改 HTML。递增后记得重新打包 exe。
+脚本同步 `package.json`、`package-lock.json`、Tauri 配置、Cargo 清单/锁文件和 Android `versionName`，同时递增 Android `versionCode`。落地页由 Vite 注入版本，安卓“我的”读取原生包版本。版本递增后重新构建所需端的安装包；同一轮修改重复编译沿用同一版本。
+
+PC/Tauri 有实际代码变化（包括影响 PC 的共享逻辑）时编译一版 exe，纯安卓修改不每次重编译 PC。交付的 exe 同样复制到 `artifacts/releases/`，文件名保留版本号。
 
 浏览器版没有原生文件对话框：保存 = 下载 `.jps`，打开 = 用文件选择框。桌面版走系统对话框，能拿到真实路径。
+
+## 构建产物与命名规则
+
+**交付只认一个目录：项目根 `artifacts/releases/`**。构建工具自己的输出目录是中间产物，不用于分发，也不入库（`dist`、`dist-android`、`android/app/build` 均在 `.gitignore` 中）。
+
+| 端 | 构建命令 | 中间产物（不交付） | 交付文件（复制到 `artifacts/releases/`） |
+| --- | --- | --- | --- |
+| 网页 / 浏览器 | `npm run build` | `dist/` | —（部署 `dist/` 本身） |
+| 安卓资源 | `npm run build:android` | `dist-android/`（相对路径构建 + WebView 资源检查） | —（打进 APK） |
+| 安卓调试包 | `gradle -p android assembleDebug` | `android/app/build/outputs/apk/debug/app-debug.apk` | `WindScore-<版本>-android-build<构建号>.apk` |
+| 安卓发布包 | `gradle -p android assembleRelease` | `android/app/build/outputs/apk/release/app-release.apk` | `WindScore-<版本>-android-build<构建号>-release.apk` |
+| 桌面 exe / 安装包 | `npx tauri build` | `src-tauri/target/release/bundle/`（`msi/WindScore_<版本>_x64_en-US.msi`、`nsis/WindScore_<版本>_x64-setup.exe` 等） | `WindScore-<版本>-windows.exe`（免安装）、`WindScore-<版本>-windows-setup.exe`（安装版） |
+
+命名与版本规则：
+
+- 版本号以 `package.json` 为唯一来源，由 `npm run version` 递增，并同步 `package-lock.json`、`src-tauri/tauri.conf.json`、`Cargo.toml`/`Cargo.lock` 与安卓 `versionName`，同时把安卓 `versionCode` 加一。**同一轮修改的重复构建沿用同一版本**，不因改动单个文件反复递增。
+- 文件名一律 `WindScore-<版本>-<平台>[-类型].apk|.exe`，安卓文件名带构建号；**不要交付同名 `app-debug.apk`**，否则分不清手机上装的是哪一版。
+- 手机上判断装的是哪一版，看「我的」页底部（`安卓版 <版本> · 构建 <号>`）；启动地址带 `?build=<构建号>`，只恢复同一构建的历史，避免升级后回到旧界面。
+- Gradle 的 `preBuild` 会自动先跑 `npm run build:android` 再同步 `dist-android` 进 assets，所以**改了 web 代码直接跑 assemble 即可**，不用手工拷资源。
+- 安卓环境要求：JDK 17、Android SDK（platforms;android-34、build-tools;34.0.0）、Gradle 8.6；`android/windscore.keystore` 是自签签名文件，只留本机、不入库。
+- 有实际代码变化（含影响 PC 的共享逻辑）时编译一版桌面 exe；纯安卓修改不要求每次重编译 PC。
 
 ## 键盘
 
@@ -271,8 +296,30 @@ node skills/windscore-jps/validate.mjs 曲名.jps   # PASS / FAIL + 退出码
 
 ## 开发约定
 
+安卓独立界面的浏览器预览：启动 `npm run dev` 后打开 [示例预览](http://localhost:5173/android.html?preview=1)。预览自带曲目，收藏、删除与导入只在本次内存中生效；[普通入口](http://localhost:5173/android.html) 使用当前浏览器的本地曲库。使用浏览器响应式模式切换手机和平板尺寸、横竖屏，可直接检查页面效果与播放操作。
+
+安卓曲库中点击曲目右侧“…”可重命名。名称不能为空或与其他曲目重名；保存时保留收藏、伴奏和标定关联。PC/Tauri 曲库重命名共用该关联迁移逻辑。浏览器示例预览中的改名仅在本次预览有效。
+
+安卓安装包统一交付至项目 `artifacts/releases/`，不再引用其他目录中的 `app-debug.apk`。`gradle -p android assembleDebug` 或 `exportDebugApk` 自动输出 `WindScore-<版本>-android-build<构建号>.apk`；Release 对应 `assembleRelease` 或 `exportReleaseApk`，文件名追加 `-release`。先用 `npm run version` 递增版本，保留旧版文件供追溯；“我的”底部显示实际版本与构建号。启动时只恢复同一构建的安卓独立入口历史；升级不更换曲库存储位置。
+
+`npm run build:android` 构建安卓资源并检查 WebView 路径；`npm run test:android` 检查字号按屏宽重排、播放和曲库检索。详细产品约定见 [安卓界面设计](docs/superpowers/specs/2026-10-20-android-app-design.md)。
+
+### 电脑向安卓上传曲库
+
+安卓 App 的“我的 → 从电脑上传曲谱”中点击“启动曲库服务”，复制显示的完整地址到电脑浏览器。电脑和手机须连接同一无线局域网；不要求局域网能访问互联网，仅移动数据不能启动。地址包含本次服务的连接凭证，停用后失效。
+
+电脑可选择或拖入 `.wspack`，每批 1～9 个、单文件不超过 100 MiB、每批合计不超过 500 MiB。手机依次校验包结构、完整性、谱面和标定，保存伴奏与曲库后，两端显示实际导入结果。同名曲目自动编号；单份损坏不影响同批其他文件。电脑首次建立心跳后，手机显示“电脑已连接，等待上传曲谱”；15 秒未收到心跳显示断开。
+
+服务启动后可切换到聊天软件发送地址，通知栏服务保留监听及同一个连接凭证。传输期间请保持双端亮屏，手机回到 WindScore 后完成校验入库；电脑会显示等待手机返回的提示。服务在手机前台运行时自动保持亮屏；Wi-Fi 断开/地址变化、手动停用、退出 App 时停止并清理暂存文件。已经导入的曲目保留。
+
+切换到 App 内的“曲库”或“社区”会自动停用上传服务，回到“我的”后需重新启动；这与切到聊天软件发送地址不同。复制地址使用安卓原生剪贴板，成功后提示在同一局域网的电脑浏览器打开，普通操作提示 3 秒自动关闭。
+
+浏览器中的安卓预览提供启停面板演示；[电脑上传页预览](http://localhost:5173/windscore-upload.html?demo=1) 可查看界面并选择文件，明确标注不会上传或写入手机。真实 Wi-Fi 地址和原生 WebView 导入需在 APK 中使用。实现与验收范围见 [局域网上传设计](docs/superpowers/specs/2026-10-20-lan-upload-design.md) 和 [实施计划](docs/superpowers/plans/2026-10-20-lan-upload.md)。
+
 - 内核（types / dsl / edit / layout / validate / timeline / tempo）不依赖 DOM，可在 Node 里直接测
 - 任何编辑操作都是 `edit.ts` 里的纯函数：`(score, …) => Score`，改一处只走一条写入路径
 - 排版 / 绘制 / 命中三处必须用同一套度量（`layout.deriveGlyph`），各写一份就会出现「看着点在缝里、实际被判成点在音上」
 - 曲库的读写只走 `libraryStore` / `alignStore` 一个出口，后端（文件夹 / 本地）由 `storeBackend` 决定
 - 界面文案说人话，内部术语（BeatGroup、不变量编号）不出现在面板上
+- 每次代码改动都要按根目录 `AGENTS.md` 做跨端影响检查：逐一判断浏览器、Android 和 Tauri 桌面是否需要同步；共享代码至少检查浏览器与 Android 的受影响入口，平台专属改动要记录其他端不适用的原因
+- 交付时列出检查过的端、同步改动、无需同步的理由，以及未验证项；布局可用浏览器响应式预览检查，不要求每轮都用 Android 真机

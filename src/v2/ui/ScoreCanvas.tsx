@@ -12,7 +12,7 @@ import {
   type LayoutResult,
   type LayoutOptions,
 } from '../layout';
-import { DARK_THEME, LIGHT_THEME, paintLayout, type PlayStyle } from '../paint';
+import { DARK_THEME, LIGHT_THEME, drawPlayBall, paintLayout, type PlayStyle } from '../paint';
 import { buildStaffLayout, type StaffLayout } from '../staff';
 import { paintStaffLayout } from '../staffPaint';
 import { withStaffRows } from '../staffSpacing';
@@ -38,6 +38,8 @@ interface Props {
   fontSize?: number;
   /** 字间距覆盖（px）：同上 */
   letterSpacing?: number;
+  /** 安卓阅读按屏宽重排，窄屏简化谱头并保留谱号空间。 */
+  responsive?: boolean;
   selectedIds: ReadonlySet<string>;
   /** 光标：插入位置（0 .. events.length） */
   cursor: number;
@@ -92,6 +94,7 @@ export function ScoreCanvas({
   unit,
   fontSize,
   letterSpacing,
+  responsive = false,
   selectedIds,
   cursor,
   timeline,
@@ -116,6 +119,9 @@ export function ScoreCanvas({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const ballCanvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasOrigin = useRef(0);
   const layoutRef = useRef<LayoutResult | null>(null);
   /** 五线谱排版（实验功能）：只在 notation === 'staff' 时才建、才用 */
   const staffRef = useRef<StaffLayout | null>(null);
@@ -145,7 +151,7 @@ export function ScoreCanvas({
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
+    return { x: clientX - rect.left, y: clientY - rect.top + canvasOrigin.current };
   }, []);
 
   /** 屏幕坐标 → 命中结果（判定逻辑在 layout.pickAt） */
@@ -183,9 +189,9 @@ export function ScoreCanvas({
     (clientX: number, clientY: number): boolean => {
       const layout = layoutRef.current;
       const p = toLocal(clientX, clientY);
-      return !!layout && !!p && hitTitleEdit(layout, p.x, p.y);
+      return !!onEditTitle && !!layout && !!p && hitTitleEdit(layout, p.x, p.y);
     },
-    [toLocal],
+    [toLocal, onEditTitle],
   );
   const clefAtPointer = (clientX: number, clientY: number) => {
     const point = toLocal(clientX, clientY);
@@ -229,24 +235,51 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     // 纵向滚动条显隐改变。排版与绘制共用实际可见宽度，保留完整的右侧页边距。
     const boxWidth = () => Math.max(1, wrap.clientWidth);
     const boxHeight = () => Math.max(1, wrap.getBoundingClientRect().height - 2);
+    let staticBallReady = false;
+    let staticOrigin = -1;
 
     const paint = (head: Playhead) => {
       const layout = layoutRef.current;
       if (!layout) return;
       headRef.current = head;
       const currentStyle = playStyleRef.current;
-      const dpr = window.devicePixelRatio || 1;
       const w = boxWidth();
       const h = Math.max(boxHeight(), layout.height + 32);
+      // 安卓只分配一个视口加缓冲区的位图；长谱/大字号不再生成数万像素高的纹理。
+      const viewHeight = responsive ? Math.min(h, boxHeight() + 256) : h;
+      const dpr = responsive ? Math.min(window.devicePixelRatio || 1, 2, 4096 / Math.max(w, viewHeight)) : window.devicePixelRatio || 1;
+      const paddingTop = responsive ? parseFloat(getComputedStyle(wrap).paddingTop) || 0 : 0;
+      const origin = responsive ? Math.max(0, Math.min(h - viewHeight, Math.floor((wrap.scrollTop - paddingTop - 64) / 128) * 128)) : 0;
+      canvasOrigin.current = origin;
+      if (responsive && surfaceRef.current) {
+        surfaceRef.current.style.height = `${h}px`;
+        canvas.style.position = 'absolute'; canvas.style.top = `${origin}px`;
+      }
       const cw = Math.max(1, Math.floor(w * dpr));
-      const ch = Math.max(1, Math.floor(h * dpr));
+      const ch = Math.max(1, Math.floor(viewHeight * dpr));
       if (canvas.width !== cw || canvas.height !== ch) {
         canvas.width = cw;
         canvas.height = ch;
         canvas.style.width = `${w}px`;
-        canvas.style.height = `${h}px`;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        canvas.style.height = `${viewHeight}px`;
+        staticBallReady = false;
       }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, -origin * dpr);
+      const overlay = ballCanvasRef.current;
+      const ballCtx = overlay?.getContext('2d');
+      const cachedBall = responsive && currentStyle === 'ball' && !staffErrorRef.current && !cueRef.current && !!ballCtx;
+      if (overlay && ballCtx) {
+        if (overlay.width !== cw || overlay.height !== ch) { overlay.width = cw; overlay.height = ch; }
+        overlay.style.top = `${origin}px`; overlay.style.width = `${w}px`; overlay.style.height = `${viewHeight}px`;
+        ballCtx.setTransform(1, 0, 0, 1, 0, 0); ballCtx.clearRect(0, 0, cw, ch);
+        if (cachedBall && ballRef.current) {
+          ballCtx.setTransform(dpr, 0, 0, dpr, 0, -origin * dpr);
+          drawPlayBall(ballCtx, ballRef.current, theme);
+        }
+      }
+      if (cachedBall && staticBallReady && staticOrigin === origin) return;
+      staticBallReady = cachedBall; staticOrigin = origin;
+      const displayHead = cachedBall ? null : head;
       // 五线谱（实验功能）：独立的一条绘制路径；开关关着时这里永远不成立，
       // 走的就是原来那份 paintLayout，现有行为不受影响
       const staff = staffRef.current;
@@ -261,27 +294,28 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       }
       if (staff) {
         paintStaffLayout(ctx, staff, theme, {
-          playhead: head,
-          playheads: head ? headsRef.current : [],
+          playhead: displayHead,
+          playheads: displayHead ? headsRef.current : [],
           focusId,
           selectedIds,
           height: h,
           playStyle: currentStyle,
-          ball: currentStyle === 'ball' ? ballRef.current : null,
+          ball: currentStyle === 'ball' && !cachedBall ? ballRef.current : null,
           showTitleEdit: !!onEditTitle,
           showMeasureNumbers: score.meta.showMeasureNumbers !== false,
         });
         return;
       }
       paintLayout(ctx, layout, theme, {
+        showTitleEdit: !!onEditTitle,
         selectedIds,
         caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
-        playhead: head,
-        playheads: head ? headsRef.current : [],
+        playhead: displayHead,
+        playheads: displayHead ? headsRef.current : [],
         cue: cueRef.current,
         focusId,
         playStyle: currentStyle,
-        ball: currentStyle === 'ball' ? ballRef.current : null,
+        ball: currentStyle === 'ball' && !cachedBall ? ballRef.current : null,
         showMeasureNumbers: score.meta.showMeasureNumbers !== false,
         showBreaks,
         height: h,
@@ -297,19 +331,23 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     };
 
     const relayout = () => {
+      staticBallReady = false;
       const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing,
+        ...(responsive ? { fitWidth: true, rightPadding: 20 } : {}),
         ...(notation === 'staff' ? {
           staffPitchMode,
           padding: 96 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
           staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
         } : {}) };
-      let layout = layoutScore(score, options);
+      const displayScore = responsive && boxWidth() < 560 ? { ...score, meta: { ...score.meta, sub: '', notes: [] } } : score;
+      let layout = layoutScore(displayScore, options);
+      if (responsive && layout.title) layout = { ...layout, title: { ...layout.title, leftX: 20, rightX: boxWidth() - 20 } };
       staffErrorRef.current = '';
       staffRef.current = null;
       staffBallPositionsRef.current = undefined;
       if (notation === 'staff') {
         try {
-          staffRef.current = buildStaffLayout(score, layout, staffPitchMode);
+          staffRef.current = buildStaffLayout(displayScore, layout, staffPitchMode);
           layout = withStaffRows(layout, staffRef.current);
           const staff = staffRef.current;
           const k = staff.glyph.fontSize / 21;
@@ -335,10 +373,12 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
 
     const ro = new ResizeObserver(relayout);
     ro.observe(wrap);
-    return () => ro.disconnect();
+    const repaintScroll = () => { if (responsive) paint(playingRef.current ? headRef.current : null); };
+    wrap.addEventListener('scroll', repaintScroll, { passive: true });
+    return () => { ro.disconnect(); wrap.removeEventListener('scroll', repaintScroll); };
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+  }, [score, dark, unit, fontSize, letterSpacing, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
   // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
   useEffect(() => {
@@ -368,7 +408,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     const canvasBox = canvas.getBoundingClientRect();
     const wrapBox = wrap.getBoundingClientRect();
     const x = point.x + canvasBox.left - wrapBox.left + wrap.scrollLeft;
-    const y = point.y + canvasBox.top - wrapBox.top + wrap.scrollTop;
+    const y = point.y - canvasOrigin.current + canvasBox.top - wrapBox.top + wrap.scrollTop;
     const pad = 48;
     if (y - pad < wrap.scrollTop) wrap.scrollTop = Math.max(0, y - pad);
     else if (y + pad > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = y + pad - wrap.clientHeight;
@@ -451,6 +491,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     let snapped = false;
     let trailStartTick: number | null = null;
     let lastStyle = playStyleRef.current;
+    let trackLayout: LayoutResult | null = null;
+    let cachedTrack: ReturnType<typeof buildBallTrack> = null;
     // 起播即恢复自动跟随：用户手动滚过之后，本次播放期间不再抢控制权
     followRef.current = true;
 
@@ -481,7 +523,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       if (playStyleRef.current === 'ball') {
         const layout = layoutRef.current;
         if (layout) {
-          const track = buildBallTrack(layout, timeline, activePartId, staffBallPositionsRef.current);
+          if (layout !== trackLayout) {
+            trackLayout = layout;
+            cachedTrack = buildBallTrack(layout, timeline, activePartId, staffBallPositionsRef.current);
+          }
+          const track = cachedTrack;
           const trail = trailRef.current;
           const lastT = lastBallTickRef.current;
           if (!track || trailStartTick === null || lastT === null || tick < lastT || tick - lastT > TICKS_PER_BEAT * 4) {
@@ -614,10 +660,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         }
       }}
     >
+      <div ref={surfaceRef} style={responsive ? { position: 'relative' } : { display: 'contents' }}>
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        aria-label={notation === 'staff' ? '五线谱谱面，点击谱号可切换高低音谱号' : '简谱谱面'}
+        aria-label={notation === 'staff' ? (onClefClick ? '五线谱谱面，点击谱号可切换高低音谱号' : '五线谱谱面') : '简谱谱面'}
         onMouseMove={(e) => {
           const canvas = canvasRef.current;
           if (pairing) {
@@ -701,6 +748,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           onPick(p, null);
         }}
       />
+      {responsive && <canvas ref={ballCanvasRef} aria-hidden="true" style={{ position: 'absolute', left: 0, pointerEvents: 'none' }}/>}
+      </div>
       {lyricEdit && lyricLayout ? <div className="v2-lyric-overlay" aria-label="谱面歌词输入" key={`${lyricEdit.partId}:${lyricEdit.verse}`}>
         {(() => {
           const current = partScore(score, lyricEdit.partId);

@@ -11,7 +11,7 @@ import {
   audioNameOf,
   type AlignPersist,
 } from '../src/v2/ui/alignStore';
-import { isItem, mergeLibrary, sortLibrary, type LibraryItem } from '../src/v2/ui/libraryStore';
+import { isItem, mergeLibrary, searchLibrary, sortLibrary, type LibraryItem } from '../src/v2/ui/libraryStore';
 
 let failed = 0;
 function check(name: string, ok: boolean, extra = ''): void {
@@ -110,6 +110,20 @@ console.log('[存储后端 · 断连后合并]');
   check('两边都有时保留更新的', merged.find((it) => it.id === 'a')!.updatedAt === 10);
   check('本地是文件夹的子集时不写盘（added = 0）', mergeLibrary(folder, [mk('b', '青花瓷', 20)]).added === 0);
   check('本地更旧不会倒退', mergeLibrary([mk('a', '灰姑娘', 10)], [mk('a', '灰姑娘', 5)]).merged[0]!.updatedAt === 10);
+}
+
+console.log('[跨端曲库 · 汉字与拼音检索]');
+{
+  const item: LibraryItem = {
+    id: 'search-song', name: '茉莉花', text: '', updatedAt: 0,
+    meta: { title: '女儿情', key: '1=C', beat: '4/4', bpm: 120, measures: 1, notes: 4, broken: false },
+  };
+  const items = [item];
+  for (const query of ['茉莉', 'MÓ LÌ HUĀ', 'mlh', '女儿', 'nǚ ér qíng', 'neq']) {
+    check(`曲名或标题匹配：${query}`, searchLibrary(items, query)[0] === item);
+  }
+  check('无匹配不返回曲目', searchLibrary(items, '不存在的乐谱').length === 0);
+  check('空查询保留原曲库', searchLibrary(items, '  ') === items);
 }
 
 console.log(failed === 0 ? '\n存储后端测试全部通过' : `\n存储后端测试失败 ${failed} 项`);

@@ -44,7 +44,8 @@ console.log('[播放 · 音频时钟与任意起点]');
   }
   const globals = globalThis as unknown as { window?: unknown };
   const previous = globals.window;
-  globals.window = { AudioContext: MockContext, setInterval: () => 0 };
+  let schedule = () => {};
+  globals.window = { AudioContext: MockContext, setInterval: (fn: () => void) => { schedule = fn; return 0; } };
   const player = new Player();
   const timeline = [{ eventId: 'note', startTick: 0, endTick: 1000, degree: 1, octave: 0, midi: 60 }];
   const near = (a: number | null, b: number) => a !== null && Math.abs(a - b) < 1e-6;
@@ -66,6 +67,13 @@ console.log('[播放 · 音频时钟与任意起点]');
     check('伴奏沿同一标定时间轴前进', near(player.currentTick, 192));
     player.startAudio({ timeline, tempo, fromTick: -1000, stems });
     check('早于音频开头的请求与实际音频零秒一致', near(player.currentSec, 0) && near(player.currentTick, -192));
+    player.startAudio({ timeline, tempo, fromTick: 2000, stems, synth: false });
+    check('谱面结束后的伴奏尾奏仍可定位播放', player.isPlaying && near(player.currentTick, 2000));
+    player.startAudio({ timeline, tempo, fromTick: 0, stems: [...stems, { buffer: { duration: 10 } as AudioBuffer, gain: 1 }], synth: false });
+    MockContext.latest.currentTime = 30; schedule();
+    check('分轨时长不同，较短分轨结束不截断较长伴奏', player.isPlaying);
+    player.startAudio({ timeline, tempo, fromTick: 100000, stems, synth: false });
+    check('超过伴奏结尾的定位不启动空播放', !player.isPlaying);
     player.stop();
     check('停止后不返回上一轮音频进度', player.currentTick === null);
   } finally {

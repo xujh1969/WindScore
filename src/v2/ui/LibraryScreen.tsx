@@ -23,11 +23,11 @@ import {
   removeLibraryItem,
   restoreLibraryItem,
   flushLibraryWrites,
-  renameLibraryItem,
   searchLibrary,
   useLibraryItems,
   type LibraryItem,
 } from './libraryStore';
+import { renameLibraryWithAssets } from './renameLibrary';
 import {
   currentBackend,
   folderName,
@@ -158,14 +158,14 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
     onNotify(`已收录 ${ok} 份谱面（只有谱，没有伴奏与标定）`);
   };
 
-  const commitRename = (id: string): void => {
+  const commitRename = async (id: string): Promise<void> => {
     const value = renameValue.trim();
     if (!value) {
       setRenaming(null);
       return;
     }
-    if (!renameLibraryItem(id, value)) {
-      onNotify(`改不了：已经有叫「${value}」的谱了`);
+    if (!await renameLibraryWithAssets(id, value)) {
+      onNotify(`未能重命名：名称重复或无法保存，请检查后重试。`);
       return;
     }
     setRenaming(null);

@@ -34,6 +34,7 @@ export default defineConfig(({ mode }) => ({
         library: 'library.html',
         play: 'play.html',
         help: 'help.html',
+        android: 'android.html',
       },
     },
   },

@@ -12,7 +12,7 @@ export interface SpacingUnit {
 }
 
 /** 同时比较后续行，避免贪心断行留下过松的一行或很短的谱尾。 */
-export function balancedBreaks(units: SpacingUnit[], available: number): number[] {
+export function balancedBreaks(units: SpacingUnit[], available: number, compressionPenalty = 45): number[] {
   const cost = new Array<number>(units.length + 1).fill(Infinity);
   const next = new Array<number>(units.length).fill(0);
   cost[units.length] = 0;
@@ -29,7 +29,7 @@ export function balancedBreaks(units: SpacingUnit[], available: number): number[
       const ragged = (last || units[to].forced) && ratio < 0.6;
       const stretch = Math.max(0, 1 / ratio - 1);
       const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch)
-        + 45 * Math.pow(Math.max(0, ratio - 1), 2)
+        + compressionPenalty * Math.pow(Math.max(0, ratio - 1), 2)
         + (last ? 0 : units[to].penalty ?? 0);
       if (rowCost + cost[to + 1] < cost[from]) {
         cost[from] = rowCost + cost[to + 1];

@@ -148,26 +148,51 @@ export function audioNameOf(key: string): string {
   return i > 0 ? key.slice(0, i) : key;
 }
 
-export async function putAudio(key: string, file: File): Promise<void> {
+export async function putAudio(key: string, file: File, strict = false): Promise<void> {
   if (currentBackend() !== 'local') {
     try {
       await writeBytes(audioFileOf(key), new Uint8Array(await file.arrayBuffer()));
       return;
-    } catch {
+    } catch (error) {
+      if (strict) throw error;
       return; // 写不进就不写（曲库清单里的引用还在，音频缺失时提示重新载入）
     }
   }
   try {
     const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put(file, key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-    db.close();
-  } catch {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).put(file, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('伴奏保存失败'));
+        tx.onabort = () => reject(tx.error ?? new Error('伴奏保存已中断'));
+      });
+    } finally { db.close(); }
+  } catch (error) {
+    if (strict) throw error;
     /* 存不了就不存 */
+  }
+}
+
+/** 上传导入必须等到保存完成；既有编辑器的兼容保存行为不变。 */
+export async function saveAlignChecked(scoreName: string, data: AlignPersist): Promise<void> {
+  if (currentBackend() === 'local') {
+    localStorage.setItem(alignKey(scoreName), JSON.stringify(data));
+  } else {
+    await writeJson(ALIGN_FILE, { ...Object.fromEntries(alignMem), [scoreName]: data });
+    alignMem.set(scoreName, data);
+  }
+}
+
+export async function clearAlignChecked(scoreName: string): Promise<void> {
+  if (currentBackend() === 'local') {
+    localStorage.removeItem(alignKey(scoreName));
+  } else {
+    const next = Object.fromEntries(alignMem);
+    delete next[scoreName];
+    await writeJson(ALIGN_FILE, next);
+    alignMem.delete(scoreName);
   }
 }
 

@@ -135,15 +135,19 @@ function findEocd(data: Uint8Array): number {
  * 只认**不压缩**的条目（我们自己写的就是这种）；遇到压缩过的明确报错，
  * 不静默给出乱码——那比报错更难查。
  */
-export function unzip(data: Uint8Array): ZipEntry[] {
+export function unzip(data: Uint8Array, strict = false): ZipEntry[] {
   const eocd = findEocd(data);
   if (eocd < 0) throw new Error('不是有效的 zip 打包文件（找不到结尾标记）');
   const ev = new DataView(data.buffer, data.byteOffset + eocd);
   const count = ev.getUint16(10, true);
   let p = ev.getUint32(16, true); // 中央目录起点（相对文件头）
   const out: ZipEntry[] = [];
+  const names = new Set<string>();
+  let totalSize = 0;
+  if (strict && (ev.getUint16(4, true) !== 0 || ev.getUint16(6, true) !== 0 || count > 1024)) throw new Error('不支持分卷或条目过多的乐谱包');
 
   for (let i = 0; i < count; i += 1) {
+    if (strict && p + 46 > eocd) throw new Error('打包文件目录不完整');
     const dv = new DataView(data.buffer, data.byteOffset + p);
     if (dv.getUint32(0, true) !== 0x02014b50) throw new Error('打包文件的目录损坏');
     const method = dv.getUint16(10, true);
@@ -154,11 +158,19 @@ export function unzip(data: Uint8Array): ZipEntry[] {
     const localAt = dv.getUint32(42, true);
     const name = dec.decode(data.subarray(p + 46, p + 46 + nameLen));
 
+    if (strict && (p + 46 + nameLen + extraLen + commentLen > eocd || localAt + 30 > data.length || names.has(name) || /(^\/|\\|(^|\/)\.\.(\/|$))/.test(name))) throw new Error('打包文件路径或目录无效');
+    names.add(name);
+
     if (method !== 0) throw new Error(`打包里的 ${name} 是压缩过的，本应用只支持不压缩的打包`);
     const lv = new DataView(data.buffer, data.byteOffset + localAt);
     const lNameLen = lv.getUint16(26, true);
     const lExtraLen = lv.getUint16(28, true);
     const bodyAt = localAt + 30 + lNameLen + lExtraLen;
+    if (strict) {
+      totalSize += size;
+      if (lv.getUint32(0, true) !== 0x04034b50 || bodyAt + size > ev.getUint32(16, true) || dv.getUint32(20, true) !== size || totalSize > 100 * 1024 * 1024 || (dv.getUint16(8, true) & 1) !== 0) throw new Error('打包文件数据不完整或超过大小限制');
+      if (crc32(data.subarray(bodyAt, bodyAt + size)) !== dv.getUint32(16, true)) throw new Error(`包内文件校验失败：${name}`);
+    }
     out.push({ name, data: data.slice(bodyAt, bodyAt + size) });
 
     p += 46 + nameLen + extraLen + commentLen;

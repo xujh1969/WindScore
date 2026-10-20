@@ -21,6 +21,8 @@ import {
   toggleParen,
 } from '../edit';
 import { HelpDialog } from './HelpCenter';
+import { AndroidPlayer } from './AndroidPlayer';
+import type { PackBundle } from './packBundle';
 import {
   applyTier as applyTierOp,
   autoGroupBeats,
@@ -144,6 +146,8 @@ const SPEED_STEP = 0.05;
 const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'b', '♮'];
 /** 播放界面的空选区：引用必须稳定，内联 new Set() 每次渲染都会触发整谱重排 */
 const EMPTY_SELECTED: ReadonlySet<string> = new Set();
+/** 安卓由播放器轮询收尾；引用保持稳定，避免进度刷新重启光球动画并清空拖尾。 */
+const onAndroidScoreEnded = () => {};
 const ACCIDENTAL_NAME: Record<Accidental, string> = { '#': '升', b: '降', '♮': '还原' };
 
 /** 力度档位，由弱到强 */
@@ -381,12 +385,27 @@ function beatsPerMeasure(beat: string): number {
  *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
  * 编辑、生成与曲库单功能页显示左上角「返回首页」。
  */
-export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play';
+export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'android-player';
 
-export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
+export function EditorApp({ entry = 'app', androidItem, androidDark, androidPreview = false, androidPack, onAndroidBack }: {
+  entry?: Entry; androidItem?: LibraryItem; androidDark?: boolean; androidPreview?: boolean;
+  androidPack?: PackBundle; onAndroidBack?: () => void;
+}) {
+  const androidPlayer = entry === 'android-player';
+  const androidResumeTick = useRef<number | null>(null);
+  const androidAlive = useRef(true);
+  const [androidNarrow, setAndroidNarrow] = useState(() => window.innerWidth < 760);
+  const [androidPartPick, setAndroidPartPick] = useState<string | null>(null);
+  useEffect(() => {
+    if (!androidPlayer) return;
+    const media = matchMedia('(max-width: 759px)');
+    const update = () => setAndroidNarrow(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [androidPlayer]);
   /** 深浅主题。初始值跟系统，之后由工具栏手动切换，不再随系统变 */
   const [dark, setDark] = useState(
-    () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
+    () => androidDark ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false),
   );
   const [active, setActive] = useState('');
   const [snap, setSnap] = useState<Snap>({
@@ -435,6 +454,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 模式记忆到 localStorage，只在 app 入口生效。
    */
   const [mode, setMode] = useState<'score' | 'align' | 'library' | 'play' | 'discover'>(() => {
+    if (androidPlayer) return 'play';
     if (entry === 'play') return 'discover'; // 独立入口：首屏是动态谱首页，点歌才进播放
     if (entry !== 'app') {
       return entry === 'library' ? 'library' : entry === 'align' ? 'align' : 'score';
@@ -479,7 +499,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     }
   });
   useEffect(() => {
-    localStorage.setItem('ws-mode', mode);
+    if (!androidPlayer) localStorage.setItem('ws-mode', mode);
     if (mode === 'align' && view === 'source') setView('score'); // 对轨只认谱面视图
     // 离开对轨 = 退出配对：不然回到记谱模式，光标还是绑定样式、
     // 小节线上还挂着靶标，点一条线会莫名其妙绑个锚点
@@ -499,6 +519,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 存 localStorage：播放页（动态谱演奏 / 曲库播放）的观众设一次就长期有效
    */
   const [playStyle, setPlayStyle] = useState<'head' | 'band' | 'ball'>(() => {
+    if (androidPlayer) return 'head';
     try {
       const v = localStorage.getItem('ws-playstyle');
       return v === 'band' || v === 'ball' ? v : 'head';
@@ -508,13 +529,16 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   });
   useEffect(() => {
     try {
-      localStorage.setItem('ws-playstyle', playStyle);
+      if (!androidPlayer) localStorage.setItem('ws-playstyle', playStyle);
     } catch {
       /* 隐私模式等存不了就算了 */
     }
   }, [playStyle]);
   /** 保留已有的记谱法偏好存储，顶部按钮切换简谱／五线谱。 */
-  const [staffViewOn, setStaffViewOn] = useExp('staffView');
+  const [storedStaffViewOn, setStoredStaffViewOn] = useExp('staffView');
+  const [androidStaffViewOn, setAndroidStaffViewOn] = useState(false);
+  const staffViewOn = androidPlayer ? androidStaffViewOn : storedStaffViewOn;
+  const setStaffViewOn = androidPlayer ? setAndroidStaffViewOn : setStoredStaffViewOn;
   /** 记谱页 / 播放页共用的记谱法 */
   const notation: 'jianpu' | 'staff' = staffViewOn ? 'staff' : 'jianpu';
   const [staffPitchMode, setStaffPitchMode] = useState<StaffPitchMode>(() => localStorage.getItem('ws-staff-pitch-mode') === 'transposed' ? 'transposed' : 'concert');
@@ -527,10 +551,10 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 存 localStorage——play.html 的观众（看谱的人）设一次就长期有效，
    * 且只影响播放界面的显示，谱面文件本身一个字节都不动。
    */
-  const [playFont, setPlayFont] = useState<number | null>(() => playViewPref.font);
-  const [playGap, setPlayGap] = useState<number | null>(() => playViewPref.gap);
+  const [playFont, setPlayFont] = useState<number | null>(() => androidPlayer ? null : playViewPref.font);
+  const [playGap, setPlayGap] = useState<number | null>(() => androidPlayer ? null : playViewPref.gap);
   useEffect(() => {
-    localStorage.setItem('ws-playview', JSON.stringify({ font: playFont, gap: playGap }));
+    if (!androidPlayer) localStorage.setItem('ws-playview', JSON.stringify({ font: playFont, gap: playGap }));
   }, [playFont, playGap]);
   /** 工具栏正中的谱面校验明细是否展开 */
   const [checkOpen, setCheckOpen] = useState(false);
@@ -543,14 +567,15 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const storeReadyRef = useRef(false);
   const [setupOpen, setSetupOpen] = useState(false);
   useEffect(() => {
+    if (androidPreview) { setStoreReady(true); return; }
     void initStore().then(() => {
       storeReadyRef.current = true;
       setStoreReady(true);
       // 安卓 App 没有文件夹模式，曲库固定走本机存储，不算「未配置」
-      setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
+      setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
     });
     const recheck = (): void => {
-      if (storeReadyRef.current) setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
+      if (storeReadyRef.current) setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
     };
     return onStoreBackendChange(recheck);
   }, []);
@@ -746,6 +771,21 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     clockRef.current.seek(0);
     setPlaying(false);
   }, []);
+  useEffect(() => {
+    androidAlive.current = true;
+    if (!androidPlayer) return;
+    return () => { androidAlive.current = false; stopPlay(); };
+  }, [androidPlayer, stopPlay]);
+  useEffect(() => {
+    if (!androidPlayer || !playing) return;
+    const id = window.setInterval(() => {
+      if (!playerRef.current.isPlaying && !shifting) {
+        androidResumeTick.current = null;
+        clockRef.current.pause(); clockRef.current.seek(0); setPlaying(false);
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [androidPlayer, playing, shifting]);
 
   /**
    * 音频逐拍跟踪后自动应用并同步谱面 BPM；谱面原点单独匹配。
@@ -866,7 +906,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // audio/*），不等就会读到空库、恢复出「没有伴奏」的结果。
       // 放在这里等（而不是事后补跑一次）是关键：事后补跑会落在用户操作之后，
       // 把刚载入的伴奏与刚对好的标定冲掉，还重复解码一遍分轨。
-      await initStore();
+      if (!androidPreview) await initStore();
       // 等待期间又切了谱 / 又点了一次打开：这一轮作废
       if (restoreKeyRef.current === token) return;
       restoreKeyRef.current = token;
@@ -883,12 +923,12 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       // 由下面的 finally 负责落地。此前是推导出来的（stems 空 + 存档说有伴奏），
       // 一旦伴奏没恢复成功就永远停在「正在恢复…」上（导入打包后卡住就是这个）
       setRestoring(false);
-      const saved = loadAlign(active);
+      const saved = androidPreview ? androidPack?.align : loadAlign(active);
       if (!saved) return;
       if (saved.audio.length > 0) setRestoring(true);
       setTempoDraft(saved.tempoDraft);
       setAnchors(saved.anchors);
-      setPlaySource(saved.playSource);
+      setPlaySource(androidPlayer && saved.audio.length ? 'audio' : saved.playSource);
       if (saved.override) {
         try {
           setTempoOverride(tempoFromAlign(saved.override as never));
@@ -898,14 +938,14 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       }
       try {
         const host = new OfflineAudioContext(2, 1, 44100);
-        const files = await Promise.all(saved.audio.map((ref) => getAudio(ref.key)));
+        const files = androidPreview ? (androidPack?.stems.map(s => s.file) ?? []) : await Promise.all(saved.audio.map((ref) => getAudio(ref.key)));
         const decoded = (
           await Promise.all(
             files.map(async (f, i) => {
               if (!f) return null;
               try {
                 return {
-                  name: saved.audio[i]!.name,
+                  name: androidPreview ? androidPack!.stems[i].name : saved.audio[i]!.name,
                   buffer: await host.decodeAudioData(await f.arrayBuffer()),
                   // 恢复上次放哪几条：上首关掉的人声，这次进来还是关掉的
                   on: saved.stemOn?.[i] ?? true,
@@ -930,6 +970,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           );
         } else {
           setStems([]);
+          if (androidPlayer) setPlaySource('synth');
           setAudioMsg('找到上次的对齐参数，但伴奏文件已不在本机缓存里——请重新载入音频或重新导入打包。');
         }
       } finally {
@@ -942,7 +983,8 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   // 参数一变就落盘。两个闸门：本谱的恢复还没做过不存（防止拿空状态覆盖存档）；
   // 没有伴奏不存（纯参数改动不产生半套存档）
   useEffect(() => {
-    if (restoredRef.current !== active || stems.length === 0) return;
+    // 浏览器预览（内存曲库）不落盘；安卓 App 与 PC 一样记住放哪几条分轨
+    if (androidPreview || restoredRef.current !== active || stems.length === 0) return;
     const data: AlignPersist = {
       version: 1,
       audio: stemKeysRef.current.map((key, i) => ({ key, name: stems[i]?.name ?? key })),
@@ -1064,6 +1106,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
 
   // 启动：优先接着上次改；没有草稿才载入内置曲
   useEffect(() => {
+    if (androidItem) { load(androidItem.name, androidItem.text, null, androidItem.id); return; }
     const s = loadSession();
     if (s) {
       const res = parseDsl(s.text);
@@ -1076,7 +1119,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       }
     }
     load(BUILTIN[0].name, BUILTIN[0].text);
-  }, [load]);
+  }, [load, androidItem]);
 
   // 曲库存储的启动探测放在**恢复流程内部**（见 restore effect 里的 await initStore()），
   // 不再在这里「水合完再补一拍恢复」——那一拍会落在用户操作之后：
@@ -1598,6 +1641,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId, activePlayPick]);
 
   const startPlayNow = useCallback(async (fromOverride?: number) => {
+    if (androidPlayer && !androidAlive.current) return;
     if (documentScore.parts?.length && expansion.errors.length) { setMsg(`重奏暂不能播放：${expansion.errors[0]}`); return; }
     if (timeline.length === 0) return;
     previewRef.current.stop(); // 试听与谱面播放互斥
@@ -1636,6 +1680,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
           setShiftLabel('');
         }
       }
+      if (androidPlayer && !androidAlive.current) return;
       // 倍速下 tick↔秒 换算整体缩放，指示条与合成声部才跟得上变快的伴奏
       const playTempo = speed === 1 ? audioTempo! : scaleTempoMap(audioTempo!, speed);
       // 前奏：谱面记的是从进唱开始，伴奏前面还整段前奏。
@@ -1653,7 +1698,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
         stems: useStems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
         synth: false,
         semitones: transpose,
-        onEnded: () => setPlaying(false),
+        onEnded: () => { if (androidPlayer) { androidResumeTick.current = null; clockRef.current.pause(); clockRef.current.seek(0); } setPlaying(false); },
       });
       setPlaying(true);
       return;
@@ -1843,7 +1888,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       if (playerRef.current.isPlaying) {
         const at = getPlayTick() ?? 0;
         stopPlay();
-        startPlayRef.current(at);
+        requestAnimationFrame(() => { void startPlayRef.current(at); });
       }
     },
     // getPlayTick 声明在后面（TDZ），不能进依赖数组；它依赖为空、身份恒定，引用不会过期
@@ -1859,7 +1904,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
       if (playerRef.current.isPlaying) {
         const at = getPlayTick() ?? 0;
         stopPlay();
-        startPlayRef.current(at);
+        requestAnimationFrame(() => { void startPlayRef.current(at); });
       }
     },
     [speed, stopPlay],
@@ -2413,7 +2458,13 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   const setExpandView = setExpandViewPick;
   /** 屏幕上是哪一份谱：展开 = 拉平后的线性谱，原谱 = 带记号的原样 */
   const fullViewScore = expandView ? playScore : documentScore;
-  const viewScore = totalView ? fullViewScore : partScore(fullViewScore, activePartId);
+  const androidParts = scoreParts(fullViewScore);
+  const androidViewPart = androidNarrow
+    ? (androidPartPick && androidPartPick !== 'total' ? androidPartPick : androidParts[0].id)
+    : androidPartPick ?? 'total';
+  const viewScore = androidPlayer
+    ? androidViewPart === 'total' ? fullViewScore : partScore(fullViewScore, androidViewPart)
+    : totalView ? fullViewScore : partScore(fullViewScore, activePartId);
 
   /**
    * **显示用**的时间线：id 口径必须和屏幕上的谱面一致。
@@ -2807,6 +2858,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
   // 编辑内容自动落一份到本地，防刷新 / 崩溃丢工作。
   // 存内容不存路径，所以两端行为一致，也不怕文件被移走。
   useEffect(() => {
+    if (androidPlayer) return;
     const t = window.setTimeout(() => {
       saveSession({ text: serialized, name: active, path, libraryId });
     }, 600);
@@ -2868,7 +2920,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    */
   const restoringAudio = restoring;
   /** 存档声称有伴奏、本机却拿不到（缓存被清 / 换了浏览器）——要说清是哪一种 */
-  const audioLost = !restoring && stems.length === 0 && !!loadAlign(active)?.audio?.length;
+  const audioLost = !androidPreview && !restoring && stems.length === 0 && !!loadAlign(active)?.audio?.length;
 
   /*
    * 模式开关。抽出来是为了在下面的条件渲染之外求值——
@@ -2876,6 +2928,58 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
    * 在里面写 mode === 'library' 会被当成永远不成立（也就点不回曲库）。
    * 单功能页不显示它：这一屏只干一件事，跳去别的屏反而是干扰。
    */
+  if (androidPlayer) {
+    const totalTicks = timelineTicks(timeline);
+    const secondsAt = (tick: number) => playSource === 'audio' && audioTempo ? tickToSec(audioTempo, tick) / speed : tick / TICKS_PER_BEAT * 60 / (score.meta.bpm * speed);
+    const duration = playSource === 'audio' && stems.length ? Math.max(...stems.map(s => s.buffer.duration)) / speed : secondsAt(totalTicks);
+    const seekAndroid = (seconds: number) => {
+      const tick = playSource === 'audio' && audioTempo ? secToTick(audioTempo, seconds * speed) : seconds * score.meta.bpm * speed / 60 * TICKS_PER_BEAT;
+      const resume = playing;
+      stopPlay(); androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
+      if (resume) startPlay(tick);
+    };
+    return <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry={entry}><AndroidPlayer
+      title={androidItem?.name ?? active} playing={playing} busy={shifting} restoring={restoring || !active || restoredRef.current !== active}
+      audioReady={audioReady} duration={duration}
+      getSeconds={() => playing ? Math.max(0, playSource === 'audio' ? (playerRef.current.currentSec ?? 0) : secondsAt(getPlayTick() ?? 0)) : androidResumeTick.current === null ? 0 : Math.max(0, secondsAt(androidResumeTick.current))}
+      onSeek={seekAndroid}
+      onToggle={() => {
+        if (playing) { const at = getPlayTick() ?? 0; stopPlay(); androidResumeTick.current = at; clockRef.current.seek(at / TICKS_PER_BEAT); }
+        else startPlay(androidResumeTick.current ?? undefined);
+      }}
+      onReplay={() => { stopPlay(); androidResumeTick.current = null; setPlayPick(null); setSnap(s => ({ ...s, cursor: 0, mode: 'insert', anchor: null })); requestAnimationFrame(() => startPlay(0)); }}
+      onBack={() => { androidAlive.current = false; stopPlay(); onAndroidBack?.(); }}
+      notation={notation} onNotation={setStaffViewOn} source={playSource}
+      parts={androidParts.map(part => ({ id: part.id, name: part.name }))} selectedPart={androidViewPart} allowTotal={!androidNarrow}
+      onPart={id => { setAndroidPartPick(id); if (id !== 'total') selectPart(id); }}
+      onSource={source => { const at = getPlayTick() ?? 0; stopPlay(); androidResumeTick.current = at; clockRef.current.seek(at / TICKS_PER_BEAT); setPlaySource(source); }}
+      font={effFont} onFont={setPlayFont} onResetFont={() => setPlayFont(null)} gap={effGap} onGap={setPlayGap}
+      style={playStyle} onStyle={setPlayStyle} expanded={expandView} canExpand={canExpandView} onExpand={setExpandView}
+      stems={stems.map(s => ({ name: s.name, on: s.on, vocal: isVocalName(s.name) }))}
+      onStem={toggleStem} onStemsAll={() => setStemsOn(() => true)} onStemsNoVocal={() => setStemsOn((name: string) => !isVocalName(name))}
+      transpose={transpose} onTranspose={changeTranspose} speed={speed} onSpeed={changeSpeed}
+      message={msg.includes('失败') ? msg : undefined}
+      renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
+        unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} responsive
+        selectedIds={EMPTY_SELECTED} cursor={0} timeline={displayTimeline} playStyle={playStyle}
+        notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
+        getPlayTick={getPlayTick} showCaret={false} focusId={activePlayPick?.id ?? null}
+        onPick={pick => {
+          if (pick.mode !== 'over') return;
+          const partId = pick.partId ?? (androidViewPart === 'total' ? activePartId : androidViewPart);
+          const shown = partScore(fullViewScore, partId); const event = shown.events[pick.index];
+          if (!event || !isTimed(event)) return;
+          const expanded = partScore(playScore, partId);
+          const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
+          if (index < 0) return;
+          const tick = tickAtEvent(expanded, index); const resume = playing;
+          handlePlayPick(pick); androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
+          if (resume) startPlay(tick);
+        }}
+        onEnded={onAndroidScoreEnded}
+      />}
+    /></div>;
+  }
   return (
     <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry={entry}>
       {/* play.html 是独立入口：整行顶栏（含返回首页、品牌、文件状态、校验、深色）不显示，播放页有自己的工具条。要切深浅色去记谱页，那里切过一次这里就沿用。 */}
@@ -3132,7 +3236,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
               <span>字距</span>
               <input
                 type="range"
-                min={-10}
+                min={-20}
                 max={24}
                 step={1}
                 value={effGap}
@@ -3971,7 +4075,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                 label="字间距"
                 type="number"
                 value={score.meta.letterSpacing ?? 0}
-                min={-10}
+                min={-20}
                 max={20}
                 onCommit={(v) => setScore(setMeta(score, { letterSpacing: Number(v) }))}
               />
@@ -5584,7 +5688,7 @@ function emptyScore(): Score {
     version: 2,
     format: 3,
     // 新谱默认字间距 -10（用户实测最美观）；老文件没写 @space 的仍按 0 排，
-    // 不改变已有谱面的样子。可调范围 -10–20。
+    // 不改变已有谱面的样子。可调范围 -20–20。
     meta: { title: '未命名曲谱', key: '1=C', beat: '4/4', bpm: 90, patch: 73, letterSpacing: -10 },
     events: [],
     groups: [],

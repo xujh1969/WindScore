@@ -178,23 +178,23 @@ export class Player {
     this.stop();
     const { timeline, tempo, fromTick, stems, synth, semitones, onEnded } = opts;
     if (timeline.length === 0 || stems.length === 0) return 0;
+    const startSec = Math.max(0, tickToSec(tempo, fromTick));
+    const duration = Math.max(...stems.map(s => s.buffer.duration));
+    if (startSec >= duration) return 0;
     claimAudio(this);
     this.semitones = semitones ?? 0;
 
     const first = timeline.findIndex((e) => e.endTick > fromTick);
-    if (first < 0) return 0;
-
     const calledAt = performance.now();
     const ctx = newAudioContext();
     this.ctx = ctx;
     this.timeline = timeline;
-    this.index = first;
+    this.index = first < 0 ? timeline.length : first;
     this.fromTick = fromTick;
     this.tempo = tempo;
     this.audioMode = true;
     this.endedCb = onEnded ?? null;
 
-    const startSec = Math.max(0, tickToSec(tempo, fromTick));
     this.startSec = startSec;
     this.when = ctx.currentTime + START_LEAD;
     const lead = (performance.now() - calledAt) / 1000 + START_LEAD;
@@ -213,8 +213,7 @@ export class Player {
     }
     const offset = Math.max(0, startSec);
     for (const src of this.sources) src.start(this.when, offset);
-    const shortest = Math.min(...stems.map((s) => s.buffer.duration));
-    this.audioEndSec = this.when + Math.max(0.1, shortest - offset);
+    this.audioEndSec = this.when + Math.max(0.1, duration - offset);
 
     this.timer = window.setInterval(() => this.scheduleSynth(synth ?? false), TIMER_MS);
     return lead;

@@ -8,6 +8,20 @@
 - Vite 多页面入口：`index.html`（四个主入口）、`editor.html`（简谱编辑）、`align.html`（动态谱生成/对轨）、`library.html`（曲库管理）、`play.html`（只读曲库查询/播放）、`help.html`（分类帮助）。各页通过 `body[data-entry]` 进入 `src/main.tsx`，再选择 `EditorApp` 或独立页面。简谱编辑与对轨共用内核、会话及伴奏标定存储，但使用独立页面；曲库的对轨操作保存选中曲目会话并跳到 `align.html`。
 - `src-tauri/` 提供桌面壳、系统文件对话框和安装包配置；业务逻辑仍在 `src/v2/`。
 - `vite.config.ts` 配置页面入口、版本注入和转录 Worker 的 ES 输出。
+- `android.html` 挂载独立的 `AndroidApp.tsx`，提供安卓曲库、社区、个人页、主题与导入；`?preview=1` 使用隔离的内存示例曲库，普通入口使用现有存储。Android WebView 冷启动加载该入口。
+- Android 启动地址附带 `versionCode`，仅恢复当前构建且路径为 `android.html` 的页面历史，避免升级后恢复旧 PC 入口；“我的”显示原生构建号。`exportDebugApk` 将安装包导出为带版本/构建号的唯一文件名。
+- `AndroidPlayer.tsx` 负责满屏谱面上的磨砂工具层和设置，通过 `EditorApp` 的安卓入口复用已有播放内核。字号变更经 `ScoreCanvas.responsive` 按当前屏宽重新排版；PC 与安卓首页共用 `public/home-botanical.png`。
+- 安卓曲库取消独立标题/口号区，顶部按页显示 WindScore-曲库/社区/我的，数量放在列表说明右侧；普通操作提示 3 秒自动关闭，确认和设置窗口保留交互。
+- 安卓 `fitWidth` 阅读忽略原谱的纸面换行，密集小节按完整拍组提供断点，按字形最小安全宽度自动收紧及铺满行；PC/导出仍遵循原谱换行。字距下限 -20px 同步到网页/桌面设置及 DSL 读取，符号占位保持正的安全下限。
+- `AndroidSongList.tsx` 仅渲染曲库视口及上下各四行，滚动按动画帧合并更新；曲库排序只在条目变化时重算，搜索覆盖全部数据。`libraryStore.ts` 用弱引用缓存汉字、全拼与首字母索引，供浏览器、Android 和 Tauri 共同使用，不改变存储格式。
+- `AndroidLanUpload.tsx` 在应用层轮询原生上传服务并顺序消费任务，“我的”提供启停、连接状态、地址复制与逐文件结果；`importPack.ts` 经严格包校验与可确认失败的存储路径入库。旧 PC/Tauri 导入默认仍走兼容读取。
+- 切换 App 内曲库/社区时主动停用上传会话，切换到系统其他 App 发地址则保留；复制操作通过 `MainActivity.copyUploadAddress` 写原生剪贴板，成功后给出三秒操作提示，失败不报告成功。
+- “我的”用本地导入、网络传入两个入口；网络服务在独立页面展示电脑/手机连接图、三步状态和地址卡片。该子页写入导航历史，左上返回“我的”仍保留服务，不显示底部主导航。
+- `renameLibrary.ts` 供安卓菜单与 PC/Tauri 曲库共同使用：先迁移按曲名索引的伴奏/标定，再更新条目名称，失败时恢复原关联；音频存储键和收藏保持不变。
+- Android `LanUploadServer.kt` 提供有会话凭证的 HTTP 页面、批次/文件接收、心跳及结果接口；`LanUploadController.kt` 仅绑定 Wi-Fi 私有 IPv4，地址变化时停止。`LanUploadService.kt` 通过 dataSync 通知栏服务支持切到聊天软件发送同一个地址；新的入库任务只在手机页面前台消费。`MainActivity.kt` 桥接暂存包读取与结果回写，前台保持亮屏；退出应用时关闭服务。
+- Android 原生壳使用 fullSensor 支持横竖屏，关闭 WebView 自带缩放；双指手势按帧合并字号修改。`ScoreCanvas.responsive` 用视口加缓冲区位图承载长谱，并使用独立光球层复用静态谱面；PC/Tauri 保留整谱画布。光球轨迹按排版结果缓存，所有端共享。
+- `npm run version` 同步网页、Android、Tauri 和锁文件，并递增 Android 构建号；所有 assemble/export APK 统一复制至 `artifacts/releases/`，保留版本与构建号。
+- `public/windscore-upload.html` 是电脑上传独立页面，由手机原生 HTTP 服务直接提供；Vite 的普通与安卓构建都会复制该静态文件，浏览器以 `?demo=1` 预览。它不挂载 PC 编辑器或启动 PC/Tauri 监听服务。
 
 ## 代码分层
 
@@ -79,6 +93,10 @@
 
 - `npm run typecheck`：TypeScript 类型检查。
 - `npm run build`：类型检查 + Vite 多页面生产构建。
+- `npm run build:android`：安卓相对路径构建（`dist-android/`）与 WebView 资源检查；`npm run test:android`：移动字号重排、播放与曲库专项检查。
+- `gradle -p android assembleDebug|assembleRelease`：先自动执行 `build:android` 并同步资源，再打包；APK 自动导出到 `artifacts/releases/`，文件名带版本与构建号。
+- `npx tauri build`：桌面 exe / 安装包（`src-tauri/target/release/bundle/`），交付副本复制到 `artifacts/releases/`。
+- 交付目录只有一个：`artifacts/releases/`；`dist/`、`dist-android/`、`android/app/build/` 均为中间产物，不入库、不作交付地址。命名规则与版本同步见 README「构建产物与命名规则」。
 - `npm test`：运行 `scripts/` 中 DSL/内核、展开、节拍、发现、导出、存储、MP3 和播放的 Node 回归测试。
 - `npm run build:skill`：将应用 DSL/校验逻辑打包到 `skills/windscore-jps/validate.mjs`。
 - `npm run tauri:dev`：Tauri 桌面开发运行。
@@ -87,6 +105,8 @@
 
 ## 维护约束
 
+- 每次代码改动都按根目录 `AGENTS.md` 执行跨端影响检查：根据浏览器、Android WebView 和 Tauri 的共享入口/平台分支确定同步范围；无需同步的端要说明理由，交付时记录端侧检查与未验证项。
+- 修改共享 UI 后检查所有受影响的 HTML 入口；安卓布局优先使用浏览器响应式预览，修改安卓原生壳或资源映射时另行检查 Android 构建。
 - 改谱面格式时先看 `dsl.ts`、`types.ts`、`validate.ts` 和 JPS reference；保持解析/序列化往返一致。
 - 改编辑行为时让变更经过 `edit.ts` 的纯函数，并保持拍内组/时值校验。
 - 改谱面显示时同时检查 `layout.ts`、`paint.ts` 和命中测试的共享度量。

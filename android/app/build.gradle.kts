@@ -11,9 +11,9 @@ android {
         applicationId = "com.windscore.app"
         minSdk = 28          // Android 9+
         targetSdk = 34
-        // 与 package.json 版本号手工同步（npm run version 不会动这里）
-        versionCode = 2
-        versionName = "0.2.77"
+        // 由 npm run version 与 package.json、桌面端同步递增。
+        versionCode = 9
+        versionName = "0.2.82"
     }
 
     signingConfigs {
@@ -57,6 +57,27 @@ val syncWebAssets by tasks.registering(Sync::class) {
 
 tasks.named("preBuild") { dependsOn(syncWebAssets) }
 
+// 面向手机交付的唯一文件名，避免 Downloads 中多份 app-debug.apk 混淆。
+tasks.register<Copy>("exportDebugApk") {
+    dependsOn("packageDebug")
+    from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+    into(rootProject.file("../artifacts/releases"))
+    rename { "WindScore-${android.defaultConfig.versionName}-android-build${android.defaultConfig.versionCode}.apk" }
+}
+
+tasks.register<Copy>("exportReleaseApk") {
+    dependsOn("packageRelease")
+    from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
+    into(rootProject.file("../artifacts/releases"))
+    rename { "WindScore-${android.defaultConfig.versionName}-android-build${android.defaultConfig.versionCode}-release.apk" }
+}
+
+tasks.configureEach {
+    if (name == "assembleDebug") dependsOn("exportDebugApk")
+    if (name == "assembleRelease") dependsOn("exportReleaseApk")
+}
+
 dependencies {
     implementation("androidx.webkit:webkit:1.10.0")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
 }

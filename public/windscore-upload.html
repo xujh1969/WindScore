@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>上传到手机曲库 · WindScore</title>
+<style>
+:root { color-scheme:light dark; --bg:#f6f7f2; --surface:#fffefa; --soft:#e3eddf; --ink:#25372e; --muted:#647267; --line:#dce3d8; --accent:#32664d; --danger:#b44036; }
+@media(prefers-color-scheme:dark) { :root { --bg:#151d19; --surface:#1e2922; --soft:#314934; --ink:#e7ede3; --muted:#a6b3a5; --line:#354538; --accent:#aecba8; --danger:#f3a298; } }
+* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.65 'Segoe UI','Microsoft YaHei',sans-serif; } ::selection { background:var(--soft); } button,input { font:inherit; } button { cursor:pointer; } button:disabled { opacity:.5; cursor:default; } :focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+header { padding:24px 0; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; font-weight:650; font-size:19px; } header svg { width:28px; height:28px; color:var(--accent); } main,header,footer { width:min(720px,calc(100% - 40px)); margin:auto; } main { padding:48px 0 28px; } h1 { font-size:clamp(26px,4vw,36px); line-height:1.3; font-weight:650; letter-spacing:-.025em; margin:0 0 14px; } h2 { font-size:18px; margin:28px 0 10px; } p { margin:10px 0; } .intro,.limit,footer { color:var(--muted); } .reminder { margin:24px 0; padding:16px 20px; background:var(--soft); border-radius:10px; font-size:14px; } #status { margin:20px 0; color:var(--accent); font-weight:600; overflow-wrap:anywhere; } #status.error,.error-text { color:var(--danger); } #demo { color:var(--muted); font-size:13px; padding-bottom:10px; }
+#drop { border:1px dashed var(--line); border-radius:12px; padding:38px 24px; background:var(--surface); text-align:center; } #drop.drag { border-color:var(--accent); background:var(--soft); } #drop svg { width:36px; height:36px; color:var(--accent); } #drop p { margin:10px 0 18px; } button { min-height:46px; padding:10px 20px; border:0; border-radius:9px; background:var(--accent); color:var(--surface); font-weight:600; } #send { margin-top:16px; width:100%; } .limit { font-size:12px; padding-top:12px; } #files { list-style:none; padding:0; margin:20px 0; } #files li { padding:14px 0; border-bottom:1px solid var(--line); } .file-name { display:block; font-weight:600; overflow-wrap:anywhere; } .file-state { color:var(--muted); font-size:13px; overflow-wrap:anywhere; } progress { width:100%; height:6px; display:block; margin:10px 0 0; accent-color:var(--accent); } footer { font-size:12px; padding:16px 0 30px; border-top:1px solid var(--line); } @media(max-width:500px) { main { padding-top:28px; } #drop { padding:24px 16px; } }
+</style></head>
+<body>
+<header><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 18V5l11-2v13M9 9l11-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="17" cy="16" rx="3" ry="3"/></svg>WindScore</header>
+<main><h1>把曲谱，传到手机。</h1><p class="intro">无需数据线，在同一无线局域网中，将乐谱和伴奏一起收入手机曲库。</p>
+<p class="reminder">同一 Wi-Fi，保持双端亮屏。可切到聊天软件发地址；回手机完成导入，切到曲库或社区将停用服务。</p>
+<div id="status" role="status" aria-live="polite">正在连接手机…</div><p id="demo" hidden>界面演示：可以选择文件查看列表，不会上传或写入手机曲库。</p>
+<section id="drop" aria-label="选择或拖入乐谱包"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5"/></svg><p>将 .wspack 乐谱包拖到这里</p><button id="choose">选择乐谱包</button><input id="picker" type="file" accept=".wspack" multiple hidden></section>
+<p class="limit">每批最多 9 个 · 单文件不超过 100 MiB · 每批总大小不超过 500 MiB</p>
+<ul id="files" aria-label="上传文件与导入结果"></ul><button id="send" disabled>上传到手机曲库</button>
+</main><footer>文件由手机校验并保存，看到“手机已导入”即表示入库成功。同名曲目自动编号保留。</footer>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search), key = params.get('key') || '', demo = params.get('demo') === '1';
+  const status = document.getElementById('status'), picker = document.getElementById('picker'), choose = document.getElementById('choose'), send = document.getElementById('send'), drop = document.getElementById('drop'), list = document.getElementById('files');
+  let selected = [], jobs = [], connected = false, working = false, uploading = false, polling = false, heartbeatAt = 0, wake = null, selectionError = '';
+  const labels = {waiting:'等待上传',receiving:'上传中',queued:'手机已接收，等待校验',importing:'手机正在校验并导入',success:'手机已导入',error:'未导入'};
+  const setStatus = (text, error = false) => { status.textContent = text; status.classList.toggle('error', error); };
+  const controls = () => { choose.disabled = working; picker.disabled = working; send.disabled = demo || !connected || working || !selected.length; };
+  const render = () => {
+    list.replaceChildren();
+    selected.forEach((file, index) => {
+      const job = jobs[index], li = document.createElement('li'), name = document.createElement('span'), info = document.createElement('span');
+      name.className = 'file-name'; name.textContent = job?.state === 'success' ? job.song : file.name;
+      info.className = 'file-state'; info.textContent = job ? labels[job.state] + (job.error ? '：' + job.error : '') : '待上传 · ' + (file.size/1048576).toFixed(2) + ' MiB';
+      if (job?.state === 'error') info.classList.add('error-text');
+      li.append(name,info);
+      if (job?.state === 'receiving') { const progress = document.createElement('progress'); progress.max = file.size; progress.value = job.received; progress.setAttribute('aria-label',file.name+'上传进度'); li.append(progress); }
+      list.append(li);
+    }); controls();
+  };
+  async function request(path, method = 'GET', data) {
+    const headers = {'X-WindScore-Token':key}; if (data) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path,{method,headers,cache:'no-store',body:data ? JSON.stringify(data) : undefined,signal:AbortSignal.timeout(10000)});
+    const result = await response.json(); if (!response.ok) throw new Error(result.error || '连接失败'); return result;
+  }
+  async function acquireWake() { try { if ('wakeLock' in navigator && document.visibilityState === 'visible') wake = await navigator.wakeLock.request('screen'); } catch (_) {} }
+  function releaseWake() { if (wake) { void wake.release(); wake = null; } }
+  async function poll() {
+    if (demo || !key || polling) return; polling = true;
+    try {
+      const beat = Date.now()-heartbeatAt > 3000;
+      const state = await request(beat ? '/api/heartbeat' : '/api/status',beat ? 'POST' : 'GET'); if (beat) heartbeatAt = Date.now();
+      connected = state.running;
+      if (jobs.length) { const latest = new Map(state.jobs.map(job=>[job.id,job])); jobs = jobs.map(job=>latest.get(job.id)||job); }
+      if (working && !uploading && jobs.length && jobs.every(job=>job.state==='success'||job.state==='error')) {
+        working=false; releaseWake(); const ok=jobs.filter(job=>job.state==='success').length; setStatus('导入完成：成功 '+ok+' 首，失败 '+(jobs.length-ok)+' 首');
+      } else if (!working && !jobs.length) setStatus(selectionError || (selected.length ? '已选择 '+selected.length+' 个文件，可以开始上传' : '已连接手机，等待选择曲谱'),!!selectionError);
+      else if (working) setStatus(uploading ? '正在上传，请保持双端亮屏…' : state.foreground === false ? '手机已接收文件，请回到手机 WindScore 完成校验并导入' : '文件已传输，等待手机校验并导入…');
+      render();
+    } catch (error) {
+      connected=false; releaseWake();
+      setStatus('服务已停用或连接已断开。请确认手机服务仍在运行、电脑和手机连接同一局域网，并使用手机上当前的完整地址。',true); controls();
+    } finally { polling=false; }
+  }
+  function select(files) {
+    if (working) return;
+    const next=Array.from(files);
+    const error = !next.length ? '请选择乐谱包' : next.length>9 ? '每批最多 9 个文件，请重新选择' : next.some(file=>!file.name.toLowerCase().endsWith('.wspack')) ? '只接收 .wspack 乐谱包' : next.some(file=>!file.size||file.size>100*1048576) ? '单文件不能为空或超过 100 MiB' : next.reduce((sum,file)=>sum+file.size,0)>500*1048576 ? '每批总大小不能超过 500 MiB' : '';
+    if (error) { selectionError=error; selected=[]; jobs=[]; render(); setStatus(error,true); picker.value=''; return; }
+    selectionError=''; selected=next; jobs=[]; render(); setStatus(demo ? '演示列表：实际上传请使用手机提供的地址' : '已选择 '+selected.length+' 个文件，可以开始上传'); picker.value='';
+  }
+  choose.onclick=()=>picker.click(); picker.onchange=()=>select(picker.files);
+  drop.ondragover=event=>{ event.preventDefault(); if(!working) drop.classList.add('drag'); };
+  drop.ondragleave=()=>drop.classList.remove('drag'); drop.ondrop=event=>{ event.preventDefault(); drop.classList.remove('drag'); select(event.dataTransfer.files); };
+  function upload(file,job) {
+    return new Promise((resolve,reject)=>{
+      const xhr=new XMLHttpRequest(); xhr.open('PUT','/api/upload/'+encodeURIComponent(job.id)); xhr.setRequestHeader('X-WindScore-Token',key); xhr.timeout=120000;
+      xhr.upload.onprogress=event=>{ job.state='receiving'; job.received=event.loaded; render(); };
+      xhr.onload=()=>{ if(xhr.status>=200&&xhr.status<300) resolve(); else { let text='文件上传失败'; try{text=JSON.parse(xhr.responseText).error||text;}catch(_){} reject(new Error(text)); } };
+      xhr.onerror=()=>reject(new Error('连接中断，请确认手机服务仍在运行且双方连接同一局域网')); xhr.ontimeout=()=>reject(new Error('上传超时，请重新上传')); xhr.send(file);
+    });
+  }
+  send.onclick=async()=>{
+    if(working||!connected||demo||!selected.length)return;
+    working=true; uploading=true; let started=false; controls(); void acquireWake();
+    try {
+      const batch=await request('/api/batch','POST',{files:selected.map(file=>({name:file.name,size:file.size}))}); started=true; jobs=batch.jobs; render();
+      for(let i=0;i<selected.length;i++) { setStatus('正在上传第 '+(i+1)+' / '+selected.length+' 个文件'); await upload(selected[i],jobs[i]); }
+      setStatus('文件已传输，等待手机校验并导入…');
+    } catch(error) {
+      setStatus(error.message,true);
+      if(started) { try { const state=await request('/api/cancel','POST'); jobs=state.jobs; } catch(_) { connected=false; } }
+      working=started&&connected&&jobs.some(job=>job.state==='queued'||job.state==='importing'); if(!working)releaseWake();
+    } finally { uploading=false; render(); void poll(); }
+  };
+  document.addEventListener('visibilitychange',()=>{ if(working&&document.visibilityState==='visible')void acquireWake(); });
+  addEventListener('beforeunload',event=>{ if(working){event.preventDefault();event.returnValue='';} });
+  if(demo) { document.getElementById('demo').hidden=false; setStatus('电脑上传页预览 · 未连接手机'); }
+  else if(!key) { setStatus('请使用手机上复制的完整连接地址打开本页面',true); choose.disabled=true; }
+  else { void poll(); setInterval(()=>void poll(),1000); }
+})();
+</script></body></html>

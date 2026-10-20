@@ -115,19 +115,43 @@ export async function buildPack(b: PackBundle): Promise<Uint8Array> {
   return zipStore(entries);
 }
 
-export async function readPack(bytes: Uint8Array): Promise<PackBundle> {
-  const entries = unzip(bytes);
+export async function readPack(bytes: Uint8Array, strict = false): Promise<PackBundle> {
+  const entries = unzip(bytes, strict);
   const byName = new Map(entries.map((e) => [e.name, e]));
   const mf = byName.get('manifest.json');
   if (!mf) throw new Error('包里没有 manifest.json，不是 WindScore 打包文件');
   const m = JSON.parse(dec.decode(mf.data)) as PackManifest;
   if (m?.format !== PACK_FORMAT) throw new Error('不是 WindScore 打包文件（格式标记对不上）');
   if (m.version !== PACK_VERSION) throw new Error(`打包版本 ${m.version} 不支持（本应用认 v${PACK_VERSION}）`);
+  if (strict && (typeof m.name !== 'string' || !m.name.trim() || typeof m.score !== 'string' || !Array.isArray(m.stems))) throw new Error('乐谱包清单不完整');
+  if (strict && m.align !== null && (!m.align || m.align.version !== 1 || !m.align.tempoDraft || !Array.isArray(m.align.anchors))) throw new Error('乐谱包标定数据无效');
+  if (strict && m.align) {
+    const align = m.align;
+    const draft = align.tempoDraft;
+    const times = draft.beatTimes;
+    if (!Number.isFinite(draft.bpm) || draft.bpm <= 0 || !Number.isFinite(draft.phaseSec) || !Number.isFinite(draft.originBeat)
+      || align.anchors.some(anchor => !anchor || !Number.isFinite(anchor.scoreBeat) || !Number.isFinite(anchor.audioBeat))
+      || (times !== undefined && (!Array.isArray(times) || times.length < 2 || times.some((time, i) => !Number.isFinite(time) || (i > 0 && time <= times[i - 1]))))
+      || (align.stemOn !== undefined && (!Array.isArray(align.stemOn) || align.stemOn.some(value => typeof value !== 'boolean')))
+      || (align.playSource !== 'audio' && align.playSource !== 'synth')) throw new Error('乐谱包的节拍或声部标定无效');
+    if (align.override !== null && align.override !== undefined) {
+      const wrapper = align.override as { tempo?: unknown };
+      const tempo = (wrapper.tempo ?? wrapper) as { kind?: string; bpm?: number; phaseSec?: number; scoreOriginBeat?: number; beatTimes?: number[] };
+      const curve = tempo.beatTimes;
+      if (!tempo || !Number.isFinite(tempo.scoreOriginBeat) || (tempo.kind === 'constant'
+        ? !Number.isFinite(tempo.bpm) || tempo.bpm! <= 0 || !Number.isFinite(tempo.phaseSec)
+        : tempo.kind !== 'curve' || !Array.isArray(curve) || curve.length < 2 || curve.some((time, i) => !Number.isFinite(time) || (i > 0 && time <= curve[i - 1])))) throw new Error('乐谱包的速度曲线无效');
+    }
+  }
   const score = byName.get(m.score);
   if (!score) throw new Error(`包里没有谱面文件（${m.score}）`);
   const stems: PackStem[] = [];
+  const used = new Set<string>();
   for (const s of m.stems ?? []) {
+    if (strict && (!s || typeof s.path !== 'string' || typeof s.name !== 'string' || !s.name.trim() || used.has(s.path))) throw new Error('伴奏清单无效');
+    used.add(s.path);
     const e = byName.get(s.path);
+    if (strict && (!e || e.data.length === 0)) throw new Error(`乐谱包缺少伴奏：${s.name}`);
     if (!e) continue; // 缺一轨不致命：谱面与标定照样能进曲库
     stems.push({
       name: s.name,

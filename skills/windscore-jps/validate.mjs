@@ -124,7 +124,9 @@ function ensembleIssues(score2) {
   const out = [];
   parts.slice(1).forEach((p, pi) => {
     const current = measures2[pi + 1];
-    if (current.length !== measures2[0].length) out.push(`${p.name}\u6709 ${current.length} \u5C0F\u8282\uFF0C${parts[0].name}\u6709 ${measures2[0].length} \u5C0F\u8282`);
+    if (current.length > measures2[0].length) {
+      out.push(`${p.name}\u6709 ${current.length} \u5C0F\u8282\uFF0C\u6BD4${parts[0].name}\u7684 ${measures2[0].length} \u5C0F\u8282\u591A`);
+    }
     current.forEach((m, i) => {
       if (measures2[0][i] && m.ticks !== measures2[0][i].ticks) out.push(`${p.name}\u7B2C ${i + 1} \u5C0F\u8282\u4E3A ${m.ticks / TICKS_PER_BEAT} \u62CD\uFF0C\u4E0E${parts[0].name}\u4E0D\u4E00\u81F4`);
     });
@@ -167,7 +169,7 @@ function withConductor(score2, id) {
     for (const e of following) {
       if (e.kind === "jump" || e.kind === "barline" && e.id !== src?.id) jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
     }
-    if (jumps.length) clean.splice(Math.max(0, index + 1), 0, ...jumps);
+    if (jumps.length && index >= 0) clean.splice(index + 1, 0, ...jumps);
   }
   return { ...target, events: clean };
 }
@@ -208,14 +210,23 @@ function instrumentOf(id) {
 function accidentalOffset(acc) {
   return acc === "#" ? 1 : acc === "b" ? -1 : 0;
 }
+var TONIC_CACHE = /* @__PURE__ */ new Map();
+var OFFSET_CACHE = /* @__PURE__ */ new Map();
 function keyOffset(key) {
+  const cached = OFFSET_CACHE.get(key);
+  if (cached !== void 0) return cached;
   const body = /1\s*=\s*(.+)$/.exec(key)?.[1] ?? key;
   const m = /^\s*([#b♯♭]?)\s*([A-Ga-g])\s*([#b♯♭]?)/.exec(body);
-  if (!m) return 0;
+  if (!m) {
+    OFFSET_CACHE.set(key, 0);
+    return 0;
+  }
   const base = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
   const acc = (c) => c === "#" || c === "\u266F" ? 1 : c === "b" || c === "\u266D" ? -1 : 0;
   const off = (base[m[2].toLowerCase()] ?? 0) + acc(m[1]) + acc(m[3]);
-  return off > 6 ? off - 12 : off;
+  const out = off > 6 ? off - 12 : off;
+  OFFSET_CACHE.set(key, out);
+  return out;
 }
 function toMidi(degree, octave, key, accidental) {
   return 60 + MAJOR[degree - 1] + keyOffset(key) + octave * 12 + accidentalOffset(accidental);
@@ -224,11 +235,23 @@ function pitchMidi(p) {
   return 12 * (p.octave + 1) + NATURAL[p.step] + p.alter;
 }
 function keyTonic(key) {
+  const cached = TONIC_CACHE.get(key);
+  if (cached) return cached;
   const body = key.replace(/^\s*1\s*=\s*/, "");
   const m = /^\s*([#b♯♭]{0,2})([A-Ga-g])([#b♯♭]{0,2})\s*$/.exec(body);
-  if (!m) return { step: 0, alter: 0, octave: 4 };
+  if (!m) {
+    const fallback = { step: 0, alter: 0, octave: 4 };
+    TONIC_CACHE.set(key, fallback);
+    return fallback;
+  }
   const mark = m[1] || m[3];
-  return { step: LETTERS.indexOf(m[2].toUpperCase()), alter: /[#♯]/.test(mark) ? mark.length : /[b♭]/.test(mark) ? -mark.length : 0, octave: 4 };
+  const out = {
+    step: LETTERS.indexOf(m[2].toUpperCase()),
+    alter: /[#♯]/.test(mark) ? mark.length : /[b♭]/.test(mark) ? -mark.length : 0,
+    octave: 4
+  };
+  TONIC_CACHE.set(key, out);
+  return out;
 }
 function legacyPitch(degree, octave, key, accidental) {
   const step = (keyTonic(key).step + degree - 1) % 7;
@@ -663,8 +686,8 @@ function parseSingle(text2, modern = false) {
         }
         case "space": {
           const n = Number(v);
-          if (Number.isFinite(n) && n >= -10 && n <= 20) meta.letterSpacing = n;
-          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -10\u201320 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
+          if (Number.isFinite(n) && n >= -20 && n <= 20) meta.letterSpacing = n;
+          else errors.push(`\u5B57\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -20\u201320 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
           break;
         }
         case "linegap": {
@@ -1362,7 +1385,7 @@ function measureStaffInk(score2, glyph, mode) {
 }
 
 // src/v2/spacing.ts
-function balancedBreaks(units, available) {
+function balancedBreaks(units, available, compressionPenalty = 45) {
   const cost = new Array(units.length + 1).fill(Infinity);
   const next = new Array(units.length).fill(0);
   cost[units.length] = 0;
@@ -1378,7 +1401,7 @@ function balancedBreaks(units, available) {
       const ratio = ideal / budget;
       const ragged = (last || units[to].forced) && ratio < 0.6;
       const stretch = Math.max(0, 1 / ratio - 1);
-      const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch) + 45 * Math.pow(Math.max(0, ratio - 1), 2) + (last ? 0 : units[to].penalty ?? 0);
+      const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch) + compressionPenalty * Math.pow(Math.max(0, ratio - 1), 2) + (last ? 0 : units[to].penalty ?? 0);
       if (rowCost + cost[to + 1] < cost[from]) {
         cost[from] = rowCost + cost[to + 1];
         next[from] = to + 1;
@@ -1733,6 +1756,21 @@ function deriveGlyph(fontSize) {
     fontSize
   };
 }
+function inkExtent(glyphWidth, dot, dashes, g = GLYPH) {
+  const dots = dot > 0 ? (dot - 1) * g.dotGap + g.dotR : 0;
+  const dash = dashes > 0 ? (dashes - 1) * g.dashGap + g.dashW : 0;
+  return {
+    from: g.pad,
+    to: g.pad + glyphWidth + g.after + Math.max(dots, dash)
+  };
+}
+function clusterSpan(it, glyphWidth = GLYPH.nominalWidth, g = GLYPH) {
+  const ink = inkExtent(glyphWidth, it.dot ?? 0, it.dashes ?? 0, g);
+  const shift = (it.accW ?? 0) + (it.graceInk ?? 0);
+  const x = it.x + ink.from + shift;
+  const right = it.dashXs?.length ? it.dashXs[it.dashXs.length - 1] + g.dashW / 2 : it.x + ink.to + shift;
+  return { x, w: Math.max(it.x + ink.to + shift, right) - x };
+}
 function isBarrier(ev) {
   return ev.kind === "barline";
 }
@@ -1767,7 +1805,7 @@ function layoutScore(score2, opts) {
   const padTop = 20;
   const padBottom = 24;
   const padding = opts.padding ?? 40;
-  const maxX = Math.max(240, opts.contentWidth - padding * 2);
+  const maxX = Math.max(opts.fitWidth ? 1 : 240, opts.contentWidth - padding - (opts.rightPadding ?? padding));
   const meta = score2.meta;
   const title = opts.showTitle === false ? null : (() => {
     const y = padTop + 16;
@@ -1792,7 +1830,7 @@ function layoutScore(score2, opts) {
       // 行尾锚点在 contentWidth - padding（见下方 maxX / barX 的算法），
       // 谱头贴 0 / contentWidth 就会悬在音符外面
       leftX: padding,
-      rightX: opts.contentWidth - padding,
+      rightX: opts.contentWidth - (opts.rightPadding ?? padding),
       centerX: opts.contentWidth / 2,
       edit: {
         // 28 = 标题字号；+20 给图标留出与歌名的间距，别贴着字
@@ -1855,7 +1893,7 @@ function layoutScore(score2, opts) {
     const ink = staffInk?.get(ev.id);
     return ink ? ink.before + ink.after : ((ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0)) * glyph.graceW;
   };
-  const accWidthOf = (ev) => ev.kind === "note" ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? opts.staffKeySpace ?? 0 : 0) : 0;
+  const accWidthOf = (ev) => ev.kind === "note" ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? opts.fitWidth ? Math.min(opts.staffKeySpace ?? 0, maxX * 0.35) : opts.staffKeySpace ?? 0 : 0) : 0;
   const widths = score2.events.map((ev) => {
     let w = 0;
     let min = 0;
@@ -1874,12 +1912,13 @@ function layoutScore(score2, opts) {
     } else if (isBarrier(ev)) {
       const bar = ev;
       const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
-      w = (base + (bar.beatAfter ? 30 : 0)) * k + spacing;
+      w = Math.max((base * 0.4 + (bar.beatAfter ? 30 : 0)) * k, (base + (bar.beatAfter ? 30 : 0)) * k + spacing);
     } else if (ev.kind === "directive") {
-      w = (ev.type === "paren" ? 15 : 26) * k + spacing;
-    } else if (ev.kind === "jump") w = 26 * k + spacing;
+      w = Math.max(8 * k, (ev.type === "paren" ? 15 : 26) * k + spacing);
+    } else if (ev.kind === "jump") w = Math.max(16 * k, 26 * k + spacing);
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
+  const denseEndings = /* @__PURE__ */ new Set();
   const measureUnit = (from, to) => {
     const slice = widths.slice(from, to);
     const ideal = slice.reduce((sum, it) => sum + it.w, 0);
@@ -1888,21 +1927,36 @@ function layoutScore(score2, opts) {
     const tail = score2.events[to - 1];
     return {
       ideal,
-      min: Math.max(ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
+      min: Math.max(opts.fitWidth ? 0 : ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
       weight: Math.pow(Math.max(1, notes), 1.5),
       lead: previous?.kind === "barline" && previous.beatAfter ? METER_LEAD * k : 0,
-      forced: tail?.kind === "barline" && !!tail.breakAfter,
-      penalty: slurCrossedBars.has(to - 1) ? 2 : 0
+      forced: !opts.fitWidth && tail?.kind === "barline" && !!tail.breakAfter,
+      penalty: tail?.kind === "barline" ? (slurCrossedBars.has(to - 1) ? 2 : 0) + (denseEndings.has(to) ? 1.5 : 0) : opts.fitWidth ? 0.1 : 0
     };
   };
   const measureCuts = [0];
   for (let i = 0; i < widths.length; i++) {
     const ev = widths[i].ev;
     if (ev.kind !== "barline") continue;
-    const cut = ev.breakAfter ? i + 1 : ev.repeat === "start" || ev.volta ? i : i + 1;
+    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === "start" || ev.volta ? i : i + 1;
     if (cut > measureCuts[measureCuts.length - 1]) measureCuts.push(cut);
   }
   if (measureCuts[measureCuts.length - 1] !== widths.length) measureCuts.push(widths.length);
+  if (opts.fitWidth && !opts.positions) {
+    const barCuts = [...measureCuts];
+    for (let m = 0; m + 1 < barCuts.length; m++) {
+      const from = barCuts[m], to = barCuts[m + 1];
+      if (measureUnit(from, to).ideal <= maxX * 0.65) continue;
+      denseEndings.add(to);
+      for (let i = from; i + 1 < to; i++) {
+        const ev = widths[i].ev, next = widths[i + 1].ev;
+        if (ev.kind !== "note" && ev.kind !== "rest" || next.kind !== "note" && next.kind !== "rest") continue;
+        const group = groupById.get(groupOfEvent.get(ev.id) ?? "");
+        if (!group || group.memberIds[group.memberIds.length - 1] === ev.id) measureCuts.push(i + 1);
+      }
+    }
+    measureCuts.sort((a, b) => a - b);
+  }
   const flowUnits = measureCuts.slice(0, -1).map((from, i) => measureUnit(from, measureCuts[i + 1]));
   let starts = [0];
   let x = 0;
@@ -1913,7 +1967,7 @@ function layoutScore(score2, opts) {
   for (let i = 0; i < widths.length; i += 1) {
     x += widths[i].w;
     if (x > maxX) {
-      const cut = [lastBar, lastBarAny, lastGroupEnd].find((c) => c > start) ?? i + 1;
+      const cut = [lastBar, lastBarAny, lastGroupEnd].find((c) => c > start) ?? (opts.fitWidth ? Math.max(start + 1, i) : i + 1);
       starts.push(cut);
       start = cut;
       x = 0;
@@ -1923,7 +1977,7 @@ function layoutScore(score2, opts) {
       lastGroupEnd = -1;
     }
     const ev = widths[i].ev;
-    if (ev.kind === "barline" && ev.breakAfter && i + 1 < widths.length) {
+    if (ev.kind === "barline" && ev.breakAfter && !opts.fitWidth && i + 1 < widths.length) {
       if (starts[starts.length - 1] !== i + 1) starts.push(i + 1);
       start = i + 1;
       x = 0;
@@ -1945,7 +1999,7 @@ function layoutScore(score2, opts) {
     }
   }
   if (!opts.positions && flowUnits.length && flowUnits.every((u) => u.min <= maxX - (u.lead ?? 0))) {
-    starts = balancedBreaks(flowUnits, maxX).map((i) => measureCuts[i]);
+    starts = balancedBreaks(flowUnits, maxX, opts.fitWidth ? 8 : 45).map((i) => measureCuts[i]);
   }
   if (opts.positions) {
     starts = [0];
@@ -2032,7 +2086,7 @@ function layoutScore(score2, opts) {
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
     const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
     const lastBar2 = widths[to - 1];
-    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - (20 * k + spacing)) / 2 : 0;
+    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - Math.max(8 * k, 20 * k + spacing)) / 2 : 0;
     const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
     const advances = /* @__PURE__ */ new Map();
     if (!opts.positions) units.forEach((u, ui) => {
@@ -2183,6 +2237,10 @@ function layoutScore(score2, opts) {
     const inkLeft = (m) => m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
     const beamX0 = (m) => inkLeft(m) + 1.5;
     const beamX1 = (m) => inkLeft(m) + glyph.nominalWidth - 0.5;
+    const clusterRight = (m) => {
+      const s = clusterSpan(m, glyph.nominalWidth, glyph);
+      return s.x + s.w;
+    };
     for (const it of items) {
       if (it.kind !== "note" && it.kind !== "rest") continue;
       const gid = groupOfEvent.get(it.eventId);
@@ -2227,40 +2285,33 @@ function layoutScore(score2, opts) {
         }
       }
     }
+    positionDashes(items, glyph);
     const arcs = [];
-    const rightEdge = items.length ? items[items.length - 1].x + items[items.length - 1].w : padding;
     const hasMarks = (m) => !!m.tongue || !!m.techniques?.length || !!m.custom || !!m.staccato || !!m.fermata;
     const pushStub = (it, cutBefore, cutAfter) => {
-      const cx2 = it.x + Math.min(it.w - 4 * k, glyph.glyphRight) / 2 + 2 * k;
-      let x0;
-      let x1;
-      if (cutBefore && cutAfter) {
-        x0 = cx2 - 26 * k;
-        x1 = cx2 + 26 * k;
-      } else if (cutAfter) {
-        x0 = cx2;
-        x1 = Math.min(rightEdge, cx2 + 48 * k);
-      } else if (cutBefore) {
-        x0 = Math.max(padding, cx2 - 48 * k);
-        x1 = cx2;
-      } else {
-        return;
-      }
+      if (!cutBefore && !cutAfter) return;
+      const x0 = inkLeft(it);
+      const x1 = clusterRight(it);
       if (x1 - x0 < 10) return;
       arcs.push({
         x0,
         x1,
-        lift: hasMarks(it) ? 11 : 6,
+        lift: Math.min(hasMarks(it) ? 12 : 9, 7 + (x1 - x0) * 0.04),
         kind: "slur",
         octaveUp: it.octave ?? 0,
-        tight: !hasMarks(it)
+        tight: !hasMarks(it),
+        flat: true,
+        // 中间段（前后都断）两端都平；只有一侧断就只开那一侧
+        ...cutBefore ? { openStart: true } : {},
+        ...cutAfter ? { openEnd: true } : {}
       });
     };
     const pushArc = (a, b, chain2, kind) => {
       const fromRight = inkLeft(a) + glyph.nominalWidth;
       const toLeft = inkLeft(b);
+      const toRight = clusterRight(b);
       const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
-      const x1 = toLeft - fromRight >= 10 ? toLeft : inkLeft(b) + glyph.nominalWidth;
+      const x1 = toRight;
       const span = x1 - x0;
       if (span < 10) return;
       const tight = !chain2.some(hasMarks);
@@ -2311,7 +2362,13 @@ function layoutScore(score2, opts) {
         pushArc(it, target, [it, target], "tie");
       }
     }
-    positionDashes(items, glyph);
+    for (const t of tuplets) {
+      const marked = items.some(
+        (it) => (it.kind === "note" || it.kind === "rest") && it.x + it.w >= t.x0 && it.x <= t.x1 && hasMarks(it)
+      );
+      const crossed = arcs.some((a) => a.x0 <= t.x1 && a.x1 >= t.x0);
+      if (!marked && !crossed) t.low = true;
+    }
     const chain = [];
     const anchors = [];
     for (const it of items) {

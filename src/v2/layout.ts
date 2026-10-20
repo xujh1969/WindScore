@@ -294,6 +294,10 @@ export interface LayoutOptions {
   letterSpacing?: number;
   lineHeight?: number;
   padding?: number;
+  /** 自适应阅读可单独缩小右边距，保留五线谱左侧谱号空间。 */
+  rightPadding?: number;
+  /** 严格按容器宽度断行；普通编辑器保留原来的最小宽度。 */
+  fitWidth?: boolean;
   /** 五线谱预览为行内转调调号预留的宽度；简谱不设置。 */
   staffKeySpace?: number;
   /** Enable actual written staff accidental and grace ink spacing. */
@@ -546,7 +550,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const padTop = 20;
   const padBottom = 24;
   const padding = opts.padding ?? 40;
-  const maxX = Math.max(240, opts.contentWidth - padding * 2);
+  const maxX = Math.max(opts.fitWidth ? 1 : 240, opts.contentWidth - padding - (opts.rightPadding ?? padding));
 
   const meta = score.meta;
   const title: LayoutTitle | null =
@@ -578,7 +582,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
             // 行尾锚点在 contentWidth - padding（见下方 maxX / barX 的算法），
             // 谱头贴 0 / contentWidth 就会悬在音符外面
             leftX: padding,
-            rightX: opts.contentWidth - padding,
+            rightX: opts.contentWidth - (opts.rightPadding ?? padding),
             centerX: opts.contentWidth / 2,
             edit: {
               // 28 = 标题字号；+20 给图标留出与歌名的间距，别贴着字
@@ -653,7 +657,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     return ink ? ink.before + ink.after : ((ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0)) * glyph.graceW;
   };
   const accWidthOf = (ev: Event): number => ev.kind === 'note'
-    ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? opts.staffKeySpace ?? 0 : 0) : 0;
+    ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? (opts.fitWidth ? Math.min(opts.staffKeySpace ?? 0, maxX * .35) : opts.staffKeySpace ?? 0) : 0) : 0;
 
   const widths: { ev: Event; w: number; min: number }[] = score.events.map((ev) => {
     let w = 0;
@@ -680,14 +684,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     else if (isBarrier(ev)) {
       const bar = ev as BarlineEvent;
       const base = bar.style === 'final' ? 26 : bar.repeat ? 24 : 20;
-      w = (base + (bar.beatAfter ? 30 : 0)) * k + spacing;
+      w = Math.max((base * .4 + (bar.beatAfter ? 30 : 0)) * k, (base + (bar.beatAfter ? 30 : 0)) * k + spacing);
     } else if (ev.kind === 'directive') {
       // 括号记号画在音符旁边，比力度 / 标注文字窄（那两个画在谱行下方、独占一格）
-      w = (ev.type === 'paren' ? 15 : 26) * k + spacing;
-    } else if (ev.kind === 'jump') w = 26 * k + spacing;
+      w = Math.max(8 * k, (ev.type === 'paren' ? 15 : 26) * k + spacing);
+    } else if (ev.kind === 'jump') w = Math.max(16 * k, 26 * k + spacing);
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
 
+  const denseEndings = new Set<number>();
   const measureUnit = (from: number, to: number): SpacingUnit => {
     const slice = widths.slice(from, to);
     const ideal = slice.reduce((sum, it) => sum + it.w, 0);
@@ -695,21 +700,37 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const previous = score.events[from - 1];
     const tail = score.events[to - 1];
     return {
-      ideal, min: Math.max(ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
+      ideal, min: Math.max(opts.fitWidth ? 0 : ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
       weight: Math.pow(Math.max(1, notes), 1.5),
       lead: previous?.kind === 'barline' && previous.beatAfter ? METER_LEAD * k : 0,
-      forced: tail?.kind === 'barline' && !!tail.breakAfter,
-      penalty: slurCrossedBars.has(to - 1) ? 2 : 0,
+      forced: !opts.fitWidth && tail?.kind === 'barline' && !!tail.breakAfter,
+      penalty: tail?.kind === 'barline' ? (slurCrossedBars.has(to - 1) ? 2 : 0) + (denseEndings.has(to) ? 1.5 : 0) : opts.fitWidth ? .1 : 0,
     };
   };
   const measureCuts = [0];
   for (let i = 0; i < widths.length; i++) {
     const ev = widths[i].ev;
     if (ev.kind !== 'barline') continue;
-    const cut = ev.breakAfter ? i + 1 : ev.repeat === 'start' || ev.volta ? i : i + 1;
+    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === 'start' || ev.volta ? i : i + 1;
     if (cut > measureCuts[measureCuts.length - 1]) measureCuts.push(cut);
   }
   if (measureCuts[measureCuts.length - 1] !== widths.length) measureCuts.push(widths.length);
+  if (opts.fitWidth && !opts.positions) {
+    const barCuts = [...measureCuts];
+    for (let m = 0; m + 1 < barCuts.length; m++) {
+      const from = barCuts[m], to = barCuts[m + 1];
+      if (measureUnit(from, to).ideal <= maxX * .65) continue;
+      denseEndings.add(to);
+      // 密集小节按完整拍组参与全局断行，避免每行固定孤立一个小节。
+      for (let i = from; i + 1 < to; i++) {
+        const ev = widths[i].ev, next = widths[i + 1].ev;
+        if ((ev.kind !== 'note' && ev.kind !== 'rest') || (next.kind !== 'note' && next.kind !== 'rest')) continue;
+        const group = groupById.get(groupOfEvent.get(ev.id) ?? '');
+        if (!group || group.memberIds[group.memberIds.length - 1] === ev.id) measureCuts.push(i + 1);
+      }
+    }
+    measureCuts.sort((a, b) => a - b);
+  }
   const flowUnits = measureCuts.slice(0, -1).map((from, i) => measureUnit(from, measureCuts[i + 1]));
 
   // ── breakFlow：只在安全点断行（§7.3）──
@@ -726,7 +747,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     x += widths[i].w;
     if (x > maxX) {
       // 依次退让：不切断连线的小节线 → 任意小节线 → 拍内组边界 → 硬断
-      const cut = [lastBar, lastBarAny, lastGroupEnd].find((c) => c > start) ?? i + 1;
+      const cut = [lastBar, lastBarAny, lastGroupEnd].find((c) => c > start) ?? (opts.fitWidth ? Math.max(start + 1, i) : i + 1);
       starts.push(cut);
       start = cut;
       x = 0;
@@ -736,7 +757,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       lastGroupEnd = -1;
     }
     const ev = widths[i].ev;
-    if (ev.kind === 'barline' && ev.breakAfter && i + 1 < widths.length) {
+    if (ev.kind === 'barline' && ev.breakAfter && !opts.fitWidth && i + 1 < widths.length) {
       if (starts[starts.length - 1] !== i + 1) starts.push(i + 1);
       start = i + 1;
       x = 0;
@@ -763,7 +784,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   }
 
   if (!opts.positions && flowUnits.length && flowUnits.every(u => u.min <= maxX - (u.lead ?? 0))) {
-    starts = balancedBreaks(flowUnits, maxX).map(i => measureCuts[i]);
+    starts = balancedBreaks(flowUnits, maxX, opts.fitWidth ? 8 : 45).map(i => measureCuts[i]);
   }
   if (opts.positions) {
     starts = [0];
@@ -881,7 +902,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
     const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
     const lastBar = widths[to - 1];
-    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - (20 * k + spacing)) / 2 : 0;
+    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - Math.max(8 * k, 20 * k + spacing)) / 2 : 0;
     const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
     const advances = new Map<number, number>();
     if (!opts.positions) units.forEach((u, ui) => {

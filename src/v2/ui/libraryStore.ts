@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { pinyin } from 'pinyin-pro';
 import { DEFAULT_META, parseDsl } from '../dsl';
 import { currentBackend, readJson, writeJson } from './storeBackend';
 
@@ -123,14 +124,26 @@ export function sortLibrary(items: LibraryItem[]): LibraryItem[] {
   );
 }
 
-/** 名字或标题命中即中，不分大小写 */
+const normalizeSearch = (value: string) => value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f\s]/g, '');
+/** 弱引用随曲库条目回收，不将索引写入存储；改名或改标题时重新生成。 */
+const searchIndex = new WeakMap<LibraryItem, { name: string; title: string; terms: string[] }>();
+
+/** 名字或标题支持汉字、全拼和首字母检索，不分大小写与声调。 */
 export function searchLibrary(items: LibraryItem[], query: string): LibraryItem[] {
-  const q = query.trim().toLowerCase();
+  const q = normalizeSearch(query);
   if (!q) return items;
-  return items.filter(
-    (it) =>
-      it.name.toLowerCase().includes(q) || (it.meta.title ?? '').toLowerCase().includes(q),
-  );
+  return items.filter(it => {
+    const title = it.meta.title ?? '';
+    let cached = searchIndex.get(it);
+    if (!cached || cached.name !== it.name || cached.title !== title) {
+      const terms = [...new Set([it.name, title])].flatMap(text => [normalizeSearch(text),
+        normalizeSearch(pinyin(text, { toneType: 'none' })),
+        normalizeSearch(pinyin(text, { pattern: 'first', toneType: 'none' }))]);
+      cached = { name: it.name, title, terms };
+      searchIndex.set(it, cached);
+    }
+    return cached.terms.some(text => text.includes(q));
+  });
 }
 
 export function describeMeta(meta: LibraryMeta): string {

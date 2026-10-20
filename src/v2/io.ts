@@ -190,17 +190,28 @@ export async function saveBytesAsFile(
   if (isTauri()) {
     const dialog = await import('@tauri-apps/api/dialog');
     const { invoke } = await import('@tauri-apps/api/tauri');
+    const pickAt = performance.now();
     const path = await dialog.save({
       defaultPath: suggested,
       filters: [{ name: opts.label ?? 'WindScore 打包', extensions: [ext] }],
     });
     if (!path) return { ok: false, path: null };
+    const pickMs = performance.now() - pickAt;
+    const writeAt = performance.now();
+    let base64Ms = 0;
+    let ipcMs = 0;
     // 不用 fs.writeBinaryFile：它把整个字节按 **JSON 数字数组** 走 IPC，
     // 视频几百 MB 的 JSON 会把 WebView 主线程冻住几分钟（用户实测：选完
     // 保存位置就卡死）。改为分块 base64 → Rust 命令解码写盘，界面保持响应。
     const CHUNK = 3 * 1024 * 1024; // 3MB 原始字节 ≈ 4MB base64，一趟能扛住
-    const writeChunk = (data: Uint8Array, create: boolean, append: boolean): Promise<void> =>
-      invoke('write_file_chunk', { path, dataBase64: toBase64(data), create, append });
+    const writeChunk = async (data: Uint8Array, create: boolean, append: boolean): Promise<void> => {
+      const encodeAt = performance.now();
+      const dataBase64 = await toBase64(data);
+      base64Ms += performance.now() - encodeAt;
+      const ipcAt = performance.now();
+      await invoke('write_file_chunk', { path, dataBase64, create, append });
+      ipcMs += performance.now() - ipcAt;
+    };
     if (bytes.length === 0) {
       await writeChunk(new Uint8Array(0), true, false);
       return { ok: true, path };
@@ -212,7 +223,9 @@ export async function saveBytesAsFile(
       first = false;
       opts.onWriteProgress?.(end, bytes.length);
     }
-    return { ok: true, path };
+    const writeMs = performance.now() - writeAt;
+    console.info('[io] binary write timing ms', { bytes: bytes.length, base64: Math.round(base64Ms), ipcAndDisk: Math.round(ipcMs), write: Math.round(writeMs), pick: Math.round(pickMs) });
+    return { ok: true, path, ms: { serialize: base64Ms, write: writeMs, pick: pickMs } };
   }
 
   // 复制一份再交给 Blob：Uint8Array<ArrayBufferLike> 不是 BlobPart
@@ -226,14 +239,17 @@ export async function saveBytesAsFile(
   return { ok: true, path: null };
 }
 
-/** Uint8Array → base64（分块调用，别一次 btoa 几百 MB） */
-function toBase64(bytes: Uint8Array): string {
-  let out = '';
-  const STEP = 0x8000; // String.fromCharCode 一次喂太多会爆栈
-  for (let i = 0; i < bytes.length; i += STEP) {
-    out += String.fromCharCode(...bytes.subarray(i, i + STEP));
-  }
-  return btoa(out);
+/** Native asynchronous conversion avoids spreading millions of bytes into JS strings on the UI thread. */
+function toBase64(bytes: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = reader.result as string;
+      resolve(url.slice(url.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('文件编码失败'));
+    reader.readAsDataURL(new Blob([new Uint8Array(bytes)]));
+  });
 }
 
 /** 把一段文本直接存成文件（曲库导出用：手上只有文本，不一定有 Score 对象） */

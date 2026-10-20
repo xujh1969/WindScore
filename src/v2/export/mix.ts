@@ -27,7 +27,13 @@ export interface Mix {
 const SYNTH_GAIN = 0.22;
 
 function alloc(durationSec: number, sampleRate: number, channels: number): Mix {
+  // 守卫：坏数据（标定损坏、时长算出 NaN/Infinity）以前会变成
+  // 「Invalid array length」这类玄学错误，这里拦下来说人话。
+  if (!Number.isFinite(durationSec)) throw new Error(`混音时长异常（${durationSec}）：请检查对轨标定或重新保存这份谱`);
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0 || sampleRate > 384000) throw new Error(`音频采样率异常（${sampleRate}）：伴奏文件可能已损坏`);
   const length = Math.max(1, Math.round(durationSec * sampleRate));
+  // 3 小时 × 48kHz ≈ 5.2 亿样本，超过基本就是坏数据
+  if (length > 3 * 3600 * 192000) throw new Error(`音频太长（约 ${Math.round(durationSec / 60)} 分钟），无法离线混音`);
   return {
     channels: Array.from({ length: channels }, () => new Float32Array(length)),
     sampleRate,

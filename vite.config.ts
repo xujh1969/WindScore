@@ -13,7 +13,8 @@ function versionInject(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  base: mode === 'android' ? './' : '/',
   plugins: [react(), versionInject()],
   clearScreen: false,
   server: {
@@ -22,7 +23,7 @@ export default defineConfig({
   },
   build: {
     target: 'es2021',
-    outDir: 'dist',
+    outDir: mode === 'android' ? 'dist-android' : 'dist',
     // 多入口：落地页 + 简谱编辑 + 动态谱生成（对轨）+ 曲库管理 + 演奏
     // （共用同一个 SPA，靠 body[data-entry] 决定落在哪一屏）
     rollupOptions: {
@@ -36,4 +37,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

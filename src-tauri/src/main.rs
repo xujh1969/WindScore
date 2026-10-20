@@ -15,32 +15,69 @@ use std::path::PathBuf;
 ///   - 其后 append = true：追加。
 /// 字符串 IPC 比数字数组便宜一个数量级以上，且分块期间界面保持响应。
 #[tauri::command]
-fn write_file_chunk(path: String, data_base64: String, create: bool, append: bool) -> Result<(), String> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_base64.as_bytes())
-        .map_err(|e| format!("base64 解码失败：{e}"))?;
-    let path = PathBuf::from(&path);
-    if let Some(dir) = path.parent() {
-        // 目录由对话框保证存在，这里不主动建，避免误建错路径
-        if !dir.exists() {
-            return Err(format!("目录不存在：{}", dir.display()));
+async fn write_file_chunk(
+    path: String,
+    data_base64: String,
+    create: bool,
+    append: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_base64.as_bytes())
+            .map_err(|e| format!("base64 解码失败：{e}"))?;
+        let path = PathBuf::from(&path);
+        if let Some(dir) = path.parent() {
+            // 目录由对话框保证存在，这里不主动建，避免误建错路径
+            if !dir.exists() {
+                return Err(format!("目录不存在：{}", dir.display()));
+            }
         }
-    }
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create(create) // 首块：截断建文件
-        .append(append) // 后续块：追加
-        .truncate(create && !append)
-        .open(&path)
-        .map_err(|e| format!("打开文件失败（{}）：{e}", path.display()))?;
-    f.write_all(&bytes)
-        .map_err(|e| format!("写入失败（{}）：{e}", path.display()))?;
-    Ok(())
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(create) // 首块：截断建文件
+            .append(append) // 后续块：追加
+            .truncate(create && !append)
+            .open(&path)
+            .map_err(|e| format!("打开文件失败（{}）：{e}", path.display()))?;
+        f.write_all(&bytes)
+            .map_err(|e| format!("写入失败（{}）：{e}", path.display()))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("写入任务失败：{e}"))?
+}
+
+/// Keep live export timings available even when a release build has no developer console.
+#[tauri::command]
+async fn log_video_export(
+    app: tauri::AppHandle,
+    line: String,
+    reset: bool,
+) -> Result<String, String> {
+    let dir = app
+        .path_resolver()
+        .app_log_dir()
+        .ok_or("无法获取诊断日志目录")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("video-export-latest.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!reset)
+            .truncate(reset)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        writeln!(file, "{}", line).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![write_file_chunk])
+        .invoke_handler(tauri::generate_handler![write_file_chunk, log_video_export])
         .run(tauri::generate_context!())
         .expect("启动 WindScore 失败");
 }

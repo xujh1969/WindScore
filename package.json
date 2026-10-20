@@ -1,11 +1,12 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.2.75",
+  "version": "0.2.77",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:android": "tsc --noEmit && vite build --mode android && node scripts/check-android-assets.mjs dist-android",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",

@@ -223,7 +223,56 @@ function lineSlack(layout: LayoutResult): number {
   return layout.lineHeight * 0.5;
 }
 
-/** 视频一帧：整块画布底色 + 整份版面（纵向滚动 scrollY 像素）+ 播放头 + 进度条 */
+const videoBounds = new WeakMap<ExportLayoutResult, { left: number; right: number; top: number; bottom: number }[]>();
+function frameLineBounds(layout: ExportLayoutResult) {
+  let bounds = videoBounds.get(layout);
+  if (bounds) return bounds;
+  const pad = layout.lineHeight * 2;
+  bounds = layout.lines.map((line, index) => {
+    const staff = layout.staff?.lines[index];
+    const xs = line.items.flatMap(item => [item.x, item.x + item.w]);
+    const ys = [staff?.y ?? line.y];
+    if (staff) {
+      for (const symbol of staff.symbols) {
+        xs.push(symbol.x);
+        if ('y' in symbol) ys.push(symbol.y);
+        if ('beamEnd' in symbol && symbol.beamEnd !== undefined) ys.push(symbol.beamEnd);
+      }
+      for (const curve of layout.staff!.curves) if (curve.line === index) {
+        ys.push(curve.y0, curve.y1, curve.controlY0, curve.controlY1);
+        xs.push(curve.x0, curve.x1);
+      }
+      for (const mark of layout.staff!.marks) if (mark.line === index) ys.push(mark.y, mark.y + mark.height);
+    }
+    return { left: Math.min(...xs) - pad, right: Math.max(...xs) + pad, top: Math.min(...ys) - pad, bottom: Math.max(...ys) + pad };
+  });
+  for (const system of layout.systems ?? []) {
+    for (let index = system.from; index < system.to; index++) {
+      bounds[index].top = Math.min(bounds[index].top, system.top - pad);
+      bounds[index].bottom = Math.max(bounds[index].bottom, system.bottom + pad);
+    }
+  }
+  const groups = new Map<number, number[]>();
+  layout.lines.forEach((line, index) => {
+    const system = layout.staff?.lines[index]?.system ?? line.system;
+    if (system !== undefined) {
+      const indices = groups.get(system) ?? [];
+      indices.push(index);
+      groups.set(system, indices);
+    }
+  });
+  // Strip layouts retain staff system IDs but have no page-level systems array.
+  for (const indices of groups.values()) {
+    const all = indices.map(index => bounds![index]);
+    const group = { left: Math.min(...all.map(b => b.left)), right: Math.max(...all.map(b => b.right)),
+      top: Math.min(...all.map(b => b.top)), bottom: Math.max(...all.map(b => b.bottom)) };
+    for (const index of indices) bounds[index] = group;
+  }
+  videoBounds.set(layout, bounds);
+  return bounds;
+}
+
+/** 视频一帧：仅向绘制器提交与视口相交的行，保留额外行距容纳歌词和跨行记号。 */
 export function paintVideoFrame(
   ctx: CanvasRenderingContext2D,
   layout: ExportLayoutResult,
@@ -247,9 +296,12 @@ export function paintVideoFrame(
     ball?: BallDraw | null;
     showMeasureNumbers?: boolean;
     progress?: number;
+    /** Cached-frame repair rectangle, in score coordinates. */
+    redraw?: { left: number; right: number; top: number; bottom: number };
   },
 ): void {
   const { canvasW, canvasH, scale } = opts;
+  ctx.save();
   const scrollY = opts.scrollY ?? 0;
   const xOff = opts.offsetX ?? Math.max(0, (canvasW - layout.width * scale) / 2);
 
@@ -268,12 +320,28 @@ export function paintVideoFrame(
     showMeasureNumbers: opts.showMeasureNumbers ?? true,
     showTitleEdit: false,
   };
-  if (layout.staff) paintStaffLayout(ctx, layout.staff, opts.bg ? { ...theme, bg: opts.bg } : theme, paintOptions);
-  else paintLayout(ctx, layout, theme, paintOptions);
+  const left = Math.max((opts.scrollX ?? 0) / scale, opts.redraw?.left ?? -Infinity);
+  const right = Math.min((opts.scrollX ?? 0) / scale + canvasW / scale, opts.redraw?.right ?? Infinity);
+  const top = Math.max(scrollY / scale, opts.redraw?.top ?? -Infinity);
+  const bottom = Math.min(scrollY / scale + canvasH / scale, opts.redraw?.bottom ?? Infinity);
+  let from = layout.lines.length;
+  let to = 0;
+  frameLineBounds(layout).forEach((bounds, index) => {
+    const visible = horizontal ? bounds.right >= left && bounds.left <= right : bounds.bottom >= top && bounds.top <= bottom;
+    if (visible) { from = Math.min(from, index); to = Math.max(to, index + 1); }
+  });
+  // A system's bracket and band span all parts, including rows without notes.
+  for (const system of layout.systems ?? []) if (system.from < to && system.to > from) {
+    from = Math.min(from, system.from); to = Math.max(to, system.to);
+  }
+  if (layout.staff) paintStaffLayout(ctx, layout.staff, opts.bg ? { ...theme, bg: opts.bg } : theme,
+    { ...paintOptions, lineRange: { from, to } });
+  else paintLayout(ctx, { ...layout, lines: layout.lines.slice(from, to) }, theme, paintOptions);
 
   if (opts.progress !== undefined) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = theme.accent;
     ctx.fillRect(0, canvasH - 4, canvasW * Math.max(0, Math.min(1, opts.progress)), 4);
   }
+  ctx.restore();
 }

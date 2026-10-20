@@ -9,7 +9,7 @@ import type { Score } from "../types";
 import type { AudioStem } from "../audio";
 import { buildBallTrack, sampleBallTrail } from '../ball';
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
-import { activeHeadsAt, activeMainAt, type TimelineEntry } from "../timeline";
+import { activeMainAt, type TimelineEntry } from "../timeline";
 import { TICKS_PER_BEAT } from "../ticks";
 import { saveBytesAsFile, type SaveResult } from "../io";
 import { safeFileName } from "./tasks";
@@ -57,6 +57,7 @@ export interface VideoExportOptions extends ExportNotation {
   showTitle?: boolean;
   showMeasureNumbers?: boolean;
   onProgress?: (ratio: number) => void;
+  onStatus?: (status: string) => void;
   cancelled?: () => boolean;
 }
 
@@ -95,11 +96,23 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
   const clock = tickClock(opts);
   if (opts.audio === "stems") {
     if (!opts.tempo || opts.stems.length === 0) return null;
+    const offsetSec = tickToSec(opts.tempo, opts.fromTick);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      throw new Error(`导出时长算出异常值（${seconds}）：这首曲子的对轨标定可能已损坏，请到对轨界面重新标定后再导`);
+    }
+    if (!Number.isFinite(offsetSec)) {
+      throw new Error(`伴奏起点算出异常值（${offsetSec}）：这首曲子的对轨标定可能已损坏，请到对轨界面重新标定后再导`);
+    }
+    for (const s of opts.stems) {
+      if (!Number.isFinite(s.buffer.duration) || !Number.isFinite(s.buffer.sampleRate)) {
+        throw new Error(`有一个伴奏分轨的音频数据异常（时长 ${s.buffer.duration}s / 采样率 ${s.buffer.sampleRate}），请到对轨界面重新载入该文件`);
+      }
+    }
     return mixStems({
       stems: opts.stems,
       durationSec: seconds,
       sampleRate: opts.stems[0]!.buffer.sampleRate,
-      offsetSec: tickToSec(opts.tempo, opts.fromTick),
+      offsetSec,
     });
   }
   const notes = opts.timeline
@@ -157,8 +170,14 @@ export async function exportScoreVideoToFile(
     stems: opts.stems,
     audio: opts.audio,
   });
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`视频时长算出异常值（${seconds} 秒）：请检查谱面速度或对轨标定`);
+  }
   const frameCount = Math.max(1, Math.round(seconds * opts.fps));
+  opts.onStatus?.('正在准备谱面和混音');
+  const mixAt = performance.now();
   const audio = buildExportAudio(opts, seconds);
+  console.info('[video] mix ms', Math.round(performance.now() - mixAt));
   const ballLayout = strip?.layout ?? layout;
   const followPartId = ballLayout.lines.some(line => line.partId === opts.activePartId)
     ? opts.activePartId : ballLayout.lines[0]?.partId;
@@ -184,19 +203,31 @@ export async function exportScoreVideoToFile(
   if (!ctx) throw new Error("拿不到 2D 画布");
   const scale = geo.scale;
   const xOff = Math.max(0, (canvasW - layout.width * scale) / 2);
+  const partTimelines = new Map<string, TimelineEntry[]>();
+  for (const entry of showTl) {
+    const id = entry.partId ?? '';
+    const entries = partTimelines.get(id) ?? [];
+    entries.push(entry);
+    partTimelines.set(id, entries);
+  }
 
   const res = await exportVideoFast({
     canvas,
     fps: opts.fps,
     frameCount,
     audio,
-    ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    onStatus: opts.onStatus,
+    ...(opts.onProgress ? { onProgress: (ratio: number) => opts.onProgress!(ratio * 0.97) } : {}),
     ...(opts.cancelled ? { cancelled: opts.cancelled } : {}),
     draw: (i) => {
       // 离线渲染：滚动位置是 tick 的纯函数，不需要逐帧去「追」目标
       const tick = clock.tickAt(i / opts.fps);
       const ball = ballTrack ? sampleBallTrail(ballTrack, tick, opts.fromTick, ballTrail) : null;
       const act = activeMainAt(showTl, tick);
+      const playheads = [...partTimelines.values()].flatMap(entries => {
+        const active = activeMainAt(entries, tick);
+        return active ? [{ eventId: active.entry.eventId, frac: active.progress }] : [];
+      });
       if (strip && stripSize && stripRanges) {
         paintVideoFrame(ctx, strip.layout, stripTheme, {
           canvasW,
@@ -206,7 +237,7 @@ export async function exportScoreVideoToFile(
           playStyle: opts.playStyle ?? "head",
           ball,
           playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
-          playheads: activeHeadsAt(showTl, tick),
+          playheads,
           showMeasureNumbers: opts.showMeasureNumbers ?? true,
           progress: (i + 1) / frameCount,
         });
@@ -221,7 +252,7 @@ export async function exportScoreVideoToFile(
         playStyle: opts.playStyle ?? "head",
         ball,
         playhead: act ? { eventId: act.entry.eventId, frac: act.progress } : null,
-        playheads: activeHeadsAt(showTl, tick),
+        playheads,
         showMeasureNumbers: opts.showMeasureNumbers ?? true,
         progress: (i + 1) / frameCount,
       });
@@ -229,15 +260,18 @@ export async function exportScoreVideoToFile(
   });
   if (!res) return { ok: false, path: null, seconds, ext: "-", sizeMB: 0, codec: "-" };
 
+  opts.onStatus?.('请选择视频保存位置，随后写入文件');
   const saved = await saveBytesAsFile(res.bytes, `${safeFileName(opts.name)}.${res.ext}`, {
     ext: res.ext,
     mime: res.ext === "mp4" ? "video/mp4" : "video/webm",
     label: res.ext === "mp4" ? "MP4 视频" : "WebM 视频",
     // 写盘阶段也要有进度：视频几十上百 MB，写的时候不吭声会被当成卡死（用户实测）
     onWriteProgress: (done, total) => {
+      opts.onStatus?.('正在写入视频文件');
       opts.onProgress?.(0.97 + 0.03 * (done / Math.max(1, total)));
     },
   });
+  if (saved.ok) opts.onProgress?.(1);
   return {
     ...saved,
     seconds: res.seconds,

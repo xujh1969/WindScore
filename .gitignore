@@ -1,5 +1,9 @@
 node_modules
 dist
+dist-android
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/
 .DS_Store
 
 # 测试 / 诊断的临时产物
@@ -15,3 +19,8 @@ artifacts/
 Score/
 music/
 __pycache__/
+
+# 构建产物（msi / exe / apk）只留本机，不入库
+*.msi
+*.exe
+*.apk

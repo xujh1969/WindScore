@@ -3677,6 +3677,7 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
                       : '滚轮缩放 · 拖空白平移 · 拖节奏线整组平移'}
                   </span>
                   <AudioWaveform
+                    paused={exportOpen}
                     stems={stems}
                     tempo={audioTempo}
                     dark={dark}

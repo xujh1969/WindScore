@@ -10,7 +10,8 @@
 import {
   AudioBufferSource,
   BufferTarget,
-  CanvasSource,
+  VideoSample,
+  VideoSampleSource,
   Mp4OutputFormat,
   Output,
   WebMOutputFormat,
@@ -18,6 +19,7 @@ import {
   getFirstEncodableVideoCodec,
 } from "mediabunny";
 import type { Mix } from "./mix";
+import { isTauri } from '../io';
 
 export type VideoCodecId = "avc" | "vp9" | "vp8";
 export type AudioCodecId = "aac" | "opus";
@@ -66,6 +68,7 @@ export interface FastExportOptions {
   draw: (frameIndex: number) => void;
   bitrate?: number;
   onProgress?: (ratio: number) => void;
+  onStatus?: (status: string) => void;
   /** 返回 true 就地中止（不产出文件） */
   cancelled?: () => boolean;
 }
@@ -82,6 +85,9 @@ export interface FastExportResult {
 
 /** Float32Array 混合音轨 → 真正的 AudioBuffer（mediabunny 吃这个） */
 function toAudioBuffer(mix: Mix): AudioBuffer {
+  if (!Number.isFinite(mix.length) || mix.length <= 0) {
+    throw new Error(`音频缓冲长度异常（${mix.length}）：混音数据损坏，请检查对轨标定或伴奏文件`);
+  }
   const buf = new AudioBuffer({
     numberOfChannels: mix.channels.length,
     length: mix.length,
@@ -93,7 +99,7 @@ function toAudioBuffer(mix: Mix): AudioBuffer {
 
 /** 探一遍可用编解码器，交给 planCodecs 决策 */
 async function probe(width: number, height: number, fps: number, bitrate: number) {
-  const cfg = { width, height, framerate: fps, bitrate };
+  const cfg = { width, height, frameRate: fps, bitrate };
   const [avc, vp9, vp8, aac, opus] = await Promise.all([
     getFirstEncodableVideoCodec(["avc"], cfg),
     getFirstEncodableVideoCodec(["vp9"], cfg),
@@ -116,7 +122,19 @@ export async function exportVideoFast(opts: FastExportOptions): Promise<FastExpo
   const height = canvas.height;
   if (width % 2 || height % 2) throw new Error("画布宽高必须是偶数（H.264 要求）");
   const bitrate = opts.bitrate ?? estimateBitrate(width, height, fps);
-
+  const started = performance.now();
+  const nativeLog = isTauri() ? import('@tauri-apps/api/tauri') : null;
+  let logQueue: Promise<unknown> = Promise.resolve();
+  const diagnostic = (record: object, reset = false): Promise<unknown> => {
+    console.info('[video]', record);
+    if (nativeLog) logQueue = logQueue.then(async () => (await nativeLog).invoke('log_video_export', {
+      line: JSON.stringify({ at: new Date().toISOString(), ...record }), reset,
+    })).catch(error => console.debug('[video] diagnostic log unavailable', error));
+    return logQueue;
+  };
+  await diagnostic({ phase: 'start', width, height, fps, frameCount, bitrate, userAgent: navigator.userAgent,
+    visibility: document.visibilityState, audioSeconds: audio?.durationSec ?? 0 }, true);
+  opts.onStatus?.('正在检查视频编码器');
   const plan = planCodecs(await probe(width, height, fps, bitrate), audio !== null);
   if (!plan) {
     throw new Error(
@@ -126,19 +144,21 @@ export async function exportVideoFast(opts: FastExportOptions): Promise<FastExpo
     );
   }
 
+  const probeMs = performance.now() - started;
   const target = new BufferTarget();
   const output = new Output({
     format: plan.container === "mp4" ? new Mp4OutputFormat() : new WebMOutputFormat(),
     target,
   });
-  const videoSource = new CanvasSource(canvas, {
+  const videoSource = new VideoSampleSource({
     codec: plan.video,
     bitrate,
     keyFrameInterval: 2, // 每 2 秒一个关键帧：拖进度条时不至于卡住
     alpha: "discard", // 画布有 alpha 通道，H.264 不支持，丢掉
     latencyMode: "quality",
+    onEncoderConfig: config => { void diagnostic({ phase: 'encoder-config', config }); },
   });
-  output.addVideoTrack(videoSource);
+  output.addVideoTrack(videoSource, { frameRate: fps });
   const audioSource = audio
     ? new AudioBufferSource({ codec: plan.audio as AudioCodecId, bitrate: 160e3 })
     : null;
@@ -148,24 +168,60 @@ export async function exportVideoFast(opts: FastExportOptions): Promise<FastExpo
   // 「Output has not started.」（踩过一次）
   await output.start();
 
+  let drawMs = 0;
+  let captureMs = 0;
+  let encodeWaitMs = 0;
+  let audioMs = 0;
+  let progressAt = performance.now();
+  let statusAt = progressAt;
   try {
     // 声音只有一次 add，先做掉，编码器不用空等画面
+    opts.onStatus?.('正在编码音频');
+    const audioAt = performance.now();
     if (audioSource && audio) await audioSource.add(toAudioBuffer(audio));
+    audioMs = performance.now() - audioAt;
+    await diagnostic({ phase: 'audio-ready', audioMs, probeMs, codec: plan });
+    opts.onStatus?.(`正在绘制和编码 ${plan.container.toUpperCase()}（自动选择编码器）`);
     for (let i = 0; i < frameCount; i += 1) {
       if (opts.cancelled?.()) {
-        output.cancel();
+        await output.cancel();
+        await diagnostic({ phase: 'cancelled', frames: i, frameCount, drawMs, captureMs, encodeWaitMs, audioMs, elapsedMs: performance.now() - started });
         return null;
       }
+      const drawAt = performance.now();
       draw(i);
+      drawMs += performance.now() - drawAt;
       // 时间戳由我们给：第 i 帧就是第 i/fps 秒，与实际耗时无关
-      await videoSource.add(i / fps, 1 / fps);
-      if (i % 5 === 0 || i === frameCount - 1) opts.onProgress?.((i + 1) / frameCount);
+      const captureAt = performance.now();
+      const sample = new VideoSample(canvas, { timestamp: i / fps, duration: 1 / fps });
+      captureMs += performance.now() - captureAt;
+      const encodeAt = performance.now();
+      try { await videoSource.add(sample); } finally { sample.close(); }
+      encodeWaitMs += performance.now() - encodeAt;
+      if (performance.now() - progressAt >= 150 || i === frameCount - 1) {
+        opts.onProgress?.((i + 1) / frameCount);
+        progressAt = performance.now();
+      }
+      if (performance.now() - statusAt >= 1000 || i === frameCount - 1) {
+        const frames = i + 1;
+        const elapsed = performance.now() - started - probeMs - audioMs;
+        opts.onStatus?.(`${(frames * 1000 / Math.max(1, elapsed)).toFixed(1)}帧/秒 · 绘制${(drawMs / frames).toFixed(1)}ms · 取帧${(captureMs / frames).toFixed(1)}ms · 编码${(encodeWaitMs / frames).toFixed(1)}ms · ${frames}/${frameCount}帧`);
+        void diagnostic({ phase: 'progress', frames, frameCount, drawMs, captureMs, encodeWaitMs, elapsedMs: elapsed,
+          visibility: document.visibilityState });
+        statusAt = performance.now();
+      }
     }
     videoSource.close();
     audioSource?.close();
+    opts.onStatus?.('正在完成视频封装');
+    const finalizeAt = performance.now();
     await output.finalize();
+    await diagnostic({ phase: 'complete', probe: Math.round(probeMs), audio: Math.round(audioMs), draw: Math.round(drawMs),
+      capture: Math.round(captureMs), encodeWait: Math.round(encodeWaitMs), finalize: Math.round(performance.now() - finalizeAt),
+      total: Math.round(performance.now() - started), frames: frameCount, width, height, codec: plan });
   } catch (e) {
-    output.cancel();
+    await output.cancel();
+    await diagnostic({ phase: 'error', message: String(e), drawMs, encodeWaitMs, audioMs });
     throw e;
   }
 

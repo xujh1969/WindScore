@@ -37,6 +37,7 @@ import {
 } from './storeBackend';
 import { configureLibraryLocation } from './storeInit';
 import { pickAndConnectFolder, reconnectFolder } from './storeInit';
+import { IS_ANDROID_APP } from '../platform';
 
 interface Props {
   /** 点一首 = 进**播放界面**（只放不编） */
@@ -377,7 +378,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
                 </span>
               ) : (
                 <span className="v2-lib-actions">
-                  {readOnly ? null : (
+                  {readOnly || IS_ANDROID_APP ? null : (
                     <>
                       <button
                         className="v2-btn"

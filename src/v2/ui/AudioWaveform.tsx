@@ -25,6 +25,8 @@ export interface WaveStem {
 }
 
 interface Props {
+  /** Export modal covers this view; avoid competing with offline video encoding. */
+  paused?: boolean;
   stems: WaveStem[];
   tempo: TempoMap;
   /** 标定网格的 BPM / 相位（音频拍 k 的时刻 = gridPhase + k × 60/gridBpm） */
@@ -164,6 +166,7 @@ function computePeaks(buffer: AudioBuffer, bins: number): { mins: Float32Array; 
 }
 
 export function AudioWaveform({
+  paused = false,
   stems,
   gridBpm,
   gridPhase,
@@ -288,6 +291,7 @@ export function AudioWaveform({
 
   // 绘制循环：播放头要动，索性每帧重画（画布很小，代价可忽略）
   useEffect(() => {
+    if (paused) return;
     let raf = 0;
     const loop = () => {
       draw();

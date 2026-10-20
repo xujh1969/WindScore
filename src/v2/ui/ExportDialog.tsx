@@ -295,6 +295,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         showMeasureNumbers: showBars,
         showTitle,
         onProgress: setProgress,
+        onStatus: setNote,
         cancelled: () => cancelRef.current,
       });
       if (cancelRef.current || !res.ok) return '已取消';

@@ -80,4 +80,14 @@
       </footer>
     </main>
   </body>
+  <!--
+    安卓 App（WebView 壳，域名 appassets.androidplatform.net）里不提供编辑与对轨，
+    把这两个入口藏掉；桌面 / 浏览器域名不受影响。
+  -->
+  <script>
+    if (location.hostname === 'appassets.androidplatform.net') {
+      document.querySelectorAll('a[href="./editor.html"], a[href="./align.html"]')
+        .forEach((a) => (a.style.display = 'none'));
+    }
+  </script>
 </html>

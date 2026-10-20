@@ -24,3 +24,6 @@ __pycache__/
 *.msi
 *.exe
 *.apk
+
+# 签名凭据：只留本机，绝不入库（丢了可以用 keytool 重新生成，但包名一致即可继续更新）
+android/windscore.keystore

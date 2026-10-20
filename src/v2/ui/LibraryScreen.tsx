@@ -232,6 +232,14 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
               更改位置…
             </button>
           </>
+        ) : IS_ANDROID_APP ? (
+          // 安卓 App：没有文件夹模式，曲库固定存本机（IndexedDB），照常可用
+          <span
+            className="v2-lib-store"
+            title="曲库存在本机 App 内。卸载 App 会清空——重要曲子请用「打包」导出 .wspack 备份"
+          >
+            📱 曲库存本机 App 内
+          </span>
         ) : storePending ? (
           <button className="v2-btn" onClick={() => void reconnectFolder()}>
             重新连接曲库文件夹

@@ -123,6 +123,7 @@ import { ToastView, useToast } from './toast';
 import { LibrarySetupDialog } from './LibrarySetupDialog';
 import { initStore } from './storeInit';
 import { defaultLibraryPath, isLibraryConfigured, onStoreBackendChange } from './storeBackend';
+import { IS_ANDROID_APP } from '../platform';
 import { isTauri } from '../io';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
@@ -545,17 +546,18 @@ export function EditorApp({ entry = 'app' }: { entry?: Entry }) {
     void initStore().then(() => {
       storeReadyRef.current = true;
       setStoreReady(true);
-      setSetupOpen(!isLibraryConfigured());
+      // 安卓 App 没有文件夹模式，曲库固定走本机存储，不算「未配置」
+      setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
     });
     const recheck = (): void => {
-      if (storeReadyRef.current) setSetupOpen(!isLibraryConfigured());
+      if (storeReadyRef.current) setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
     };
     return onStoreBackendChange(recheck);
   }, []);
   useEffect(() => {
     // 进曲库管理 / 演奏首页时再查一次（配置好之前每次进入都提醒）
     if ((mode === 'discover' || mode === 'library') && storeReadyRef.current) {
-      setSetupOpen(!isLibraryConfigured());
+      setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
     }
   }, [mode, storeReady]);
   /**

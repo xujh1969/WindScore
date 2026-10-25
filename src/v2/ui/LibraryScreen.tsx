@@ -35,9 +35,13 @@ import {
   libraryRootPath,
   onStoreBackendChange,
 } from './storeBackend';
-import { configureLibraryLocation } from './storeInit';
+import { configureLibraryLocation, initStore } from './storeInit';
+import { isPickCancelled } from './storeBackend';
 import { pickAndConnectFolder, reconnectFolder } from './storeInit';
+import { isBankFile, loadSavedBanks, type BankInfo } from './instrumentBank';
+import { BankManagerDialog } from './BankManagerDialog';
 import { IS_ANDROID_APP } from '../platform';
+import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
   /** 点一首 = 进**播放界面**（只放不编） */
@@ -64,9 +68,12 @@ interface Props {
   readOnly?: boolean;
   /** play.html 的只读模式：点左上角回到动态谱首页 */
   onBackHome?: () => void;
+  /** 深浅主题：月亮开关就放在曲库页头 */
+  dark: boolean;
+  onDark: (dark: boolean) => void;
 }
 
-export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly, onBackHome }: Props) {
+export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly, onBackHome, dark, onDark }: Props) {
   /** 订阅式曲库：水合完成 / 任何写入（包括别的页面改的）都会让这里重读 */
   const items = useLibraryItems();
   // 后端状态（连接 / 待授权）变化时重渲染，让存储位置的徽标跟上
@@ -78,8 +85,20 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
   const [renameValue, setRenameValue] = useState('');
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 音色包管理弹窗：装了哪些包 / 移除 / 导入，都收在这一个界面里，不占曲库列表 */
+  const [bankOpen, setBankOpen] = useState(false);
   const packRef = useRef<HTMLInputElement>(null);
   const jpsRef = useRef<HTMLInputElement>(null);
+  /** 已导入的音色包（.wsbank）：音色下拉里多出来的那些音色就是它们给的 */
+  const [banks, setBanks] = useState<BankInfo[]>([]);
+  useEffect(() => {
+    // 启动时把已导入的包登记回运行时；**等 initStore 探测完存储后端再读**，
+    // 否则桌面端会走 local 兜底读到空索引（与 EditorApp 同一个坑，0.3.2 修）
+    void initStore()
+      .then(() => loadSavedBanks())
+      .then((list) => setBanks(list))
+      .catch(() => undefined);
+  }, []);
 
 
   const visible = useMemo(() => searchLibrary(items, query), [items, query]);
@@ -119,6 +138,11 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
     const bad: string[] = [];
     for (const f of Array.from(files)) {
       try {
+        // 音色包走「音色列表」弹窗的独立导入（0.3.4 起入口分开，别在这混着收）
+        if (isBankFile(f.name)) {
+          bad.push(`${f.name}（音色包请到「音色列表」里导入）`);
+          continue;
+        }
         const b = await readPack(new Uint8Array(await f.arrayBuffer()));
         const item = importLibrary(b.name, b.text);
         if (!item) {
@@ -226,7 +250,10 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
               onClick={() => {
                 configureLibraryLocation()
                   .then(() => onNotify('曲库位置已更改，原曲库已迁到新位置'))
-                  .catch((e) => onNotify(`没能更改位置：${(e as Error).message}`));
+                  .catch((e) => {
+                    // 用户点「取消」不是故障，别弹提示
+                    if (!isPickCancelled(e)) onNotify(`没能更改位置：${(e as Error).message}`);
+                  });
               }}
             >
               更改位置…
@@ -252,7 +279,10 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
             onClick={() => {
               pickAndConnectFolder()
                 .then(() => onNotify('曲库已放入文件夹——以后迁移只需拷贝它'))
-                .catch((e) => onNotify(`没能连接文件夹：${(e as Error).message}`));
+                .catch((e) => {
+                  // 用户点「取消」不是故障，别弹提示
+                  if (!isPickCancelled(e)) onNotify(`没能连接文件夹：${(e as Error).message}`);
+                });
             }}
           >
             把曲库放进文件夹
@@ -270,6 +300,13 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
             </button>
             <button
               className="v2-btn"
+              title={`查看已装的音色包，可在这里导入 / 删除${banks.length ? `（已装 ${banks.length} 个）` : ''}`}
+              onClick={() => setBankOpen(true)}
+            >
+              音色列表{banks.length > 0 ? `（${banks.length}）` : ''}
+            </button>
+            <button
+              className="v2-btn"
               title="只收录 .jps 谱面（不含伴奏与标定）"
               onClick={() => jpsRef.current?.click()}
             >
@@ -280,7 +317,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
         <input
           ref={packRef}
           type="file"
-          accept=".wspack,.zip"
+          accept=".wspack,.zip,.wsbank"
           multiple
           hidden
           onChange={(e) => {
@@ -299,12 +336,18 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
             e.target.value = '';
           }}
         />
+        {/* 深浅主题月亮：统一放页面右上角（所有页面同一个位置，好找） */}
+        <ThemeToggle dark={dark} onChange={onDark} />
       </header>
 
       {msg ? (
         <p className="v2-hint v2-lib-msg" role="status">
           {msg}
         </p>
+      ) : null}
+
+      {bankOpen ? (
+        <BankManagerDialog banks={banks} onBanks={setBanks} onNotify={onNotify} onClose={() => setBankOpen(false)} />
       ) : null}
 
       <div className="v2-lib-list">

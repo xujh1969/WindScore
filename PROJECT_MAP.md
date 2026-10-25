@@ -29,7 +29,7 @@
 
 内核数据为 `Score`：有序 `events`、拍内组 `groups` 和元数据。内核尽量不依赖 DOM，便于 Node 测试。
 
-- `types.ts`：谱面、音符、休止符、小节线、跳转标记和拍内组的数据模型；每拍 48 ticks。
+- `types.ts`：谱面、音符、休止符、小节线、跳转标记和拍内组的数据模型；每拍 6720 ticks（=2^6×3×5×7，能精确表达 5/6/7 连音）。
 - `dsl.ts`：`.jps` 文本的解析与序列化，是谱面文件格式的唯一入口。
 - `lyrics.ts`：歌词行增删改名/关联、逐音附着与文本行序列化，中文词句逐字插入、补空位顺延（容量不足保留原谱）；`ui/TrackDialog.tsx` 创建演奏声部或关联歌词行，`ui/LyricCell.tsx` 与 `ScoreCanvas` 在谱面提供输入法完成选字后分格的输入。`PartInfo.lyricNames` 保存行名，文字仍在 `NoteEvent.lyrics` 中，歌词不进入播放时间线。歌词基础字号 16、段间距 24 同步用于画布输入框、布局、绘制和导出。
 - `ticks.ts`、`validate.ts`：时值换算和谱面结构/不变量检查。
@@ -39,6 +39,8 @@
 - `timeline.ts`、`tempo.ts`、`clock.ts`：把事件转为演奏时间线，处理调号、转调、恒速/变速映射和播放时钟。
 - `expand.ts`：把反复结构派生成线性谱，供播放与导出使用；编辑仍针对原谱。
 - `audio.ts`、`beat.ts`、`mp3.ts`：合成/伴奏播放、音频 BPM 与入口估算、WAV 转 MP3。
+- `timbre.ts`：钢琴音色的**唯一来源**——泛音列各自独立衰减、槌击噪声、非谐性、音区滤波与力度层；纯数值渲染器，实时播放（`audio.ts`）与离线导出（`export/mix.ts`）跑的是同一份代码。
+- `metronome.ts`：节拍器——拍号强弱、拍内节奏型、click 采样与击打点排程；纯计算层可在 Node 测试，引擎层自带 AudioContext，导出时由 `export/mix.ts` 纯数值叠加。
 - `beatTracker.ts`、`beatClient.ts`、`beat.worker.ts`：多速度候选与动态规划逐拍跟踪，分轨选择和可取消的全曲 Worker 分析。自动候选应用后以 `tempoDraft.beatTimes` 驱动波形、吸附与播放；独立模型 CLI 的后续约定见 `docs/beat-analyzer-cli-contract.md`。
 - `pack.ts`：ZIP store 读写；业务包格式与 `.wspack` 约定在 `ui/packBundle.ts`。
 

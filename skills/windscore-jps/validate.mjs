@@ -2,36 +2,45 @@
 import { readFileSync } from "node:fs";
 
 // src/v2/ticks.ts
-var TICKS_PER_BEAT = 48;
+var TICKS_PER_BEAT = 6720;
+var PX_PER_BEAT_DEFAULT = 62.4;
 var DURATION_TICKS = {
-  whole: 192,
-  half: 96,
-  quarter: 48,
-  eighth: 24,
-  sixteenth: 12,
-  thirtySecond: 6,
+  whole: 26880,
+  half: 13440,
+  quarter: 6720,
+  eighth: 3360,
+  sixteenth: 1680,
+  thirtySecond: 840,
   /** 1/3 拍，三连音成员 */
-  tripletThird: 16,
+  tripletThird: 2240,
+  /** 1/5 拍，五连音成员 */
+  quintupletFifth: 1344,
   /** 1/6 拍，六连音成员 */
-  sextupletSixth: 8
+  sextupletSixth: 1120,
+  /** 1/7 拍，七连音成员 */
+  septupletSeventh: 960
 };
 var DIVISION_TICKS = {
-  1: 48,
-  2: 24,
-  3: 16,
-  4: 12,
-  6: 8,
-  8: 6
+  1: 6720,
+  2: 3360,
+  3: 2240,
+  4: 1680,
+  5: 1344,
+  6: 1120,
+  7: 960,
+  8: 840
 };
 var TICK_DIVISIONS = {
-  48: 1,
-  24: 2,
-  16: 3,
-  12: 4,
-  8: 6,
-  6: 8
+  6720: 1,
+  3360: 2,
+  2240: 3,
+  1680: 4,
+  1344: 5,
+  1120: 6,
+  960: 7,
+  840: 8
 };
-var BASE_DURATIONS = [192, 96, 48, 24, 12, 6];
+var BASE_DURATIONS = [26880, 13440, 6720, 3360, 1680, 840];
 function withDots(base, dots) {
   if (dots === 0) return base;
   return Math.round(base * (dots === 1 ? 1.5 : 1.75));
@@ -42,7 +51,9 @@ var LEGAL_TICKS = (() => {
     for (const d of [0, 1, 2]) set.add(withDots(b, d));
   }
   set.add(DURATION_TICKS.tripletThird);
+  set.add(DURATION_TICKS.quintupletFifth);
   set.add(DURATION_TICKS.sextupletSixth);
+  set.add(DURATION_TICKS.septupletSeventh);
   return [...set].sort((a, b) => a - b);
 })();
 var LEGAL_SET = new Set(LEGAL_TICKS);
@@ -188,7 +199,7 @@ function meterAt(score2, index) {
   return beat;
 }
 function groupTicks(beat) {
-  return /^(6|9|12)\/8$/.test(beat) ? 72 : 48;
+  return /^(6|9|12)\/8$/.test(beat) ? TICKS_PER_BEAT * 1.5 : TICKS_PER_BEAT;
 }
 
 // src/v2/pitch.ts
@@ -298,7 +309,8 @@ function normalizeKey(key) {
 }
 
 // src/v2/types.ts
-var TICKS_PER_BEAT2 = 48;
+var DEFAULT_FONT_SIZE = 24;
+var DEFAULT_LETTER_SPACING = -10;
 function isTimed(e) {
   return e.kind === "note" || e.kind === "rest";
 }
@@ -606,10 +618,11 @@ function parseDsl(text2) {
 function normalizeModern(text2) {
   return text2.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词(?:线)?[1-6]:[^\n]*$)/m).map((segment) => {
     if (segment.trim().startsWith("@") || segment.trim().startsWith("//") || /^歌词(?:线)?[1-6]:/.test(segment.trim())) return segment;
-    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before, note, slashes) => `${before}${note}/${2 ** slashes.length}`).replace(/<3:\s*([^<>]+)>/g, (full, body) => {
+    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before, note, slashes) => `${before}${note}/${2 ** slashes.length}`).replace(/<(\d+):\s*([^<>]+)>/g, (full, numStr, body) => {
+      const n = Number(numStr);
       const tokens = body.trim().split(/\s+/);
-      if (tokens.length !== 3 || !tokens.every((t) => /^[#b♯♭♮]?[0-7][v^]*[!=>@tkVrfdmwsxqh]*$/.test(t))) return full;
-      return `<3: ${tokens.map((t) => t.replace(/^([#b♯♭♮]?[0-7][v^]*)/, "$1/3")).join(" ")}>`;
+      if (n < 2 || tokens.length !== n || !tokens.every((t) => /^[#b♯♭♮]?[0-7][v^]*[!=>@tkVrfdmwsxqh]*$/.test(t))) return full;
+      return `<${n}: ${tokens.map((t) => t.replace(/^([#b♯♭♮]?[0-7][v^]*)/, `$1/${n}`)).join(" ")}>`;
     });
   }).join("");
 }
@@ -856,7 +869,7 @@ function parseSingle(text2, modern = false) {
     currentGroup.totalTicks = sum;
     if (modern) {
       const maxTicks = !currentGroup.tuplet ? groupTicks(currentBeat) : TICKS_PER_BEAT;
-      if (sum > maxTicks) errors.push(`\u62CD\u7EC4\u65F6\u503C\u8D85\u8FC7 ${maxTicks / TICKS_PER_BEAT} \u62CD\uFF1B\u4E09\u8FDE\u97F3\u7701\u5199\u5FC5\u987B\u662F <3: 1 2 3>\uFF0C\u5176\u4ED6\u60C5\u51B5\u8BF7\u660E\u786E\u6BCF\u97F3\u65F6\u503C`);
+      if (sum > maxTicks) errors.push(`\u62CD\u7EC4\u65F6\u503C\u8D85\u8FC7 ${maxTicks / TICKS_PER_BEAT} \u62CD\uFF1B${currentGroup.tuplet ?? ""} \u8FDE\u97F3\u7701\u5199\u5FC5\u987B\u662F <${currentGroup.tuplet ?? 3}: 1 2 3>\uFF0C\u5176\u4ED6\u60C5\u51B5\u8BF7\u660E\u786E\u6BCF\u97F3\u65F6\u503C`);
       if (currentGroup.tuplet && currentGroup.memberIds.length !== currentGroup.tuplet) errors.push(`${currentGroup.tuplet} \u8FDE\u97F3\u9700\u8981 ${currentGroup.tuplet} \u4E2A\u6210\u5458`);
     }
     currentGroup = null;
@@ -1118,23 +1131,19 @@ function parseSingle(text2, modern = false) {
 function renderDuration(ticks, dot) {
   const dots = dot ?? 0;
   const factor = dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75;
-  const undotted = ticks / factor;
-  if (!Number.isInteger(undotted)) {
-    throw new Error(`tick ${ticks} \u4E0E\u9644\u70B9\u6570 ${dots} \u4E0D\u81EA\u6D3D\uFF0C\u65E0\u6CD5\u8FD8\u539F\u5199\u6CD5`);
+  const maxDashes = Math.floor(ticks / TICKS_PER_BEAT);
+  for (let d = 0; d <= maxDashes; d++) {
+    const rest = ticks - d * TICKS_PER_BEAT;
+    const base = rest / factor;
+    if (base <= 0 || base > TICKS_PER_BEAT) continue;
+    if (!Number.isInteger(base)) continue;
+    const div = TICK_DIVISIONS[base];
+    if (div === void 0) continue;
+    let s = dots === 1 ? "." : dots === 2 ? ".." : "";
+    if (div !== 1) s += `/${div}`;
+    return s + "-".repeat(d);
   }
-  let base = undotted;
-  let dashes = 0;
-  while (base > TICKS_PER_BEAT) {
-    base -= TICKS_PER_BEAT;
-    dashes += 1;
-  }
-  const div = TICK_DIVISIONS[base];
-  if (div === void 0) {
-    throw new Error(`tick ${ticks}\uFF08\u53BB\u9644\u70B9\u540E ${base}\uFF09\u6CA1\u6709\u5BF9\u5E94\u7684\u9664\u6CD5\u8BB0\u53F7\uFF0C\u65E0\u6CD5\u65E0\u635F\u8FD8\u539F`);
-  }
-  let s = dots === 1 ? "." : dots === 2 ? ".." : "";
-  if (div !== 1) s += `/${div}`;
-  return s + "-".repeat(dashes);
+  throw new Error(`tick ${ticks}\uFF08\u9644\u70B9\u6570 ${dots}\uFF09\u6CA1\u6709\u5BF9\u5E94\u7684\u5199\u6CD5\uFF0C\u65E0\u6CD5\u65E0\u635F\u8FD8\u539F`);
 }
 function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? "/1" : "");
@@ -1256,7 +1265,7 @@ function serializeSingle(score2) {
           const post = (slurEndsAt.get(mi) ?? []).length > 0 ? ")" : "";
           const dyn = m.kind === "note" ? [m.dynamic, m.hairpinTo ? void 0 : m.hairpin].filter(Boolean).join(" ") : "";
           const kc = m.kind === "note" && m.keyChange ? `\u8F6C${m.keyChange} ` : "";
-          return `${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(m, tieOut(m), score2.format === 3, score2.format === 3 && g.tuplet === 3)}${post}${rangeEnd(m)}`;
+          return `${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(m, tieOut(m), score2.format === 3, score2.format === 3 && g.tuplet != null)}${post}${rangeEnd(m)}`;
         }).join(" ");
         out.push(`<${g.tuplet ? `${g.tuplet}: ` : ""}${inner}>`);
         members.forEach((m) => emitted.add(m.id));
@@ -1524,7 +1533,7 @@ function layoutEnsemble(score2, opts, layoutSingle) {
         const lyric = Math.max(0, ...(item.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
         return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k) + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));
-      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? 1.3) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
+      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === "barline" && e.tick > 0).map((e) => e.item.w));
     const close = Math.max(x, 60 * k - barW);
@@ -1706,14 +1715,14 @@ var GLYPH = {
   accW: 9,
   octaveStep: 7,
   octaveBase: 17,
-  octaveClear: 7,
-  beamLine: 1.6,
-  beamTop: 15,
-  beamStep: 5.5,
+  octaveClear: 5,
+  beamLine: 1.1,
+  beamTop: 10,
+  beamStep: 3,
   barHalf: 21,
   arcBase: 24,
   arcTieBase: 19,
-  selHalfH: 14,
+  selHalfH: 12,
   caretHalf: 16,
   markTop: 44,
   tupletDrop: 27,
@@ -1779,6 +1788,11 @@ function beatsPerMeasureOf(beat) {
   if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
   return n * (4 / d);
 }
+function barlineWidthOf(bar, k, spacing) {
+  const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
+  const extra = bar.beatAfter ? 30 : 0;
+  return Math.max((base * 0.4 + extra) * k, (base + extra) * k + Math.max(0, spacing));
+}
 function dashCountOf(ticks, dot) {
   const factor = dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75;
   let base = ticks / factor;
@@ -1793,14 +1807,14 @@ function dashCountOf(ticks, dot) {
 var METER_LEAD = 30;
 function layoutScore(score2, opts) {
   if (score2.parts?.length) return layoutEnsemble(score2, opts, layoutScore);
-  const unit = opts.unit ?? 1.3;
-  const fontSize = opts.fontSize ?? score2.meta.fontSize ?? 21;
+  const unit = opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT;
+  const fontSize = opts.fontSize ?? score2.meta.fontSize ?? DEFAULT_FONT_SIZE;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
-  const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? 0;
+  const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
   const verses = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
   const lyricBottom = (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 64 : 44) + verses * 24;
-  const lineGap = score2.meta.lineGap ?? 0;
+  const lineGap = opts.lineGap ?? score2.meta.lineGap ?? 0;
   const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 24 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
   const padTop = 20;
   const padBottom = 24;
@@ -1909,11 +1923,8 @@ function layoutScore(score2, opts) {
         min,
         Math.max(26 * k, TICKS_PER_BEAT * unit * Math.sqrt(ev.ticks / TICKS_PER_BEAT) + 10 * k) + accWidthOf(ev) + graceWidthOf(ev) + spacing
       );
-    } else if (isBarrier(ev)) {
-      const bar = ev;
-      const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
-      w = Math.max((base * 0.4 + (bar.beatAfter ? 30 : 0)) * k, (base + (bar.beatAfter ? 30 : 0)) * k + spacing);
-    } else if (ev.kind === "directive") {
+    } else if (isBarrier(ev)) w = barlineWidthOf(ev, k, spacing);
+    else if (ev.kind === "directive") {
       w = Math.max(8 * k, (ev.type === "paren" ? 15 : 26) * k + spacing);
     } else if (ev.kind === "jump") w = Math.max(16 * k, 26 * k + spacing);
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
@@ -2086,7 +2097,7 @@ function layoutScore(score2, opts) {
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
     const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
     const lastBar2 = widths[to - 1];
-    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - Math.max(8 * k, 20 * k + spacing)) / 2 : 0;
+    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - barlineWidthOf(lastBar2.ev, k, spacing)) / 2 : 0;
     const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
     const advances = /* @__PURE__ */ new Map();
     if (!opts.positions) units.forEach((u, ui) => {
@@ -2200,7 +2211,7 @@ function layoutScore(score2, opts) {
           acc += it.ticks ?? 0;
           open = true;
         } else if (it.kind === "barline") {
-          if (open && complete && !measurePartial) {
+          if (open && complete && !(measurePartial || it.partial)) {
             const beats = acc / TICKS_PER_BEAT;
             const exp = expected / TICKS_PER_BEAT;
             if (acc > expected) {
@@ -2544,7 +2555,7 @@ function validateGroups(score2) {
         message: `\u03A3 \u6210\u5458\u65F6\u503C ${sum} \u2260 \u7EC4\u603B\u65F6\u503C ${g.totalTicks}`
       });
     }
-    const maxGroup = score2.format === 3 && !g.tuplet ? groupTicks(meterAt(score2, index.get(g.memberIds[0]) ?? 0)) : TICKS_PER_BEAT2;
+    const maxGroup = score2.format === 3 && !g.tuplet ? groupTicks(meterAt(score2, index.get(g.memberIds[0]) ?? 0)) : TICKS_PER_BEAT;
     if (g.totalTicks > maxGroup) {
       out.push({
         code: "I2",

@@ -10,9 +10,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { BeatClock } from '../src/v2/clock';
-import { parseDsl, renderNoteToken, serializeDsl } from '../src/v2/dsl';
+import { DEFAULT_META, parseDsl, renderNoteToken, serializeDsl } from '../src/v2/dsl';
 import type { BarlineEvent, RestEvent } from '../src/v2/types';
-import { TICKS_PER_BEAT } from '../src/v2/types';
+import { DEFAULT_FONT_SIZE, TICKS_PER_BEAT } from '../src/v2/types';
 import {
   caretAt,
   clusterSpan,
@@ -27,15 +27,24 @@ import {
 } from '../src/v2/layout';
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
+import { assembleParts, namespacePart, partScore, scoreParts } from '../src/v2/parts';
+import { groupTicks, groupTierBeats } from '../src/v2/meter';
 import {
   applyTier as applyTierOp,
   autoGroupBeats,
   candidatesFor,
   cycleDot,
+  decodeDuration,
   deleteDynamic,
+  durationShape,
+  extendSlurRight,
   dynamicAt,
   extendPrev,
+  candidateGlyph,
+  groupCandidates,
   groupTiers,
+  groupTierOptions,
+  resplitOversizedGroups,
   insertBarline,
   insertNote,
   nextTimed,
@@ -81,9 +90,24 @@ import {
   isLegalTick,
   LEGAL_TICKS,
   TICKS_PER_BEAT,
+  PX_PER_BEAT_DEFAULT,
   withDots,
 } from '../src/v2/ticks';
 import { expandScore } from '../src/v2/expand';
+import { buildTimeline } from '../src/v2/timeline';
+import {
+  instrumentLabel,
+  instrumentPatches,
+  instrumentSampleFor,
+  instrumentSource,
+  onInstrumentBanksChange,
+  renderSampledNote,
+  unregisterBank,
+} from '../src/v2/instrumentSamples';
+import { applyBank, parseBank } from '../src/v2/ui/instrumentBank';
+import { isPreviewMuted, previewNote, setPreviewMuted } from '../src/v2/notePreview';
+import { applyTimbre } from '../src/v2/ui/playTimbre';
+import { zipStore } from '../src/v2/pack';
 import { ensembleIssues } from '../src/v2/parts';
 import { audioKey, clearAlign, loadAlign, saveAlign } from '../src/v2/ui/alignStore';
 import { gridSkipOf, snapBeatToGrid } from '../src/v2/ui/AudioWaveform';
@@ -166,16 +190,18 @@ function stable(v: unknown): string {
 
 // ───────────────────────── M0-2 ticks ─────────────────────────
 console.log('\n[M0-2 ticks]');
-check('TICKS_PER_BEAT = 48', TICKS_PER_BEAT === 48, String(TICKS_PER_BEAT));
-check('三连音成员 = 16 tick', DIVISION_TICKS[3] === 16, String(DIVISION_TICKS[3]));
-check('八分 = 24 / 十六分 = 12 / 三十二分 = 6',
-  DIVISION_TICKS[2] === 24 && DIVISION_TICKS[4] === 12 && DIVISION_TICKS[8] === 6);
-check('附点 1 拍 = 72 tick', withDots(48, 1) === 72, String(withDots(48, 1)));
-check('复附点 1 拍 = 84 tick', withDots(48, 2) === 84, String(withDots(48, 2)));
-check('减时线：24→1 12→2 6→3 48→0',
-  beamCount(24) === 1 && beamCount(12) === 2 && beamCount(6) === 3 && beamCount(48) === 0);
-check('三连音 16 tick 不按普通减时线处理（交给 group.tuplet）', beamCount(16) === 0);
-check('合法 tick 含 16 与 48', LEGAL_TICKS.includes(16) && LEGAL_TICKS.includes(48));
+check('TICKS_PER_BEAT 能同时表达 3/5/6/7 连音', TICKS_PER_BEAT % 3 === 0 && TICKS_PER_BEAT % 5 === 0 && TICKS_PER_BEAT % 6 === 0 && TICKS_PER_BEAT % 7 === 0, String(TICKS_PER_BEAT));
+check('三连音成员 = 1/3 拍', DIVISION_TICKS[3] === TICKS_PER_BEAT / 3, String(DIVISION_TICKS[3]));
+check('五连音成员 = 1/5 拍', DIVISION_TICKS[5] === TICKS_PER_BEAT / 5, String(DIVISION_TICKS[5]));
+check('七连音成员 = 1/7 拍', DIVISION_TICKS[7] === TICKS_PER_BEAT / 7, String(DIVISION_TICKS[7]));
+check('八分 = 1/2 拍 / 十六分 = 1/4 拍 / 三十二分 = 1/8 拍',
+  DIVISION_TICKS[2] === TICKS_PER_BEAT / 2 && DIVISION_TICKS[4] === TICKS_PER_BEAT / 4 && DIVISION_TICKS[8] === TICKS_PER_BEAT / 8);
+check('附点 1 拍 = 1.5 拍', withDots(TICKS_PER_BEAT, 1) === TICKS_PER_BEAT * 3 / 2, String(withDots(TICKS_PER_BEAT, 1)));
+check('复附点 1 拍 = 1.75 拍', withDots(TICKS_PER_BEAT, 2) === TICKS_PER_BEAT * 7 / 4, String(withDots(TICKS_PER_BEAT, 2)));
+check('减时线：八分→1 十六分→2 三十二分→3 四分→0',
+  beamCount(TICKS_PER_BEAT * 1 / 2) === 1 && beamCount(TICKS_PER_BEAT * 1 / 4) === 2 && beamCount(TICKS_PER_BEAT * 1 / 8) === 3 && beamCount(TICKS_PER_BEAT) === 0);
+check('三连音成员不按普通减时线处理（交给 group.tuplet）', beamCount(TICKS_PER_BEAT * 1 / 3) === 0);
+check('合法 tick 含三连音与四分', LEGAL_TICKS.includes(TICKS_PER_BEAT * 1 / 3) && LEGAL_TICKS.includes(TICKS_PER_BEAT));
 
 // ───────────────────────── M0-3 reseat ─────────────────────────
 console.log('\n[M0-3 reseat]');
@@ -188,25 +214,25 @@ const mkGroup = (totalTicks: number, ids: string[]): BeatGroup => ({
 
 // spec §3.3 算例：3 音各 16，选后 2 个设 24 tick → 24 / 12 / 12
 {
-  const members = [mkNote('a', 16), mkNote('b', 16), mkNote('c', 16)];
-  const r = reseat({ group: mkGroup(48, ['a', 'b', 'c']), members, selectedIds: ['b', 'c'], selectedTicks: 24 });
+  const members = [mkNote('a', TICKS_PER_BEAT * 1 / 3), mkNote('b', TICKS_PER_BEAT * 1 / 3), mkNote('c', TICKS_PER_BEAT * 1 / 3)];
+  const r = reseat({ group: mkGroup(TICKS_PER_BEAT, ['a', 'b', 'c']), members, selectedIds: ['b', 'c'], selectedTicks: TICKS_PER_BEAT * 1 / 2 });
   check('算例：选后 2 音设 1/2 拍 → a=24 b=12 c=12',
-    r.ok && r.ticks.a === 24 && r.ticks.b === 12 && r.ticks.c === 12,
+    r.ok && r.ticks.a === TICKS_PER_BEAT * 1 / 2 && r.ticks.b === TICKS_PER_BEAT * 1 / 4 && r.ticks.c === TICKS_PER_BEAT * 1 / 4,
     r.ok ? JSON.stringify(r.ticks) : r.reason);
-  check('算例 Σ 守恒 = 48', r.ok && r.ticks.a! + r.ticks.b! + r.ticks.c! === 48);
+  check('算例 Σ 守恒 = 1 拍', r.ok && r.ticks.a! + r.ticks.b! + r.ticks.c! === TICKS_PER_BEAT);
 }
 
 // 组溢出必须拒绝
 {
-  const members = [mkNote('a', 16), mkNote('b', 16), mkNote('c', 16)];
-  const r = reseat({ group: mkGroup(48, ['a', 'b', 'c']), members, selectedIds: ['b', 'c'], selectedTicks: 60 });
+  const members = [mkNote('a', TICKS_PER_BEAT * 1 / 3), mkNote('b', TICKS_PER_BEAT * 1 / 3), mkNote('c', TICKS_PER_BEAT * 1 / 3)];
+  const r = reseat({ group: mkGroup(TICKS_PER_BEAT, ['a', 'b', 'c']), members, selectedIds: ['b', 'c'], selectedTicks: TICKS_PER_BEAT * 5 / 4 });
   check('组溢出被拒绝，不静默扩组', !r.ok && /溢出/.test(r.reason), r.ok ? 'accepted' : r.reason);
 }
 
 // 全选但新值 ≠ 组总时值 → 拒绝（改组总时值是扩组，不是 reseat）
 {
-  const members = [mkNote('a', 24), mkNote('b', 24)];
-  const r = reseat({ group: mkGroup(48, ['a', 'b']), members, selectedIds: ['a', 'b'], selectedTicks: 24 });
+  const members = [mkNote('a', TICKS_PER_BEAT * 1 / 2), mkNote('b', TICKS_PER_BEAT * 1 / 2)];
+  const r = reseat({ group: mkGroup(TICKS_PER_BEAT, ['a', 'b']), members, selectedIds: ['a', 'b'], selectedTicks: TICKS_PER_BEAT * 1 / 2 });
   check('全选且新值 ≠ 组总时值 → 拒绝', !r.ok, r.ok ? 'accepted' : r.reason);
 }
 
@@ -215,18 +241,18 @@ const mkGroup = (totalTicks: number, ids: string[]): BeatGroup => ({
   const score: Score = {
     version: 2,
     meta: { title: 't', key: '1=C', beat: '4/4', bpm: 90, patch: 73 },
-    events: [mkNote('a', 16), mkNote('b', 16), mkNote('c', 16)],
-    groups: [mkGroup(48, ['a', 'b', 'c'])],
+    events: [mkNote('a', TICKS_PER_BEAT * 1 / 3), mkNote('b', TICKS_PER_BEAT * 1 / 3), mkNote('c', TICKS_PER_BEAT * 1 / 3)],
+    groups: [mkGroup(TICKS_PER_BEAT, ['a', 'b', 'c'])],
   };
   // 删掉 c 之后组内只剩 a、b，走 applyReseat 全选 48
   const shrunk: Score = {
     ...score,
     events: score.events.filter((e) => e.id !== 'c'),
-    groups: [mkGroup(48, ['a', 'b'])],
+    groups: [mkGroup(TICKS_PER_BEAT, ['a', 'b'])],
   };
-  const r = applyReseat(shrunk, 'g1', ['a', 'b'], 48);
+  const r = applyReseat(shrunk, 'g1', ['a', 'b'], TICKS_PER_BEAT);
   check('删音后同组自动重新均分 → a=24 b=24',
-    r.ok && (r.score.events[0] as TimedEvent).ticks === 24 && (r.score.events[1] as TimedEvent).ticks === 24,
+    r.ok && (r.score.events[0] as TimedEvent).ticks === TICKS_PER_BEAT * 1 / 2 && (r.score.events[1] as TimedEvent).ticks === TICKS_PER_BEAT * 1 / 2,
     r.ok ? 'ok' : r.reason);
   if (r.ok) check('删音后不变量无违反', validateGroups(r.score).length === 0);
 }
@@ -247,11 +273,11 @@ const SAMPLE = `@title Roundtrip 样本
   if (a.score) {
     const g = a.score.groups;
     check('拍内组数 = 2', g.length === 2, String(g.length));
-    check('第 1 组 Σ = 48 且成员 24/12/12',
-      g[0]?.totalTicks === 48 &&
+    check('第 1 组 Σ = 1 拍且 3 个成员',
+      g[0]?.totalTicks === TICKS_PER_BEAT &&
       g[0]?.memberIds.length === 3);
-    check('第 2 组为三连音（tuplet=3，Σ=48）',
-      g[1]?.tuplet === 3 && g[1]?.totalTicks === 48);
+    check('第 2 组为三连音（tuplet=3，Σ=1 拍）',
+      g[1]?.tuplet === 3 && g[1]?.totalTicks === TICKS_PER_BEAT);
     check('不变量全部通过', validateGroups(a.score).length === 0,
       validateGroups(a.score).map((v) => `${v.code}:${v.message}`).join('; '));
 
@@ -321,6 +347,11 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const lv1 = layout.lines.flatMap((l) => l.beams).filter((b) => b.level === 1).length;
   const lv2 = layout.lines.flatMap((l) => l.beams).filter((b) => b.level === 2).length;
   check(`${f} 内容不溢出可用宽度`, right <= 1001, `right=${right.toFixed(0)}`);
+  // 小节拍数校验徽标（✗ 超出 / ⚠ 未满）：示例曲库里的谱必须全部干净——
+  // 弱起小节要用 |{partial} 标记，普通 | 结尾的不满小节在这里现形（生日快乐 0.2.109 实测踩到）
+  const beatBadges = layout.lines.flatMap((l) => l.badges);
+  check(`${f} 无小节拍数校验徽标`, beatBadges.length === 0,
+    beatBadges.map((b) => b.text).join('; ') || '干净');
   const arcs = layout.lines.flatMap((l) => l.arcs).length;
   console.log(
     `      ${f}: ${lv1} 条一级减时线 / ${lv2} 条二级 / ${arcs} 条弧线 / ${layout.lines.length} 行 / 右边界 ${right.toFixed(0)}px`,
@@ -343,7 +374,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('每条连线恰好画出一条弧（链未被拆成逐段）', arcs === chains, `arcs=${arcs} chains=${chains}`);
   check('茉莉花有可见的减时线', beams.length > 0, `beams=${beams.length}`);
   check('茉莉花拍内组已建立', score!.groups.length > 0, `groups=${score!.groups.length}`);
-  check('组总时值都 ≤ 1 拍（I2）', score!.groups.every((g) => g.totalTicks <= 48));
+  check('组总时值都 ≤ 1 拍（I2）', score!.groups.every((g) => g.totalTicks <= TICKS_PER_BEAT));
 }
 
 {
@@ -503,7 +534,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('#5 是升号', ns[0].accidental === '#');
   check('b3 是降号', ns[1].accidental === 'b');
   check('♮2 是还原号', ns[2].accidental === '♮');
-  check('#4/2 与除法记号共存', ns[3].accidental === '#' && ns[3].ticks === 24);
+  check('#4/2 与除法记号共存', ns[3].accidental === '#' && ns[3].ticks === TICKS_PER_BEAT * 1 / 2);
   check('无记号时不留空字段', ns[4].accidental === undefined);
 
   // 变音必须进音高计算：升 +1、降 -1、还原同本位
@@ -533,7 +564,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const withAcc = layoutScore(on, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === id)!;
   const plain = layoutScore(base, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === id)!;
   check('带变音的音符格更宽', withAcc.w > plain.w, `${withAcc.w} vs ${plain.w}`);
-  check('宽度回传给 paint（不许两处各写一个常量）', withAcc.accW === withAcc.w - plain.w);
+  check('宽度回传给 paint（不许两处各写一个常量）', Math.abs(withAcc.accW! - (withAcc.w - plain.w)) < 1e-6, `${withAcc.accW} vs ${withAcc.w - plain.w}`);
 }
 
 {
@@ -561,15 +592,15 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 {
   // 复点音的档位匹配：面板显示去点后的值，「2..」的档位是八分那颗
   console.log('\n[复点音的档位匹配]');
-  check('复附点八分 2.. → 去点 12', undotTicks(21, 2) === 12, String(undotTicks(21, 2)));
-  check('附点八分 2. → 去点 12', undotTicks(18, 1) === 12, String(undotTicks(18, 1)));
-  check('无附点 → 原值', undotTicks(48, 0) === 48);
+  check('复附点八分 2.. → 去点 1/4 拍', undotTicks(TICKS_PER_BEAT * 7 / 16, 2) === TICKS_PER_BEAT / 4, String(undotTicks(TICKS_PER_BEAT * 7 / 16, 2)));
+  check('附点八分 2. → 去点 1/4 拍', undotTicks(TICKS_PER_BEAT * 3 / 8, 1) === TICKS_PER_BEAT / 4, String(undotTicks(TICKS_PER_BEAT * 3 / 8, 1)));
+  check('无附点 → 原值', undotTicks(TICKS_PER_BEAT, 0) === TICKS_PER_BEAT);
 
   // 换档位不掉点：附点是独立开关
   const s = parseDsl('@beat 4/4\n\n2.. ||\n').score!;
-  const after = setTicks(s, s.events[0].id, 12);
-  check('2.. 选八分档仍是复附点八分', (after.events[0] as NoteEvent).ticks === 21, String((after.events[0] as NoteEvent).ticks));
-  check('去点值仍是八分', undotTicks((after.events[0] as NoteEvent).ticks, (after.events[0] as NoteEvent).dot ?? 0) === 12);
+  const after = setTicks(s, s.events[0].id, TICKS_PER_BEAT / 4);
+  check('2.. 选八分档仍是复附点八分', (after.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 7 / 16, String((after.events[0] as NoteEvent).ticks));
+  check('去点值仍是八分', undotTicks((after.events[0] as NoteEvent).ticks, (after.events[0] as NoteEvent).dot ?? 0) === TICKS_PER_BEAT / 4);
 }
 
 {
@@ -598,6 +629,11 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const anacrusisShort = badgeWith('@beat 4/4', '|{partial} 5 5 | 1 1 1 1 | 1 ||');
   check('弱起曲结尾不满不警告', anacrusisShort.length === 0, anacrusisShort.join(','));
   check('非弱起曲结尾不满照常警告', badge('2. 1/2 1 ||').length === 1);
+  // 弱起线收在弱起小节**结尾**（先写音再收线，更顺手的书写顺序）同样豁免
+  const anacrusisTail = badgeWith('@beat 4/4', '5 5 |{partial} 1 1 1 1 ||');
+  check('弱起线收尾写法不警告', anacrusisTail.length === 0, anacrusisTail.join(','));
+  const anacrusisTailShort = badgeWith('@beat 4/4', '5 5 |{partial} 1 1 1 1 | 1 ||');
+  check('弱起线收尾 + 结尾小节不满也不警告', anacrusisTailShort.length === 0, anacrusisTailShort.join(','));
 }
 
 {
@@ -665,7 +701,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check(
     '整组重建（总时值守恒）',
     p1.score.groups.some(
-      (g) => g.memberIds.join(',') === pasted1.map((e) => e.id).join(',') && g.totalTicks === 48,
+      (g) => g.memberIds.join(',') === pasted1.map((e) => e.id).join(',') && g.totalTicks === TICKS_PER_BEAT,
     ),
   );
   const p1note = pasted1[0] as NoteEvent;
@@ -696,7 +732,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   console.log('\n[休止符时值与附点]');
   const s = parseDsl('@beat 4/4\n\n0. 0/2 0 0 ||\n').score!;
   const r0 = s.events[0] as unknown as RestEvent;
-  check('0. 解析为 1.5 拍 + dot=1', r0.ticks === 72 && r0.dot === 1, `${r0.ticks}/${r0.dot}`);
+  check('0. 解析为 1.5 拍 + dot=1', r0.ticks === TICKS_PER_BEAT * 3 / 2 && r0.dot === 1, `${r0.ticks}/${r0.dot}`);
   const rt = parseDsl(serializeDsl(s));
   check(
     '附点休止 round-trip（序列化写回 0.）',
@@ -707,15 +743,15 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   );
 
   const s2 = parseDsl('@beat 4/4\n\n0.. 0 0 0 ||\n').score!;
-  check('0.. = 1.75 拍', (s2.events[0] as unknown as RestEvent).ticks === 84);
+  check('0.. = 1.75 拍', (s2.events[0] as unknown as RestEvent).ticks === TICKS_PER_BEAT * 7 / 4);
 
   const s3 = parseDsl('@beat 4/4\n\n0 0 0 0 ||\n').score!;
   const s3d = setDot(s3, s3.events[0].id, 1);
   const r3 = s3d.events[0] as unknown as RestEvent;
-  check('setDot 作用在休止符上', r3.ticks === 72 && r3.dot === 1, `${r3.ticks}/${r3.dot}`);
+  check('setDot 作用在休止符上', r3.ticks === TICKS_PER_BEAT * 3 / 2 && r3.dot === 1, `${r3.ticks}/${r3.dot}`);
   const s3u = setDot(s3d, s3.events[0].id, 0);
   const r3u = s3u.events[0] as unknown as RestEvent;
-  check('setDot 0 去掉附点', r3u.ticks === 48 && !r3u.dot);
+  check('setDot 0 去掉附点', r3u.ticks === TICKS_PER_BEAT && !r3u.dot);
 
   // 排版层：休止符的附点 / 减时线进排版项，画得出来
   const L = layoutScore(s, { contentWidth: 800 });
@@ -744,39 +780,61 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   // 用户实际踩到的场景：休止符是 0/2-（1.5 拍，无点）时加点——
   // 基准必须归一到一拍：0. / 0..，而不是拼出非法的 0/2-. （序列化还会破坏 round-trip）
   const dashRest = parseDsl('@beat 4/4\n\n0/2- 0 0 0 ||\n').score!;
-  check('0/2- 解析为 1.5 拍无点', (dashRest.events[0] as unknown as RestEvent).ticks === 72);
+  check('0/2- 解析为 1.5 拍无点', (dashRest.events[0] as unknown as RestEvent).ticks === TICKS_PER_BEAT * 3 / 2);
   const d1 = setDot(dashRest, dashRest.events[0].id, 1);
   const rd1 = d1.events[0] as unknown as RestEvent;
-  check('加点后 = 0.（72 tick）', rd1.ticks === 72 && rd1.dot === 1, `${rd1.ticks}/${rd1.dot}`);
+  check('加点后 = 0.（72 tick）', rd1.ticks === TICKS_PER_BEAT * 3 / 2 && rd1.dot === 1, `${rd1.ticks}/${rd1.dot}`);
   const text1 = serializeDsl(d1);
   check('序列化写回 0. 而非 0/2-.', text1.includes('0.') && !text1.includes('/2'), text1.split('\n').pop()?.trim());
   const d2 = setDot(dashRest, dashRest.events[0].id, 2);
   check(
     '双附点 = 0..（84 tick）且可回读',
-    (d2.events[0] as unknown as RestEvent).ticks === 84 &&
-      parseDsl(serializeDsl(d2)).score!.events[0].ticks === 84,
+    (d2.events[0] as unknown as RestEvent).ticks === TICKS_PER_BEAT * 7 / 4 &&
+      parseDsl(serializeDsl(d2)).score!.events[0].ticks === TICKS_PER_BEAT * 7 / 4,
   );
 
   // 音符同理：5/2- 加点 → 5.
   const dashNote = parseDsl('@beat 4/4\n\n5/2- 5 5 5 ||\n').score!;
   const n1 = setDot(dashNote, dashNote.events[0].id, 1).events[0] as unknown as NoteEvent;
-  check('5/2- 加点 → 5.（72 tick）', n1.ticks === 72 && n1.dot === 1 && serializeDsl(setDot(dashNote, dashNote.events[0].id, 1)).includes('5.'));
+  check('5/2- 加点 → 5.（72 tick）', n1.ticks === TICKS_PER_BEAT * 3 / 2 && n1.dot === 1 && serializeDsl(setDot(dashNote, dashNote.events[0].id, 1)).includes('5.'));
+
+  // 双附点与「附点 + 增时线」：序列化必须先剥增时线再套附点系数，
+  // 否则 1.-/1..- 会得出 base=3840/4480 这类没有除法记号的值直接抛错（0.2.107 前的实测回归）
+  for (const [body, ticks, dot] of [
+    ['1.. 2 3 4 ||', TICKS_PER_BEAT * 7 / 4, 2],
+    ['1.- 3 4 ||', TICKS_PER_BEAT * 5 / 2, 1],
+    ['1..- 4 ||', TICKS_PER_BEAT * 11 / 4, 2],
+    ['0.. 2 3 4 ||', TICKS_PER_BEAT * 7 / 4, 2],
+  ] as const) {
+    const p = parseDsl(`@beat 4/4\n\n${body}\n`);
+    const ev = p.score!.events[0] as unknown as NoteEvent;
+    check(`解析 ${body.split(' ')[0]} = ${ticks} tick`, p.errors.length === 0 && ev.ticks === ticks && ev.dot === dot,
+      p.errors.join('; ') || `${ev.ticks}/${ev.dot}`);
+    const rt = parseDsl(serializeDsl(p.score!));
+    check(`round-trip ${body.split(' ')[0]}`, rt.errors.length === 0 && (rt.score!.events[0] as unknown as NoteEvent).ticks === ticks,
+      rt.errors.join('; ') || serializeDsl(p.score!).split('\n').pop()?.trim());
+  }
+  check('双附点音符序列化写回 1..', serializeDsl(parseDsl('@beat 4/4\n\n1.. 2 3 4 ||\n').score!).includes('1..'));
+  check('附点+增时线序列化写回 1..-', serializeDsl(parseDsl('@beat 4/4\n\n1..- 4 ||\n').score!).includes('1..-'));
+  check('单附点+增时线序列化写回 1.-', serializeDsl(parseDsl('@beat 4/4\n\n1.- 3 4 ||\n').score!).includes('1.-'));
+  // 语法上点在增时线之前：1-.. 不是合法写法（正确写法 1..-）
+  check('1-.. 不合语法（点必须写在增时线前）', parseDsl('@beat 4/4\n\n1-.. 4 ||\n').errors.length > 0);
 
   // 拍内组守恒（用户实测踩到）：两音各半拍共用 1 拍，给一个音加附点，
   // 另一个必须自动缩成 1/4 拍，否则这拍悄悄变长
   const grp = parseDsl('@beat 4/4\n\n<1/2 2/2> 3 4 ||\n').score!;
-  check('前置：两音半拍成一组', grp.groups.length === 1 && grp.groups[0].totalTicks === 48);
+  check('前置：两音半拍成一组', grp.groups.length === 1 && grp.groups[0].totalTicks === TICKS_PER_BEAT);
   const gd = setDot(grp, grp.groups[0].memberIds[0], 1);
   const gFirst = gd.events.find((e) => e.id === grp.groups[0].memberIds[0]) as unknown as NoteEvent;
   const gSecond = gd.events.find((e) => e.id === grp.groups[0].memberIds[1]) as unknown as NoteEvent;
-  check('附点音 0.75 拍（36 tick）', gFirst.ticks === 36 && gFirst.dot === 1, `${gFirst.ticks}/${gFirst.dot}`);
-  check('同组另一音自动变 1/4 拍（12 tick）', gSecond.ticks === 12 && !gSecond.dot, `${gSecond.ticks}/${gSecond.dot}`);
+  check('附点音 0.75 拍（36 tick）', gFirst.ticks === TICKS_PER_BEAT * 3 / 4 && gFirst.dot === 1, `${gFirst.ticks}/${gFirst.dot}`);
+  check('同组另一音自动变 1/4 拍（12 tick）', gSecond.ticks === TICKS_PER_BEAT * 1 / 4 && !gSecond.dot, `${gSecond.ticks}/${gSecond.dot}`);
   check('组保留且守恒不变量干净', gd.groups.length === 1 && validateGroups(gd).length === 0, validateGroups(gd).map((v) => v.code).join(','));
 
   // 分不动就解散组：4×1/8 拍组里给一个音加附点（6→9），剩 15 分三份 = 5，
   // 不是合法 tick 粒度（I4）——守恒重分做不了，退回单音改语义
   const tiny = parseDsl('@beat 4/4\n\n<1/8 2/8 3/8 4/8> 3 4 ||\n').score!;
-  check('前置：四音 1/8 拍成一组', tiny.groups.length === 1 && tiny.groups[0].totalTicks === 24);
+  check('前置：四音 1/8 拍成一组', tiny.groups.length === 1 && tiny.groups[0].totalTicks === TICKS_PER_BEAT * 1 / 2);
   const gd2 = setDot(tiny, tiny.groups[0].memberIds[0], 1);
   check('剩余分不动时解散组', gd2.groups.length === 0, `groups=${gd2.groups.length}`);
   check('解散后不变量干净', validateGroups(gd2).length === 0);
@@ -859,10 +917,10 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   // 非法值：解析报错、setMeta 拒绝
   check('@size 99 报错', parseDsl('@size 99\n\n5 ||\n').errors.length > 0);
   check('@space 99 报错', parseDsl('@space 99\n\n5 ||\n').errors.length > 0);
-  // 字间距下限 -10（曾夹在 -4）：负值收紧排版，密集谱面用
-  const tight = parseDsl('@space -10\n@beat 4/4\n\n5 5 5 5 ||\n');
-  check('@space -10 接受', tight.errors.length === 0 && tight.score?.meta.letterSpacing === -10, tight.errors.join(' / '));
-  check('@space -11 报错', parseDsl('@space -11\n\n5 ||\n').errors.length > 0);
+  // 字间距范围 -20–20（与编辑器滑条一致）：负值收紧排版，密集谱面用
+  const tight = parseDsl('@space -20\n@beat 4/4\n\n5 5 5 5 ||\n');
+  check('@space -20 接受', tight.errors.length === 0 && tight.score?.meta.letterSpacing === -20, tight.errors.join(' / '));
+  check('@space -21 报错', parseDsl('@space -21\n\n5 ||\n').errors.length > 0);
   // 行间距增量（@lineGap）：0–48，按字号比例增加行高
   check('@lineGap 解析', parseDsl('@beat 4/4\n@lineGap 12\n\n5 ||\n').score?.meta.lineGap === 12);
   check(
@@ -872,8 +930,9 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('@lineGap 99 报错', parseDsl('@beat 4/4\n@lineGap 99\n\n5 ||\n').errors.length > 0);
   check(
     '@lineGap 抬高行高',
-    layoutScore(parseDsl('@beat 4/4\n@lineGap 12\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight -
-      layoutScore(parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight ===
+    // lineGap 按字号比例增加（lineGap * k），用显式 @size 21 基线让差值恰为 12
+    layoutScore(parseDsl('@size 21\n@beat 4/4\n@lineGap 12\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight -
+      layoutScore(parseDsl('@size 21\n@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight ===
       12,
   );
   const metaBase = parseDsl('@beat 4/4\n\n5 ||\n').score!;
@@ -883,24 +942,34 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     setMeta(metaBase, { fontSize: 28, letterSpacing: 2 }).meta.fontSize === 28,
   );
 
-  // 排版随字号缩放：42px = 基准 2 倍
-  const L21 = layoutScore(parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 2000 });
+  // 排版随字号缩放：42px = 基准 2 倍（显式 @size 21 基线，缺省已是 24）
+  const L21 = layoutScore(parseDsl('@size 21\n@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 2000 });
   const L42 = layoutScore(parseDsl('@size 42\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
     contentWidth: 2000,
   });
+  const Ldef = layoutScore(parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 2000 });
   check('行高随字号翻倍', Math.abs(L42.lineHeight - L21.lineHeight * 2) < 0.01, `${L21.lineHeight} → ${L42.lineHeight}`);
   check('字形度量随字号缩放', Math.abs(L42.glyph.pad - L21.glyph.pad * 2) < 0.01);
   check('度量写进排版结果', L42.glyph.fontSize === 42 && L21.glyph.fontSize === 21);
   check('deriveGlyph 与排版结果一致', JSON.stringify(deriveGlyph(42)) === JSON.stringify(L42.glyph));
-  // 21px（缺省）与基准常量一致：不写 @size 的谱面版式不变
-  check('缺省字号 = 基准度量', JSON.stringify(L21.glyph) === JSON.stringify(GLYPH));
+  // 不写 @size 的谱面用新缺省（24px）：缺省派生度量与 DEFAULT_FONT_SIZE 一致
+  check(
+    '缺省字号 = 新默认的派生度量',
+    JSON.stringify(Ldef.glyph) === JSON.stringify(deriveGlyph(DEFAULT_FONT_SIZE)) &&
+      Ldef.glyph.fontSize === DEFAULT_FONT_SIZE,
+  );
+  // 21px（基准常量）与基准度量一致：显式 @size 21 的谱面版式不变
+  check('21px 基准 = 基准度量', JSON.stringify(L21.glyph) === JSON.stringify(GLYPH));
 
-  // 字间距：每个记号的占位加 5px
+  // 字间距：每个记号的占位加 5px（基线同字号 24px、显式 @space 0）
   const Lsp = layoutScore(parseDsl('@space 5\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
     contentWidth: 2000,
   });
+  const Lsp0 = layoutScore(parseDsl('@space 0\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
+    contentWidth: 2000,
+  });
   const xs = Lsp.lines[0].items.map((i) => i.x);
-  const xs0 = L21.lines[0].items.map((i) => i.x);
+  const xs0 = Lsp0.lines[0].items.map((i) => i.x);
   check(
     '字间距逐项累加',
     xs.every((x, i) => Math.abs(x - (xs0[i] + 5 * i)) < 0.01),
@@ -965,13 +1034,14 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 
 {
   // 连音的减时线：按「这组连音顶替的常规音符级别」算，
-  // 不按每个音自己的 ticks（3 连音占 1 拍时每音 16 tick，beamCount(16) === 0，
+  // 不按每个音自己的 ticks（3 连音占 1 拍时每音 16 tick，beamCount(TICKS_PER_BEAT * 1 / 3) === 0，
   // 直接用会一条线都不画）。
   console.log('\n[连音的减时线]');
-  check('3 连音占 1 拍 → 1 条', tupletBeamCount(48, 3) === 1);
-  check('3 连音占半拍 → 2 条', tupletBeamCount(24, 3) === 2, String(tupletBeamCount(24, 3)));
-  check('6 连音占 1 拍 → 2 条', tupletBeamCount(48, 6) === 2, String(tupletBeamCount(48, 6)));
-  check('5 连音占 1 拍 → 2 条', tupletBeamCount(48, 5) === 2);
+  check('3 连音占 1 拍 → 1 条', tupletBeamCount(TICKS_PER_BEAT, 3) === 1);
+  check('3 连音占半拍 → 2 条', tupletBeamCount(TICKS_PER_BEAT / 2, 3) === 2, String(tupletBeamCount(TICKS_PER_BEAT / 2, 3)));
+  check('6 连音占 1 拍 → 2 条', tupletBeamCount(TICKS_PER_BEAT, 6) === 2, String(tupletBeamCount(TICKS_PER_BEAT, 6)));
+  check('5 连音占 1 拍 → 2 条', tupletBeamCount(TICKS_PER_BEAT, 5) === 2);
+  check('7 连音占 1 拍 → 2 条', tupletBeamCount(TICKS_PER_BEAT, 7) === 2);
   check('3 连音占 2 拍 → 0 条（只留标号）', tupletBeamCount(96, 3) === 0);
 
   // 排版层真的把线画出来了
@@ -1005,13 +1075,13 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const measureTicks = 4 * TICKS_PER_BEAT;
   const all = durationTiers(measureTicks);
 
-  check('单选保留长音档位（3 拍）', all.some((t) => t.ticks === 3 * TICKS_PER_BEAT), all.map((t) => t.label).join(','));
+  check('单选保留长音档位（3 拍）', all.some((t) => t.ticks === TICKS_PER_BEAT * 3), all.map((t) => t.label).join(','));
 
   // 核心断言：凡是被给出的档位，应用后都必须零不变量违反。
   // 修复前「2 拍 / 3 拍」会建出违反 I2 的组、1/4 拍会产出 3 tick 违反 I4。
   for (const n of [2, 3, 4, 6, 8]) {
-    const list = groupTiers(n, measureTicks);
-    check(`n=${n} 档位不超过 1 拍`, list.every((t) => t.ticks <= TICKS_PER_BEAT), list.map((t) => t.label).join(','));
+    const list = groupTiers(n, '4/4');
+    check(`n=${n} 档位不超过连通单位（1 拍）`, list.every((t) => t.ticks <= TICKS_PER_BEAT), list.map((t) => t.label).join(','));
     check(`n=${n} 给出的档位都能整除`, list.length > 0, list.map((t) => t.label).join(','));
     for (const t of list) {
       const next = applyTierOp(score, ids.slice(0, n), t.ticks);
@@ -1023,11 +1093,11 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     }
   }
 
-  check('n=4 不再给出 2 拍', !groupTiers(4, measureTicks).some((t) => t.ticks === 2 * TICKS_PER_BEAT));
-  check('n=4 不再给出 3 拍', !groupTiers(4, measureTicks).some((t) => t.ticks === 3 * TICKS_PER_BEAT));
-  check('n=4 不再给出 1/4 拍（每音 3 tick 非法）', !groupTiers(4, measureTicks).some((t) => t.ticks === 12));
-  check('n=2 保留 1/4 拍（每音 6 tick 合法）', groupTiers(2, measureTicks).some((t) => t.ticks === 12));
-  check('n=8 只剩 1 拍', groupTiers(8, measureTicks).every((t) => t.ticks === TICKS_PER_BEAT));
+  check('n=4 不再给出 2 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 24 * TICKS_PER_BEAT));
+  check('n=4 不再给出 3 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 16 * TICKS_PER_BEAT));
+  check('n=4 不再给出 1/4 拍（每音 3 tick 非法）', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 4));
+  check('n=2 保留 1/4 拍（每音 6 tick 合法）', groupTiers(2, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 4));
+  check('n=8 只剩 1 拍', groupTiers(8, '4/4').every((t) => t.ticks === TICKS_PER_BEAT));
 
   // 候选划分本身也不能吐非法 tick
   check('候选剔除非法划分', candidatesFor(4, 12).length === 0);
@@ -1036,7 +1106,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('n=3 一拍给四个候选', c3.length === 4, c3.map((c) => c.label).join(' | '));
   check(
     '对称切分候选在连音之前',
-    c3[2] !== undefined && c3[2].ticks.join(',') === '12,24,12' && c3[2].tuplet === undefined && c3[3]?.tuplet === 3,
+    c3[2] !== undefined && c3[2].ticks.join(',') === [TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 2, TICKS_PER_BEAT / 4].join(',') && c3[2].tuplet === undefined && c3[3]?.tuplet === 3,
     c3.map((c) => c.label).join(' | '),
   );
   {
@@ -1049,9 +1119,9 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   }
 
   // 标签要说人话：1/4 拍 不能显示成「0.25 拍」
-  check('1/4 拍标签是分数', candidatesFor(1, 12)[0].label.includes('1/4'), candidatesFor(1, 12)[0].label);
-  check('1/3 拍标签正确', candidatesFor(1, 16)[0].label.includes('1/3'), candidatesFor(1, 16)[0].label);
-  check('3/4 拍标签正确', candidatesFor(1, 36)[0].label.includes('3/4'), candidatesFor(1, 36)[0].label);
+  check('1/4 拍标签是分数', candidatesFor(1, TICKS_PER_BEAT / 4)[0].label.includes('1/4'), candidatesFor(1, TICKS_PER_BEAT / 4)[0].label);
+  check('1/3 拍标签正确', candidatesFor(1, TICKS_PER_BEAT / 3)[0].label.includes('1/3'), candidatesFor(1, TICKS_PER_BEAT / 3)[0].label);
+  check('3/4 拍标签正确', candidatesFor(1, TICKS_PER_BEAT * 3 / 4)[0].label.includes('3/4'), candidatesFor(1, TICKS_PER_BEAT * 3 / 4)[0].label);
 }
 
 {
@@ -1100,7 +1170,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   // 0 是「音符 ⇄ 休止符」的转换，不是插入
   const rest = setDegree(four, id0, 0);
   check('0 把音符转成休止符', rest.events[0].kind === 'rest' && rest.events.length === four.events.length);
-  check('0 保留时值', (rest.events[0] as { ticks: number }).ticks === 48);
+  check('0 保留时值', (rest.events[0] as { ticks: number }).ticks === TICKS_PER_BEAT);
 }
 
 {
@@ -1221,6 +1291,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     for (const f of files) {
       const s = parseDsl(readFileSync(join(DIR, f), 'utf-8')).score!;
       const L = layoutScore(s, { contentWidth: w });
+      const g = L.glyph;
       for (const e of s.events) {
         if (e.kind !== 'note') continue;
         for (const t of e.ties ?? []) {
@@ -1232,10 +1303,10 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
                 | { x: number; accW?: number; graceInk?: number }
                 | undefined;
               if (!it) return false;
-              // 弧端 = 首音数字墨迹右缘 / 末音数字墨迹左缘（pad 5 + 标称宽 13，k=1）
+              // 弧端 = 首音数字墨迹右缘 / 末音数字墨迹左缘（pad + 标称宽，随字号缩放）
               // ——只要弧与该音的数字墨迹横向有交叠，就算这个端画出了弧
-              const inkL = it.x + 5 + (it.accW ?? 0) + (it.graceInk ?? 0);
-              const inkR = inkL + 13;
+              const inkL = it.x + g.pad + (it.accW ?? 0) + (it.graceInk ?? 0);
+              const inkR = inkL + g.nominalWidth;
               return l.arcs.some((a) => a.x0 <= inkR + 2 && a.x1 >= inkL - 2);
             });
             if (!covered) missing += 1;
@@ -1248,9 +1319,11 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 }
 
 {
-  // 跨小节长音连线（`(2--- | 2---)`）：弧必须从第一个 2 一直盖到第二小节**最后一个
-  // 增时线**。旧实现取末音数字**左缘**，弧停在第二个 2 之前，第二小节整段时值露在外面。
-  console.log('\n[连线：跨小节长音的末端覆盖增时线]');
+  // 跨小节长音连线（`(2--- | 2---)`）：弧从**音符正上方**起止——
+  // 首音数字中心 → 末音数字中心，弧关于两个音对称（旧版从右缘起到右缘，
+  // 整条弧挂在音符组右侧，用户实测偏侧）。弧尾至少要越过小节线落进第二小节，
+  // 不能停在第二个 2 之前把第二小节露在连线外。
+  console.log('\n[连线：跨小节长音从音符正上方起止]');
   const s = parseDsl('@beat 4/4\n\n(2--- | 2---) ||\n').score!;
   const L = layoutScore(s, { contentWidth: 1400 });
   const arc = L.lines.flatMap((l) => l.arcs).find((a) => a.kind === 'slur');
@@ -1259,18 +1332,18 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   if (arc && notes.length === 2) {
     const first = notes[0]!;
     const last = notes[1]!;
-    const lastCluster = clusterSpan(last);
-    const lastRight = lastCluster.x + lastCluster.w; // 数字 + 附点 + 增时线的右缘
-    const firstInkR = first.x + 5 + (first.accW ?? 0) + (first.graceInk ?? 0) + 13;
+    /** 数字墨迹中心的横坐标（变音 / 前倚音已算进 inkLeft） */
+    const centerOf = (it: typeof first): number =>
+      it.x + L.glyph.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + L.glyph.nominalWidth / 2;
     check(
-      '弧尾盖到末音最后一个增时线',
-      arc.x1 >= lastRight - 1,
-      `x1=${arc.x1.toFixed(1)} 簇右缘=${lastRight.toFixed(1)}`,
+      '弧首从首音数字正上方起',
+      Math.abs(arc.x0 - centerOf(first)) < 2,
+      `x0=${arc.x0.toFixed(1)} 首音数字中心=${centerOf(first).toFixed(1)}`,
     );
     check(
-      '弧首从首音数字右缘起',
-      Math.abs(arc.x0 - firstInkR) < 2,
-      `x0=${arc.x0.toFixed(1)} 首音数字右缘=${firstInkR.toFixed(1)}`,
+      '弧尾停在末音数字正上方',
+      Math.abs(arc.x1 - centerOf(last)) < 2,
+      `x1=${arc.x1.toFixed(1)} 末音数字中心=${centerOf(last).toFixed(1)}`,
     );
   }
 }
@@ -1394,7 +1467,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     l.lines[0].items.filter((i) => i.kind === 'note').slice(0, 1)[0].w;
   check('字间距变大则音符格变宽', widthOf(loose) > widthOf(tight));
   check('字间距变大则行数变多', loose.lines.length >= tight.lines.length);
-  check('默认字间距仍是 1.3', layoutScore(score!, { contentWidth: 1000 }).unit === 1.3);
+  check('默认每拍像素宽度仍是 62.4', layoutScore(score!, { contentWidth: 1000 }).unit === PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT);
 }
 
 {
@@ -1529,20 +1602,20 @@ const blank = (): Score => ({
   console.log('\n[时值与自动成组]');
   const s = parseDsl('@beat 4/4\n\n1 2 3 4 ||').score!;
   const id0 = s.events[0].id;
-  const short = setTicks(s, id0, 24);
-  check('单音改时值生效', (short.events[0] as NoteEvent).ticks === 24);
+  const short = setTicks(s, id0, TICKS_PER_BEAT / 2);
+  check('单音改时值生效', (short.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 2);
   check('单音改时值不建组', short.groups.length === 0, `groups=${short.groups.length}`);
 
   // 组内单音改时值：先解散组，避免 Σ成员 ≠ 组总时值
   const grouped = parseDsl('@beat 4/4\n\n<3/2 3/4 5/4> 1 ||').score!;
   check('前置：已有 1 个组', grouped.groups.length === 1);
-  const solo = setTicks(grouped, grouped.groups[0].memberIds[0], 48);
+  const solo = setTicks(grouped, grouped.groups[0].memberIds[0], TICKS_PER_BEAT);
   check('组内单音改时值后解散组', solo.groups.length === 0);
   check('解散后不变量干净', validateGroups(solo).length === 0, validateGroups(solo).map((v) => v.code).join(','));
 
   // 自动成组：连续音之和恰好 1 拍 → 拉通
   const a = autoGroupBeats(parseDsl('@beat 4/4\n\n1/2 2/2 3 4 ||').score!);
-  check('两个半拍自动成组', a.groups.length === 1 && a.groups[0].totalTicks === 48, `groups=${a.groups.length}`);
+  check('两个半拍自动成组', a.groups.length === 1 && a.groups[0].totalTicks === TICKS_PER_BEAT, `groups=${a.groups.length}`);
   check('成组后成员都带 groupId', a.events.slice(0, 2).every((e) => isTimed(e) && !!e.groupId));
 
   const b = autoGroupBeats(parseDsl('@beat 4/4\n\n1/4 2/4 3/4 4/4 5 6 ||').score!);
@@ -1575,18 +1648,18 @@ const blank = (): Score => ({
   // 连音：选中 n 个音 → 忽略原时值，统一改成一拍内均分
   const s = parseDsl('@beat 4/4\n\n1/2 2/2 3 4 ||').score!;
   const ids = s.events.slice(0, 3).map((e) => e.id);
-  const tri = applyTierOp(s, ids, TICKS_PER_BEAT, Array(3).fill(16), 3)!;
-  check('3 连音每音 16 tick', tri.events.slice(0, 3).every((e) => (e as NoteEvent).ticks === 16));
+  const tri = applyTierOp(s, ids, TICKS_PER_BEAT, Array(3).fill(TICKS_PER_BEAT / 3), 3)!;
+  check('3 连音每音 16 tick', tri.events.slice(0, 3).every((e) => (e as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 3));
   check('3 连音标号写入组', tri.groups[0].tuplet === 3);
-  check('3 连音组总时值 1 拍', tri.groups[0].totalTicks === 48);
+  check('3 连音组总时值 1 拍', tri.groups[0].totalTicks === TICKS_PER_BEAT);
   check('3 连音不变量干净', validateGroups(tri).length === 0, validateGroups(tri).map((v) => v.code).join(','));
 
   const six = parseDsl('@beat 4/4\n\n1/4 2/4 3/4 4/4 5/4 6/4 7 ||').score!;
   const sids = six.events.slice(0, 6).map((e) => e.id);
-  const sex = applyTierOp(six, sids, TICKS_PER_BEAT, Array(6).fill(8), 6)!;
-  check('6 连音每音 8 tick', sex.events.slice(0, 6).every((e) => (e as NoteEvent).ticks === 8));
+  const sex = applyTierOp(six, sids, TICKS_PER_BEAT, Array(6).fill(TICKS_PER_BEAT / 6), 6)!;
+  check('6 连音每音 8 tick', sex.events.slice(0, 6).every((e) => (e as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 6));
   check('6 连音标号写入组', sex.groups[0].tuplet === 6);
-  check('8 tick 是合法 tick（I4）', isLegalTick(8));
+  check('六连音成员是合法 tick（I4）', isLegalTick(TICKS_PER_BEAT / 6));
   check('6 连音不变量干净', validateGroups(sex).length === 0, validateGroups(sex).map((v) => v.code).join(','));
 
   // 连音必须能无损序列化（8 tick 没有除法记号的话 renderDuration 会抛）
@@ -1623,9 +1696,9 @@ const blank = (): Score => ({
   // 否则音频和谱面播放头会错位。
   const s = parseDsl('@beat 4/4\n\n1 2 | 3 4 ||').score!;
   check('下标 0 → tick 0', tickAtEvent(s, 0) === 0);
-  check('小节线不占时值', tickAtEvent(s, 2) === 96, String(tickAtEvent(s, 2)));
-  check('末尾 = 总时值', tickAtEvent(s, s.events.length) === 192, String(tickAtEvent(s, s.events.length)));
-  check('越界下标被夹住', tickAtEvent(s, 999) === 192);
+  check('小节线不占时值', tickAtEvent(s, 2) === TICKS_PER_BEAT * 2, String(tickAtEvent(s, 2)));
+  check('末尾 = 总时值', tickAtEvent(s, s.events.length) === TICKS_PER_BEAT * 4, String(tickAtEvent(s, s.events.length)));
+  check('越界下标被夹住', tickAtEvent(s, 999) === TICKS_PER_BEAT * 4);
   check('负下标被夹住', tickAtEvent(s, -5) === 0);
 
   // 每个事件起点的 tick 必须与 timeline 里对应条目的 startTick 对上
@@ -1641,7 +1714,7 @@ const blank = (): Score => ({
 
   // 起播点落在长音中间时，该音应从 fromTick 处起声
   const long = parseDsl('@beat 4/4\n\n1 - - - 2 ||').score!;
-  check('长音中间起播取到 tick 48', tickAtEvent(long, 1) === 48);
+  check('长音中间起播取到 1 拍处', tickAtEvent(long, 1) === TICKS_PER_BEAT);
 }
 
 {
@@ -1790,25 +1863,25 @@ const blank = (): Score => ({
   // 时值档位必须覆盖增时线能写出来的长音，否则 1-- 选中后改不回去。
   // 但上限是小节本身：2/4 里出现「3 拍」按钮，一个小节根本装不下。
   const t = durationTiers(TICKS_PER_BEAT * 4); // 4/4
-  check('4/4 档位含 3 拍（144 tick）', t.some((x) => x.ticks === 144), t.map((x) => x.label).join(' / '));
-  check('4/4 档位含 4 拍（192 tick）', t.some((x) => x.ticks === 192));
-  check('档位含 1/8 拍（6 tick）', t.some((x) => x.ticks === 6));
+  check('4/4 档位含 3 拍（144 tick）', t.some((x) => x.ticks === TICKS_PER_BEAT * 3), t.map((x) => x.label).join(' / '));
+  check('4/4 档位含 4 拍（192 tick）', t.some((x) => x.ticks === TICKS_PER_BEAT * 4));
+  check('档位含 1/8 拍（6 tick）', t.some((x) => x.ticks === TICKS_PER_BEAT * 1 / 8));
   check('档位无重复 tick', new Set(t.map((x) => x.ticks)).size === t.length);
   check(
     '4/4 的 1 小节已是整拍档，不重复列',
     !t.some((x) => x.label === '1 小节'),
     t.map((x) => x.label).join(' / '),
   );
-  const t34 = durationTiers(72); // 3/4 → 1 小节 = 1.5 拍，不是整拍倍数
-  check('3/4 补出 1 小节档', t34.some((x) => x.label === '1 小节' && x.ticks === 72), t34.map((x) => x.label).join(' / '));
+  const t34 = durationTiers(TICKS_PER_BEAT * 3 / 2); // 3/4 → 1 小节 = 1.5 拍，不是整拍倍数
+  check('3/4 补出 1 小节档', t34.some((x) => x.label === '1 小节' && x.ticks === TICKS_PER_BEAT * 3 / 2), t34.map((x) => x.label).join(' / '));
 
   // 上限 = 小节
   const t24 = durationTiers(TICKS_PER_BEAT * 2); // 2/4
-  check('2/4 不给 3 拍', !t24.some((x) => x.ticks === 3 * TICKS_PER_BEAT), t24.map((x) => x.label).join(' / '));
-  check('2/4 不给 4 拍', !t24.some((x) => x.ticks === 4 * TICKS_PER_BEAT));
-  check('2/4 保留 2 拍', t24.some((x) => x.ticks === 2 * TICKS_PER_BEAT));
-  check('3/4 不给 4 拍', !durationTiers(72).some((x) => x.ticks === 4 * TICKS_PER_BEAT));
-  check('3/4 保留 1 小节档（附点二分）', durationTiers(72).some((x) => x.ticks === 72));
+  check('2/4 不给 3 拍', !t24.some((x) => x.ticks === TICKS_PER_BEAT * 3), t24.map((x) => x.label).join(' / '));
+  check('2/4 不给 4 拍', !t24.some((x) => x.ticks === TICKS_PER_BEAT * 4));
+  check('2/4 保留 2 拍', t24.some((x) => x.ticks === TICKS_PER_BEAT * 2));
+  check('3/4 不给 4 拍', !durationTiers(TICKS_PER_BEAT * 3 / 2).some((x) => x.ticks === TICKS_PER_BEAT * 4));
+  check('3/4 保留 1 小节档（附点二分）', durationTiers(TICKS_PER_BEAT * 3 / 2).some((x) => x.ticks === TICKS_PER_BEAT * 3 / 2));
 }
 
 {
@@ -1819,16 +1892,16 @@ const blank = (): Score => ({
   check('3 拍 → 3--', renderNoteToken(3, 3 * TICKS_PER_BEAT) === '3--');
   check('2 拍 → 3-', renderNoteToken(3, 2 * TICKS_PER_BEAT) === '3-');
   check('1 拍 → 3', renderNoteToken(3, TICKS_PER_BEAT) === '3');
-  check('1/2 拍 → 3/2', renderNoteToken(3, 24) === '3/2');
-  check('1/4 拍 → 3/4', renderNoteToken(3, 12) === '3/4');
-  check('1/8 拍 → 3/8', renderNoteToken(3, 6) === '3/8');
-  check('附点 → 3.', renderNoteToken(3, 72, 1) === '3.');
-  check('高八度 → 3^', renderNoteToken(3, 48, 0, 1) === '3^');
-  check('低两个八度 → 3vv', renderNoteToken(3, 48, 0, -2) === '3vv');
-  check('非法时值不炸面板', renderNoteToken(3, 7) === '3');
+  check('1/2 拍 → 3/2', renderNoteToken(3, TICKS_PER_BEAT / 2) === '3/2');
+  check('1/4 拍 → 3/4', renderNoteToken(3, TICKS_PER_BEAT / 4) === '3/4');
+  check('1/8 拍 → 3/8', renderNoteToken(3, TICKS_PER_BEAT / 8) === '3/8');
+  check('附点 → 3.', renderNoteToken(3, TICKS_PER_BEAT * 3 / 2, 1) === '3.');
+  check('高八度 → 3^', renderNoteToken(3, TICKS_PER_BEAT, 0, 1) === '3^');
+  check('低两个八度 → 3vv', renderNoteToken(3, TICKS_PER_BEAT, 0, -2) === '3vv');
+  check('非法时值不炸面板', renderNoteToken(3, 999) === '3');
 
   // 按钮文字就是 DSL 记号本身：渲染出来必须能被解析器原样读回
-  for (const ticks of [192, 144, 96, 48, 24, 12, 6]) {
+  for (const ticks of [TICKS_PER_BEAT * 4, TICKS_PER_BEAT * 3, TICKS_PER_BEAT * 2, TICKS_PER_BEAT, TICKS_PER_BEAT / 2, TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 8]) {
     const tok = renderNoteToken(3, ticks);
     const p = parseDsl(`@beat 4/4\n\n${tok} ||\n`);
     check(
@@ -1841,13 +1914,13 @@ const blank = (): Score => ({
 
 {
   // 底色块（选中 / 焦点 / 播放头）不得侵入减时线所在的高度带。
-  // 减时线在中线下 beamOffset(1) 处；底色若盖住它，两个八分音符被选中时
-  // 那根连着的横线就只剩色块缝隙里的一小截，看起来像没画。
+  // 减时线在中线下 beamOffset(1) 处，画在底色**之后**（paint.ts 先铺底色再画线），
+  // 底色与线小幅重叠不影响可见性；但线不能顶进数字墨底（墨底 ≈ 中心下 8px）
   console.log('\n[底色与减时线分层]');
   check(
-    '底色块下沿不越过一级减时线',
-    SEL_HALF_H <= beamOffset(1),
-    `底色 ${SEL_HALF_H} vs 减时线 ${beamOffset(1)}`,
+    '一级减时线仍在数字墨底之下至少 2px',
+    beamOffset(1) >= 10,
+    `减时线 ${beamOffset(1)}`,
   );
 
   // 二级减时线更深，更不能被盖住
@@ -1887,13 +1960,13 @@ const blank = (): Score => ({
 
 {
   const s1 = insertNote(blank(), 0, 5);
-  check('插入音符默认 1 拍（48 tick）', s1.events.length === 1 && (s1.events[0] as NoteEvent).ticks === 48);
+  check('插入音符默认 1 拍（48 tick）', s1.events.length === 1 && (s1.events[0] as NoteEvent).ticks === TICKS_PER_BEAT);
 
   const s2 = insertBarline(insertNote(s1, 1, 3), 2);
   check('继续插入音符与小节线', s2.events.length === 3 && s2.events[2].kind === 'barline');
 
   const ext = extendPrev(s2, 2);
-  check('增时线 - 加 1 拍（48 → 96）', ext.ok && (ext.score.events[1] as NoteEvent).ticks === 96);
+  check('增时线 - 加 1 拍（48 → 96）', ext.ok && (ext.score.events[1] as NoteEvent).ticks === TICKS_PER_BEAT * 2);
 
   const oct = shiftOctave(s2, s2.events[0].id, 1);
   check('八度 ^ 生效', (oct.events[0] as NoteEvent).octave === 1);
@@ -1903,9 +1976,9 @@ const blank = (): Score => ({
   const d3 = cycleDot(d2, s2.events[0].id);
   check(
     '附点循环 48 → 72 → 84 → 48',
-    (d1.events[0] as NoteEvent).ticks === 72 &&
-      (d2.events[0] as NoteEvent).ticks === 84 &&
-      (d3.events[0] as NoteEvent).ticks === 48,
+    (d1.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 3 / 2 &&
+      (d2.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 7 / 4 &&
+      (d3.events[0] as NoteEvent).ticks === TICKS_PER_BEAT,
   );
 
   check('删除事件', removeEvent(s2, s2.events[1].id).events.length === 2);
@@ -1918,63 +1991,516 @@ const blank = (): Score => ({
   s = insertNote(s, 2, 2);
   const ids = s.events.map((e) => e.id);
 
-  const t = applyTierOp(s, ids, 48, [24, 12, 12]);
+  const t = applyTierOp(s, ids, TICKS_PER_BEAT, [TICKS_PER_BEAT / 2, TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 4]);
   check('框选 3 音套 1 拍档位 → 建立拍内组', !!t && t.groups.length === 1);
   check(
     '组内时值写成 24 / 12 / 12',
     !!t &&
-      (t.events[0] as NoteEvent).ticks === 24 &&
-      (t.events[1] as NoteEvent).ticks === 12 &&
-      (t.events[2] as NoteEvent).ticks === 12,
+      (t.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 2 &&
+      (t.events[1] as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 4 &&
+      (t.events[2] as NoteEvent).ticks === TICKS_PER_BEAT * 1 / 4,
   );
-  check('组守恒 Σ = 48', !!t && t.groups[0].totalTicks === 48);
+  check('组守恒 Σ = 48', !!t && t.groups[0].totalTicks === TICKS_PER_BEAT);
   check('应用档位后不变量通过', !!t && validateGroups(t).length === 0,
     !!t ? validateGroups(t).map((v) => `${v.code}:${v.message}`).join('; ') : '');
 
-  check('n = 3 给出 4 个候选划分', candidatesFor(3, 48).length === 4);
-  check('n = 4 均分无歧义，只给 1 个候选', candidatesFor(4, 48).length === 1);
+  check('n = 3 给出 4 个候选划分', candidatesFor(3, TICKS_PER_BEAT).length === 4);
+  // n = 4：只剩均分。曾经的「前 1/2 拍 + 3×1/6 拍」两档里 1/6 拍（1120）是
+  // 六连音成员值，单独放在非连音组里没有对应记号——全组合扫描抓出后移除
+  check('n = 4 只给均分（1/6 拍碎片候选已移除）',
+    candidatesFor(4, TICKS_PER_BEAT).length === 1
+      && JSON.stringify(candidatesFor(4, TICKS_PER_BEAT)[0].ticks) === JSON.stringify(Array(4).fill(TICKS_PER_BEAT / 4)));
+  check('n = 4 含二分组合（前 2 音 1/4 拍 + 后 2 音 1/8 拍 类）',
+    candidatesFor(6, TICKS_PER_BEAT).some((c) => JSON.stringify(c.ticks) === JSON.stringify([1680, 1680, 840, 840, 840, 840])),
+    JSON.stringify(candidatesFor(6, TICKS_PER_BEAT).map((c) => c.ticks)));
+  check('n = 8 只有均分一档也返回（面板照常弹出自定义入口）', candidatesFor(8, TICKS_PER_BEAT).length >= 1);
+
+  // ── 浮动输入板「音值组合」的档位可用性：选中 2-8 个音，凑不出的档位要禁用 ──
+  // 最细分到 1/8 拍（3 条减时线），所以 1 拍最多 8 个音、1/2 拍最多 4 个、1/4 拍最多 2 个
+  const beat = TICKS_PER_BEAT;
+  check('2 个音：1 拍 / 1/2 拍 / 1/4 拍都能凑',
+    candidatesFor(2, beat).length > 0 && candidatesFor(2, beat / 2).length > 0 && candidatesFor(2, beat / 4).length > 0);
+  check('3 个音凑不出 1/4 拍', candidatesFor(3, beat / 4).length === 0, String(candidatesFor(3, beat / 4).length));
+  check('4 个音还能凑 1/2 拍', candidatesFor(4, beat / 2).length > 0);
+  check('5 个音凑不出 1/2 拍', candidatesFor(5, beat / 2).length === 0, String(candidatesFor(5, beat / 2).length));
+  check('8 个音还能凑 1 拍（8 × 1/8 拍）', candidatesFor(8, beat).length > 0);
+
+// ── 音值组合 × 拍号（手册《简谱音值组合对照手册（常见拍子）》§4/§7）──
+// 连通单位随拍号走：单拍子 1 拍；6/8 系 1 大拍 = 3 个八分 = 1½ 拍；6/4 = 3 拍。
+// 档位表也随体系走：2 分体系对半细分，3 分体系按大拍的 1/⅔/½/⅓/¼ 分档。
+{
+  console.log('\n[音值组合 × 拍号：连通单位与档位表]');
+  const P = TICKS_PER_BEAT;
+  check('groupTicks 4/4 = 1 拍', groupTicks('4/4') === P);
+  check('groupTicks 2/2 = 1 拍（习惯以四分为单位）', groupTicks('2/2') === P);
+  check('groupTicks 6/8 = 9/8 = 12/8 = 3/8 = 1½ 拍',
+    groupTicks('6/8') === Math.round(P * 1.5) && groupTicks('9/8') === Math.round(P * 1.5)
+      && groupTicks('12/8') === Math.round(P * 1.5) && groupTicks('3/8') === Math.round(P * 1.5));
+  check('groupTicks 6/4 = 3 拍', groupTicks('6/4') === P * 3);
+
+  // 档位表：6/8 系 = 1½ / 1 / ¾ / ½ / 3/8 拍（手册 §4.2），6/4 = 3 / 2 / 1½ / 1 / ¾ 拍（§4.3）
+  const t68 = groupTierOptions('6/8').map((t) => t.ticks);
+  check('6/8 档位表 = 1½/1/¾/½/3/8 拍',
+    JSON.stringify(t68) === JSON.stringify([Math.round(P * 1.5), P, Math.round(P * 0.75), P / 2, Math.round(P * 0.375)]),
+    JSON.stringify(t68));
+  const t64 = groupTierOptions('6/4').map((t) => t.ticks);
+  check('6/4 档位表 = 3/2/1½/1/¾ 拍',
+    JSON.stringify(t64) === JSON.stringify([P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75)]),
+    JSON.stringify(t64));
+  const t44 = groupTierOptions('4/4').map((t) => t.ticks);
+  check('4/4 档位表 = 1/½/¼/⅛ 拍', JSON.stringify(t44) === JSON.stringify([P, P / 2, P / 4, P / 8]), JSON.stringify(t44));
+  check('groupTierBeats(6/8) 是 3 分体系细分', groupTierBeats('6/8').length === 5);
+
+  // 选区档位跟着拍号走：6/8 里 3 个音能凑 1½ 拍（标志性组合，3 个八分），
+  // 4/4 里同一档不出现（1½ 拍超 1 拍连通边界）
+  check('6/8 里 n=3 给出 1½ 拍档', groupTiers(3, '6/8').some((t) => t.ticks === Math.round(P * 1.5)));
+  check('4/4 里 n=3 不给 1½ 拍档', !groupTiers(3, '4/4').some((t) => t.ticks === Math.round(P * 1.5)));
+  check('6/8 里 n=2 给出 1 拍与 1½ 拍档',
+    groupTiers(2, '6/8').some((t) => t.ticks === P) && groupTiers(2, '6/8').some((t) => t.ticks === Math.round(P * 1.5)));
+  check('9/8 的档位表与 6/8 相同（每大拍独立）',
+    JSON.stringify(groupTierOptions('9/8').map((t) => t.ticks)) === JSON.stringify(t68));
+
+  // ── 9/8 选 3 音套 1½ 拍：候选要贴小拍网格（用户实测：全是每音带点的怪组合）──
+  // 大拍档走 compoundCandidates：成员只落在小拍网格上（八分/附点四分/十六分/三十二分），
+  // 「附点八分+附点十六分×2」这类跨格划分不再出现
+  {
+    const u15 = Math.round(P * 1.5);
+    const cands = groupCandidates(3, u15, '9/8');
+    const aligned = [P / 2, P, Math.round(P * 1.5), P / 4, P / 8];
+    check('9/8 三音候选全部贴小拍网格（无跨格附点碎片）',
+      cands.length > 0 && cands.every((c) => c.ticks.every((t) => aligned.includes(t))),
+      JSON.stringify(cands.map((c) => c.ticks)));
+    check('9/8 三音均分 = 3 个八分，自然划分不挂连音标号',
+      !!cands[0] && JSON.stringify(cands[0].ticks) === JSON.stringify([P / 2, P / 2, P / 2]) && !cands[0].tuplet,
+      JSON.stringify(cands.map((c) => c.label)));
+    check('9/8 三音有「附点四分 + 2×十六分」两个方向的常用组合',
+      cands.some((c) => JSON.stringify(c.ticks) === JSON.stringify([P, P / 4, P / 4]))
+        && cands.some((c) => JSON.stringify(c.ticks) === JSON.stringify([P / 4, P / 4, P])));
+    check('9/8 三音候选里没有「3 连音」与跨格附点值', !cands.some((c) => c.tuplet)
+      && !cands.some((c) => c.ticks.some((t) => t === Math.round(P * 0.75) || t === Math.round(P * 0.375))));
+    // 4/4 走泛用模板不受影响：n=3 仍是 4 候选（含真三连音）
+    check('4/4 三音候选不变（泛用模板）', groupCandidates(3, P, '4/4').length === 4);
+    const g = candidateGlyph(cands[0], u15);
+    check('候选成员画法带减时线（均分 = 三连贯通线）',
+      JSON.stringify(g.beams) === JSON.stringify([1, 1, 1]) && JSON.stringify(g.dots) === JSON.stringify([0, 0, 0]),
+      JSON.stringify([g.beams, g.dots]));
+    // 写回零违反 + 序列化回读
+    const s9 = parseDsl('@format 3\n@beat 9/8\n\n1/2 2/2 3/2 ||\n').score!;
+    const ids9 = s9.events.filter((e) => e.kind === 'note').map((e) => e.id);
+    const applied = applyTierOp(s9, ids9, u15, cands[0].ticks)!;
+    check('9/8 三音 1½ 拍写回零违反', validateGroups(applied).length === 0,
+      validateGroups(applied).map((v) => `${v.code}:${v.message}`).join(' / '));
+    const rt = parseDsl(serializeDsl(applied));
+    check('写回可序列化回读', !rt.errors.length, rt.errors.join(' / '));
+
+    // ── 谱面画法回归（用户实测：应用「1 拍 + 2×1/4 拍」后第一个音被画上一条线，
+    //    四分音符看起来成了八分）——canvas 的一级减时线不得贯穿 beams=0 的成员，
+    //    要与 GroupGlyph 预览的连续段逻辑同构 ──
+    const mix = applyTierOp(s9, ids9, u15, [P, P / 4, P / 4])!;
+    const mLay = layoutScore(mix, { contentWidth: 1200 });
+    const mItems = mLay.lines[0].items.filter((i) => ids9.includes(i.eventId));
+    const mBeams = mLay.lines.flatMap((l) => l.beams);
+    check('组合第一个音（四分）不带减时线', mItems[0]?.beams === 0, String(mItems[0]?.beams));
+    check('组合后两音（十六分）带两条线', mItems[1]?.beams === 2 && mItems[2]?.beams === 2,
+      JSON.stringify(mItems.map((i) => i.beams)));
+    const lv1InGroup = mBeams.filter(
+      (b) => b.level === 1 && b.x1 > mItems[0].x && b.x0 < mItems[2].x + mItems[2].w,
+    );
+    check(
+      '一级线只连后两音，不贯穿四分音符',
+      lv1InGroup.length === 1 && lv1InGroup[0].x0 >= mItems[1].x,
+      JSON.stringify(lv1InGroup.map((b) => [b.x0, b.x1])),
+    );
+  }
+}
+
+{
+  // ── 跨组选区套组合（用户实测：减时线重叠）──
+  // 9/8 三个自动组，框选跨越 A/B 组边界的 3 个音套 1½ 拍组合：
+  // 旧逻辑只改写首成员的组，另一个组原样留着这些成员——一个音挂两个组，
+  // 两根同层减时线画在同一位置（重叠 45px），序列化还写出嵌套 < >。
+  // 修法：含选中音的组整体解散（残组违反 I1），落选成员清 groupId 回归散音。
+  console.log('\n[跨组选区套组合]');
+  const P = TICKS_PER_BEAT;
+  const s0 = parseDsl('@format 3\n@beat 9/8\n\n7/2 6/2 3/2 1/2 2/2 3/2 4/2 3/2 5/2 ||\n').score!;
+  const allIds = s0.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const autoed = autoGroupBeats(s0);
+  check('自动成组 3 组', autoed.groups.length === 3, String(autoed.groups.length));
+  const sel = allIds.slice(2, 5);
+  const cross = applyTierOp(autoed, sel, Math.round(P * 1.5), [P, P / 4, P / 4])!;
+  check('落选成员不挂空组', cross.events.every((e) => {
+    if (!sel.includes(e.id) && 'groupId' in e && e.groupId) {
+      return cross.groups.some((g) => g.memberIds.includes(e.id));
+    }
+    return true;
+  }));
+  check('没有音同时挂在两个组', cross.groups.every((g) =>
+    g.memberIds.every((id) => cross.groups.filter((x) => x.memberIds.includes(id)).length === 1)));
+  check('跨组写回零违反', validateGroups(cross).length === 0,
+    validateGroups(cross).map((v) => `${v.code}:${v.message}`).join(' / '));
+  const rtCross = parseDsl(serializeDsl(cross));
+  check('跨组写回可序列化回读', !rtCross.errors.length, rtCross.errors.join(' / '));
+  check('回读组数一致', (rtCross.score!.groups ?? []).length === cross.groups.length,
+    `${(rtCross.score!.groups ?? []).length} vs ${cross.groups.length}`);
+  // 布局层：同层级减时线段不得重叠（重叠 = 数据里有一个音挂两个组）
+  const layCross = layoutScore(cross, { contentWidth: 1400 });
+  const segs = layCross.lines.flatMap((l) => l.beams);
+  let overlap = 0;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      if (segs[i].level !== segs[j].level) continue;
+      const ov = Math.min(segs[i].x1, segs[j].x1) - Math.max(segs[i].x0, segs[j].x0);
+      if (ov > 0.5) overlap += 1;
+    }
+  }
+  check('同层减时线无重叠', overlap === 0, `${overlap} 处`);
+}
+
+// ── 拍号 × 档位 × 音数 全组合扫描（本次改动面大，逐格排查）──
+// 对每种拍子的每一档 × 2-8 个音：候选成员都是合法 tick、画法可推导、
+// 写回零不变量违反、序列化无损回读。任何一格炸了都说明组合体系有洞。
+{
+  console.log('\n[拍号 × 档位 × 音数 全组合扫描]');
+  const P = TICKS_PER_BEAT;
+  const meters = ['2/4', '3/4', '4/4', '2/2', '3/8', '6/8', '9/8', '12/8', '6/4', '9/4', '5/4', '7/8'];
+  // 每种拍子用自己的底谱（I2 按*这张谱*的拍号算上限；小节数是否对齐不归 validateGroups 管）
+  const bases = new Map(meters.map((beat) => [beat,
+    parseDsl(`@format 3\n@beat ${beat}\n\n${Array(12).fill('5').join(' ')} ||\n`).score!]));
+  let combos = 0;
+  let bad = 0;
+  const problems: string[] = [];
+  for (const beat of meters) {
+    const base = bases.get(beat)!;
+    const allIds = base.events.filter((e) => e.kind === 'note').map((e) => e.id);
+    for (const tier of groupTierOptions(beat)) {
+      for (let n = 2; n <= 8; n++) {
+        const cands = groupCandidates(n, tier.ticks, beat);
+        if (!cands.length) continue;
+        for (const c of cands) {
+          combos += 1;
+          const tag = `${beat} ${tier.label} × ${n} 音「${c.label}」`;
+          // 1) 成员都是合法 tick（I4 判据）
+          if (!c.ticks.every((t) => isLegalTick(t))) {
+            bad += 1;
+            problems.push(`${tag} 成员含非法 tick ${JSON.stringify(c.ticks)}`);
+            continue;
+          }
+          // 2) 画法可推导：普通成员 decode 可解或靠增时线写；连音成员有层数
+          const g = candidateGlyph(c, tier.ticks);
+          const drawable = c.ticks.every((t, i) =>
+            c.tuplet || decodeDuration(t) || durationShape(t).dashes > 0);
+          if (!drawable || g.beams.some((b) => !Number.isInteger(b) || b < 0) || g.dots.some((d) => !Number.isInteger(d) || d < 0 || d > 2)) {
+            bad += 1;
+            problems.push(`${tag} 画法推导失败 ${JSON.stringify([g.beams, g.dots, g.dashes])}`);
+            continue;
+          }
+          // 3) 写回零违反
+          const applied = applyTierOp(base, allIds.slice(0, n), tier.ticks, c.ticks, c.tuplet, c.dots);
+          const viols = applied ? validateGroups(applied) : [{ code: 'NULL', message: 'applyTierOp 返回 null' }];
+          if (viols.length) {
+            bad += 1;
+            problems.push(`${tag} 写回违反 ${viols.map((v) => `${v.code}:${v.message}`).join(' / ')}`);
+            continue;
+          }
+          // 4) 序列化无损回读
+          const rt = parseDsl(serializeDsl(applied!));
+          const ticksOk = !rt.errors.length && applied!.events.filter((e) => e.kind === 'note').every((e, i) => {
+            const back = rt.score!.events.filter((x) => x.kind === 'note')[i] as NoteEvent | undefined;
+            return back && back.ticks === (e as NoteEvent).ticks;
+          });
+          if (!ticksOk) {
+            bad += 1;
+            problems.push(`${tag} 序列化回读失败 ${rt.errors.join(' / ')}`);
+          }
+        }
+      }
+    }
+  }
+  check(`全组合扫描 ${combos} 格零问题`, bad === 0, problems.slice(0, 5).join(' || '));
+  check('扫描确实覆盖到了 3 分体系（9/8 有候选）',
+    groupTierOptions('9/8').some((t) => candidatesFor(3, t.ticks).length > 0));
+  check('groupTicks 9/4 = 12/4 = 3 拍（3 分体系四分家族）',
+    groupTicks('9/4') === P * 3 && groupTicks('12/4') === P * 3);
+}
+
+// ── 复拍子里的组上限（I2）与变拍后的自动重排 ──
+{
+  console.log('\n[复拍子组上限与变拍重排]');
+  const P = TICKS_PER_BEAT;
+  const u15 = Math.round(P * 1.5);
+  /** 拆掉全部组（测试里用来构造「手动连成一大条」的场景） */
+  const stripGroups = (s: Score): Score => ({
+    ...s,
+    groups: [],
+    events: s.events.map((e) => {
+      if ('groupId' in e && e.groupId) {
+        const { groupId: _g, ...rest } = e;
+        return rest;
+      }
+      return e;
+    }),
+  });
+
+  // 6/8：6 个八分填满小节。autoGroupBeats 按大拍（1½ 拍）自动分成 3+3——
+  // 减时线在 3 八分大拍内部连通、跨大拍断开，正是手册 §4.2 的要求。
+  const s68 = parseDsl('@format 3\n@beat 6/8\n\n1/2 2/2 3/2 4/2 5/2 6/2 ||\n').score!;
+  check('6/8：3 个八分（1½ 拍组）合法', validateGroups(s68).length === 0,
+    validateGroups(s68).map((v) => v.message).join(' / '));
+  check('6/8：自动成组按大拍 3+3 断开',
+    s68.groups.length === 2 && s68.groups.every((g) => g.totalTicks === u15),
+    JSON.stringify(s68.groups.map((g) => g.totalTicks)));
+
+  // 手动把 6 个八分连成一条线（合计 3 拍，跨了两个大拍）→ I2 拦下（手册 §8 第一条典型错误）
+  const ids6 = s68.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const bad = applyTierOp(stripGroups(s68), ids6, P * 3, Array(6).fill(P / 2));
+  check('6/8 里 6 个八分连一条线违反 I2', !!bad && validateGroups(bad).some((v) => v.code === 'I2'),
+    validateGroups(bad ?? s68).map((v) => v.message).join(' / '));
+
+  // 变拍 6/8 → 4/4：1½ 拍组超过新单位（1 拍）→ resplit 自动断开重排：
+  // 八分两两凑成 1 拍组，重排后零违反、音符一个不少。
+  const grouped = applyTierOp(stripGroups(s68), ids6.slice(0, 3), u15, [P / 2, P / 2, P / 2])!;
+  check('重排前：6/8 的 1½ 拍组合法', validateGroups(grouped).length === 0,
+    validateGroups(grouped).map((v) => v.message).join(' / '));
+  const changed = { ...grouped, meta: { ...grouped.meta, beat: '4/4' } };
+  check('换拍后旧组违反 I2', validateGroups(changed).some((v) => v.code === 'I2'));
+  const resplit = resplitOversizedGroups(changed);
+  check('换拍重排后零不变量违反', validateGroups(resplit).length === 0,
+    validateGroups(resplit).map((v) => `${v.code}:${v.message}`).join(' / '));
+  check('重排后组时值不超过 1 拍', resplit.groups.every((g) => g.totalTicks <= P),
+    JSON.stringify(resplit.groups.map((g) => g.totalTicks)));
+  check('重排后音符一个不少',
+    resplit.events.filter((e) => e.kind === 'note').length === grouped.events.filter((e) => e.kind === 'note').length);
+  // 放宽方向（4/4 → 6/8）：1 拍组不超 1½ 拍上限，一组都不拆
+  const relax = resplitOversizedGroups({ ...resplit, meta: { ...resplit.meta, beat: '6/8' } });
+  check('放宽方向（4/4 → 6/8）不拆组', relax.groups.length === resplit.groups.length);
+
+  // 多声部：每个声部各自有 1½ 拍组，换拍 4/4 后逐声部重排（meterAt 不能串声部）
+  const ens = assembleParts(
+    { ...s68, meta: { ...s68.meta } },
+    [
+      namespacePart(s68, { id: '1', name: '一声部', gain: 1 }),
+      namespacePart(s68, { id: '2', name: '二声部', gain: 1 }),
+    ],
+  );
+  const ensChanged = { ...ens, meta: { ...ens.meta, beat: '4/4' } };
+  const ensFixed = resplitOversizedGroups(ensChanged);
+  check('多声部换拍重排：仍是两个声部', scoreParts(ensFixed).length === 2 && !!ensFixed.part);
+  check('多声部换拍重排：每个声部零违反',
+    scoreParts(ensFixed).every((p) => {
+      const v = validateGroups(partScore(ensFixed, p.id));
+      return v.length === 0;
+    }),
+    scoreParts(ensFixed).map((p) => `${p.name}:${validateGroups(partScore(ensFixed, p.id)).map((x) => x.message).join(',')}`).join(' / '));
+  check('多声部换拍重排：每声部组都不超 1 拍',
+    scoreParts(ensFixed).every((p) => p.groups.every((g) => g.totalTicks <= P)));
+}
 
   // ── 两音的附点切分（用户提案）：选 2 音套 1 拍 → 均分 + 两个方向的附点切分 ──
-  const c2 = candidatesFor(2, 48);
+  const c2 = candidatesFor(2, TICKS_PER_BEAT);
   check('两音 1 拍出三档（均分 + 前附点 + 后附点）', c2.length === 3, JSON.stringify(c2.map((c) => c.ticks)));
-  check('均分档各半拍不带点', c2[0]!.ticks[0] === 24 && !c2[0]!.dots?.[0]);
+  const even2 = c2.find((c) => c.label.startsWith('均分'))!;
+  check('均分档各半拍不带点', even2.ticks[0] === TICKS_PER_BEAT / 2 && !even2.dots?.[0]);
   check(
-    '前附点档 36 + 12，dot 只在前音',
-    c2.some((c) => c.ticks[0] === 36 && c.ticks[1] === 12 && c.dots?.[0] === 1 && c.dots?.[1] === 0),
+    '前附点档 3/4 拍 + 1/4 拍，dot 只在前音',
+    c2.some((c) => c.ticks[0] === TICKS_PER_BEAT * 3 / 4 && c.ticks[1] === TICKS_PER_BEAT / 4 && c.dots?.[0] === 1 && c.dots?.[1] === 0),
   );
   check(
-    '后附点档 12 + 36，dot 只在后音',
-    c2.some((c) => c.ticks[0] === 12 && c.ticks[1] === 36 && c.dots?.[1] === 1 && c.dots?.[0] === 0),
+    '后附点档 1/4 拍 + 3/4 拍，dot 只在后音',
+    c2.some((c) => c.ticks[0] === TICKS_PER_BEAT / 4 && c.ticks[1] === TICKS_PER_BEAT * 3 / 4 && c.dots?.[1] === 1 && c.dots?.[0] === 0),
   );
-  // 分不出的就不给档：半拍组 12 tick → 附点方向 9/3 非法，只剩均分
-  check('半拍组只剩均分一档', candidatesFor(2, 12).length === 1, String(candidatesFor(2, 12).length));
+  // 分不出的就不给档：半拍组 → 附点方向 9/3 非法，只剩均分
+  check('半拍组只剩均分一档', candidatesFor(2, TICKS_PER_BEAT / 4).length === 1, String(candidatesFor(2, TICKS_PER_BEAT / 4).length));
 
   const twoNotes = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
   const dotAp = applyTierOp(
     twoNotes,
     [twoNotes.events[0]!.id, twoNotes.events[1]!.id],
-    48,
-    [36, 12],
+    TICKS_PER_BEAT,
+    [TICKS_PER_BEAT * 3 / 4, TICKS_PER_BEAT / 4],
     undefined,
     [1, 0],
   )!;
   const dFirst = dotAp.events[0] as NoteEvent;
   const dSecond = dotAp.events[1] as NoteEvent;
-  check('applyTier 写入附点切分（36+dot / 12）', dFirst.ticks === 36 && dFirst.dot === 1 && dSecond.ticks === 12 && !dSecond.dot);
+  check('applyTier 写入附点切分（36+dot / 12）', dFirst.ticks === TICKS_PER_BEAT * 3 / 4 && dFirst.dot === 1 && dSecond.ticks === TICKS_PER_BEAT * 1 / 4 && !dSecond.dot);
   check('附点切分后组守恒干净', validateGroups(dotAp).length === 0, validateGroups(dotAp).map((v) => v.code).join(','));
   const dRound = parseDsl(serializeDsl(dotAp)).score!;
-  check('附点切分可序列化回读', (dRound.events[0] as NoteEvent).ticks === 36 && (dRound.events[0] as NoteEvent).dot === 1);
-  // 排版：附点八分该有 1 条减时线 + 点（此前 beamCount(36)=0 画成缺线的错样）
+  check('附点切分可序列化回读', (dRound.events[0] as NoteEvent).ticks === TICKS_PER_BEAT * 3 / 4 && (dRound.events[0] as NoteEvent).dot === 1);
+  // 排版：附点八分该有 1 条减时线 + 点（此前 beamCount(TICKS_PER_BEAT * 3 / 4)=0 画成缺线的错样）
   const dLay = layoutScore(dotAp, { contentWidth: 800 });
   const dItem = dLay.lines[0].items.find((i) => i.eventId === dFirst.id) as { beams?: number; dot?: number } | undefined;
   check('附点八分排版：1 条线 + 附点', dItem?.beams === 1 && dItem?.dot === 1, `beams=${dItem?.beams} dot=${dItem?.dot}`);
 
+  // ── 自定义音值组合（逐音点线/点） ──
+  // 用户实测场景：5 音凑一拍 1/4+1/8+1/8+1/4+1/4；连音勾选走 tuplet 路径
+  console.log('\n[编辑 · 自定义音值组合]');
+  check('decodeDuration：1/4 拍 = 2 线 0 点', (() => {
+    const d = decodeDuration(TICKS_PER_BEAT / 4);
+    return !!d && d.beams === 2 && d.dots === 0;
+  })());
+  check('decodeDuration：3/16 拍 = 3 线 1 点', (() => {
+    const d = decodeDuration(Math.round((TICKS_PER_BEAT / 8) * 1.5));
+    return !!d && d.beams === 3 && d.dots === 1;
+  })());
+  check('decodeDuration：连音成员 1/3 拍不在值域', decodeDuration(TICKS_PER_BEAT / 3) === null);
+  check('decodeDuration：1 拍 = 0 线 0 点', (() => {
+    const d = decodeDuration(TICKS_PER_BEAT);
+    return !!d && d.beams === 0 && d.dots === 0;
+  })());
+  const cgScore = parseDsl('@beat 4/4\n\n5 5 5 5 5 ||\n').score!;
+  const cgIds = cgScore.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const cgTicks = [
+    TICKS_PER_BEAT / 4,
+    TICKS_PER_BEAT / 8,
+    TICKS_PER_BEAT / 8,
+    TICKS_PER_BEAT / 4,
+    TICKS_PER_BEAT / 4,
+  ];
+  const cgApplied = applyTierOp(cgScore, cgIds, TICKS_PER_BEAT, cgTicks, undefined, [0, 0, 0, 0, 0])!;
+  check('5 音自定义凑一拍写回成功', !!cgApplied);
+  check(
+    '自定义成员时值逐音精确',
+    cgIds.every((id, i) => (cgApplied!.events.find((e) => e.id === id) as NoteEvent).ticks === cgTicks[i]),
+  );
+  check('自定义组合组守恒干净', validateGroups(cgApplied).length === 0, validateGroups(cgApplied).map((v) => v.code).join(','));
+  const cgLay = layoutScore(cgApplied, { contentWidth: 900 });
+  const cgBeams = cgLay.lines[0].items
+    .filter((i) => i.kind === 'note')
+    .map((i) => (i as { beams?: number }).beams);
+  check('自定义组合排版：中间两个 1/8 拍各 3 线、其余 2 线', JSON.stringify(cgBeams) === JSON.stringify([2, 3, 3, 2, 2]), JSON.stringify(cgBeams));
+  const cgRound = parseDsl(serializeDsl(cgApplied)).score!;
+  check(
+    '自定义组合可序列化回读',
+    cgIds.every((id, i) => (cgRound.events.find((e) => e.id === id) as NoteEvent).ticks === cgTicks[i]),
+  );
+  const cgThree = parseDsl('@beat 4/4\n\n5 5 5 ||\n').score!;
+  const cgThreeIds = cgThree.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const cgTri = applyTierOp(cgThree, cgThreeIds, TICKS_PER_BEAT, Array(3).fill(TICKS_PER_BEAT / 3), 3, [0, 0, 0])!;
+  check(
+    '连音勾选（3 连音均分）写回 tuplet=3（挂在组上）',
+    cgTri.groups.some((g) => g.tuplet === 3 && cgThreeIds.every((id) => g.memberIds.includes(id))),
+  );
+  check('连音写回组守恒干净', validateGroups(cgTri).length === 0);
+  // 弹窗取消勾选连音 → 改自由组合 → 组上的 tuplet 必须被剥掉（用户实测坑）
+  const cgFree = applyTierOp(
+    cgTri,
+    cgThreeIds,
+    TICKS_PER_BEAT,
+    [TICKS_PER_BEAT / 2, TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 4],
+    undefined,
+    [0, 0, 0],
+  )!;
+  check(
+    '取消连音改自由组合后组上不再有 tuplet',
+    !cgFree.groups.some((g) => 'tuplet' in g && cgThreeIds.every((id) => g.memberIds.includes(id))),
+  );
+  check('自由组合排版无连音标号', cgFree.groups.every((g) => !g.tuplet));
+  // 删音重均分必须重算附点：带 dot 的成员被均分成 1/3 拍（2240）时残留 dot=1，
+  // 序列化反推不出写法直接抛错白屏（用户实测：从尾部删光所有音符）
+  const rmScore = parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!;
+  const rmIds = rmScore.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const withDot = applyTierOp(
+    rmScore,
+    rmIds,
+    TICKS_PER_BEAT,
+    [2520, 840, 1680, 1680],
+    undefined,
+    [1, 0, 0, 0],
+  )!;
+  check('附点自定义组合写入（3/8 拍 = 2 线 1 点）', (withDot.events.find((e) => e.id === rmIds[0]) as NoteEvent).dot === 1);
+  const afterRm = removeEvent(withDot, rmIds[1]!);
+  check('删音重均分后附点重算（1/3 拍不带点）', (afterRm.events.find((e) => e.id === rmIds[0]) as NoteEvent).dot === 0);
+  check('删音重均分后成员时值正确', (afterRm.events.find((e) => e.id === rmIds[0]) as NoteEvent).ticks === TICKS_PER_BEAT / 3);
+  let rmSerialized: string | null = null;
+  try {
+    rmSerialized = serializeDsl(afterRm);
+  } catch {
+    rmSerialized = null;
+  }
+  check('删音后可无损序列化（不再抛「没有对应的写法」）', !!rmSerialized);
+  // 删音重均分还可能产出**非法 tick**（不只是 dot 矛盾）：1½ 拍组（9/8 的 10080）
+  // 删成 5 音会均分出 2016（=10080/5），不在合法时值表、无记谱写法，序列化直接
+  // 抛「tick 2016 没有对应的写法」白屏（用户实测删空乐谱）。守卫：分不出合法值
+  // 就解散组，各音保留原时值。
+  const rm9 = parseDsl('@format 3\n@beat 9/8\n\n1/4 2/4 3/4 4/4 5/4 6/4 7 6 ||\n').score!;
+  const rm9Ids = rm9.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const rm9Grouped = applyTierOp(rm9, rm9Ids.slice(0, 6), Math.round(TICKS_PER_BEAT * 1.5), Array(6).fill(TICKS_PER_BEAT / 4))!;
+  check('9/8 六个十六分凑 1½ 拍组', rm9Grouped.groups.length === 1);
+  const rm9After = removeEvent(rm9Grouped, rm9Ids[2]!);
+  check('删成 5 音均分不出合法值 → 解散组', rm9After.groups.length === 0, String(rm9After.groups.length));
+  check(
+    '解散后各音保留原时值（1680 不变）',
+    rm9Ids.slice(0, 6).filter((x) => x !== rm9Ids[2]).every((x) => (rm9After.events.find((e) => e.id === x) as NoteEvent).ticks === TICKS_PER_BEAT / 4),
+  );
+  let rm9Serialized: string | null = null;
+  try {
+    rm9Serialized = serializeDsl(rm9After);
+  } catch {
+    rm9Serialized = null;
+  }
+  check('删成 5 音后可无损序列化（不再抛 tick 2016）', !!rm9Serialized);
+  // 删空整谱（用户操作路径）：一路删到 0 个音，序列化全程不抛
+  let emptyScore = rm9Grouped;
+  for (const x of rm9Ids) emptyScore = removeEvent(emptyScore, x);
+  check('删空后没有事件与组', emptyScore.events.filter(isTimed).length === 0 && emptyScore.groups.length === 0);
+  let emptySerialized: string | null = null;
+  try {
+    emptySerialized = serializeDsl(emptyScore);
+  } catch {
+    emptySerialized = null;
+  }
+  check('删空后可无损序列化', !!emptySerialized);
+  // 空谱子（新建 / 音符删光）是合法状态：解析与展开都不该报「谱面为空」红字
+  check('空文本解析不报错', parseDsl('').errors.length === 0);
+  check('只有谱头的空谱解析不报错', parseDsl('@beat 4/4\n@bpm 90\n').errors.length === 0);
+  check('空谱展开不报错', expandScore({ meta: { bpm: 90, beat: '4/4' }, events: [], groups: [] } as never).errors.length === 0);
+  // 浮动输入板「连音线」：单光标时向右逐音续连（选区情况走 toggleSlur）
+  {
+    const s = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+    const ids = s.events.filter((e) => e.kind === 'note').map((e) => e.id);
+    const outOf = (sc: typeof s, id: string): string | undefined =>
+      (sc.events.find((e) => e.id === id) as NoteEvent).ties?.find((t) => t.kind === 'slur')?.to;
+    const l1 = extendSlurRight(s, ids[0]!);
+    check('向右续连：第一音连到第二音', outOf(l1, ids[0]!) === ids[1]!);
+    const l2 = extendSlurRight(l1, ids[0]!);
+    check('再按一次多连一个音（连到第三音）', outOf(l2, ids[1]!) === ids[2]!);
+    const l3 = extendSlurRight(l2, ids[0]!);
+    check('第三次连到第四音', outOf(l3, ids[2]!) === ids[3]!);
+    check('续连不跨终止线（第四次无变化）', extendSlurRight(l3, ids[0]!) === l3);
+  }
+  // 真写了内容却一个事件都解析不出来 → 仍然报错（不能把真错误也吞掉）
+  check('写了内容解析不出事件仍报错', parseDsl('@beat 4/4\n\n哈哈哈\n').errors.length > 0);
+
   if (t) {
     const rm = removeEvent(t, ids[2]);
     const sum = rm.events.filter(isTimed).reduce((a, e) => a + (e as TimedEvent).ticks, 0);
-    check('删音后同组重新均分，Σ 仍为 48', sum === 48, `sum=${sum}`);
+    check('删音后同组重新均分，Σ 仍为 1 拍', sum === TICKS_PER_BEAT, `sum=${sum}`);
     check('删音后不变量通过', validateGroups(rm).length === 0);
   }
+}
+
+// 时值按钮按**谱面的样子**画：先剥增时线，剩下的零头再拆成减时线 + 附点。
+// 拆法错了按钮就画成别的时值——按下去得到的东西和看到的不一样。
+{
+  const shape = (beats: number) => durationShape(Math.round(beats * TICKS_PER_BEAT));
+  const s4 = shape(4);
+  const s3 = shape(3);
+  const s2 = shape(2);
+  const s1 = shape(1);
+  const h = shape(0.5);
+  const q = shape(0.25);
+  const e = shape(0.125);
+  const d15 = shape(1.5);
+  const d075 = shape(0.75);
+  check('4 拍 = 5---（3 条增时线）', s4.dashes === 3 && s4.beams === 0 && s4.dots === 0, JSON.stringify(s4));
+  check('3 拍 = 5--（2 条增时线）', s3.dashes === 2 && s3.beams === 0 && s3.dots === 0, JSON.stringify(s3));
+  check('2 拍 = 5-（1 条增时线）', s2.dashes === 1 && s2.beams === 0 && s2.dots === 0, JSON.stringify(s2));
+  check('1 拍 = 5（无线无点）', s1.dashes === 0 && s1.beams === 0 && s1.dots === 0, JSON.stringify(s1));
+  check('1/2 拍 = 5 下 1 条减时线', h.beams === 1 && h.dots === 0 && h.dashes === 0, JSON.stringify(h));
+  check('1/4 拍 = 5 下 2 条减时线', q.beams === 2 && q.dots === 0, JSON.stringify(q));
+  check('1/8 拍 = 5 下 3 条减时线', e.beams === 3 && e.dots === 0, JSON.stringify(e));
+  check('1.5 拍 = 5·（1 个附点，不画增时线）', d15.dots === 1 && d15.dashes === 0 && d15.beams === 0, JSON.stringify(d15));
+  check('3/4 拍 = 5 下 1 线 + 1 个附点', d075.beams === 1 && d075.dots === 1 && d075.dashes === 0, JSON.stringify(d075));
 }
 
 {
@@ -2002,17 +2528,16 @@ const blank = (): Score => ({
   const lay = layoutScore(slurred, { contentWidth: 1000 });
   const arcs = lay.lines.flatMap((l) => l.arcs);
   check('3 个音的连音线只画 1 条弧（不是 2 条重叠）', arcs.length === 1, `arcs=${arcs.length}`);
-  // 端点：首音数字墨迹**右缘** → 末音整个字形簇（数字+附点+增时线）的**右缘**。
-  // 早期版本取末音数字左缘，跨小节长音（2---|2---）会把第二小节整段时值露在连线外。
+  // 端点：首音数字**正上方**（中心）→ 末音数字正上方（中心），
+  // 弧关于音符组对称，不偏向一侧（用户实测）。
   const notes = lay.lines[0].items.filter((i) => i.kind === 'note') as PlacedItem[];
   const a0 = arcs[0];
-  const firstInkR = notes[0]!.x + 5 + (notes[0]!.accW ?? 0) + (notes[0]!.graceInk ?? 0) + 13;
-  const lastCluster = clusterSpan(notes[2]!);
-  const lastRight = lastCluster.x + lastCluster.w;
+  const centerOf = (it: PlacedItem): number =>
+    it.x + lay.glyph.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + lay.glyph.nominalWidth / 2;
   check(
-    '弧从首音数字右缘起、到末音字形簇右缘止',
-    Math.abs(a0.x0 - firstInkR) < 2 && Math.abs(a0.x1 - lastRight) < 2,
-    `x0=${a0.x0.toFixed(1)} 首音右缘=${firstInkR.toFixed(1)} x1=${a0.x1.toFixed(1)} 末音簇右缘=${lastRight.toFixed(1)}`,
+    '弧从首音数字正上方起、到末音数字正上方止',
+    Math.abs(a0.x0 - centerOf(notes[0]!)) < 2 && Math.abs(a0.x1 - centerOf(notes[2]!)) < 2,
+    `x0=${a0.x0.toFixed(1)} 首音中心=${centerOf(notes[0]!).toFixed(1)} x1=${a0.x1.toFixed(1)} 末音中心=${centerOf(notes[2]!).toFixed(1)}`,
   );
   check('弧不倒挂（x1 > x0）', a0.x1 > a0.x0 + 10, `x0=${a0.x0.toFixed(1)} x1=${a0.x1.toFixed(1)}`);
 }
@@ -2056,7 +2581,7 @@ const blank = (): Score => ({
   const s = parseDsl('@beat 4/4\n\nf 5 3 mf 2 ||\n').score!;
   const ns = s.events.filter((e) => e.kind === 'note') as NoteEvent[];
   check('力度绑定到音符', ns[0].dynamic === 'f' && ns[2].dynamic === 'mf', ns.map((n) => n.dynamic).join(','));
-  check('力度不占时值', buildTimeline(s).reduce((a, e) => a + (e.endTick - e.startTick), 0) === 144);
+  check('力度不占时值', buildTimeline(s).reduce((a, e) => a + (e.endTick - e.startTick), 0) === TICKS_PER_BEAT * 3);
   const text = serializeDsl(s);
   check('力度 round-trip 无 diff', stable(parseDsl(text).score) === stable(s), text);
   const layout = layoutScore(s, { contentWidth: 1000 });
@@ -2228,9 +2753,9 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
     // 1 拍 = 48 tick，倚音各 12：前倚音 [0,12) 主音 [12,36) 后倚音 [36,48)
     check('前倚音段停在框开头（进度 0）', activeMainAt(gtl, 4)?.progress === 0);
     check('前倚音段落到主音条目上', activeMainAt(gtl, 4)?.entry.grace !== true);
-    check('主音段正常插值', Math.abs((activeMainAt(gtl, 24)?.progress ?? 0) - 0.5) < 1e-6);
-    check('后倚音段停在框尾（进度 1）', activeMainAt(gtl, 40)?.progress === 1);
-    const seq = [0, 4, 12, 24, 35, 36, 44].map((t) => activeMainAt(gtl, t)?.progress ?? 0);
+    check('主音段正常插值', Math.abs((activeMainAt(gtl, TICKS_PER_BEAT / 2)?.progress ?? 0) - 0.5) < 1e-6);
+    check('后倚音段停在框尾（进度 1）', activeMainAt(gtl, TICKS_PER_BEAT * 5 / 6)?.progress === 1);
+    const seq = [0, 4, 12, 24, 35, 36, 44].map((t) => t * TICKS_PER_BEAT / 48).map((t) => activeMainAt(gtl, t)?.progress ?? 0);
     check('整个音的进度单调不回头', seq.every((v, i) => i === 0 || v >= seq[i - 1]), JSON.stringify(seq));
   }
 }
@@ -2246,7 +2771,7 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
     ),
   };
   const tl = buildTimeline(tied);
-  check('延音线在播放时合并成一个长音', tl.length === 1 && tl[0].endTick === 96,
+  check('延音线在播放时合并成一个长音', tl.length === 1 && tl[0].endTick === TICKS_PER_BEAT * 2,
     `len=${tl.length} end=${tl[0]?.endTick}`);
 
   const slurred: Score = {
@@ -2314,20 +2839,20 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   );
   const main0 = tl.find((e) => e.eventId === events[0].id && !e.grace)!;
   const grace0 = tl.find((e) => e.eventId === events[0].id && e.grace)!;
-  check('前倚音在主音之前发声', grace0.startTick === 0 && grace0.endTick === 12);
-  check('主音从倚音之后起声', main0.startTick === 12 && main0.endTick === TICKS_PER_BEAT);
+  check('前倚音在主音之前发声', grace0.startTick === 0 && grace0.endTick === TICKS_PER_BEAT / 4);
+  check('主音从倚音之后起声', main0.startTick === TICKS_PER_BEAT / 4 && main0.endTick === TICKS_PER_BEAT);
   const main1 = tl.find((e) => e.eventId === events[1].id && !e.grace)!;
   const grace1 = tl.find((e) => e.eventId === events[1].id && e.grace)!;
   check(
     '后倚音吃掉主音结尾',
-    main1.endTick === 2 * TICKS_PER_BEAT - 12 && grace1.endTick === 2 * TICKS_PER_BEAT,
+    main1.endTick === 2 * TICKS_PER_BEAT - TICKS_PER_BEAT / 4 && grace1.endTick === 2 * TICKS_PER_BEAT,
   );
 
   // 主音太短时按「主音至少保留一半」压缩
   const tiny = parseDsl('@beat 4/4\n\n{65}3/4 0 0 0 ||\n').score!; // 主音 12 tick
   const ttl = buildTimeline(tiny);
   const tmain = ttl.find((e) => !e.grace)!;
-  check('主音过短时压缩倚音', tmain.endTick - tmain.startTick === 6, String(tmain.endTick - tmain.startTick));
+  check('主音过短时压缩倚音', tmain.endTick - tmain.startTick === TICKS_PER_BEAT / 8, String(tmain.endTick - tmain.startTick));
 
   // 面板操作：加 / 删 / 清空 / 还原成音符
   let e = parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!;
@@ -2416,7 +2941,7 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   const tiedMidis = buildTimeline(tied).map((e) => `${e.startTick}:${e.midi}`);
   check(
     '延音线跨转调不合并（转调听得见）',
-    tiedMidis.join(' ') === '0:67 48:62 96:62 144:62 192:62',
+    tiedMidis.join(' ') === `0:67 ${TICKS_PER_BEAT}:62 ${TICKS_PER_BEAT * 2}:62 ${TICKS_PER_BEAT * 3}:62 ${TICKS_PER_BEAT * 4}:62`,
     tiedMidis.join(' '),
   );
   // 对照：没有转调时照旧合并成一个长音
@@ -2438,7 +2963,7 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   const chainAttacks = buildTimeline(chainTie).filter((e) => e.degree === 5 && !e.grace);
   check(
     '链式延音 5~5~5 只响一次（第三颗不再重复起声）',
-    chainAttacks.length === 6 && chainAttacks[0]?.startTick === 144 && chainAttacks[0]?.endTick === 288,
+    chainAttacks.length === 6 && chainAttacks[0]?.startTick === TICKS_PER_BEAT * 3 && chainAttacks[0]?.endTick === TICKS_PER_BEAT * 6,
     `attacks=${chainAttacks.length} first=${chainAttacks[0]?.startTick}-${chainAttacks[0]?.endTick}`,
   );
 
@@ -2506,6 +3031,31 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   // 第一房就起在 `|:` 那条线上（没有公共部分）：第一遍 3 3 3 3、第二遍 4 4 4 4
   const voltaHead = melody('@beat 4/4\n\n|: [1] 3 3 3 3 | [2] 4 4 4 4 :| ||\n');
   check('房起在 |: 上也能各走各的', voltaHead.degrees === '33334444', voltaHead.degrees);
+
+  // ③b 双向反复 :||:——上一段的结束同时是下一段的开始
+  const both = melody('@beat 4/4\n\n|: 1 2 :||: 3 4 :| 5 ||\n');
+  check('双向反复展开：1 2 两遍 + 3 4 两遍 + 5', both.degrees === '121234345', both.degrees);
+  check('双向反复展开无结构错误', both.ex?.errors.length === 0, both.ex?.errors.join('; '));
+  check('双向反复往返写回 :||:', serializeDsl(parseDsl('@beat 4/4\n\n1 1 :||: 2 2 ||\n').score!).includes(':||:'));
+  // 双向反复没有前面的 |: 时：它就只是一次普通反复的开始
+  const bothHead = melody('@beat 4/4\n\n1 1 :||: 2 2 :| 3 ||\n');
+  check('双向反复作段首也成立（1 1 奏一遍，2 2 两遍）', bothHead.degrees === '1122223', bothHead.degrees);
+
+  // ③c 连续外挂房子：`:|3 [1] A | [2] B | [3] C`——[2][3] 的前一道线只是
+  // 上一房的收尾线，不是反复结束线，也要能接上链（外挂房可以一串好几间）
+  const chain = melody('@beat 4/4\n\n|: 1 :|3 [1] 2 | [2] 3 | [3] 4 ||\n');
+  check('连续外挂房子展开：1 2 / 1 3 / 1 4', chain.degrees === '121314', chain.degrees);
+  check('连续外挂房子无结构错误', chain.ex?.errors.length === 0, chain.ex?.errors.join('; '));
+
+  // 外挂房号超出遍数（`:|` 两遍却写了 [3]）＝第 3 遍不存在，
+  // 明确报「超出反复遍数」，不能报误导性的「不在反复段内」
+  const overTimes = melody('@beat 4/4\n\n|: 1 [1] 2 :| [2] 3 | [3] 4 ||\n');
+  check(
+    '外挂房号超遍数报「超出反复遍数」',
+    (overTimes.ex?.errors ?? []).some((e) => e.includes('超出反复遍数')) &&
+      !(overTimes.ex?.errors ?? []).some((e) => e.includes('不在反复段内')),
+    JSON.stringify(overTimes.ex?.errors),
+  );
 
   // ④ 结构错误：必须明确报错、不展开（不猜）
   check('孤单的 :| 报错', (melody('@beat 4/4\n\n1 2 :| 3 ||\n').ex?.errors ?? []).length > 0);
@@ -3333,7 +3883,7 @@ console.log('\n[隐藏休止 8 与隐藏小节线 |*（混排占位）]');
   const rr = rich.events.filter((e): e is RestEvent => e.kind === 'rest');
   check(
     '8 支持完整时值语法（/2 附点 增时线）',
-    rr.length === 3 && rr[0].ticks === 24 && rr[1].ticks === 72 && rr[2].ticks === 144,
+    rr.length === 3 && rr[0].ticks === TICKS_PER_BEAT * 1 / 2 && rr[1].ticks === TICKS_PER_BEAT * 3 / 2 && rr[2].ticks === TICKS_PER_BEAT * 3,
     JSON.stringify(rr.map((x) => x.ticks)),
   );
   // 排版：占位宽度照算、hidden 传给 item、小节计数不受影响
@@ -3378,6 +3928,214 @@ console.log('\n[文字标注（段落 (文字) 的编辑器操作）]');
   const reopen = parseDsl(back);
   const r1 = reopen.score!.events.find((e) => e.kind === 'note')!;
   check('重新解析不丢', textAnnotationOf(reopen.score!, r1.id) === '前奏');
+}
+
+{
+  // ── 真采样音色：DSL 声部级 @patch 往返 + 循环平铺渲染基本性质 ──
+  const multi = [
+    '@format 3',
+    '@title 音色测试',
+    '@key 1=C',
+    '@beat 4/4',
+    '',
+    '@part 1 "旋律"',
+    '@patch 40',
+    '1 2 3 1 |',
+    '',
+    '@part 2 "伴奏"',
+    '5 3 5 3 |',
+  ].join('\n');
+  const parsed = parseDsl(multi);
+  check('声部级 @patch 解析', parsed.score != null && !parsed.errors.length);
+  const p1 = scoreParts(parsed.score!).find((p) => p.id === '1');
+  const p2 = scoreParts(parsed.score!).find((p) => p.id === '2');
+  check('声部 1 音色 = 40', p1?.patch === 40);
+  check('声部 2 音色缺省（跟曲目）', p2?.patch === undefined);
+  const back = serializeDsl(parsed.score!);
+  check('@patch 落盘', back.includes('@patch 40'));
+  check('未设置的声部不落 @patch', !/patch[^\n]*\n5 3/.test(back));
+  const again = parseDsl(back);
+  check('往返稳定', scoreParts(again.score!).find((p) => p.id === '1')?.patch === 40);
+  const bad = parseDsl(multi.replace('@patch 40', '@patch 300'));
+  check('@patch 越界报错', bad.errors.some((e) => e.includes('声部音色')));
+
+  // 时间线：声部 patch 进入条目，未设置的声部跟曲目 patch
+  const tl = buildTimeline(parsed.score!);
+  check('声部 1 条目 patch=40', tl.filter((e) => e.partId === '1').every((e) => e.patch === 40));
+  check('声部 2 条目 patch=曲目', tl.filter((e) => e.partId === '2').every((e) => e.patch === parsed.score!.meta.patch));
+
+  // renderSampledNote：循环平铺到任意音长 + 松键淡出 + 变调比率
+  const SR = 44100;
+  const loop = new Float32Array(SR); // 1s 正弦，峰 0.5
+  for (let i = 0; i < loop.length; i++) loop[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / SR);
+  const point = { midi: 60, start: 0, loopStart: Math.round(0.2 * SR), loopEnd: SR, length: SR, gain: 1 };
+  const short = renderSampledNote(loop, point, 60, { sampleRate: SR, durationSec: 0.3 });
+  check('短音长度', short.length === Math.round(0.3 * SR));
+  const long = renderSampledNote(loop, point, 60, { sampleRate: SR, durationSec: 3.7 });
+  check('长音长度（循环平铺）', long.length === Math.round(3.7 * SR));
+  // 平铺段振幅稳定（循环接续没断）：取 1.5s 处附近峰值仍接近 0.5
+  let midPeak = 0;
+  for (let i = Math.round(1.4 * SR); i < Math.round(1.6 * SR); i++) midPeak = Math.max(midPeak, Math.abs(long[i]));
+  check('平铺段振幅稳定', midPeak > 0.35);
+  // 尾部淡出：最后一帧远小于中段
+  const tail = Math.abs(long[long.length - 1]);
+  check('松键淡出', tail < 0.02);
+  // 变调：midi 72（高八度）→ 2 倍速读取 → 平铺段频率翻倍
+  const hi = renderSampledNote(loop, point, 72, { sampleRate: SR, durationSec: 1.5 });
+  let crossings = 0;
+  for (let i = Math.round(0.9 * SR); i < Math.round(1.0 * SR); i++) {
+    if (hi[i - 1] < 0 && hi[i] >= 0) crossings++;
+  }
+  check('变调比率（高八度 880Hz）', Math.abs(crossings - 88) <= 2);
+  check('未加载 patch 回落 null', instrumentSampleFor(999, 60) === null);
+}
+
+{
+  // ── 音色包（.wsbank）：格式校验 → 登记 → 覆盖内置 → 缺包回落 ──
+  const point = { midi: 60, start: 0, loopStart: 100, loopEnd: 200, length: 200, gain: 1 };
+  const fakeManifest = JSON.stringify({ name: 'fake', label: '测试音色', patch: 41, sampleRate: 44100, license: 'test', points: [point] });
+  const bankManifest = JSON.stringify({
+    kind: 'windscore-soundbank',
+    version: 1,
+    name: '测试包',
+    license: 'CC BY-SA 3.0',
+    instruments: [{ patch: 41, label: '小提琴（独奏）', mp3: '41.mp3', json: '41.json' }],
+  });
+  const bankBytes = zipStore([
+    { name: 'manifest.json', data: new TextEncoder().encode(bankManifest) },
+    { name: '41.mp3', data: new Uint8Array([1, 2, 3, 4]) },
+    { name: '41.json', data: new TextEncoder().encode(fakeManifest) },
+  ]);
+
+  // 格式校验
+  const parsed = parseBank(bankBytes);
+  check('音色包解析', parsed.manifest.name === '测试包' && parsed.manifest.instruments.length === 1);
+  let threw = '';
+  try {
+    parseBank(zipStore([{ name: 'manifest.json', data: new TextEncoder().encode('{"kind":"other"}') }]));
+  } catch (e) { threw = (e as Error).message; }
+  check('非音色包被拒', threw.includes('不是 WindScore 音色包'));
+  threw = '';
+  try {
+    parseBank(zipStore([{ name: 'manifest.json', data: new TextEncoder().encode(bankManifest) }]));
+  } catch (e) { threw = (e as Error).message; }
+  check('缺音频条目被拒', threw.includes('缺'));
+  threw = '';
+  try {
+    parseBank(zipStore([{ name: 'manifest.json', data: new TextEncoder().encode(
+      JSON.stringify({ ...JSON.parse(bankManifest), instruments: [{ patch: 300, label: 'x', mp3: 'a', json: 'b' }] }),
+    ) }]));
+  } catch (e) { threw = (e as Error).message; }
+  check('非法音色号被拒', threw.includes('音色号'));
+
+  // 登记：包里的音色覆盖内置（同 patch 41 = 提琴系），来源标成包名
+  check('登记前 41 无音色包', instrumentSource(41) === '内置');
+  const applied = applyBank(bankBytes, '测试包');
+  check('登记了 1 件', applied.length === 1 && applied[0] === 41);
+  check('来源变为音色包', instrumentSource(41) === '测试包');
+  check('标签用包里的名字', instrumentLabel(41) === '小提琴（独奏）');
+  check('音色列表含 41', instrumentPatches().includes(41));
+  // 只登记不解码（包里可能几十件，用哪个才解哪个）：起播前 preload 会补上
+  check('登记后未解码前取不到采样', instrumentSampleFor(41, 60) === null);
+  check('未解码不影响渲染回落', renderSampledNote(new Float32Array(300), point, 60, { sampleRate: 44100, durationSec: 0.2 }).length > 0);
+  // 未登记的号仍是内置 / 无采样
+  check('未登记号回落内置', instrumentSource(73) === '内置');
+  check('未登记号无采样（不解码）', instrumentSampleFor(73, 60) === null);
+  // 移除音色包：立刻注销内存登记，不等重开页面（0.2.188 修）
+  const removedPatches = unregisterBank('测试包');
+  check('注销返回被移除的音色号', removedPatches.length === 1 && removedPatches[0] === 41);
+  check('注销后来源回落内置', instrumentSource(41) === '内置');
+  check('注销后独占号从列表消失', !instrumentPatches().includes(41));
+  check('注销后解码缓存已清', instrumentSampleFor(41, 60) === null);
+  // 再登记一次（模拟重装同号包），确认注销是可逆操作
+  applyBank(bankBytes, '测试包');
+  check('重装同号包恢复覆盖', instrumentSource(41) === '测试包');
+  // 登记变化要通知订阅者（UI 靠它刷新音色下拉，0.3.2）
+  let bankEvents = 0;
+  const off = onInstrumentBanksChange(() => { bankEvents += 1; });
+  applyBank(bankBytes, '测试包');
+  unregisterBank('测试包');
+  off();
+  check('登记 / 注销都通知了订阅者', bankEvents === 2);
+}
+
+{
+  // ── 播放音色覆盖（playTimbre）：按声部覆盖音色 + 八度，不改谱面 ──
+  const base = parseDsl(
+    ['@format 3', '@title t', '@key 1=C', '@beat 4/4', '@patch 66', '', '@part 1 "a"', '1 2 |', '', '@part 2 "b"', '@patch 40', '5 3 |'].join('\n'),
+  ).score!;
+  const tlPatch = buildTimeline(applyTimbre(base, { parts: { '1': { patch: 21 }, '2': { patch: 73 } } }));
+  check('声部覆盖各自生效', tlPatch.filter((e) => e.partId === '1').every((e) => e.patch === 21) && tlPatch.filter((e) => e.partId === '2').every((e) => e.patch === 73));
+  // 覆盖了音色但没覆盖八度 → 八度仍跟谱面（曲目 @patchOct 缺省 0 / 未写）
+  check('未覆盖的八度跟谱面', tlPatch.every((e) => (e.patchOctave ?? 0) === 0));
+  const tlOct = buildTimeline(applyTimbre(base, { parts: { '2': { octave: -1 } } }));
+  check('八度覆盖只动该声部', tlOct.filter((e) => e.partId === '2').every((e) => e.patchOctave === -1 && e.patch === 40) && tlOct.filter((e) => e.partId === '1').every((e) => (e.patchOctave ?? 0) === 0 && e.patch === 66));
+  check('谱面本体不被覆盖改动', base.meta.patch === 66 && scoreParts(base).find((p) => p.id === '2')?.patch === 40);
+  check('无覆盖原样返回', applyTimbre(base) === base);
+  // 0.3.4 旧格式（数字音色）读入归一：数字按音色号处理
+  const tlOld = buildTimeline(applyTimbre(base, { parts: { '1': 21 } as never }));
+  check('旧格式数字音色兼容', tlOld.filter((e) => e.partId === '1').every((e) => e.patch === 21));
+}
+
+{
+  // ── 音色：未指定默认钢琴 + 音色八度（@patchOct）──
+  const plain = parseDsl(['@title 默认音色', '@key 1=C', '@beat 4/4', '1 2 3 1 |'].join('\n'));
+  check('未指定音色默认钢琴', plain.score!.meta.patch === 0);
+  check('默认音色是 DEFAULT_META', DEFAULT_META.patch === 0);
+
+  // 音色八度：谱头 @patchOct 往返 + 时间线透传
+  const withOct = parseDsl(
+    ['@format 3', '@title 音色八度', '@key 1=C', '@beat 4/4', '@patch 66', '@patchOct 1', '',
+     '@part 1 "旋律"', '1 2 3 1 |', '', '@part 2 "伴奏"', '@patchOct -1', '5 3 5 3 |'].join('\n'),
+  );
+  check('@patchOct 解析', withOct.score!.meta.patchOctave === 1);
+  check('声部级 @patchOct 解析', scoreParts(withOct.score!).find((p) => p.id === '2')?.patchOctave === -1);
+  const octBack = serializeDsl(withOct.score!);
+  check('@patchOct 落盘', octBack.includes('@patchOct 1'));
+  check('往返稳定', parseDsl(octBack).score!.meta.patchOctave === 1);
+  const octTl = buildTimeline(withOct.score!);
+  check('声部 1 条目八度 = 1', octTl.filter((e) => e.partId === '1').every((e) => e.patchOctave === 1));
+  check('声部 2 条目八度 = -1', octTl.filter((e) => e.partId === '2').every((e) => e.patchOctave === -1));
+  check('音色号不变', octTl.every((e) => e.patch === 66));
+  // 越界的八度当没写，不打断解析
+  const badOct = parseDsl(withOct ? ['@format 3', '@title x', '@key 1=C', '@beat 4/4', '@patchOct 9', '', '@part 1 "a"', '1 2 |'].join('\n') : '');
+  check('越界 @patchOct 不生效', (badOct.score?.meta.patchOctave ?? 0) === 0);
+}
+
+{
+  // ── 输入试听静音开关（0.2.187）：关掉后输入音符 / 点击音符都不发声 ──
+  check('试听默认开（不静音）', isPreviewMuted() === false);
+  setPreviewMuted(true);
+  check('静音开关生效', isPreviewMuted() === true);
+  // 静音时 previewNote 直接返回：不建 AudioContext（node 里没有，建了必抛）、也不报错
+  let threw = '';
+  try {
+    previewNote(60, 0.28, 0, 0);
+  } catch (e) {
+    threw = String(e);
+  }
+  check('静音时不发声也不报错', threw === '');
+  setPreviewMuted(false);
+  check('可恢复发声', isPreviewMuted() === false);
+  // 指定了未解码的真采样音色时点音：拉懒加载 + 回落钢琴，都不许同步抛错（0.3.8）
+  let previewThrew = '';
+  try {
+    previewNote(60, 0.28, 41);
+  } catch (e) {
+    previewThrew = String(e);
+  }
+  check('未解码音色的点音试听不抛错', previewThrew === '');
+}
+
+{
+  // ── 双细线（乐段结束，0.3.9）：`‖` 往返；`||` 仍是终止线 ──
+  const dbl = parseDsl('@format 3\n1 2 ‖').score!;
+  const dblBar = dbl.events.find((e) => e.kind === 'barline') as BarlineEvent;
+  check('‖ 解析为双细线', dblBar.style === 'double');
+  check('双细线往返写回 ‖', serializeDsl(dbl).includes('‖'));
+  check('三连竖线 ||| 也算双细线', (parseDsl('@format 3\n1 2 |||').score!.events.find((e) => e.kind === 'barline') as BarlineEvent).style === 'double');
+  const fin = parseDsl('@format 3\n1 2 ||').score!;
+  check('|| 仍是终止线（老谱不变）', (fin.events.find((e) => e.kind === 'barline') as BarlineEvent).style === 'final');
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

@@ -6,8 +6,6 @@
  * 约定：本文件及 v2 内核其余模块不得 import 任何 Canvas / DOM API。
  */
 
-export const TICKS_PER_BEAT = 48;
-
 export type Degree = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /**
  * 变音记号：♯ 升、♭ 降、♮ 还原。
@@ -133,15 +131,16 @@ export interface RestEvent extends BaseEvent {
  */
 export interface BarlineEvent extends BaseEvent {
   kind: 'barline';
-  style: 'single' | 'final';
+  /** single = 单细线；double = 双细线（乐段结束）；final = 细线+粗线（全曲终止） */
+  style: 'single' | 'double' | 'final';
   /** 从这条小节线之后起使用的新拍号。 */
   beatAfter?: string;
   /** 此小节线后强制换行，page 同时要求 PDF 换页。 */
   breakAfter?: 'line' | 'page';
   /** 弱起 / 不完全小节开关（§8.2） */
   partial?: boolean;
-  /** `|:` 反复开始 / `:|` 反复结束 */
-  repeat?: 'start' | 'end';
+  /** `|:` 反复开始 / `:|` 反复结束 / `:||:` 双向反复（既是上一段的结束又是下一段的开始） */
+  repeat?: 'start' | 'end' | 'both';
   /** `:|` 的演奏遍数，缺省 2（`:|3` = 三遍） */
   times?: number;
   /**
@@ -217,10 +216,15 @@ export interface ScoreMeta {
   /** 如 "4/4" */
   beat: string;
   bpm: number;
-  /** 全局默认音色，MIDI program 0-127 */
+  /** 全局默认音色，MIDI program 0-127（0 = 钢琴） */
   patch: number;
   /** 仅显示用，如 "Flute" */
   patchName?: string;
+  /**
+   * 音色的**八度偏移**：乐器音区不合适（太低发闷 / 太高失真）时整体挪八度，
+   * 只改发声、不改谱面记谱。±1 = 升 / 降一个八度，建议 ±2 以内。
+   */
+  patchOctave?: number;
   /**
    * 标题下的居中说明行（DSL `@sub`），如「锣钹C20 管弦乐三重奏技法谱」。
    * 缺省（未写过）不显示、不回写
@@ -232,11 +236,11 @@ export interface ScoreMeta {
    */
   notes?: string[];
   /**
-   * 谱面字号（px），缺省 21。数字 / 附点 / 增时线 / 倚音的整体大小随它缩放，
+   * 谱面字号（px），缺省见 DEFAULT_FONT_SIZE。数字 / 附点 / 增时线 / 倚音的整体大小随它缩放，
    * 行高与命中测试一起缩——三处（排版 / 绘制 / 命中）必须同源，见 layout.deriveGlyph。
    */
   fontSize?: number;
-  /** 字间距（px），缺省 0。加在每个记号占位的横向空隙上，正数拉开、负数收紧 */
+  /** 字间距（px），缺省见 DEFAULT_LETTER_SPACING。加在每个记号占位的横向空隙上，正数拉开、负数收紧 */
   letterSpacing?: number;
   /**
    * 行间距增量（px，按字号比例缩放）：行高的额外增加量，0 = 默认紧凑行距。
@@ -249,6 +253,11 @@ export interface ScoreMeta {
    */
   showMeasureNumbers?: boolean;
 }
+
+/** 新建谱面的默认字号（px）——用户 2026-10-23 定：24 */
+export const DEFAULT_FONT_SIZE = 24;
+/** 新建谱面的默认字间距（px），与默认字号配套 */
+export const DEFAULT_LETTER_SPACING = -10;
 
 export interface Score {
   version: 2;
@@ -269,6 +278,13 @@ export interface PartInfo {
   gain: number;
   muted?: boolean;
   solo?: boolean;
+  /** 此声部的合成音色（GM patch 号）；缺省跟随曲目音色 meta.patch。 */
+  patch?: number;
+  /**
+   * 此声部音色的**八度偏移**（±1 = 升 / 降一个八度）：
+   * 乐器音区不合适时整体挪八度，避免音色失真；缺省跟随 meta.patchOctave。
+   */
+  patchOctave?: number;
   /** 关联此演奏声部的歌词行名称；数组位置与音符 lyrics 段号一致。 */
   lyricNames?: string[];
   /** 只决定五线谱的书写音高，不改变已有简谱的实际发声音高。 */

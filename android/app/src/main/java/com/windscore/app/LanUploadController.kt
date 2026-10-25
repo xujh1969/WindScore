@@ -42,15 +42,36 @@ class LanUploadController(private val context: Context, private val onRunningCha
             ?.firstOrNull { it is Inet4Address && it.isSiteLocalAddress && !it.isLoopbackAddress }?.hostAddress
     }
 
+    /**
+     * 个人热点（软 AP）的地址：热点接口不经过 ConnectivityManager（应用看不到这个 Network），
+     * 只能枚举系统网卡。排除移动数据接口（rmnet/ccmni/seth_wlan 等），避免误拿运营商内网
+     * 的 10.x 地址——那种地址绑上去电脑也连不通。热点网段固定是 192.168.x.x 私有地址。
+     */
+    private fun hotspotAddress(): String? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { it.isUp }
+            .filterNot { nif -> nif.name.startsWith("rmnet") || nif.name.startsWith("ccmni") || nif.name.startsWith("seth") }
+            .flatMap { nif -> nif.inetAddresses.asSequence() }
+            .filterIsInstance<Inet4Address>()
+            .firstOrNull { it.isSiteLocalAddress && !it.isLoopbackAddress }
+            ?.hostAddress
+    }.getOrNull()
+
+    /** 可用的局域网地址：Wi-Fi 优先，其次个人热点。都没有 = 无法启动服务。 */
+    private fun lanAddress(): String? = wifiAddress() ?: hotspotAddress()
+
     @Synchronized private fun checkNetwork() {
-        if (running && wifiAddress() != address) stop("无线局域网已断开或地址变化，请重新启动服务")
+        if (running && lanAddress() != address) stop("无线局域网已断开或地址变化，请重新启动服务")
     }
 
     @Synchronized fun start(): String {
         if (running) return status()
         if (!foreground) { message = "请让 WindScore 保持在前台后启动服务"; return status() }
-        val ip = wifiAddress()
-        if (ip == null) { message = "请连接无线局域网，不能通过移动数据或公网启动上传服务"; return status() }
+        val ip = lanAddress()
+        if (ip == null) {
+            message = "请连接无线局域网，或打开个人热点后再启动（仅靠移动数据公网不行）"
+            return status()
+        }
         try {
             val page = { context.assets.open("windscore-upload.html").bufferedReader().use { it.readText() } }
             var candidate = LanUploadServer(ip, 8080, cache, page)

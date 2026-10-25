@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import guide from '../../../docs/user-guide.md?raw';
+import { ExpClose } from './ExpClose';
+import { ThemeToggle } from './ThemeToggle';
 import './help.css';
 
 const ids = ['quick-start', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'staff', 'export', 'jps', 'faq'];
@@ -58,7 +60,7 @@ export function HelpCenter({ initialTopic = 'quick-start', onClose, onSelect, to
   useEffect(() => { article.current?.scrollTo(0, 0); }, [topic?.id]);
   const choose = (id: string): void => { setSelected(id); setQuery(''); onSelect?.(id); };
   return <div className="ws-help-center" onKeyDown={(e) => e.stopPropagation()}>
-    <header className="ws-help-head"><div><strong>WindScore</strong><span>使用帮助</span></div><div className="ws-help-actions">{tools}{onClose ? <button className="v2-btn" onClick={onClose}>关闭帮助</button> : null}</div></header>
+    <header className="ws-help-head"><div><strong>WindScore</strong><span>使用帮助</span></div><div className="ws-help-actions">{tools}{onClose ? <ExpClose onClose={onClose} title="关闭帮助" /> : null}</div></header>
     <div className="ws-help-body">
       <aside className="ws-help-nav">
         <label className="ws-help-search"><span>搜索帮助</span><input autoFocus={!!onClose} type="search" placeholder="试试：歌词、锚点、反复" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
@@ -89,7 +91,19 @@ export function HelpDialog({ initialTopic, dark, onClose }: { initialTopic?: str
 }
 
 export function HelpPage() {
-  const [dark, setDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  // 主题与其他网页页共用一份记忆（ws-theme）：在记谱页切成深色，
+  // 打开帮助页也应该是深色，而不是又回到系统偏好。
+  const [dark, setDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ws-theme');
+      if (saved === 'dark' || saved === 'light') return saved === 'dark';
+    } catch { /* 隐私模式读不到存储：按系统偏好算 */ }
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('ws-theme', dark ? 'dark' : 'light'); } catch { /* 存不了就算了 */ }
+  }, [dark]);
   const initialTopic = location.hash.slice(1) || 'quick-start';
-  return <div className="v2-app ws-help-page" data-theme={dark ? 'dark' : 'light'}><HelpCenter initialTopic={initialTopic} onSelect={(id) => history.replaceState(null, '', `#${id}`)} tools={<><a className="v2-home-btn" href="./index.html">← 返回首页</a><button className="v2-btn" onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button></>} /></div>;
+  // 与其他页面同一枚图标开关：深色 = 太阳，浅色 = 月亮
+  return <div className="v2-app ws-help-page" data-theme={dark ? 'dark' : 'light'}><HelpCenter initialTopic={initialTopic} onSelect={(id) => history.replaceState(null, '', `#${id}`)} tools={<><a className="v2-home-btn" href="./index.html">← 返回首页</a><ThemeToggle dark={dark} onChange={setDark} /></>} /></div>;
 }

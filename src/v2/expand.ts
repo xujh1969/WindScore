@@ -88,7 +88,16 @@ export function expandScore(score: Score): ExpandResult {
     const bar = barAt(i);
     if (!bar) continue;
 
-    if (bar.repeat === 'start') {
+    if (bar.repeat === 'start' || bar.repeat === 'both') {
+      // 双向反复（:||:）先作为上一段的结束弹出配对，再作为新段的开始压栈
+      if (bar.repeat === 'both') {
+        const prev = stack.pop();
+        if (prev === undefined) {
+          // 没有未闭合的 |:：它就只是一次普通反复的开始
+        } else {
+          repeatPair.set(prev, i);
+        }
+      }
       stack.push(i);
       if (stack.length > 2) {
         errors.push(`第 ${measureAt(events, i)} 小节的 |: 让嵌套超过了 2 层（暂不支持更深的嵌套）`);
@@ -138,13 +147,11 @@ export function expandScore(score: Score): ExpandResult {
 
     const sec = enclosing(i);
     if (!sec) {
-      const prev = i > 0 ? events[i - 1] : null;
-      const afterEnd = prev && prev.kind === 'barline' && prev.repeat === 'end';
-      if (bar.repeat === 'end' || afterEnd) {
-        trailingHouses.push(i);
-        continue;
-      }
-      errors.push(`第 ${measureAt(events, i)} 小节的 [${bar.volta.join(',')}] 不在反复段内`);
+      // 一律先收进 trailingHouses，由下面的扩展循环判定：链在反复段上的接链
+      // 展开；孤立的（前面根本没有反复段）在那里报「不在反复段内」。
+      // （不能在这里报——连续外挂房子 `:| [2] A | [3] B` 的 [3] 前一道线
+      // 只是 [2] 房的收尾线，但它是合法的链式延续。）
+      trailingHouses.push(i);
       continue;
     }
     const times = timesOf(sec[1]);
@@ -166,14 +173,24 @@ export function expandScore(score: Score): ExpandResult {
   // （延伸后的结束线是普通小节线，没有 times），所以要记住原结束线的下标
   const endTimes = new Map<number, number>();
   for (const h of trailingHouses) {
-    // 外挂房子的「反复结束线」：合并写法下就是房子线自己，否则是它前一道
-    const endIdx = barAt(h)?.repeat === 'end' ? h : h - 1;
+    // 外挂房子的「反复结束线」：合并写法下就是房子线自己，否则是它前一道。
+    // 连续外挂房子（`:| [2] A | [3] B`）轮到 [3] 时，前一道只是 [2] 房的
+    // 收尾线，但上一轮已把反复段末端延伸到 [3] 的房子线——按已延伸的末端接链，
+    // 遍数仍锚在最初那道 `:|` 上（endTimes 里有记录）。
+    let endIdx = barAt(h)?.repeat === 'end' ? h : h - 1;
     let start: number | undefined;
     for (const [s, e] of repeatPair) if (e === endIdx) start = s;
+    if (start === undefined) {
+      for (const [s, e] of repeatPair) if (e === h) start = s;
+      if (start !== undefined) endIdx = endTimes.get(h) ?? endIdx;
+    }
     if (start === undefined) {
       errors.push(`第 ${measureAt(events, h)} 小节的 [${(barAt(h) as BarlineEvent).volta!.join(',')}] 不在反复段内`);
       continue;
     }
+    // 房号超出遍数（`:|` 两遍却写了 [3]）＝这一遍不存在，房子永远奏不到。
+    // 报错但**照常接链**：这样同一串房子里的后续房子报的也是「超遍数」，
+    // 而不是误导性的「不在反复段内」（反正有错就不展开，产物不会被使用）。
     let end = events.length;
     for (let j = h + 1; j < events.length; j += 1) {
       const b2 = barAt(j);
@@ -186,6 +203,11 @@ export function expandScore(score: Score): ExpandResult {
     voltaEnd.set(h, end);
     repeatPair.set(start, end);
     endTimes.set(end, endIdx);
+    const times = timesOf(endIdx);
+    const bad = (barAt(h) as BarlineEvent).volta!.filter((n) => n < 1 || n > times);
+    if (bad.length > 0) {
+      errors.push(`第 ${measureAt(events, h)} 小节的房子号 ${bad.join(',')} 超出反复遍数 ${times}（这一遍不存在，房子奏不到）`);
+    }
   }
   const timesOfPair = (endIdx: number): number =>
     timesOf(endTimes.get(endIdx) ?? endIdx);
@@ -319,7 +341,7 @@ export function expandScore(score: Score): ExpandResult {
       const ev = events[i];
       const bar = barAt(i);
 
-      if (bar?.repeat === 'start') {
+      if (bar?.repeat === 'start' || bar?.repeat === 'both') {
         const end = repeatPair.get(i);
         // end === to 只有一种合法情况：顶层调用（to = events.length）且反复段
         // 一直盖到谱尾（外挂房子延伸出来的结束线）。嵌套区间里 end 必须严格小于 to
@@ -340,7 +362,9 @@ export function expandScore(score: Score): ExpandResult {
         // 收尾：源谱在 `:|` 之后还接内容（`… :| 2 2 2 2 ||`）时，这道线就是那段的分隔；
         // 后面若是 `||`，pushBar 会让它顶掉这一根，不会出现 `| ||`
         if (end < events.length) pushBar(events[end]);
-        i = end + 1;
+        // 双向反复（:||:）：这道线同时是下一段的开始——回到它本身再走一遍本分支，
+        // 用它自己的配对（repeatPair.get(E) = 下一段的结束线）继续展开
+        i = (events[end] as BarlineEvent | undefined)?.repeat === 'both' ? end : end + 1;
         continue;
       }
 
@@ -538,7 +562,9 @@ export function expandScore(score: Score): ExpandResult {
   // 展开谱的最后要有终止线：源谱末尾是 :| 时它顶替了终止线
   const last = out[out.length - 1];
   if (!last) {
-    return { score: null, errors: ['谱面为空'], warnings, firstIndex, repeatedSections };
+    // 空谱子（刚新建、音符全删完）是合法状态，不算阻断错误——
+    // 展开结果就是「没有可播的谱面」，播放本身另有 timeline 为空的拦截
+    return { score: null, errors: [], warnings, firstIndex, repeatedSections };
   }
   if (last.kind === 'barline') {
     (last as BarlineEvent).style = 'final';

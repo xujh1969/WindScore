@@ -13,7 +13,7 @@
  * 内存里的对齐照常工作，只是刷新后要重来。
  */
 
-import { currentBackend, readBytes, readJson, writeBytes, writeJson } from './storeBackend';
+import { currentBackend, deleteBytes, readBytes, readJson, writeBytes, writeJson } from './storeBackend';
 
 export interface AudioRef {
   /** IndexedDB 里的键：`文件名:字节数` */
@@ -213,6 +213,30 @@ export async function getAudio(key: string): Promise<File | null> {
     return file;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 删除一份音频字节（音色包移除用）：文件后端删磁盘上的文件，
+ * local 兜底删 IndexedDB 记录。删不掉（本来就不在 / 权限）静默收场。
+ */
+export async function removeAudio(key: string): Promise<void> {
+  if (currentBackend() !== 'local') {
+    await deleteBytes(audioFileOf(key));
+    return;
+  }
+  try {
+    const db = await openDb();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('音频删除失败'));
+      });
+    } finally { db.close(); }
+  } catch {
+    /* 删不掉就算了 */
   }
 }
 

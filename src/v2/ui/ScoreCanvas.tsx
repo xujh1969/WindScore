@@ -19,7 +19,7 @@ import { withStaffRows } from '../staffSpacing';
 import type { StaffPitchMode, StaffClef } from '../pitch';
 import { TICKS_PER_BEAT } from '../ticks';
 import { activeHeadsAt, activeMainAt, timelineTicks, type TimelineEntry } from '../timeline';
-import type { Score, LyricLink } from '../types';
+import { DEFAULT_FONT_SIZE, type Score, type LyricLink } from '../types';
 import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
 import { lyricTrackNames } from '../lyrics';
@@ -38,6 +38,8 @@ interface Props {
   fontSize?: number;
   /** 字间距覆盖（px）：同上 */
   letterSpacing?: number;
+  /** 行间距覆盖（px，行高增量）：同上 */
+  lineGap?: number;
   /** 安卓阅读按屏宽重排，窄屏简化谱头并保留谱号空间。 */
   responsive?: boolean;
   selectedIds: ReadonlySet<string>;
@@ -94,6 +96,7 @@ export function ScoreCanvas({
   unit,
   fontSize,
   letterSpacing,
+  lineGap,
   responsive = false,
   selectedIds,
   cursor,
@@ -332,12 +335,12 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
 
     const relayout = () => {
       staticBallReady = false;
-      const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing,
+      const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing, lineGap,
         ...(responsive ? { fitWidth: true, rightPadding: 20 } : {}),
         ...(notation === 'staff' ? {
           staffPitchMode,
-          padding: 96 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
-          staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? 21) / 21,
+          padding: 96 * (fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21,
+          staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21,
         } : {}) };
       const displayScore = responsive && boxWidth() < 560 ? { ...score, meta: { ...score.meta, sub: '', notes: [] } } : score;
       let layout = layoutScore(displayScore, options);
@@ -371,14 +374,28 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     paintRef.current = paint;
     relayout();
 
-    const ro = new ResizeObserver(relayout);
+    // RO 回调里**同步** relayout 会在同一帧内又改变布局（React 状态提交、
+    // surface 高度写入都会跟着变），浏览器检测到尺寸通知投递不完就抛
+    // 「ResizeObserver loop completed with undelivered notifications」。
+    // 挪进 rAF 去重调度：回调只排帧、不写布局，写入发生在渲染帧开头，
+    // 新的尺寸变化下一帧正常投递，不再构成回调栈内的循环
+    // ——与曲库页虚拟列表（AndroidSongList）同一模式，那边从不抛这个错
+    let roFrame = 0;
+    const ro = new ResizeObserver(() => {
+      if (roFrame) return;
+      roFrame = requestAnimationFrame(() => { roFrame = 0; relayout(); });
+    });
     ro.observe(wrap);
     const repaintScroll = () => { if (responsive) paint(playingRef.current ? headRef.current : null); };
     wrap.addEventListener('scroll', repaintScroll, { passive: true });
-    return () => { ro.disconnect(); wrap.removeEventListener('scroll', repaintScroll); };
+    return () => {
+      if (roFrame) cancelAnimationFrame(roFrame);
+      ro.disconnect();
+      wrap.removeEventListener('scroll', repaintScroll);
+    };
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+  }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
   // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
   useEffect(() => {

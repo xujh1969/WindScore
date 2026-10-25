@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ExpClose } from './ExpClose';
 import { addPart, assembleParts, scoreParts } from '../parts';
 import { addLyricTrack, configureLyricTrack, lyricTrackNames, removeLyricTrack } from '../lyrics';
 import type { Score } from '../types';
@@ -28,7 +29,7 @@ export function TrackDialog({ score, partId, verse, remove, onClose, onSave }: {
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
       }
     }}>
-      <div className="v2-exp-head"><strong>{title}</strong><button className="v2-btn" onClick={onClose}>关闭</button></div>
+      <div className="v2-exp-head"><strong>{title}</strong><ExpClose onClose={onClose} /></div>
       <form onSubmit={(e) => {
         e.preventDefault();
         if (remove && verse !== undefined) { onSave(removeLyricTrack(score, partId, verse), partId, null); return; }

@@ -6,6 +6,7 @@ import { AndroidBrand, AndroidDialog, AndroidIcon, type AndroidIconName } from '
 import { importLibrary, metaOfText, normalizeName, onLibraryChange, readLibrary, removeLibraryItem, searchLibrary, setFavorite, uniqueName, type LibraryItem } from './libraryStore';
 import { renameLibraryWithAssets } from './renameLibrary';
 import { readPack } from './packBundle';
+import { isBankFile, loadSavedBanks, saveBank } from './instrumentBank';
 import { audioKey, loadAlign, putAudio, saveAlign } from './alignStore';
 import { initStore } from './storeInit';
 import { ensureMp3 } from '../mp3';
@@ -14,6 +15,7 @@ import songbie from '../../scores/songbie.jps?raw';
 import qinghuaci from '../../scores/qinghuaci.jps?raw';
 import huanlesong from '../../scores/huanlesong.jps?raw';
 import xiaoxingxing from '../../scores/xiaoxingxing.jps?raw';
+import shengrikuaile from '../../scores/shengrikuaile.jps?raw';
 import ensembleDemo from '../../scores/ensemble-demo.jps?raw';
 import './android.css';
 
@@ -21,7 +23,7 @@ type Tab = 'library' | 'community' | 'my';
 const tabs: { id: Tab; label: string; icon: AndroidIconName }[] = [{ id: 'library', label: '曲库', icon: 'music' }, { id: 'community', label: '社区', icon: 'community' }, { id: 'my', label: '我的', icon: 'user' }];
 const collator = new Intl.Collator('zh-Hans-CN-u-co-pinyin', { numeric: true });
 function samples(): LibraryItem[] {
-  return [['茉莉花', molihua], ['送别', songbie], ['青花瓷', qinghuaci], ['欢乐颂', huanlesong], ['小星星', xiaoxingxing], ['重奏练习', ensembleDemo]].map(([name, text], i) => ({ id: `preview-${i}`, name, text, updatedAt: 0, meta: metaOfText(text, name), favorite: i === 0 || i === 2 }));
+  return [['茉莉花', molihua], ['送别', songbie], ['青花瓷', qinghuaci], ['欢乐颂', huanlesong], ['小星星', xiaoxingxing], ['生日快乐（3/4 拍）', shengrikuaile], ['重奏练习', ensembleDemo]].map(([name, text], i) => ({ id: `preview-${i}`, name, text, updatedAt: 0, meta: metaOfText(text, name), favorite: i === 0 || i === 2 }));
 }
 const preview = new URLSearchParams(location.search).get('preview') === '1';
 function initialTheme(): boolean {
@@ -76,7 +78,12 @@ export function AndroidApp() {
   useEffect(() => {
     if (preview) return;
     const off = onLibraryChange(() => setItems(readLibrary()));
-    void initStore().then(() => { setItems(readLibrary()); setReady(true); }).catch(e => setError(String(e)));
+    void initStore().then(async () => {
+      setItems(readLibrary());
+      // 音色包随曲库一起恢复：装过的包下次开 App 直接用
+      await loadSavedBanks().catch(() => undefined);
+      setReady(true);
+    }).catch(e => setError(String(e)));
     return off;
   }, []);
   useEffect(() => {
@@ -129,7 +136,13 @@ export function AndroidApp() {
     setBusy(true); let ok = 0; const bad: string[] = [];
     for (const picked of Array.from(files)) {
       try {
-        if (!picked.name.toLowerCase().endsWith('.wspack')) throw new Error('请选择 .wspack 乐谱包');
+        // 音色包：与乐谱包共用同一个上传入口，按扩展名分流（用户要求的安卓扩充音色入口）
+        if (isBankFile(picked.name)) {
+          const info = await saveBank(picked);
+          setNotice(`已装入音色包「${info.name}」：${info.patches.length} 件音色`);
+          continue;
+        }
+        if (!picked.name.toLowerCase().endsWith('.wspack')) throw new Error('请选择 .wspack 乐谱包（或 .wsbank 音色包）');
         const pack = await readPack(new Uint8Array(await picked.arrayBuffer()));
         if (metaOfText(pack.text).broken) throw new Error('谱面内容无法解析');
         if (preview) {
@@ -165,7 +178,7 @@ export function AndroidApp() {
       {tab === 'my' && !uploadPage && appBuild && <p className="an-build-info">安卓版 {appBuild}</p>}
       {!uploadPage && <nav className="an-nav" aria-label="主导航">{tabs.map(t => <button key={t.id} className={tab === t.id ? 'is-on' : ''} aria-current={tab === t.id ? 'page' : undefined} onClick={() => { if (t.id !== tab) navigate(t.id); }}><span><AndroidIcon name={t.icon}/></span>{t.label}</button>)}</nav>}
     </>}
-    <input ref={file} type="file" accept=".wspack" multiple hidden onChange={e => { void importFiles(e.target.files); e.target.value = ''; }}/>
+    <input ref={file} type="file" accept=".wspack,.zip,.wsbank" multiple hidden onChange={e => { void importFiles(e.target.files); e.target.value = ''; }}/>
     {menu && <AndroidDialog title={menu.name} onClose={() => setMenu(null)} className="an-action-sheet"><button className="an-menu-action" onClick={() => toggleFavorite(menu)}><AndroidIcon name="star"/>{menu.favorite ? '取消收藏' : '收藏乐谱'}</button><button className="an-menu-action" onClick={() => { setRenameValue(menu.name); setRenameError(''); setRenaming(menu); setMenu(null); }} disabled={busy || lan.state.running}><AndroidIcon name="rename"/>重命名</button>{lan.state.running && <p className="an-setting-hint">停用上传服务后可重命名。</p>}<button className="an-menu-action an-danger" onClick={() => { setDeleting(menu); setMenu(null); }}><AndroidIcon name="trash"/>从曲库删除</button></AndroidDialog>}
     {renaming && <AndroidDialog title="重命名乐谱" onClose={() => { if (!renameBusy) setRenaming(null); }}><form onSubmit={e => { e.preventDefault(); void commitRename(); }}>
       <label className="an-rename-field" htmlFor="an-rename-input">乐谱名称<input ref={renameInput} id="an-rename-input" value={renameValue} onChange={e => { setRenameValue(e.target.value); setRenameError(''); }} disabled={renameBusy} autoComplete="off" enterKeyHint="done" aria-invalid={!!renameError} aria-describedby={renameError ? 'an-rename-error' : undefined}/></label>

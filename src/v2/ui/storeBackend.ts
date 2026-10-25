@@ -127,6 +127,15 @@ async function loadHandle(): Promise<DirHandleLike | null> {
   return dir;
 }
 
+/**
+ * 用户取消了选目录（或内嵌预览环境根本打不开原生选择器，直接 abort）。
+ * 取消**不是错误**：界面应当静默收场，不该弹红字。
+ * 各调用点用它判断要不要吞掉报错。
+ */
+export function isPickCancelled(err: unknown): boolean {
+  return err instanceof Error && err.message === '未选择文件夹';
+}
+
 /** Web：让用户挑一个文件夹当曲库（Chrome / Edge） */
 export async function pickLibraryFolder(): Promise<void> {
   const picker = (
@@ -135,7 +144,17 @@ export async function pickLibraryFolder(): Promise<void> {
     }
   ).showDirectoryPicker;
   if (!picker) throw new Error('这个浏览器不支持文件夹模式——请用 Chrome 或 Edge');
-  const dir = await picker({ mode: 'readwrite' });
+  let dir: DirHandleLike;
+  try {
+    dir = await picker({ mode: 'readwrite' });
+  } catch (e) {
+    // 浏览器把「用户点了取消」也抛成 AbortError（The user aborted a request.）；
+    // 内嵌预览这类环境连选择器都打不开，同样 abort。统一翻译成「未选择文件夹」，
+    // 让界面走「取消 = 什么都不发生」的路径，而不是把英文原文当故障弹出来。
+    const name = (e as { name?: string } | null)?.name;
+    if (name === 'AbortError') throw new Error('未选择文件夹');
+    throw e;
+  }
   await saveHandle(dir);
   rootDir = dir;
   folderName = dir.name;
@@ -359,4 +378,27 @@ export async function readBytes(rel: string): Promise<Uint8Array | null> {
     return null;
   }
   return null;
+}
+
+/**
+ * 删除一个二进制文件（音色包移除时把包文件本体一起删掉）。
+ * 文件本来就不在 / 权限不够都不算错——索引已经摘掉，残留文件无害，别把 UI 卡在报错上。
+ */
+export async function deleteBytes(rel: string): Promise<void> {
+  try {
+    if (backend === 'folder') {
+      const parts = rel.split('/');
+      let dir = folderBackend();
+      for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: false });
+      await dir.removeEntry?.(parts[parts.length - 1]!);
+      return;
+    }
+    if (backend === 'tauri') {
+      const fs = await import('@tauri-apps/api/fs');
+      const p = await tauriPath(rel);
+      if (await fs.exists(p)) await fs.removeFile(p);
+    }
+  } catch {
+    /* 删不掉就算了：索引已摘，见上 */
+  }
 }

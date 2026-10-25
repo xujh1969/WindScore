@@ -4,6 +4,7 @@ import { legacyPitch, pitchMidi } from './pitch';
 import { scoreParts } from './parts';
 import type { Score } from './types';
 import { staffContentRight } from './staffBounds';
+import { TICKS_PER_BEAT } from './ticks';
 
 export interface StaffCurve {
   line: number;
@@ -107,7 +108,7 @@ export function buildStaffCurves(score: Score, staff: StaffLayout): StaffCurve[]
         if (x1 <= x0) continue;
         const start = first ? a.glyph : notes[0];
         const end = last ? b.glyph : notes[notes.length - 1];
-        const stemEnd = (n: StaffGlyph) => n.kind === 'note' && (n.baseTicks ?? n.ticks) < 192
+        const stemEnd = (n: StaffGlyph) => n.kind === 'note' && (n.baseTicks ?? n.ticks) < TICKS_PER_BEAT * 4
           ? n.beamEnd ?? n.y + (n.up ? -3.5 : 3.5) * sp : n.y;
         // 两端固定在符头附近，端点自身的符干不参与抬高曲线。
         const between = notes.filter(n => n !== start && n !== end && n.x > x0 && n.x < x1);

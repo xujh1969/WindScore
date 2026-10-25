@@ -418,12 +418,13 @@ console.log('[导出 · 离线混音]');
   const over = mixStems({ stems: [{ buffer: dc(1000), gain: 1 }], durationSec: 0.2, sampleRate: 1000 });
   check('伴奏比目标长时截断，不越界', over.length === 200 && over.channels[0]![199] === 1);
 
-  // 合成音：三角波 + 包络
+  // 合成音：钢琴音色（泛音列各自衰减 + 槌击噪声 + 制音器余韵）
   const s = synthNotes({ notes: [{ startSec: 0.5, endSec: 1, midi: 69 }], durationSec: 2, sampleRate: 8000 });
   check('合成音：起点之前静音', s.channels[0]![100] === 0);
   check('合成音：音内非零', peakOf(s) > 0.05, String(peakOf(s)));
   check('合成音：包络渐入（前 1ms 明显小于中段）', s.channels[0]![4000]! < Math.abs(s.channels[0]![6000]!));
-  check('合成音：音结束后静音', s.channels[0]![8100] === 0);
+  check('合成音：松键后有制音器余韵（不是立刻断掉）', s.channels[0]![8100] !== 0);
+  check('合成音：余韵之后静音', s.channels[0]![9000] === 0);
   const short = synthNotes({ notes: [{ startSec: 0, endSec: 0.001, midi: 60 }], durationSec: 0.5, sampleRate: 8000 });
   check('极短的音也有 60ms 尾巴（不会被吃掉）', peakOf(short) > 0, String(peakOf(short)));
   const over2 = synthNotes({ notes: [{ startSec: 5, endSec: 6, midi: 60 }], durationSec: 1, sampleRate: 8000 });

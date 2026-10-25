@@ -11,7 +11,7 @@
 
 import { measureStaffInk } from './staffInk';
 import type { StaffPitchMode } from './pitch';
-import { beamCount, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
+import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
 import { layoutEnsemble } from './ensembleLayout';
 import { meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, type LyricLine } from './lyricLines';
@@ -25,6 +25,7 @@ import type {
   NoteEvent,
   Score,
 } from './types';
+import { DEFAULT_FONT_SIZE, DEFAULT_LETTER_SPACING } from './types';
 
 export interface HitBox {
   eventId: string;
@@ -79,8 +80,8 @@ export interface PlacedItem {
   staffAfterInk?: number;
   /** 断音 / 顿音（小圆点），画在音符上方 */
   staccato?: boolean;
-  /** 反复记号：这一格是小节线 + 反复点（start = 右侧两点，end = 左侧两点） */
-  repeat?: 'start' | 'end';
+  /** 反复记号：这一格是小节线 + 反复点（start = 右侧两点，end = 左侧两点，both = 两侧都有） */
+  repeat?: 'start' | 'end' | 'both';
   /** `:|3` 的遍数，画在反复点上方 */
   repeatTimes?: number;
   /** 房子号（`[1]` → [1]），画在括线里 */
@@ -95,6 +96,8 @@ export interface PlacedItem {
   hairpin?: 'cresc' | 'dim';
   lyrics?: string[];
   final?: boolean;
+  /** 双细线（乐段结束）：画两根细线 */
+  double?: boolean;
   partial?: boolean;
   beatAfter?: string;
   breakAfter?: 'line' | 'page';
@@ -292,6 +295,8 @@ export interface LayoutOptions {
   fontSize?: number;
   /** 字间距覆盖（px）：同上，不给 = 跟随谱面 meta.letterSpacing */
   letterSpacing?: number;
+  /** 行间距覆盖（px，在默认行高上加的量）：不给 = 跟随谱面 meta.lineGap */
+  lineGap?: number;
   lineHeight?: number;
   padding?: number;
   /** 自适应阅读可单独缩小右边距，保留五线谱左侧谱号空间。 */
@@ -374,14 +379,14 @@ export const GLYPH: GlyphMetrics = {
   accW: 9,
   octaveStep: 7,
   octaveBase: 17,
-  octaveClear: 7,
-  beamLine: 1.6,
-  beamTop: 15,
-  beamStep: 5.5,
+  octaveClear: 5,
+  beamLine: 1.1,
+  beamTop: 10,
+  beamStep: 3,
   barHalf: 21,
   arcBase: 24,
   arcTieBase: 19,
-  selHalfH: 14,
+  selHalfH: 12,
   caretHalf: 16,
   markTop: 44,
   tupletDrop: 27,
@@ -508,6 +513,18 @@ function beatsPerMeasureOf(beat: string): number {
   return n * (4 / d);
 }
 
+/**
+ * 小节线的占位宽：竖线画在格子正中，两侧自然形成空隙给插入点站。
+ * 负字间距只收紧音符格、不跟进这里——占位被压到 8k 以下时插入点就没了
+ * 可站的空间（实测 @space -10 时两侧只剩 ~6px）。带反复记号的多留一点：
+ * 两点画在竖线旁边，不然会压到相邻的音。
+ */
+function barlineWidthOf(bar: BarlineEvent, k: number, spacing: number): number {
+  const base = bar.style === 'final' ? 26 : bar.repeat === 'both' ? 32 : bar.style === 'double' || bar.repeat ? 24 : 20;
+  const extra = bar.beatAfter ? 30 : 0;
+  return Math.max((base * .4 + extra) * k, (base + extra) * k + Math.max(0, spacing));
+}
+
 /** 还原写法中的增时线条数：ticks 去掉附点后按整拍切分 */
 function dashCountOf(ticks: number, dot: 0 | 1 | 2): number {
   const factor = dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75;
@@ -529,21 +546,22 @@ export const METER_LEAD = 30;
 
 export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   if (score.parts?.length) return layoutEnsemble(score, opts, layoutScore);
-  const unit = opts.unit ?? 1.3;
+  // unit 是 px/tick；用「每拍多少像素」表达，改 tick 精度时谱面视觉不变
+  const unit = opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT;
   // 版式度量随谱面字号派生（缺省 21px = 基准值，尺寸与老文件完全一致）；
   // opts.fontSize / opts.letterSpacing 是播放页的观看偏好覆盖，谱面本身不变
-  const fontSize = opts.fontSize ?? score.meta.fontSize ?? 21;
+  const fontSize = opts.fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
   /** 字间距（px）：加在每个记号的占位宽度上，正数拉开、负数收紧 */
-  const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? 0;
+  const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
   // 行高要容得下自下而上的四层：减时线 → 音符 → 连音线 → 换气 / 吐音标记。
-  // 房子括线贴着小节线顶端画（y − barHalf − 5，遍数数字最高到基线上方约 39px），
+  // 房子括线悬在小节线上方画（横线 y − barHalf − 16，数字最高到基线上方约 35px），
   // 行高 86 的上半行（43px）装得下，不用为它加高
   const verses = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
   const lyricBottom = (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 64 : 44) + verses * 24;
   // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 原紧凑行距
-  const lineGap = score.meta.lineGap ?? 0;
+  const lineGap = opts.lineGap ?? score.meta.lineGap ?? 0;
   const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
@@ -681,11 +699,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 小节线留出较宽的占位：竖线画在格子正中，两侧自然形成空隙，
     // 插入点才有地方可站，不会和竖线糊在一起。
     // 带反复记号的那根线还要多留一点：两点画在竖线旁边，不然会压到相邻的音。
-    else if (isBarrier(ev)) {
-      const bar = ev as BarlineEvent;
-      const base = bar.style === 'final' ? 26 : bar.repeat ? 24 : 20;
-      w = Math.max((base * .4 + (bar.beatAfter ? 30 : 0)) * k, (base + (bar.beatAfter ? 30 : 0)) * k + spacing);
-    } else if (ev.kind === 'directive') {
+    else if (isBarrier(ev)) w = barlineWidthOf(ev as BarlineEvent, k, spacing); else if (ev.kind === 'directive') {
       // 括号记号画在音符旁边，比力度 / 标注文字窄（那两个画在谱行下方、独占一格）
       w = Math.max(8 * k, (ev.type === 'paren' ? 15 : 26) * k + spacing);
     } else if (ev.kind === 'jump') w = Math.max(16 * k, 26 * k + spacing);
@@ -711,7 +725,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   for (let i = 0; i < widths.length; i++) {
     const ev = widths[i].ev;
     if (ev.kind !== 'barline') continue;
-    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === 'start' || ev.volta ? i : i + 1;
+    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === 'start' || ev.repeat === 'both' || ev.volta ? i : i + 1;
     if (cut > measureCuts[measureCuts.length - 1]) measureCuts.push(cut);
   }
   if (measureCuts[measureCuts.length - 1] !== widths.length) measureCuts.push(widths.length);
@@ -902,7 +916,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
     const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
     const lastBar = widths[to - 1];
-    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - Math.max(8 * k, 20 * k + spacing)) / 2 : 0;
+    // 行末小节线的墨迹（竖线居中）要落在右锚线上，格子按占位公式探出半格；
+    // 基准必须与 barlineWidthOf 同源，否则负字间距下右缘会多探出 5px
+    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - barlineWidthOf(lastBar.ev as BarlineEvent, k, spacing)) / 2 : 0;
     const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
     const advances = new Map<number, number>();
     if (!opts.positions) units.forEach((u, ui) => {
@@ -994,6 +1010,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           x: cx,
           w,
           final: bar.style === 'final',
+          double: bar.style === 'double',
           // 小节号：这条线**结束**的是第几小节（与报错「第 N 小节」同口径）。
           // 谱面开头那根线是第 1 小节的左边界，不编号也不推进计数——否则所有
           // 小节号会偏一位（|: 开头的谱实测踩到）
@@ -1024,6 +1041,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 前半段不能当成"少拍"来报假警告。
     // 未满与超出都报（未满 ⚠ 超出 ✗）——但两种情况例外：
     //   弱起小节本身就不满；弱起曲的最后一个小节与弱起互补，也允许不满。
+    //   弱起线的两种写法都豁免：|{partial} 放在小节**开头**（measurePartial，
+    //   豁免本小节）或**结尾**（it.partial，豁免刚结束的这小节）——后者是
+    //   更顺手的书写顺序（先写弱起的音、再收线），此前只认前者会误报。
     const badges: PlacedBadge[] = [];
     {
       let acc = 0;
@@ -1042,7 +1062,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           acc += it.ticks ?? 0;
           open = true;
         } else if (it.kind === 'barline') {
-          if (open && complete && !measurePartial) {
+          if (open && complete && !(measurePartial || it.partial)) {
             const beats = acc / TICKS_PER_BEAT;
             const exp = expected / TICKS_PER_BEAT;
             if (acc > expected) {
@@ -1090,7 +1110,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const inkLeft = (m: PlacedItem) =>
       m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
     const beamX0 = (m: PlacedItem) => inkLeft(m) + 1.5;
-    const beamX1 = (m: PlacedItem) => inkLeft(m) + glyph.nominalWidth - 0.5;
+    // 线的右端：默认止于数字墨迹右缘；**末成员带附点时延伸到附点下面**——
+    // 记谱上减时线覆盖整个音（含附点），停在数字右缘会显得附点悬在线外
+    //（用户实测「3.」的线只到 3）。附点位置与 paint.drawGlyph 的公式一致：
+    // gx + gw + 5 + i·dotGap，末颗半径 dotR，再留 1px 让线盖住点的中心
+    const beamX1 = (m: PlacedItem) => {
+      const end = inkLeft(m) + glyph.nominalWidth - 0.5;
+      if (!m.dot) return end;
+      return inkLeft(m) + glyph.nominalWidth + 5 + (m.dot - 1) * glyph.dotGap + glyph.dotR + 1;
+    };
     /** 整个字形簇（数字 + 附点 + 增时线）的右缘：连线末端要盖到最后一个增时线 */
     const clusterRight = (m: PlacedItem): number => {
       const s = clusterSpan(m, glyph.nominalWidth, glyph);
@@ -1138,10 +1166,12 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       }
       // 组内没人被细分（全 ≥ 1 拍）就不画减时线
       if (members.every((m) => (m.beams ?? 0) < 1)) continue;
-      beams.push({ x0, x1, level: 1, gray: groupGray });
 
-      // 更深的减时线：每一级只连接实际具有该级线数的连续成员。
-      for (let level = 2; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
+      // 每一级线只连接实际具有该级线数的**连续**成员。一级线不能例外：
+      // 复拍子的连通组（9/8 的 1½ 拍）里混着 beams=0 的整拍成员——
+      // 「1 拍 + 2×1/4 拍」= 四分 + 两个十六分，一级线若贯穿全组，
+      // 四分音符看起来就成了八分。与 GroupGlyph 预览的 runs 逻辑同构。
+      for (let level = 1; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
         let s = 0;
         while (s < members.length) {
           if ((members[s].beams ?? 0) < level) { s++; continue; }
@@ -1204,17 +1234,12 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       chain: PlacedItem[],
       kind: 'slur' | 'tie',
     ): void => {
-      // 端点 = 首音数字墨迹**右缘** → 末音**整个字形簇（含增时线）的右缘**：
-      // 跨小节的连线要一直盖到第二小节最后一个增时线（`2---|2---|` 用户要求），
-      // 停在末音数字左缘会把第二小节整段时值露在连线外。
-      // 复用减时线的 inkLeft（与绘制层数字起笔公式一致，变音/倚音自动对准）；
-      // 簇右缘用 clusterSpan——与选中框 / 命中测试同口径，附点与增时线都算进去。
-      // 两音贴得太近（负字间距）时中间放不下弧，起点退回首音数字左缘整段盖过。
-      const fromRight = inkLeft(a) + glyph.nominalWidth;
-      const toLeft = inkLeft(b);
-      const toRight = clusterRight(b);
-      const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
-      const x1 = toRight;
+      // 端点 = 首音数字墨迹**正上方**（中心）→ 末音数字墨迹正上方（中心）：
+      // 弧关于音符组对称，不再偏向一侧（旧版从首音右缘起到末音簇右缘，
+      // 整条弧挂在整个音符组的右侧，用户实测不对）。
+      // 复用减时线的 inkLeft（与绘制层数字起笔公式一致，变音/倚音自动对准）。
+      const x0 = inkLeft(a) + glyph.nominalWidth / 2;
+      const x1 = inkLeft(b) + glyph.nominalWidth / 2;
       const span = x1 - x0;
       if (span < 10) return;
       // tight（链上无技法记号）弧贴近音符，拱高上限也压小：
@@ -1529,8 +1554,11 @@ function clusterLeft(it: PlacedItem, g: GlyphMetrics): number {
 function clusterRight(it: PlacedItem, g: GlyphMetrics): number {
   // 后倚音右对齐到格内（与绘制层的 5px 内缩一致，随字号缩放）
   if (it.graceAfter?.length) return it.x + it.w - 5 * (g.fontSize / 21);
-  const shift = (it.accW ?? 0) + (it.graceInk ?? 0);
-  return it.x + shift + Math.min(it.w - shift, g.glyphRight);
+  // 其余与 clusterSpan 同口径：增时线按真实横坐标（dashXs）算右缘——
+  // 长音（6--）的增时线摊满整个格子，只算到数字右侧固定 22px 的话，
+  // 插入光标会画进增时线中间（用户实测）
+  const s = clusterSpan(it, g.nominalWidth, g);
+  return s.x + s.w;
 }
 
 /** 从 from 起按 dir 找最近的、墨迹落在谱行高度带里的记号 */

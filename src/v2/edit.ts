@@ -6,13 +6,14 @@
  * 时值必须由用户后续通过框选 + 档位指定。
  */
 
+import { assembleParts, partScore, scoreParts } from './parts';
 import { distribute } from './reseat';
 import { normalizeKey } from './timeline';
-import { groupTicks } from './meter';
+import { groupTicks, groupTierBeats, meterAt } from './meter';
 import {
-  durationTiers,
   isLegalTick,
   TICKS_PER_BEAT,
+  tupletBeamCount,
   withDots,
   undotTicks,
   type DurationTier,
@@ -200,7 +201,7 @@ export function insertRest(score: Score, at: number): Score {
   return insert(score, at, rest);
 }
 
-export function insertBarline(score: Score, at: number, style: 'single' | 'final' = 'single'): Score {
+export function insertBarline(score: Score, at: number, style: 'single' | 'double' | 'final' = 'single'): Score {
   const id = newIds(score).ev;
   return insert(score, at, { id, kind: 'barline', style });
 }
@@ -276,7 +277,7 @@ export function setAccidental(score: Score, id: string, acc?: Accidental): Score
 }
 
 /** 改小节线样式。键盘上连按两次 `|` 就是终止线（对应 DSL 的 `||`） */
-export function setBarlineStyle(score: Score, id: string, style: 'single' | 'final'): Score {
+export function setBarlineStyle(score: Score, id: string, style: 'single' | 'double' | 'final'): Score {
   return {
     ...score,
     events: score.events.map((e) => (e.id === id && e.kind === 'barline' ? { ...e, style } : e)),
@@ -306,13 +307,13 @@ export function pressBarline(score: Score, at: number): { score: Score; cursor: 
  * 反复记号就是这条线自己的状态（`|` → `|:` / `:|`），
  * 若像早期那样往光标处插一个独立记号，谱面就会多出一条线（`| |: 5 6 …`）。
  *
- * repeat 传 undefined = 取消（回到普通小节线）；`'start'` 与 `'end'` 互斥，
- * 同一根线不能既是反复开始又是反复结束。
+ * repeat 传 undefined = 取消（回到普通小节线）；`'both'`（双向反复 `:||:`）=
+ * 既是上一段的结束又是下一段的开始。
  */
 export function setBarlineRepeat(
   score: Score,
   id: string,
-  repeat?: 'start' | 'end',
+  repeat?: 'start' | 'end' | 'both',
   times?: number,
 ): Score {
   return {
@@ -474,6 +475,19 @@ export function shiftOctave(score: Score, id: string, delta: number): Score {
     ...score,
     events: score.events.map((e) =>
       e.id === id && e.kind === 'note'
+        ? { ...e, octave: Math.max(-3, Math.min(3, e.octave + delta)) }
+        : e,
+    ),
+  };
+}
+
+/** 升 / 降 8 度作用于整个选区（所有选中音一起移动），封顶规则与 shiftOctave 一致 */
+export function shiftOctaveMany(score: Score, ids: readonly string[], delta: number): Score {
+  const set = new Set(ids);
+  return {
+    ...score,
+    events: score.events.map((e) =>
+      set.has(e.id) && e.kind === 'note'
         ? { ...e, octave: Math.max(-3, Math.min(3, e.octave + delta)) }
         : e,
     ),
@@ -1005,20 +1019,31 @@ export function removeEvent(score: Score, id: string): Score {
     const g = score.groups.find((x) => x.id === gid);
     if (g) {
       const memberIds = g.memberIds.filter((m) => m !== id);
-      if (memberIds.length >= 2) {
-        const parts = distribute(g.totalTicks, memberIds.length);
+      const parts = memberIds.length >= 2 ? distribute(g.totalTicks, memberIds.length) : [];
+      // 重均分必须**全员合法 tick**：1½ 拍组（9/8 的 10080）删成 5 音会均分出
+      // 2016（=10080/5）——不在合法时值表里、也没有记谱写法，序列化直接抛
+      // 「没有对应的写法」白屏（用户实测删空乐谱）。与 setDot 同一守卫惯例：
+      // 分不出合法值就解散组，各音保留原时值——删音本来就让总时值缩水，
+      // 小节未满交给拍数校验徽标说话。
+      const ok = parts.length === memberIds.length && parts.every((p) => isLegalTick(p) && p > 0);
+      if (ok) {
         const byId: Record<string, number> = {};
-        memberIds.forEach((m, i) => (byId[m] = parts[i]));
-        const patched = events.map((e) =>
-          e.id in byId ? { ...e, ticks: byId[e.id] } : e,
-        );
+        memberIds.forEach((m, i) => (byId[m] = parts[i]!));
+        const patched = events.map((e) => {
+          if (!(e.id in byId)) return e;
+          const v = byId[e.id]!;
+          // 重均分的值必须重算附点：残留旧 dot 会造出 tick 与附点矛盾的状态
+          //（如 2240 = 1/3 拍却带 dot=1，序列化反推不出写法直接抛错白屏）。
+          // decodeDuration 优先无附点解；连音成员（1/3 拍等）不在值域 → 显式清 0
+          return { ...e, ticks: v, dot: decodeDuration(v)?.dots ?? 0 };
+        });
         return {
           ...score,
           events: patched,
           groups: groups.map((x) => (x.id === gid ? { ...x, memberIds } : x)),
         };
       }
-      // 剩不到 2 个成员 -> 解散组
+      // 剩不到 2 个成员，或重均分产不出合法时值 → 解散组
       groups = groups.filter((x) => x.id !== gid);
     }
   }
@@ -1040,12 +1065,12 @@ export interface TierCandidate {
   dots?: (0 | 1 | 2)[];
 }
 
-function beatLabel(t: number): string {
+export function beatLabel(t: number): string {
   const beats = t / TICKS_PER_BEAT;
   if (Number.isInteger(beats)) return `${beats} 拍`;
   // 1/4 拍、1/3 拍（三连音）、3/4 拍（附点八分）都要说成人话。
   // 只试 2 的幂会漏掉 1/3，只试 1/2 会把 1/4 显示成「0.25 拍」。
-  for (const den of [2, 3, 4, 6, 8, 12, 16]) {
+  for (const den of [2, 3, 4, 5, 6, 7, 8, 12, 16]) {
     const num = Math.round(beats * den);
     if (num > 0 && Math.abs(beats * den - num) < 1e-6) {
       return num === 1 ? `1/${den} 拍` : `${num}/${den} 拍`;
@@ -1055,69 +1080,263 @@ function beatLabel(t: number): string {
 }
 
 /**
- * 候选划分（§6.4）：n 为 2 的幂时均分无歧义直接应用；
- * n = 3/5/6/7 时给出前八后十六、前十六后八、n 连音三选一。
+ * 候选划分（§6.4）：均分、前八后十六 / 前十六后八、附点切分（两音）、
+ * 对称切分（三音）、二分组合，以及 n = 3/5/6/7 时的 n 连音。
+ * 常用组合覆盖所有音数——哪怕只有均分一档也要弹面板（用户要求：
+ * 4/6/7/8 音选档位后要能看到候选并有「自定义组合」入口，不能静默画默认值）。
  */
 export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
   const even = totalTicks / n;
   /** 每个音的 tick 都必须是合法粒度，否则写回去就是 I4 违反（如 3 tick） */
   const legal = (c: TierCandidate): boolean => c.ticks.every((x) => isLegalTick(x));
+  const same = (a: TierCandidate, b: TierCandidate): boolean =>
+    a.tuplet === b.tuplet &&
+    JSON.stringify(a.ticks) === JSON.stringify(b.ticks) &&
+    JSON.stringify(a.dots ?? null) === JSON.stringify(b.dots ?? null);
+  const push = (out: TierCandidate[], c: TierCandidate): void => {
+    if (!legal(c)) return;
+    if (out.some((x) => same(x, c))) return;
+    out.push(c);
+  };
 
   if (n === 1) return [{ label: `整 ${beatLabel(totalTicks)}`, ticks: [totalTicks] }];
-  if (n === 2 || n === 4 || n === 8) {
-    const out =
-      Number.isInteger(even)
-        ? [{ label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) }].filter(legal)
-        : [];
-    // 两音的附点切分（与三音的「前八后十六」同思路）：附点音占 3t/4、短音占 t/4，
-    // 两个方向各一档。附点音的基准正好是均分值（1.5 × t/2 = 3t/4），所以带 dot=1。
-    // t 不能被 4 整除或 3t/4 不是合法 tick（如 t=12 → 9/3、t=36 → 27）就自然出局。
-    if (n === 2 && totalTicks % 4 === 0) {
-      const q = totalTicks / 4;
-      const a = totalTicks - q;
-      const dotted = (first: boolean): TierCandidate => ({
-        label: `${first ? '前音' : '后音'}附点 ${beatLabel(a)} + ${first ? '后音' : '前音'} ${beatLabel(q)}`,
-        ticks: first ? [a, q] : [q, a],
-        dots: first ? [1, 0] : [0, 1],
-      });
-      out.push(dotted(true), dotted(false));
-    }
-    return out.filter(legal);
-  }
 
   const out: TierCandidate[] = [];
+
+  // 前八后十六 / 前十六后八的泛化：前（后）一半时值 + 其余均分（n=2 退化成均分，不重复给）。
+  // 「前八后十六」这个名字只对真·八分+十六分（2 幂体系）成立；6/8 系的
+  // ¾拍+2×3/8 拍这类划分套这个名字会误导（八/十六是 2 幂词汇），用通用写法。
+  // 两侧成员都必须**可书写**（decode 可解或靠增时线）：n=4 时 restEach 会算出
+  // 1/6 拍（1120，六连音成员值），单独出现在非连音组里没有对应记号，不能给
+  const writable = (t: number): boolean => !!decodeDuration(t) || durationShape(t).dashes > 0;
   const half = totalTicks / 2;
   const restEach = half / (n - 1);
-  if (Number.isInteger(half) && Number.isInteger(restEach) && restEach > 0) {
-    out.push({ label: `前八后十六（${beatLabel(half)} + ${n - 1}×${beatLabel(restEach)}）`, ticks: [half, ...Array(n - 1).fill(restEach)] });
-    out.push({ label: `前十六后八（${n - 1}×${beatLabel(restEach)} + ${beatLabel(half)}）`, ticks: [...Array(n - 1).fill(restEach), half] });
+  if (n >= 3 && Number.isInteger(half) && Number.isInteger(restEach) && restEach > 0
+    && writable(half) && writable(restEach)) {
+    const classic = half === TICKS_PER_BEAT / 2 && restEach === TICKS_PER_BEAT / 4;
+    const fwd = classic ? '前八后十六' : `前 ${beatLabel(half)}`;
+    const bwd = classic ? '前十六后八' : `后 ${n - 1}×${beatLabel(restEach)}`;
+    push(out, { label: `${fwd}（${beatLabel(half)} + ${n - 1}×${beatLabel(restEach)}）`, ticks: [half, ...Array(n - 1).fill(restEach)] });
+    push(out, { label: `${bwd}（${n - 1}×${beatLabel(restEach)} + ${beatLabel(half)}）`, ticks: [...Array(n - 1).fill(restEach), half] });
   }
-  // 三音的对称切分：两侧十六分夹一个八分（1/4 + 1/2 + 1/4）——切分音的常见形态
+  // 两音的附点切分：附点音占 3t/4、短音占 t/4，两个方向各一档。
+  // 附点音的基准正好是均分值（1.5 × t/2 = 3t/4），所以带 dot=1。
+  // t 不能被 4 整除或 3t/4 不是合法 tick（如 t=12 → 9/3、t=36 → 27）就自然出局。
+  if (n === 2 && totalTicks % 4 === 0) {
+    const q = totalTicks / 4;
+    const a = totalTicks - q;
+    const dotted = (first: boolean): TierCandidate => ({
+      label: `${first ? '前音' : '后音'}附点 ${beatLabel(a)} + ${first ? '后音' : '前音'} ${beatLabel(q)}`,
+      ticks: first ? [a, q] : [q, a],
+      dots: first ? [1, 0] : [0, 1],
+    });
+    push(out, dotted(true));
+    push(out, dotted(false));
+  }
+  // 三音的对称切分：两侧短音夹一个长音（1/4 + 1/2 + 1/4）——切分音的常见形态
   const quarter = totalTicks / 4;
   if (n === 3 && Number.isInteger(quarter) && quarter > 0) {
-    out.push({ label: '前1/4拍 + 中1/2拍 + 后1/4拍', ticks: [quarter, totalTicks / 2, quarter] });
+    push(out, {
+      label: `前 ${beatLabel(quarter)} + 中 ${beatLabel(totalTicks / 2)} + 后 ${beatLabel(quarter)}`,
+      ticks: [quarter, totalTicks / 2, quarter],
+    });
   }
-  const tupletEach = Math.round(even);
-  if (tupletEach > 0) {
-    out.push({ label: `${n} 连音（每音 ${beatLabel(tupletEach)}，标号 ${n}）`, ticks: Array(n).fill(tupletEach), tuplet: n });
+  // 二分组合：前 m 音均分前半 + 后 n-m 音均分后半。两侧的均分值都必须是
+  // **可书写的常规时值**（带连音语义的混合划分 applyTier 表达不了，跳过）。
+  // 从中间的切分点向外取，最多两档——控制候选数量（用户要求常用而非穷举）
+  if (n >= 4) {
+    const ms = Array.from({ length: n - 1 }, (_, i) => i + 1).sort(
+      (a, b) => Math.abs(a - n / 2) - Math.abs(b - n / 2),
+    );
+    let added = 0;
+    for (const m of ms) {
+      if (added >= 2) break;
+      const a = half / m;
+      const b = half / (n - m);
+      if (a <= 0 || b <= 0 || !Number.isInteger(a) || !Number.isInteger(b)) continue;
+      if (!decodeDuration(a) || !decodeDuration(b)) continue;
+      const before = out.length;
+      push(out, {
+        label: `前 ${m} 音各 ${beatLabel(a)} + 后 ${n - m} 音各 ${beatLabel(b)}`,
+        ticks: [...Array(m).fill(a), ...Array(n - m).fill(b)],
+      });
+      if (out.length > before) added += 1;
+    }
+  }
+  // 均分殿后：均分值能写成常规时值（decodeDuration 可解）就是普通均分，
+  // 不管几个音——6/8 里 3 个八分凑满一大拍是**自然划分**，不是三连音（手册 §4.2）；
+  // 只有均分值本身不可书写（1 拍 ÷ 3 = 2240 这种）才挂连音标号，且仅 3/5/6/7 音。
+  // 连音组还有**跨度 ≤ 1 拍**的硬约束（I2 对连音组恒按 1 拍封顶；两拍连音
+  // 在现有 DSL 无无损写法），6/4 的 2 拍档 × 6 音就不该出六连音候选
+  if (Number.isInteger(even) && even > 0) {
+    const plain = decodeDuration(even);
+    if (plain) {
+      push(out, { label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) });
+    } else if ([3, 5, 6, 7].includes(n) && totalTicks <= TICKS_PER_BEAT) {
+      push(out, { label: `${n} 连音（每音 ${beatLabel(even)}，标号 ${n}）`, ticks: Array(n).fill(even), tuplet: n });
+    }
+    // 都不行（如 2 拍 ÷ 6 = 1/3 拍碎片：写不了常规值、连音又超跨度）就不给这档，
+    // 面板里该档位自然禁用——不能塞一个画不出来也写不回的候选
   }
   return out.filter(legal);
 }
 
 /**
+ * 3 分体系大拍的常用划分（手册 §4.2/§4.3）：在大拍的 **3 个小拍网格**上枚举——
+ * 每个小拍要么与相邻格合并成附点值（2 格 = 附点四分）、要么整格 1 音、
+ * 要么对半/四分细分（C/2、C/4）。出来的都是「三个八分」「附点四分+八分」
+ * 「十六分十六分八分八分」这类真常用组合。
+ *
+ * 不能套泛用模板：前八后十六那套按 2 幂切，在 1½ 拍上会产出
+ * 「附点八分 + 2×附点十六分」这种每音带点、跨小拍格的划分——合法但很少用
+ * （用户实测 9/8 三音候选全是这种，视觉上还分不出差异）。
+ */
+export function compoundCandidates(n: number, unitTicks: number): TierCandidate[] {
+  const C = unitTicks / 3;
+  if (!Number.isInteger(C) || C <= 0 || n < 2) return [];
+  const half = C / 2;
+  const quarter = C / 4;
+  if (!Number.isInteger(half) || !Number.isInteger(quarter) || quarter <= 0) return [];
+  const out: TierCandidate[] = [];
+  const seen = new Set<string>();
+  const emit = (acc: number[]): void => {
+    const key = acc.join(',');
+    if (seen.has(key)) return;
+    seen.add(key);
+    // 标签：全等 → 均分；否则按连续等值段压缩（「1 拍 + 2×1/4 拍」）
+    if (acc.every((t) => t === acc[0])) {
+      out.push({ label: `均分，每音 ${beatLabel(acc[0])}`, ticks: [...acc] });
+      return;
+    }
+    const runs: string[] = [];
+    let i = 0;
+    while (i < acc.length) {
+      let j = i;
+      while (j < acc.length && acc[j] === acc[i]) j += 1;
+      runs.push((j - i > 1 ? `${j - i}×` : '') + beatLabel(acc[i]));
+      i = j;
+    }
+    out.push({ label: runs.join(' + '), ticks: [...acc] });
+  };
+  const rec = (cell: number, left: number, acc: number[]): void => {
+    if (cell === 3) {
+      if (left === 0) emit(acc);
+      return;
+    }
+    if (left <= 0) return;
+    if (left > (3 - cell) * 4) return; // 剩余格每格最多细分成 4 音
+    if (cell <= 1) rec(cell + 2, left - 1, [...acc, 2 * C]); // 相邻两格合并 = 附点值
+    rec(cell + 1, left - 1, [...acc, C]); // 整格 1 音
+    if (left >= 2) rec(cell + 1, left - 2, [...acc, half, half]); // 对半细分
+    if (left >= 4) rec(cell + 1, left - 4, [...acc, quarter, quarter, quarter, quarter]); // 四分细分
+  };
+  rec(0, n, []);
+  // 越「均衡」越常用（均分 > 一处细分 > 多处细分），同分保持枚举序；控量给常用
+  const rank = (c: TierCandidate): number => Math.max(...c.ticks) / Math.min(...c.ticks);
+  return out.sort((a, b) => rank(a) - rank(b)).slice(0, 6);
+}
+
+/**
+ * 音值组合流程的候选入口（属性面板 / 浮动输入板 / 自定义弹窗共用）：
+ * 目标恰好是所在拍号的**大拍**且为 3 分体系（6/8 系 1½ 拍、6/4 3 拍）时，
+ * 按小拍网格出常用划分；其余（单拍子全部档位、复拍子的子档位）走泛用模板——
+ * 那套模板本来就是按 2 幂体系调的，1 拍以内的划分它给得又准又常用。
+ */
+export function groupCandidates(n: number, totalTicks: number, beat?: string): TierCandidate[] {
+  const unit = beat ? groupTicks(beat) : 0;
+  if (unit && unit !== TICKS_PER_BEAT && totalTicks === unit) {
+    const cands = compoundCandidates(n, totalTicks);
+    if (cands.length) return cands;
+  }
+  return candidatesFor(n, totalTicks);
+}
+
+/**
+ * 候选成员的**画法**（减时线 + 附点），属性面板与浮动输入板的候选预览共用。
+ *
+ * 成员是 3 分体系值（5040 = 附点八分、2520 = 附点十六分）时，
+ * `beamCount` 这类 2 幂公式会算出 0 条线——必须走 decodeDuration 反推，
+ * 附点也一起反推，否则 9/8 的候选全是裸数字，视觉上分不出差异（用户实测）。
+ * 连音成员 decodeDuration 解不出来，按连音层数画线、附点用候选自带的。
+ */
+export function candidateGlyph(
+  cand: TierCandidate,
+  totalTicks: number,
+): { beams: number[]; dots: (0 | 1 | 2)[]; dashes: number[] } {
+  return {
+    beams: cand.ticks.map((t) =>
+      cand.tuplet ? tupletBeamCount(totalTicks, cand.tuplet) : decodeDuration(t)?.beams ?? 0,
+    ),
+    dots: cand.ticks.map((_, i) => cand.dots?.[i] ?? decodeDuration(cand.ticks[i])?.dots ?? 0),
+    // 超过一拍的成员靠增时线写（附点二分 = `1-.`）：预览里也要画出来，
+    // 否则 6/4 的 3 拍档候选全是裸数字，看不出时值差异
+    dashes: cand.tuplet ? cand.ticks.map(() => 0) : cand.ticks.map((t) => durationShape(t).dashes),
+  };
+}
+
+/**
+ * 音值组合的**全部档位**（不分音数，浮动输入板用它摆按钮、再按音数禁用）：
+ * 来自拍号的连通档位表（meter.groupTierBeats，手册 §7）——
+ * 4/4 系是 1/½/¼/⅛ 拍，6/8 系是 1½/1/¾/½/3/8 拍，6/4 是 3/2/1½/1/¾ 拍。
+ */
+export function groupTierOptions(beat: string): DurationTier[] {
+  return groupTierBeats(beat)
+    .map((b) => {
+      const ticks = Math.round(b * TICKS_PER_BEAT);
+      return { label: beatLabel(ticks), ticks };
+    })
+    .filter((t) => t.ticks > 0);
+}
+
+/**
  * 选区档位：多选时档位的语义是「**整个选区的总时值**」，不是每个音的时值。
  *
- * 受 I2 约束，总时值不能超过 1 拍——简谱里超过一拍的长音用增时线写在**单个音**上
- * （`5 - -`），不存在「几个音连起来共用一条减时线、合计 2 拍」的写法。
- * 所以选多音时不该给「2 拍 / 3 拍 / 1 小节」这类档位：按下去会建出违反 I2 的拍内组。
+ * 上限是所在拍号的**连通单位**（groupTicks：单拍子 1 拍、6/8 系 1½ 拍、6/4 3 拍）——
+ * 组不能跨大拍（手册 §6：跨大拍必须断开，只能用延音线），所以档位表按拍号出：
+ * 6/8 里组合最多凑 1½ 拍，4/4 里最多 1 拍。
  *
  * 同时要求划分出来的每个音都是合法 tick 粒度（I4）：
  * 4 个音分 1/4 拍 = 每音 3 tick，不是合法时值，这一档就不该出现。
  */
-export function groupTiers(n: number, measureTicks: number): DurationTier[] {
-  return durationTiers(measureTicks).filter(
-    (t) => t.ticks <= TICKS_PER_BEAT && candidatesFor(n, t.ticks).length > 0,
+export function groupTiers(n: number, beat: string): DurationTier[] {
+  return groupTierOptions(beat).filter(
+    (t) => n >= 2 && groupCandidates(n, t.ticks, beat).length > 0,
   );
+}
+
+/** 自定义组合的减时线上限（3 线 = 1/8 拍，三十二分）。要表达更细分值时放宽这里 */
+export const MAX_BEAMS = 3;
+
+/**
+ * 时值反解成「减时线 + 附点」（自定义组合弹窗的值域）：
+ * ticks = 基准 ÷ 2^线 × 附点系数（先剥线再套点，与 DSL 写回校验同构——
+ * 口径不一致的组合会被静默丢弃，这是 0.2.125 记过的坑）。
+ * 连音成员（1/3、1/5 拍…）不在此值域内，返回 null——那些走均分路径。
+ */
+export function decodeDuration(ticks: number): { beams: number; dots: 0 | 1 | 2 } | null {
+  if (!isLegalTick(ticks)) return null;
+  for (let beams = 0; beams <= MAX_BEAMS; beams += 1) {
+    const unit = TICKS_PER_BEAT / 2 ** beams;
+    for (const dots of [0, 1, 2] as const) {
+      if (Math.round(unit * (dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75)) === ticks) {
+        return { beams, dots };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 时值拆成谱面上的零件：几条增时线 + 几条减时线 + 几个附点。
+ *
+ * 先按整拍剥增时线（`5 - -` = 3 拍），剩下的零头再按「减时线 + 附点」反解
+ * （`5·` = 1.5 拍、`5` 下加一线再加点 = 3/4 拍）——与谱面写法一一对应。
+ * 时值按钮 / 输入板要把时值画成谱面的样子，就靠它，不能靠「1/4 拍」这种文字。
+ */
+export function durationShape(ticks: number): { dashes: number; beams: number; dots: number } {
+  const dashes = Math.max(0, Math.floor(ticks / TICKS_PER_BEAT + 1e-9) - 1);
+  const d = decodeDuration(ticks - dashes * TICKS_PER_BEAT);
+  return { dashes, beams: d?.beams ?? 0, dots: d?.dots ?? 0 };
 }
 
 /**
@@ -1149,27 +1368,55 @@ export function applyTier(
   // 划分：显式给出则用之，否则均分
   const parts = ticks && ticks.length === members.length ? ticks : distribute(totalTicks, members.length);
   const sum = parts.reduce((a, b) => a + b, 0);
-  const gid = (members[0] as { groupId?: string }).groupId;
+  // 受选区影响的已有组：组里含**任一**选中音就算。只按首成员的组改写的话，
+  // 跨组选区（框住 A 组尾 + B 组头）会让 B 组原样留着这些成员——一个音同时
+  // 挂两个组，谱面两根同层减时线画在同一位置（用户实测线段重叠），序列化
+  // 还会写出互相嵌套的 < >。
+  const byGroup = new Map<string, BeatGroup>();
+  for (const m of members) {
+    const g0 = (m as { groupId?: string }).groupId;
+    if (!g0 || byGroup.has(g0)) continue;
+    const g = score.groups.find((x) => x.id === g0);
+    if (g) byGroup.set(g0, g);
+  }
+  const memberKey = members.map((m) => m.id).join(',');
+  const exact =
+    byGroup.size === 1 && [...byGroup.values()][0]!.memberIds.join(',') === memberKey
+      ? [...byGroup.values()][0]!
+      : undefined;
 
   let groups: BeatGroup[];
-  if (gid) {
-    groups = score.groups.map((g) =>
-      g.id === gid
-        ? {
-            ...g,
-            auto: undefined,
-            totalTicks: sum,
-            memberIds: members.map((m) => m.id),
-            ...(tuplet ? { tuplet } : {}),
-          }
-        : g,
-    );
+  let newGid: string;
+  const freed = new Set<string>();
+  if (exact) {
+    // 选区恰好等于这个组：就地改写（保留组 id）。必须**显式剥掉**旧 tuplet：
+    // 不传 tuplet（弹窗取消勾选连音、改成自由组合）而组上还挂着 tuplet 的话，
+    // 绘制照旧标连音——用户实测「取消勾选改了组合，点对勾还是连音」就是这个坑
+    groups = score.groups.map((g) => {
+      if (g.id !== exact.id) return g;
+      const { tuplet: _old, ...rest } = g;
+      return {
+        ...rest,
+        auto: undefined,
+        totalTicks: sum,
+        memberIds: members.map((m) => m.id),
+        ...(tuplet ? { tuplet } : {}),
+      };
+    });
+    newGid = exact.id;
   } else {
-    const id = newIds(score).grp;
+    // 其余情况（原来无组 / 跨组 / 组的子集或超集）：含选中音的组**整体解散**——
+    // 抽走成员后的残组凑不满原总时值（违反 I1），不能留着。解散释放的成员
+    // 由随后的 autoGroupBeats 按拍重新归组。
+    const selected = new Set(members.map((m) => m.id));
+    for (const g of byGroup.values()) {
+      for (const id of g.memberIds) if (!selected.has(id)) freed.add(id);
+    }
+    newGid = newIds(score).grp;
     groups = [
-      ...score.groups,
+      ...score.groups.filter((g) => !byGroup.has(g.id)),
       {
-        id,
+        id: newGid,
         totalTicks: sum,
         memberIds: members.map((m) => m.id),
         ...(tuplet ? { tuplet } : {}),
@@ -1178,17 +1425,29 @@ export function applyTier(
   }
 
   const byId: Record<string, { ticks: number; dot: 0 | 1 | 2 }> = {};
-  members.forEach((m, i) => (byId[m.id] = { ticks: parts[i], dot: dots?.[i] ?? 0 }));
+  // dot：候选显式给的优先；没给的**按 tick 反推**——3 分体系成员本身带附点
+  // （5040 = 附点八分），写 dot=0 会造出 tick/dot 矛盾，serializeDsl 直接抛
+  // 「没有对应的写法」（0.2.147 同款坑：任何写 ticks 的代码都要同步重算 dot）
+  members.forEach(
+    (m, i) => (byId[m.id] = { ticks: parts[i], dot: dots?.[i] ?? decodeDuration(parts[i])?.dots ?? 0 }),
+  );
 
   return {
     ...score,
     groups,
     events: score.events.map((e) => {
       const p = byId[e.id];
-      if (!p) return e;
-      // dot 一律显式写（0 = 无点）：附点切分换档后旧附点不能残留
-      const patched = { ...e, ticks: p.ticks, dot: p.dot };
-      return { ...patched, groupId: gid ?? groups[groups.length - 1].id };
+      if (p) {
+        // dot 一律显式写（0 = 无点）：附点切分换档后旧附点不能残留
+        return { ...e, ticks: p.ticks, dot: p.dot, groupId: newGid };
+      }
+      // 被解散组的落选成员：组没了，groupId 一并清掉（挂空引用会让
+      // 序列化 / 校验口径错乱）
+      if (freed.has(e.id)) {
+        const { groupId: _g, ...rest } = e as Event & { groupId?: string };
+        return rest as Event;
+      }
+      return e;
     }),
   };
 }
@@ -1307,6 +1566,55 @@ export function autoGroupBeats(score: Score): Score {
   };
 }
 
+/**
+ * 换拍号后的善后：乐曲中途变拍（如 6/8 变 4/4）时，原有组可能超过**新**拍号的
+ * 连通单位（6/8 的 1½ 拍组在 4/4 里越界，违反 I2）。这里把超限的组就地解散，
+ * 交给 autoGroupBeats 按新单位重新分组——能凑满一单位的自动成组，
+ * 凑不满的留作散音，减时线按各自时值画。连音组不动（连音边界不在单位上，
+ * 解掉它会让标号消失，用户得重新指定）。
+ *
+ * 只该在**拍号确实变了**的时候调用（小节线检查器改拍号、曲信息改拍号）；
+ * 平时的编辑走 autoGroupBeats 就够，不能把用户手动建的组拆掉。
+ */
+export function resplitOversizedGroups(score: Score): Score {
+  // 多声部：每个声部各自重排（拍号跟该声部的小节线走，全局 events 交错着
+  // 别的声部的小节线，meterAt 直接扫会串）——与 EditorApp 的逐声部
+  // autoGroupBeats 同一套模式
+  if (score.parts?.length) {
+    return assembleParts(
+      score,
+      scoreParts(score).map((p) => {
+        const fixed = resplitOversizedGroups(partScore(score, p.id));
+        return { ...p, events: fixed.events, groups: fixed.groups };
+      }),
+    );
+  }
+  const index = new Map<string, number>();
+  score.events.forEach((e, i) => index.set(e.id, i));
+  const dropped = new Set<string>();
+  for (const g of score.groups) {
+    if (g.tuplet) continue;
+    const start = index.get(g.memberIds[0] ?? '') ?? -1;
+    if (start < 0) continue;
+    const unit = score.format === 3 ? groupTicks(meterAt(score, start)) : TICKS_PER_BEAT;
+    if (g.totalTicks > unit) dropped.add(g.id);
+  }
+  if (dropped.size === 0) return score;
+  const kept = score.groups.filter((g) => !dropped.has(g.id));
+  const keptIds = new Set(kept.flatMap((g) => g.memberIds));
+  return autoGroupBeats({
+    ...score,
+    groups: kept,
+    events: score.events.map((e) => {
+      if ('groupId' in e && e.groupId && !keptIds.has(e.groupId)) {
+        const { groupId: _g, ...rest } = e;
+        return rest;
+      }
+      return e;
+    }),
+  });
+}
+
 /** 解散拍内组，成员保留当前时值 */
 export function ungroup(score: Score, groupId: string): Score {
   const g = score.groups.find((x) => x.id === groupId);
@@ -1399,7 +1707,7 @@ export function setOctave(score: Score, id: string, octave: number): Score {
  * 归一到 48 后加点才是 `5.`（72），声音不变、写法合法、可无损还原。
  */
 export function canonicalDurationBase(ticks: number): number | undefined {
-  for (const b of [192, 96, 48, 24, 12, 6]) {
+  for (const b of [TICKS_PER_BEAT * 4, TICKS_PER_BEAT * 2, TICKS_PER_BEAT, TICKS_PER_BEAT / 2, TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 8]) {
     if (ticks === b) return b;
     if (ticks === withDots(b, 1)) return b;
     if (ticks === withDots(b, 2)) return b;
@@ -1524,4 +1832,41 @@ export function toggleSlur(score: Score, ids: string[]): Score {
       return { ...e, ties: next };
     }),
   };
+}
+
+/**
+ * 连音线**向右续连一个音**（浮动输入板的「连音线」按钮）：
+ * 从 startId 沿已有 slur 链走到末端，再向右连下一个音（末端按定义没有出边，
+ * 所以每次调用都是「多连一个」）。不跨小节线 / 跳转记号。
+ *
+ * 与 toggleSlur 的「选区建链 / 整段取消」互补——用户按一次多连一个音，
+ * 再按一次再多连一个音（浮动输入板要求）。
+ */
+export function extendSlurRight(score: Score, startId: string): Score {
+  const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
+  const first = byId.get(startId);
+  if (!first || first.kind !== 'note') return score;
+  let last: NoteEvent = first;
+  // 沿出边走到链末端（guard 防环）
+  for (let guard = 0; guard <= score.events.length; guard += 1) {
+    const out = last.ties?.find((t) => t.kind === 'slur');
+    if (!out) break;
+    const next = byId.get(out.to);
+    if (!next || next.kind !== 'note') break;
+    last = next;
+  }
+  // 右邻第一个音符（不跨小节线 / 跳转）
+  const from = score.events.findIndex((e) => e.id === last.id);
+  let target: string | null = null;
+  for (let i = from + 1; i < score.events.length; i += 1) {
+    const e = score.events[i];
+    if (!e) break;
+    if (e.kind === 'note') {
+      target = e.id;
+      break;
+    }
+    if (e.kind === 'barline' || e.kind === 'jump') break;
+  }
+  if (!target) return score;
+  return toggleSlur(score, [last.id, target]);
 }

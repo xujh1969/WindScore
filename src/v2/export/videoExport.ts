@@ -12,9 +12,11 @@ import { secToTick, tickToSec, type TempoMap } from "../tempo";
 import { activeMainAt, type TimelineEntry } from "../timeline";
 import { TICKS_PER_BEAT } from "../ticks";
 import { saveBytesAsFile, type SaveResult } from "../io";
+import { preloadInstrumentSamples } from "../instrumentSamples";
 import { safeFileName } from "./tasks";
 import { exportVideoFast } from "./encode";
-import { mixStems, synthNotes, type Mix } from "./mix";
+import { mixStems, synthNotes, mixMetronome, type Mix } from "./mix";
+import { scheduleHits, type MetronomeHit, type MetronomePattern, type MeterAt } from "../metronome";
 import { exportTheme, paintVideoFrame, prepareExportLayout, type ExportLayoutResult, type ExportNotation } from "./render";
 import {
   lineTickRanges,
@@ -54,6 +56,12 @@ export interface VideoExportOptions extends ExportNotation {
   /** 长条模式的页面排版输入（对话框传页面当前显示的那份） */
   layout?: ExportLayoutResult;
   audio: "stems" | "synth" | "none";
+  /** 导出音轨里要不要带节拍器（可选）。拍号段与细分决定 click 落在哪 */
+  metronome?: {
+    pattern: MetronomePattern;
+    meterAt: MeterAt;
+    volume: number;
+  };
   showTitle?: boolean;
   showMeasureNumbers?: boolean;
   onProgress?: (ratio: number) => void;
@@ -86,14 +94,57 @@ export function tickClock(opts: VideoExportOptions): {
 }
 
 /**
+ * 导出音轨里的节拍器击打点。
+ *
+ * 位置按**谱面拍**对齐：小节首拍 = 第 0 拍，强弱（每小节第一拍重音）
+ * 因此跟谱面的拍号一致；伴奏模式经 tempo 标定换算成秒，
+ * 合成音模式按谱面速度换算——两种模式都落在音乐真正的小节线上。
+ */
+export function exportMetronomeHits(
+  opts: VideoExportOptions,
+  seconds: number,
+): MetronomeHit[] {
+  const m = opts.metronome;
+  if (!m) return [];
+  const clock = tickClock(opts);
+  return scheduleHits({
+    fromSec: 0,
+    toSec: seconds,
+    beatToSec: (b) => clock.secondsOf(b * TICKS_PER_BEAT),
+    meterAt: m.meterAt,
+    pattern: m.pattern,
+    startBeat: Math.max(0, Math.floor(opts.fromTick / TICKS_PER_BEAT)),
+  });
+}
+
+/**
  * 离线混出整条音轨。
  *
  * stems：伴奏从曲首开始对齐，所以起点就是 fromTick 对应的秒数，剪掉前面即可。
- * synth：时间轴上每个音按谱面速度换算成秒，三角波 + 包络直接写样本。
+ * synth：时间轴上每个音按谱面速度换算成秒，按条目音色（真采样 / 钢琴合成）
+ *   直接写样本——与实时播放同一条音色路径。
+ * metronome：可选，混完之后把 click 叠上去（不影响主音轨）。
  */
 export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix | null {
   if (opts.audio === "none") return null;
   const clock = tickClock(opts);
+  const mix = buildBaseMix(opts, clock, seconds);
+  if (!mix) return null;
+  const m = opts.metronome;
+  if (!m) return mix;
+  return mixMetronome({
+    mix,
+    hits: exportMetronomeHits(opts, seconds),
+    volume: m.volume,
+  });
+}
+
+/** 不带节拍器的主音轨 */
+function buildBaseMix(
+  opts: VideoExportOptions,
+  clock: { secondsOf: (tick: number) => number },
+  seconds: number,
+): Mix | null {
   if (opts.audio === "stems") {
     if (!opts.tempo || opts.stems.length === 0) return null;
     const offsetSec = tickToSec(opts.tempo, opts.fromTick);
@@ -116,15 +167,20 @@ export function buildExportAudio(opts: VideoExportOptions, seconds: number): Mix
     });
   }
   const notes = opts.timeline
-    .filter((e) => e.midi !== null && !e.grace)
+    .filter((e) => e.midi !== null)
     .map((e) => ({
       startSec: clock.secondsOf(e.startTick),
-      endSec: clock.secondsOf(e.endTick),
+      // 倚音多渲染 80ms（与实时播放 audio.ts 的 GRACE_TAIL 同值）：
+      // 淡出尾巴盖过主音起音，接缝才顺。此前倚音整条被过滤，导出的视频不响倚音
+      endSec: clock.secondsOf(e.endTick) + (e.grace ? 0.08 : 0),
       midi: e.midi as number,
       gain: e.gain,
       // 力度与渐强渐弱：与实时播放同一套包络，导出成品里也听得出来
       dyn: e.dyn,
       dynTo: e.dynTo,
+      // 音色：与实时播放同一口径（patch / 音色八度），synthNotes 据此选采样
+      patch: e.patch,
+      patchOctave: e.patchOctave ?? 0,
     }))
     .filter((n) => n.endSec > 0 && n.startSec < seconds);
   return synthNotes({ notes, durationSec: seconds, sampleRate: MIX_RATE });
@@ -175,6 +231,12 @@ export async function exportScoreVideoToFile(
   }
   const frameCount = Math.max(1, Math.round(seconds * opts.fps));
   opts.onStatus?.('正在准备谱面和混音');
+  // 合成音导出前先把谱面涉及的真采样加载好：synthNotes 里「没加载」会静默
+  // 回落钢琴合成，不预载的话设了手风琴 / 小提琴导出来还是钢琴（用户实测）。
+  // 已加载时是空操作；失败也静默（回落合成，与实时播放同策略）。
+  if (opts.audio === "synth") {
+    await preloadInstrumentSamples(opts.timeline.map((e) => e.patch));
+  }
   const mixAt = performance.now();
   const audio = buildExportAudio(opts, seconds);
   console.info('[video] mix ms', Math.round(performance.now() - mixAt));

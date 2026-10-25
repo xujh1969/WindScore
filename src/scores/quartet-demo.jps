@@ -4,6 +4,8 @@
 @key 1=C
 @beat 4/4
 @bpm 96
+@size 24
+@space -10
 @patch 73
 
 @part 1 "主旋律"

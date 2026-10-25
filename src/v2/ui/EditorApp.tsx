@@ -5,6 +5,7 @@ import songbie from '../../scores/songbie.jps?raw';
 import huanlesong from '../../scores/huanlesong.jps?raw';
 import qinghuaci from '../../scores/qinghuaci.jps?raw';
 import xiaoxingxing from '../../scores/xiaoxingxing.jps?raw';
+import shengrikuaile from '../../scores/shengrikuaile.jps?raw';
 import ensembleDemo from '../../scores/ensemble-demo.jps?raw';
 import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
 import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
@@ -14,30 +15,18 @@ import { meterAt } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, setLyricLink } from '../lyrics';
 import type { LyricLink } from '../types';
-import {
-  annotationTextOf,
-  parenFlagsOf,
-  setTextAnnotation,
-  toggleParen,
-} from '../edit';
+import { toggleParen } from '../edit';
 import { HelpDialog } from './HelpCenter';
 import { AndroidPlayer } from './AndroidPlayer';
 import type { PackBundle } from './packBundle';
 import {
   applyTier as applyTierOp,
   autoGroupBeats,
-  canonicalDurationBase,
-  candidatesFor,
   cycleDot,
-  dropGrace,
-  moveGrace,
   pasteEvents,
-  setGrace,
-  setGraceSlot as setGraceSlotOp,
-  setKeyChange,
-  setHairpinRange,
   setBarNotation,
   extendPrev,
+  insertBarline,
   insertNote,
   insertRest,
   setBarlineRepeat,
@@ -46,35 +35,30 @@ import {
   setBarlineVoltaOpen,
   setVoltaFromSelection,
   toggleJumpAfterBarline,
-  groupTiers,
-  toggleArticulation,
+  groupCandidates,
+  groupTierOptions,
+  resplitOversizedGroups,
+  extendSlurRight,
   nextTimed,
   prevTimed,
   removeEvent,
   pressBarline,
   setAccidental,
   setDegree,
-  setDot,
-  setFermata,
-  setGray,
   setMeta,
-  setNoteDynamic,
-  setNoteMark,
   setRepeatTimes,
   setOctave,
-  toggleTechnique,
   setTicks,
-  setTongue,
   shiftOctave,
+  shiftOctaveMany,
   toggleSlur,
   toggleTongue,
-  type GracePos,
   type TierCandidate,
 } from '../edit';
 import type { BeatClock } from '../clock';
 import { BeatClock as Clock } from '../clock';
 import { Player } from '../audio';
-import { DEFAULT_META, parseDsl, renderNoteToken, serializeDsl } from '../dsl';
+import { DEFAULT_META, parseDsl, serializeDsl } from '../dsl';
 import {
   canWriteInPlace,
   fromText,
@@ -86,9 +70,8 @@ import {
   type FsFileHandle,
   type OpenResult,
 } from '../io';
-import { ACCIDENTAL_GLYPH, TECHNIQUE_GLYPH, TECHNIQUE_PATHS, TECHNIQUE_PATH_SCALE } from '../paint';
 import { loadSession, saveSession } from '../session';
-import { beamCount, durationTiers, TICKS_PER_BEAT, tupletBeamCount, undotTicks, withDots } from '../ticks';
+import { durationTiers, TICKS_PER_BEAT, undotTicks } from '../ticks';
 import { expandScore, measureAt } from '../expand';
 import {
   audioKey,
@@ -106,18 +89,19 @@ import {
   playOrderMeasures,
   tickAtEvent,
   timelineTicks,
+  toMidi,
 } from '../timeline';
-import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, GraceNote, JumpMark, Score } from '../types';
+import { previewNote, disposePreview } from '../notePreview';
+import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, JumpMark, Score } from '../types';
 import { beatToSec, secToBeat, constantTempo, curveFromAnchors, scaleTempo as scaleTempoMap, secToTick, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
 import { detectVocalEntry, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
 import AudioWaveform from './AudioWaveform';
-import { isTimed } from '../types';
+import { DEFAULT_FONT_SIZE, DEFAULT_LETTER_SPACING, isTimed } from '../types';
 import { useExp } from '../experimental';
 import { STAFF_INSTRUMENTS, type StaffPitchMode, type StaffInstrument, type StaffClefSetting, type StaffClef } from '../pitch';
 import { resolveStaffClef, suggestStaffClef } from '../staffClef';
-import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from '../musicSymbols';
 import { validateGroups } from '../validate';
 import { ScoreCanvas, type ScorePick } from './ScoreCanvas';
 import { LibraryScreen } from './LibraryScreen';
@@ -129,11 +113,35 @@ import { IS_ANDROID_APP } from '../platform';
 import { isTauri } from '../io';
 import { DiscoverScreen } from './DiscoverScreen';
 import { ExportDialog } from './ExportDialog';
-import { buildPack, packFileName } from './packBundle';
+import { ExpClose } from './ExpClose';
+import { ThemeToggle } from './ThemeToggle';
+import { loadPianoSamples } from '../pianoSamples';
+import { buildPack, PACK_EXT, packFileName, readPack } from './packBundle';
 import { updateLibraryItem, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
+import {
+  Metronome,
+  metronomeAvailable as metronomeAvailableIn,
+  meterSegmentsOf,
+  patternFor,
+} from '../metronome';
+import { MetronomePanel } from './MetronomePanel';
+import { PlayTimbreDialog } from './PlayTimbreDialog';
+import { applyTimbre, readTimbreMap, writeTimbre, type PlayTimbre } from './playTimbre';
+import { CustomGroupDialog } from './CustomGroupDialog';
+import { PadBody } from './PadBody';
+import {
+  instrumentLabel,
+  instrumentPatches,
+  instrumentSource,
+  onInstrumentBanksChange,
+  preloadInstrumentSamples,
+} from '../instrumentSamples';
+import { loadSavedBanks } from './instrumentBank';
+import { ACCIDENTAL_CHOICES } from './NoteFields';
+import type { PadActions } from './PadBody';
 
 /** 变调锁死区间（半音）：±3 内无明显失真，放宽到 ±5 大调性移动也够用，再远「橡皮音」明显 */
 const MAX_SEMITONES = 5;
@@ -142,16 +150,10 @@ const MIN_SPEED = 0.6;
 const MAX_SPEED = 1.4;
 const SPEED_STEP = 0.05;
 
-/** 变音记号按钮：本位（无记号）在前，其余按升降序 */
-const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'b', '♮'];
 /** 播放界面的空选区：引用必须稳定，内联 new Set() 每次渲染都会触发整谱重排 */
 const EMPTY_SELECTED: ReadonlySet<string> = new Set();
 /** 安卓由播放器轮询收尾；引用保持稳定，避免进度刷新重启光球动画并清空拖尾。 */
 const onAndroidScoreEnded = () => {};
-const ACCIDENTAL_NAME: Record<Accidental, string> = { '#': '升', b: '降', '♮': '还原' };
-
-/** 力度档位，由弱到强 */
-const DYNAMICS = ['pp', 'p', 'mp', 'mf', 'f', 'ff'];
 
 /**
  * 恒定 BPM 三参数的默认值。换谱 / 新建时一律回到它——
@@ -180,30 +182,7 @@ const VIOLATION_LABEL: Record<string, string> = {
   R2: '反复',
 };
 
-/**
- * 转调下拉的调号：**按实际音高从低到高排**（C #C/bD D … B），
- * 等价的两个写法挨在一起。不按「升降调放最后」排——
- * 找 1=#A 时不该先翻过一屏自然调。
- */
-const KEY_CHOICES = [
-  '1=C',
-  '1=#C',
-  '1=bD',
-  '1=D',
-  '1=#D',
-  '1=bE',
-  '1=E',
-  '1=F',
-  '1=#F',
-  '1=bG',
-  '1=G',
-  '1=#G',
-  '1=bA',
-  '1=A',
-  '1=#A',
-  '1=bB',
-  '1=B',
-];
+
 
 /**
  * 时值的人话标签（拍数）：2 拍 / 1 拍 / 1/2 拍 / 1/4 拍 / 1/8 拍 …
@@ -213,7 +192,7 @@ const KEY_CHOICES = [
 function durLabel(ticks: number): string {
   const beats = ticks / TICKS_PER_BEAT;
   if (Number.isInteger(beats)) return `${beats} 拍`;
-  for (const den of [2, 3, 4, 6, 8, 12, 16]) {
+  for (const den of [2, 3, 4, 5, 6, 7, 8, 12, 16]) {
     const num = Math.round(beats * den);
     if (num > 0 && Math.abs(beats * den - num) < 1e-6) {
       return num === 1 ? `1/${den} 拍` : `${num}/${den} 拍`;
@@ -241,62 +220,13 @@ const KEY_OPTIONS = [
   '1=B',
 ];
 
-/** 一列八度点（高音在数字上、低音在下），简谱里就是这么标的 */
-function GlyphDots({ n }: { n: number }) {
-  return (
-    <span className="v2-glyph-dots">
-      {Array.from({ length: n }, (_, i) => (
-        <i key={i} className="v2-dot" />
-      ))}
-    </span>
-  );
-}
-
-/**
- * 简谱写法的可视化按钮文字：数字 + 上方八度点 / 下方减时线。
- *
- * 时值与八度按钮都用它——按钮要长成谱面上的样子，
- * 用户才不必在「3/2」和「数字下面一条横线的 3」之间来回翻译。
- * beams 来自 ticks.beamCount（1/2 拍 1 条、1/4 拍 2 条、1/8 拍 3 条）。
- */
-function NotationGlyph({
-  degree,
-  beams = 0,
-  dots = 0,
-  accidental,
-}: {
-  degree: number;
-  beams?: number;
-  dots?: number;
-  /** 变音记号写在数字左边，与简谱 `#4` / `b3` 一致 */
-  accidental?: Accidental;
-}) {
-  return (
-    <span className="v2-glyph">
-      {dots > 0 ? <GlyphDots n={dots} /> : null}
-      {/* 变音记号与数字同一行（写在数字左边），八度点才在上下方 */}
-      <span className="v2-glyph-body">
-        {accidental ? <span className="v2-glyph-acc">{ACCIDENTAL_GLYPH[accidental]}</span> : null}
-        <span className="v2-glyph-digit">{degree}</span>
-      </span>
-      {beams > 0 ? (
-        <span className="v2-glyph-beams">
-          {Array.from({ length: beams }, (_, i) => (
-            <i key={i} className="v2-beam" />
-          ))}
-        </span>
-      ) : null}
-      {dots < 0 ? <GlyphDots n={-dots} /> : null}
-    </span>
-  );
-}
-
 const BUILTIN: { name: string; text: string }[] = [
   { name: '茉莉花', text: molihua },
   { name: '茉莉花（反复）', text: molihuaRepeat },
   { name: '送别', text: songbie },
   { name: '欢乐颂', text: huanlesong },
   { name: '小星星', text: xiaoxingxing },
+  { name: '生日快乐（3/4 拍）', text: shengrikuaile },
   { name: '青花瓷', text: qinghuaci },
   { name: '欢乐颂（二重奏示例）', text: ensembleDemo },
   { name: '拍号与力度范围（重奏示例）', text: notationPhase2Demo },
@@ -305,20 +235,22 @@ const BUILTIN: { name: string; text: string }[] = [
   { name: '小星星（四声部示例）', text: quartetDemo },
 ];
 
-/** 播放页观看偏好的本地存取（字号 / 字距；null = 跟随谱面） */
-function readPlayViewPref(): { font: number | null; gap: number | null } {
+/** 播放页观看偏好的本地存取（字号 / 字距 / 行距；null = 跟随谱面） */
+function readPlayViewPref(): { font: number | null; gap: number | null; lineGap: number | null } {
   try {
     const v = JSON.parse(localStorage.getItem('ws-playview') ?? 'null') as {
       font?: number | null;
       gap?: number | null;
+      lineGap?: number | null;
     } | null;
-    if (!v) return { font: null, gap: null };
+    if (!v) return { font: null, gap: null, lineGap: null };
     return {
       font: typeof v.font === 'number' ? v.font : null,
       gap: typeof v.gap === 'number' ? v.gap : null,
+      lineGap: typeof v.lineGap === 'number' ? v.lineGap : null,
     };
   } catch {
-    return { font: null, gap: null };
+    return { font: null, gap: null, lineGap: null };
   }
 }
 const playViewPref = readPlayViewPref();
@@ -403,10 +335,32 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, [androidPlayer]);
-  /** 深浅主题。初始值跟系统，之后由工具栏手动切换，不再随系统变 */
+  /**
+   * 深浅主题。初始值：安卓由原生壳给定 → 上次手动选的（ws-theme）→ 系统偏好。
+   * 各页面是独立 HTML，主题必须落 localStorage 才能跨页一致；月亮开关（ThemeToggle）负责改它。
+   */
   const [dark, setDark] = useState(
-    () => androidDark ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false),
+    () =>
+      androidDark ??
+      (localStorage.getItem('ws-theme') === 'dark'
+        ? true
+        : localStorage.getItem('ws-theme') === 'light'
+          ? false
+          : (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)),
   );
+  useEffect(() => {
+    if (!androidPlayer) localStorage.setItem('ws-theme', dark ? 'dark' : 'light');
+  }, [dark, androidPlayer]);
+  // 真实钢琴起音采样：进页面就后台拉取（440KB，CC-BY Salamander），
+  // 失败静默——renderNote 检测不到采样时自动回退纯合成音色
+  useEffect(() => {
+    void loadPianoSamples();
+  }, []);
+  // 音色包登记变化（导入 / 移除 / 启动恢复）时刷新整棵树：
+  // 曲目信息 / 声部配置的音色下拉都是渲染时现取 instrumentPatches()，
+  // 不刷新的话刚导入的音色要等下一次无关的重渲染才会冒出来
+  const [, bumpBanks] = useState(0);
+  useEffect(() => onInstrumentBanksChange(() => bumpBanks((v) => v + 1)), []);
   const [active, setActive] = useState('');
   const [snap, setSnap] = useState<Snap>({
     score: emptyScore(),
@@ -436,6 +390,17 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [pending, setPending] = useState<{ ids: string[]; ticks: number; cands: TierCandidate[] } | null>(
     null,
   );
+  /** 节拍器：跟随谱面播放 */
+  const [metronomeFollow, setMetronomeFollow] = useState(false);
+  /** 自定义音值组合弹窗（依附于 pending 的选区与目标时值） */
+  const [customGroupOpen, setCustomGroupOpen] = useState(false);
+  /** 节拍器面板开关 */
+  const [metronomeOpen, setMetronomeOpen] = useState(false);
+  const [timbreOpen, setTimbreOpen] = useState(false);
+  /** 节拍器节奏型（拍内细分） */
+  const [metronomePatternId, setMetronomePatternId] = useState('quarter');
+  const [metronomeVolume, setMetronomeVolume] = useState(0.6);
+  const metronomeRef = useRef<Metronome | null>(null);
   const [draft, setDraft] = useState('');
   /** 整体视图：要么看简谱，要么看源码。源码不再塞在属性栏里。 */
   const [view, setView] = useState<'score' | 'source'>('score');
@@ -512,6 +477,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [clip, setClip] = useState<Event[]>([]);
   const [clipGroups, setClipGroups] = useState<BeatGroup[]>([]);
   /**
+   * 安卓端每首曲子的观看偏好（字号/字距/行距/光标/记谱方式/实音移调）：
+   * 按曲目名单独存（ws-an-view:<曲名>），打开哪首恢复哪首的配置。
+   * EditorApp 以 key=曲目 id 重挂载，所以在初始化里同步读一次即可，无跨曲竞态。
+   * 注意：必须定义在所有引用它的 useState 初始化器（playStyle 等）之前。
+   */
+  const anViewKey = androidPlayer && androidItem ? `ws-an-view:${androidItem.name}` : null;
+  const anView: {
+    font?: number | null; gap?: number | null; lineGap?: number | null;
+    style?: 'head' | 'band' | 'ball'; notation?: 'staff' | 'jianpu'; pitch?: StaffPitchMode;
+  } = (() => {
+    if (!anViewKey) return {};
+    try { return JSON.parse(localStorage.getItem(anViewKey) ?? 'null') ?? {}; } catch { return {}; }
+  })();
+  /**
    * 播放指示方式：
    *   head = 跟着当前音跳的色块 + 平滑横移的竖线（旧方式）
    *   band = 从当前行行首开始、随音乐不断变宽的高亮条（更好跟）
@@ -519,7 +498,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 存 localStorage：播放页（动态谱演奏 / 曲库播放）的观众设一次就长期有效
    */
   const [playStyle, setPlayStyle] = useState<'head' | 'band' | 'ball'>(() => {
-    if (androidPlayer) return 'head';
+    if (androidPlayer) return anView.style === 'band' || anView.style === 'ball' || anView.style === 'head' ? anView.style : 'head';
     try {
       const v = localStorage.getItem('ws-playstyle');
       return v === 'band' || v === 'ball' ? v : 'head';
@@ -536,26 +515,39 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [playStyle]);
   /** 保留已有的记谱法偏好存储，顶部按钮切换简谱／五线谱。 */
   const [storedStaffViewOn, setStoredStaffViewOn] = useExp('staffView');
-  const [androidStaffViewOn, setAndroidStaffViewOn] = useState(false);
+  const [androidStaffViewOn, setAndroidStaffViewOn] = useState(() => androidPlayer && anView.notation === 'staff');
   const staffViewOn = androidPlayer ? androidStaffViewOn : storedStaffViewOn;
   const setStaffViewOn = androidPlayer ? setAndroidStaffViewOn : setStoredStaffViewOn;
   /** 记谱页 / 播放页共用的记谱法 */
   const notation: 'jianpu' | 'staff' = staffViewOn ? 'staff' : 'jianpu';
-  const [staffPitchMode, setStaffPitchMode] = useState<StaffPitchMode>(() => localStorage.getItem('ws-staff-pitch-mode') === 'transposed' ? 'transposed' : 'concert');
+  const [staffPitchMode, setStaffPitchMode] = useState<StaffPitchMode>(() => {
+    if (androidPlayer && anView.pitch) return anView.pitch; // 按曲恢复；没记过则沿用全局偏好
+    return localStorage.getItem('ws-staff-pitch-mode') === 'transposed' ? 'transposed' : 'concert';
+  });
   const [staffSettingsOpen, setStaffSettingsOpen] = useState(false);
   useEffect(() => { localStorage.setItem('ws-staff-pitch-mode', staffPitchMode); }, [staffPitchMode]);
   /** 对轨页「音轨分离工具下载」的说明弹窗 */
   const [tramaOpen, setTramaOpen] = useState(false);
   /**
    * 播放页的观看偏好：字号 / 字距（覆盖谱面自带设置；null = 跟随谱面）。
-   * 存 localStorage——play.html 的观众（看谱的人）设一次就长期有效，
-   * 且只影响播放界面的显示，谱面文件本身一个字节都不动。
+   * PC 播放页存全局 ws-playview；安卓端按**曲目单独记**（定义见上 anView）。
    */
-  const [playFont, setPlayFont] = useState<number | null>(() => androidPlayer ? null : playViewPref.font);
-  const [playGap, setPlayGap] = useState<number | null>(() => androidPlayer ? null : playViewPref.gap);
+  const [playFont, setPlayFont] = useState<number | null>(() => androidPlayer ? (typeof anView.font === 'number' ? anView.font : null) : playViewPref.font);
+  const [playGap, setPlayGap] = useState<number | null>(() => androidPlayer ? (typeof anView.gap === 'number' ? anView.gap : null) : playViewPref.gap);
+  const [playLineGap, setPlayLineGap] = useState<number | null>(() => androidPlayer ? (typeof anView.lineGap === 'number' ? anView.lineGap : null) : playViewPref.lineGap);
   useEffect(() => {
-    if (!androidPlayer) localStorage.setItem('ws-playview', JSON.stringify({ font: playFont, gap: playGap }));
-  }, [playFont, playGap]);
+    if (!androidPlayer) localStorage.setItem('ws-playview', JSON.stringify({ font: playFont, gap: playGap, lineGap: playLineGap }));
+  }, [playFont, playGap, playLineGap]);
+  // 安卓：每首曲子的观看偏好单独落盘，下次打开同一首自动重现
+  useEffect(() => {
+    if (!anViewKey) return;
+    try {
+      localStorage.setItem(anViewKey, JSON.stringify({
+        font: playFont, gap: playGap, lineGap: playLineGap,
+        style: playStyle, notation: staffViewOn ? 'staff' : 'jianpu', pitch: staffPitchMode,
+      }));
+    } catch { /* 隐私模式等存不了就算了 */ }
+  }, [anViewKey, playFont, playGap, playLineGap, playStyle, staffViewOn, staffPitchMode]);
   /** 工具栏正中的谱面校验明细是否展开 */
   const [checkOpen, setCheckOpen] = useState(false);
   /**
@@ -571,6 +563,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     void initStore().then(() => {
       storeReadyRef.current = true;
       setStoreReady(true);
+      // 已导入的音色包（.wsbank）：**必须等 initStore 探测完存储后端**再恢复登记。
+      // 挂载时就恢复曾踩过坑：后端还是 local 兜底，索引读的是空 localStorage，
+      // 桌面端重开程序后音色下拉里就少了已导入的音色（0.3.2 修）。
+      // 失败静默：包丢了自动回落内置，别挡着程序启动。
+      void loadSavedBanks().catch(() => undefined);
       // 安卓 App 没有文件夹模式，曲库固定走本机存储，不算「未配置」
       setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
     });
@@ -590,8 +587,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * `graceSlot` = 正在输入的那一格（null = 输入框收起）。
    * 三格共用一套状态，切音时由下面的 effect 复位。
    */
-  const [graceSide, setGraceSide] = useState<GracePos | null>('before');
-  const [graceSlot, setGraceSlot] = useState<number | null>(null);
   /**
    * 曲目信息编辑面板是否展开。点谱面标题旁的铅笔才打开。
    * 与音符属性互斥：改音符是改音符，改曲目信息是改曲目信息，不混在一个面板里。
@@ -603,12 +598,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 用户要求移除控件——密度固定为 0.70（沿用原默认值，视觉不变）。
    * 想调谱面本身的间距请用曲目信息面板的「字间距」。
    */
-  const EDITOR_UNIT = 0.7;
+  const EDITOR_UNIT = 33.6 / TICKS_PER_BEAT;
   /** 源码面板默认只读。主编辑路径是点选 + 键盘 + 属性面板。 */
 
   const [msg, setMsg] = useState('');
   const dslRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** .wspack 导入（对轨页「导入打包」）：与 fileRef 同款的选择框兜底 */
+  const packRef = useRef<HTMLInputElement>(null);
   const clockRef = useRef<BeatClock>(new Clock(90));
   const playerRef = useRef<Player>(new Player());
   const [playing, setPlaying] = useState(false);
@@ -640,6 +637,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    */
   const [pivotBeat, setPivotBeat] = useState(0);
   const [playSource, setPlaySource] = useState<'synth' | 'audio'>('synth');
+  /**
+   * 节拍器只在**合成音**的播放场景出现（规则见 metronome.ts 的纯函数）。
+   * 记谱页一直放合成音 → 一直有；播放页 / 动态谱生成页选「伴奏」时收起来。
+   */
+  const metronomeAvailable = metronomeAvailableIn(mode, playSource);
   /**
    * 从头播放时**连伴奏前奏一起放**（默认开）：谱面记的是从进唱开始，
    * 伴奏前面那段前奏不该被跳过——跳过了就永远听不到前奏。
@@ -1323,6 +1325,78 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [snap.score, active, stems, tempoDraft, anchors, tempoOverride, playSource, toastProgress, toastOk, toastInfo]);
 
   /**
+   * 对轨界面的「导入打包」：打开机器上的 .wspack（谱面 + 伴奏 + 对轨标定），
+   * 原样装回对轨页继续编辑——「打包」的逆操作。与曲库的「导入打包」不同：
+   * 不进曲库，只作为当前编辑对象打开（保存仍按原有路径走）。
+   *
+   * 装载顺序有讲究：伴奏与标定**先**落存储（putAudio / saveAlign），**再**
+   * adopt 换谱——adopt 会 bump 恢复令牌，随后的恢复流程按 active 读到的
+   * 正是刚落存的这份。反过来先 adopt 的话，恢复会读到空档，
+   * 表现为导入后没有伴奏、没有标定。
+   */
+  const importPackFile = useCallback(
+    async (file: File) => {
+      if (!file.name.toLowerCase().endsWith(PACK_EXT)) {
+        toastFail('导入失败', '请选择 .wspack 乐谱包（谱面 + 伴奏 + 对轨标定）');
+        return;
+      }
+      toastProgress('正在导入打包…', '解压谱面与伴奏');
+      let pack: PackBundle;
+      try {
+        pack = await readPack(new Uint8Array(await file.arrayBuffer()));
+      } catch (e) {
+        toastFail('导入失败', e instanceof Error ? e.message : String(e));
+        return;
+      }
+      const res = fromText(pack.text, pack.name);
+      if (!res.score) {
+        toastFail('导入失败', '包里的谱面无法解析');
+        return;
+      }
+      toastProgress('正在导入打包…', pack.stems.length ? `写入 ${pack.stems.length} 条伴奏与标定` : '写入标定');
+      try {
+        // 伴奏分轨落存储：键 = 文件名:字节数（打包 / 恢复 / 保存三方同口径）。
+        // 老包里若还有 wav，ensureMp3 原地转掉
+        const audio: AlignPersist['audio'] = [];
+        for (const stem of pack.stems) {
+          const f = await ensureMp3(stem.file);
+          const key = audioKey(f);
+          await putAudio(key, f);
+          audio.push({ key, name: f.name });
+        }
+        const align: AlignPersist = pack.align
+          ? { ...pack.align, audio }
+          : {
+              version: 1,
+              audio,
+              tempoDraft: { bpm: res.score.meta.bpm || 120, phaseSec: 0, originBeat: 0 },
+              anchors: [],
+              override: null,
+              playSource: audio.length ? 'audio' : 'synth',
+            };
+        saveAlign(pack.name, align);
+      } catch (e) {
+        toastFail('导入失败', e instanceof Error ? e.message : String(e));
+        return;
+      }
+      adopt(res); // 换谱 + bump 恢复令牌：伴奏与标定由恢复流程装回对轨页
+      const detail = `${pack.stems.length} 条伴奏` + (pack.align ? ' · 含对轨标定' : ' · 无标定');
+      setMsg(`已导入 ${pack.name}（${detail}），可继续对轨编辑`);
+      toastOk('导入成功', `${pack.name}（${detail}）`);
+    },
+    [adopt, toastProgress, toastOk, toastFail],
+  );
+
+  const onPackPicked = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      e.target.value = '';
+      if (f) void importPackFile(f);
+    },
+    [importPackFile],
+  );
+
+  /**
    * 从曲库点开一首：与 adopt 同口径（换谱即换歌，旧伴奏 / 标定作废）。
    * 点行 = 进播放界面；行里的「对轨」按钮才进编辑。
    */
@@ -1372,9 +1446,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const score = useMemo(() => partScore(documentScore, activePartId), [documentScore, activePartId]);
   const lyricVerse = lyricSelection?.partId === activePartId && lyricSelection.verse < lyricTrackNames(score).length ? lyricSelection.verse : null;
   const canEditConductor = !documentScore.part || activePartId === documentScore.part.id;
-  /** 播放页生效的字号 / 字距：观看偏好优先，没设过就跟随谱面自带设置 */
-  const effFont = playFont ?? (score.meta.fontSize ?? 21);
-  const effGap = playGap ?? (score.meta.letterSpacing ?? 0);
+  /** 播放页生效的字号 / 字距：观看偏好优先，没设过就跟随谱面自带设置（缺省 24 / -10） */
+  const effFont = playFont ?? (score.meta.fontSize ?? DEFAULT_FONT_SIZE);
+  const effGap = playGap ?? (score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING);
+  const effLineGap = playLineGap ?? (score.meta.lineGap ?? 0);
   /** 有未保存的改动 */
   const dirty = snap.rev !== savedRev;
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
@@ -1590,13 +1665,48 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [focusScoreBeat]);
 
   /**
+   * 播放音色覆盖（播放工具条「音色」按钮，仅合成音场景）：不改谱面文件，
+   * 只在喂给 expandScore / buildTimeline 前把 meta.patch / 声部 patch 换掉；
+   * 按曲名记在 localStorage，下次播同一首还是这套（编辑模式不受影响）。
+   */
+  const [timbreMap, setTimbreMap] = useState(readTimbreMap);
+  const playTimbre = timbreMap[active];
+  const setPlayTimbre = useCallback(
+    (t: PlayTimbre | null) => {
+      setTimbreMap((m) => {
+        const next = { ...m };
+        if (t) next[active] = t;
+        else delete next[active];
+        writeTimbre(active, t);
+        return next;
+      });
+    },
+    [active],
+  );
+  const timbreScore = useMemo(
+    // **只在播放模式生效**：覆盖是按曲名持久化的播放偏好，曾经泄漏进编辑界面的
+    // 播放链（编辑与播放共用 timeline）——症状是编辑里选钢琴 / 手风琴，播出来
+    // 全是上一次在播放页选的排箫（0.3.6 修）。编辑永远按谱面发声。
+    () => applyTimbre(documentScore, mode === 'play' ? playTimbre : undefined),
+    [documentScore, playTimbre, mode],
+  );
+  /**
    * 反复展开：**播放只吃线性谱**（这是整套反复功能里最省事的一条约定）。
    * 编辑永远作用在带反复记号的原谱上；展开产物是派生的、只读的。
    * 结构有错（配对不上 / 房子越界）或谱面本来没有反复记号时，退回原谱。
    */
-  const expansion = useMemo(() => expandScore(documentScore), [documentScore]);
-  const playScore = expansion.score ?? documentScore;
+  const expansion = useMemo(() => expandScore(timbreScore), [timbreScore]);
+  const playScore = expansion.score ?? timbreScore;
   const timeline = useMemo(() => buildTimeline(playScore), [playScore]);
+  /**
+   * 节拍器的强弱按**谱面拍号段**走：曲头拍号定基调，小节线上标了新拍号
+   * （DSL「拍3/4」）就从那根线起换——2/4、3/4、4/4 各按各的小节响重音。
+   * 从展开谱取：反复段里的换拍同样生效。
+   */
+  const metronomeMeter = useMemo(
+    () => meterSegmentsOf(playScore.events, playScore.meta.beat),
+    [playScore],
+  );
   const notationTimeline = useMemo(() => buildTimeline(playScore, { mergeTies: false }), [playScore]);
 
   /**
@@ -1640,12 +1750,53 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return from >= total ? 0 : from;
   }, [timeline, playScore, score, expansion, snap.mode, snap.cursor, activePartId, activePlayPick]);
 
+  /**
+   * 节拍器跟随播放起动。
+   *
+   * 只跟**变速**（倍速播放时节拍也要变快），不跟移调——移调不改变节拍。
+   * 速度**只认谱面 BPM**：节拍器只在合成音场景出现（metronomeAvailable），
+   * 而合成音播放走的就是谱面速度——曾在这里误用伴奏的 tempo 标定，
+   * 那个标定的「一拍」来自音频节拍检测，有半速歧义（124.42 的曲子被按 62.21 数），
+   * 结果一小节只响两下、还跟音乐漂移。
+   * 强弱跟谱面的拍号段走：2/4、3/4 各按各的小节，小节线上换拍（DSL「拍3/4」）
+   * 也跟着换——拍号段从**展开谱**取，反复段里的换拍同样生效。
+   */
+  const startMetronomeFollow = useCallback(
+    (fromTick: number, delaySec = 0): void => {
+      const m = metronomeRef.current;
+      if (!m || !metronomeFollow) return;
+      const pattern = patternFor(metronomePatternId);
+      const fromBeat = fromTick / TICKS_PER_BEAT;
+      const bpmEff = score.meta.bpm * speed;
+      m.start(
+        {
+          beatToSec: (b) => (b - fromBeat) * (60 / bpmEff),
+          meterAt: metronomeMeter,
+          pattern,
+          volume: metronomeVolume,
+        },
+        fromBeat,
+        delaySec,
+      );
+    },
+    [metronomeFollow, metronomeMeter, metronomePatternId, metronomeVolume, score.meta.bpm, speed],
+  );
+
+  /** 与音乐起播对齐用的 lead（秒）：startPlayNow 存进来，effect 起播时用掉 */
+  const metronomeLeadRef = useRef(0);
+
   const startPlayNow = useCallback(async (fromOverride?: number) => {
     if (androidPlayer && !androidAlive.current) return;
     if (documentScore.parts?.length && expansion.errors.length) { setMsg(`重奏暂不能播放：${expansion.errors[0]}`); return; }
     if (timeline.length === 0) return;
+    // 趁还有用户手势先把节拍器的音频上下文建好：下面可能有几秒的
+    // 变调/变速处理，等处理完再新建上下文会被浏览器的自动播放策略挂起 → 不出声
+    if (metronomeFollow) metronomeRef.current?.unlock();
     previewRef.current.stop(); // 试听与谱面播放互斥
     setPreviewing(false);
+    // 真采样音色：起播前把时间线里用到的音色拉齐（本地文件，通常 <100ms）。
+    // 没拉齐的音色渲染时静默回落钢琴合成——不阻塞、不报错、不破坏手势窗口
+    await preloadInstrumentSamples(timeline.map((e) => e.patch));
     const bpm = score.meta.bpm;
     const from = fromOverride ?? playFromTick;
     // 音频模式：stem + TempoMap 齐备且用户选了「伴奏音频」。
@@ -1691,7 +1842,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         playIntro && !activePlayPick && snap.mode !== 'over' && from === 0
           ? Math.min(0, secToTick(playTempo, 0))
           : from;
-      playerRef.current.startAudio({
+      const audioLead = playerRef.current.startAudio({
         timeline,
         tempo: playTempo,
         fromTick: introTick,
@@ -1701,6 +1852,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         onEnded: () => { if (androidPlayer) { androidResumeTick.current = null; clockRef.current.pause(); clockRef.current.seek(0); } setPlaying(false); },
       });
       setPlaying(true);
+      // 起播对齐走 effect（那里读 lead）；这里只把 lead 带过去
+      metronomeLeadRef.current = audioLead;
       return;
     }
     // 先起音频、拿到它真正发声的时刻，再让时钟对齐到那个时刻起跑。
@@ -1710,7 +1863,34 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     clockRef.current.seek(from / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
+    // 起播对齐走 effect（那里读 lead）；这里只把 lead 带过去
+    metronomeLeadRef.current = lead;
   }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed]);
+
+  // 播放停止 → 节拍器跟着停
+  useEffect(() => {
+    if (!playing) metronomeRef.current?.stop();
+  }, [playing]);
+
+  /**
+   * 切到伴奏场景（节拍器不出现）→ 把它停掉。
+   * 按钮都没了还在响 = 用户没法关它，只能重开页面；必须跟着场景一起消失。
+   */
+  useEffect(() => {
+    if (metronomeAvailable) return;
+    metronomeRef.current?.stop();
+    if (metronomeFollow) setMetronomeFollow(false);
+  }, [metronomeAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 节拍器引擎随组件创建 / 销毁
+  useEffect(() => {
+    metronomeRef.current = new Metronome();
+    return () => {
+      metronomeRef.current?.dispose();
+      metronomeRef.current = null;
+      disposePreview();
+    };
+  }, []);
 
   // ── 跟着音乐打拍子定速度 ─────────────────────────────────────
   // 自动测速的失败模式是锁错倍频（17:8 就是 2.125 倍），数学上无法从错网格自救。
@@ -1928,6 +2108,28 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return clockRef.current.currentBeat * TICKS_PER_BEAT;
   }, []);
 
+  /**
+   * 跟随模式的开关与改动 → 立刻按**当前播放位置**重新起。
+   * 重新起而不是中途换拍：节拍器的拍格必须始终锁在音乐的小节线上，
+   * 半路换型最容易听出「错位一拍」。
+   * 播放本身由 startPlayNow 起（那里知道真正的起播 tick）。
+   *
+   * 首播时 startPlayNow 会把 lead 存进 metronomeLeadRef：第一拍要等
+   * lead 秒才响（音频还在起跑），不读它的话 click 会抢在音符前面，
+   * 听起来像被拍子追着跑（用户实测的「紧迫感」就是这个）。用掉即清零，
+   * 之后中途改配置的重起 delay = 0——此刻音乐正响着 fromBeat 这一拍。
+   */
+  useEffect(() => {
+    if (!playing) return;
+    if (!metronomeFollow) {
+      metronomeRef.current?.stop();
+      return;
+    }
+    const lead = metronomeLeadRef.current;
+    metronomeLeadRef.current = 0;
+    startMetronomeFollow(getPlayTick() ?? 0, lead);
+  }, [playing, metronomeFollow, metronomePatternId, metronomeVolume]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 调试钩子：端到端测试从外面读播放状态（currentSec / currentTick / tempo）
   useEffect(() => {
     (window as unknown as { __windscore?: unknown }).__windscore = {
@@ -2017,15 +2219,27 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [range, overId, score]);
 
   /**
-   * 选区档位表：多选时档位的语义变成「整个选区的总时值」，
-   * 受 I2 约束上限 1 拍，且每个音都要分到合法 tick（I4）。
-   * 所以选区和单音用的不是同一份表——「3 拍」在单选时是合法长音，
-   * 在选区里却会建出总时值 3 拍的拍内组。
+   * 换选区就没收划分候选：候选是按「当时的选区 + 档位」算出来的
+   *（ids 与总时值都绑在上一个选区上）。改选哪怕成员数一样（再选 3 个
+   * 别的音），旧候选指向的 ids 已经不对了，继续显示会误操作（用户实测）。
+   * 用 id 串当键：点档位本身不改选区，不会被自己清掉。
    */
-  const groupTierList = useMemo(
-    () => groupTiers(selectedTimedIds.length, beatTicks),
-    [selectedTimedIds.length, beatTicks],
-  );
+  const selectionKey = selectedTimedIds.join(',');
+  useEffect(() => {
+    setPending(null);
+  }, [selectionKey]);
+
+
+
+  /** 输入板的音值组合档位：全部档位 + 按当前选中音数算好的可用性 */
+  const groupTargets = useMemo(() => {
+    const beat = meterAt(score, snap.cursor);
+    const n = selectedTimedIds.length;
+    return groupTierOptions(beat).map((t) => ({
+      ...t,
+      ok: n >= 2 && groupCandidates(n, t.ticks, beat).length > 0,
+    }));
+  }, [score, snap.cursor, selectedTimedIds.length]);
 
   // 属性检查器的焦点：无选区时取光标前一个事件
   /**
@@ -2044,123 +2258,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     },
     [commit, snap],
   );
-
-  /** 段落标注的编辑草稿（null = 没在编辑，显示谱面里的值） */
-  const [annotDraft, setAnnotDraft] = useState<string | null>(null);
-  /** 自定义记号输入框（非受控）：✓ 按钮要读它当前的值 */
-  const markInputRef = useRef<HTMLInputElement | null>(null);
-  /** 当前音左右两侧是否已加了括号（按钮点亮用） */
-  const parenFlags = useMemo(
-    () => (focus && isTimed(focus) ? parenFlagsOf(score, focus.id) : { open: false, close: false }),
-    [focus, score],
-  );
-
-  /**
-   * 提交段落标注。插入 / 删除 directive 会改变它后面所有事件的下标，
-   * 而选中的音是按下标取的（events[cursor-1]）——光标必须跟着挪，
-   * 否则提交完焦点就跑到标注自己身上，面板一换、输入框又没了。
-   */
-  const commitAnnotation = useCallback(
-    (text: string) => {
-      if (!focus || (focus.kind !== 'note' && focus.kind !== 'rest')) return;
-      const next = setTextAnnotation(score, focus.id, text);
-      if (next === score) return;
-      const shift = next.events.length - score.events.length;
-      commit({ ...snap, score: next, cursor: snap.cursor + shift });
-    },
-    [focus, score, snap, commit],
-  );
-
-  // ───────────────────────── 倚音录入（三格 + 前/后互斥） ─────────────────────────
-
-  /**
-   * 换到别的音时把录入状态复位：勾选框回到这颗音实际有倚音的那一侧
-   * （两侧都有只可能来自源码写法，按「前」展示），并收起输入框。
-   * 依赖只有 id——编辑过程中不要抢用户正在选的那一侧。
-   */
-  useEffect(() => {
-    if (!focus || focus.kind !== 'note') {
-      setGraceSlot(null);
-      return;
-    }
-    const hasBefore = (focus.graceBefore?.length ?? 0) > 0;
-    const hasAfter = (focus.graceAfter?.length ?? 0) > 0;
-    setGraceSide(hasAfter && !hasBefore ? 'after' : 'before');
-    setGraceSlot(null);
-  }, [focus?.id]);
-
-  /** 三格里显示的那一组（跟着勾选框走；都没勾就是空的） */
-  const graceList: GraceNote[] =
-    focus && focus.kind === 'note'
-      ? graceSide === 'after'
-        ? focus.graceAfter ?? []
-        : graceSide === 'before'
-          ? focus.graceBefore ?? []
-          : []
-      : [];
-
-  /**
-   * 点前 / 后勾选框。
-   *   再点已勾的那个 = 取消勾选，并清掉这一侧的倚音（等价于「这个音不要倚音」）
-   *   换到另一侧 = 把当前这组搬过去（勾了后面就是后倚音）；目标侧本来就有倚音
-   *   （只可能来自源码 / 旧文件）时只切视图，绝不动数据，免得悄悄吞掉一组
-   */
-  const pickGraceSide = useCallback(
-    (side: GracePos) => {
-      if (!focus || focus.kind !== 'note') return;
-      if (graceSide === side) {
-        setScore(setGrace(score, focus.id, side, undefined));
-        setGraceSide(null);
-        setGraceSlot(null);
-        return;
-      }
-      const other: GracePos = side === 'before' ? 'after' : 'before';
-      const target = (side === 'before' ? focus.graceBefore : focus.graceAfter) ?? [];
-      const moving = other === 'before' ? focus.graceBefore ?? [] : focus.graceAfter ?? [];
-      setGraceSide(side);
-      if (target.length === 0 && moving.length > 0) {
-        setScore(moveGrace(score, focus.id, other, side));
-      }
-    },
-    [focus, graceSide, score, setScore],
-  );
-
-  /** 点某一格：打开输入框（再点同一格 = 收起）。什么都没勾时默认按前倚音录入 */
-  const openGraceSlot = useCallback(
-    (i: number) => {
-      if (!focus || focus.kind !== 'note') return;
-      if (graceSide === null) setGraceSide('before');
-      setGraceSlot(graceSlot === i ? null : i);
-    },
-    [focus, graceSide, graceSlot],
-  );
-
-  /** 输入框里点一个键：写入当前格；再点同一格会自动跳到下一格，填满最后一格就收起 */
-  const putGrace = useCallback(
-    (octave: number, key: { degree: Degree; accidental?: Accidental }) => {
-      if (!focus || focus.kind !== 'note' || graceSlot === null) return;
-      const side = graceSide ?? 'before';
-      const g: GraceNote = { degree: key.degree, octave };
-      if (key.accidental) g.accidental = key.accidental;
-      setScore(setGraceSlotOp(score, focus.id, side, graceSlot, g));
-      setGraceSlot(graceSlot >= GRACE_COUNT - 1 ? null : graceSlot + 1);
-    },
-    [focus, graceSide, graceSlot, score, setScore],
-  );
-
-  /** 清除本格：三格里的某一格不要了 */
-  const clearGraceSlot = useCallback(() => {
-    if (!focus || focus.kind !== 'note' || graceSlot === null) return;
-    setScore(setGraceSlotOp(score, focus.id, graceSide ?? 'before', graceSlot, null));
-  }, [focus, graceSide, graceSlot, score, setScore]);
-
-  /** 清除：前、后两侧的倚音全删光，勾选框一并取消 */
-  const clearGrace = useCallback(() => {
-    if (!focus || focus.kind !== 'note') return;
-    setScore(setGrace(setGrace(score, focus.id, 'before', undefined), focus.id, 'after', undefined));
-    setGraceSide(null);
-    setGraceSlot(null);
-  }, [focus, score, setScore]);
 
   /**
    * 波形上定好的那个点 = 音频第几拍。
@@ -2278,6 +2375,26 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   );
 
   /**
+   * 输入试听用的音色：当前编辑声部的音色（声部未设置则跟曲目）。
+   * **必须走 scoreParts()**：第一声部存在 `score.part` 而不是 `parts` 数组里——
+   * 之前只查 parts，给第一声部（含单声部谱）配置的音色在点音试听时根本读不到，
+   * 永远回落曲目音色（0.3.8 修，用户实测「点音符还是别的音色」）。
+   * 真采样没解码时 notePreview 会先拉懒加载再用真音色补声，无需 await。
+   */
+  const previewPatch = useMemo(() => {
+    const p = scoreParts(documentScore).find((x) => x.id === activePartId);
+    if (p?.patch !== undefined) return p.patch;
+    return documentScore.meta.patch;
+  }, [documentScore, activePartId]);
+
+  /** 输入试听用的音色八度（与音色同源：声部未设置则跟曲目） */
+  const previewOctave = useMemo(() => {
+    const p = scoreParts(documentScore).find((x) => x.id === activePartId);
+    if (p?.patchOctave !== undefined) return p.patchOctave;
+    return documentScore.meta.patchOctave ?? 0;
+  }, [documentScore, activePartId]);
+
+  /**
    * 鼠标选中。
    *   点在音上   → over 模式，方块光标，之后输入是替换
    *   点在缝隙里 → insert 模式，I 形光标，之后输入是插入
@@ -2303,6 +2420,23 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         setWavePos(null);
         setWaveBeat(null);
       }
+      // 点到音符就奏一声它的音高（拖选建区间不算——那是在框选，不是在点听）
+      if ((!b || b.index === a.index) && a.index >= 0 && a.index < score.events.length) {
+        const ev = score.events[a.index]!;
+        if (ev.kind === 'note') {
+          // 有效调号：转调后的音按新调算（转调记号含它自己那颗）
+          let key = score.meta.key;
+          for (let i = 0; i <= a.index; i++) {
+            const e = score.events[i]!;
+            if (e.kind === 'note' && e.keyChange) key = e.keyChange;
+          }
+          previewNote(toMidi(ev.degree, ev.octave, key, ev.accidental), 0.28, previewPatch, previewOctave);
+        }
+      }
+      // 拖选（框选一段）**不发声**：0.2.182 试过「新选中的音依次响」，
+      // 但鼠标每动一下就触发一次 handlePick，一次拖动下来几十个音各响 0.45 秒
+      // 层层叠在一起，听着就是一团噪音（用户实测太乱，已下线）。
+      // 点单个音的试听保留在下面 setSnap 之前的那个分支里。
       setSnap((s) => {
         if (a.partId && b?.partId && a.partId !== b.partId) return s;
         if (b && b.index !== a.index) {
@@ -2313,7 +2447,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         return { ...s, partId: a.partId ?? activePartId, cursor: a.cursor, anchor: null, mode: a.mode };
       });
     },
-    [bindPick, wavePos, activePartId],
+    [bindPick, wavePos, activePartId, score, previewPatch, previewOctave],
   );
 
   /**
@@ -2397,16 +2531,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         commit({ score: setTicks(score, ids[0], ticks) });
         return;
       }
-      const cands = candidatesFor(ids.length, ticks);
-      if (cands.length === 0) return;
-      if (cands.length === 1) {
-        const next = applyTierOp(score, ids, ticks, cands[0].ticks, cands[0].tuplet, cands[0].dots);
-        if (next) commit({ score: next });
-        return;
-      }
+      const cands = groupCandidates(ids.length, ticks, meterAt(score, snap.cursor));
+      // 一律弹面板（哪怕只有均分一档）：用户要的是「看到候选 + 能点自定义」，
+      // 静默画默认值会让人以为点错了（用户实测 4/6/7/8 音选 1 拍直接被画成均分）
       setPending({ ids, ticks, cands });
     },
-    [selectedTimedIds, score, commit],
+    [selectedTimedIds, score, snap, commit],
   );
 
   // 连音不走独立按钮：选区选 1 拍时候选面板里就有「n 连音」，
@@ -2416,6 +2546,207 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (selectedTimedIds.length < 2) return;
     commit({ ...snap, score: toggleSlur(score, selectedTimedIds) });
   }, [selectedTimedIds, score, snap, commit]);
+
+  /**
+   * 输入板的动作：与键盘输入**等价**，一律作用在光标处 / 光标左侧的音上。
+   * 「左侧的音」走 prevTimed（over 模式下就是 overId），与键盘 2876-2949 同一套。
+   */
+  const padLeftId = useCallback((): string | null => {
+    const k = prevTimed(score, snap.cursor);
+    if (k < 0) return null;
+    const e = score.events[k];
+    if (!e) return null;
+    return e.kind === 'note' || e.kind === 'rest' ? e.id : null;
+  }, [score, snap.cursor]);
+
+  /**
+   * 输入试听：每输入 / 替换一个音符，立刻响一声它的音高（用户 0.2.161 定）。
+   * 音高按记谱调 + 变音记号换算 MIDI，与播放同一份音色代码。
+   * 在手势处理函数里同步调用——AudioContext 必须在手势窗口内建好并 resume。
+   */
+  const previewInput = useCallback(
+    (degree: number, octave = 0, accidental?: Accidental) => {
+      previewNote(toMidi(degree, octave, score.meta.key, accidental), 0.28, previewPatch, previewOctave);
+    },
+    [score.meta.key, previewPatch, previewOctave],
+  );
+  /** 替换左侧音的音级时沿用它的八度 / 变音（octaveOverride 给八度按钮覆盖） */
+  const previewReplace = useCallback(
+    (id: string, degree: number, octaveOverride?: number) => {
+      const e = score.events.find((x) => x.id === id);
+      if (e && e.kind === 'note') {
+        previewNote(toMidi(degree, octaveOverride ?? e.octave, score.meta.key, e.accidental), 0.28, previewPatch, previewOctave);
+      }
+    },
+    [score, previewPatch, previewOctave],
+  );
+
+  /**
+   * 浮动板字段组件的目标音：**仅限真正选中的音**（over 模式焦点）。
+   * 插入光标状态下不出现技法 / 倚音 / 力度分区——那些是「改选中音」的功能，
+   * 对着左侧音改会让用户以为在改刚输入的下一个音。
+   * 插入模式的音级 / 八度 / 变音等仍走 padActions 的左侧音路径，不受影响。
+   */
+  const padTarget = useMemo(
+    // 休止符也算「目标」：选中 0 时时值 / 附点按钮同样要亮（0 按钮本身点亮）
+    () => (focus && (focus.kind === 'note' || focus.kind === 'rest') ? focus : null),
+    [focus],
+  );
+
+  /**
+   * 浮动板的段落标注提交：与右侧检查器同一条守则——插入 / 删除 directive
+   * 会挪动后续所有事件的下标，光标必须跟着位移，否则焦点落到标注自己身上。
+   */
+  const padAnnotate = useCallback(
+    (next: Score, shift: number) => {
+      commit({ ...snap, score: next, cursor: snap.cursor + shift });
+    },
+    [commit, snap],
+  );
+
+  const padActions = useMemo<PadActions>(
+    () => ({
+      note: (d, oct) => {
+        if (d === 0) {
+          if (overId) setScore(setDegree(score, overId, 0));
+          else commit({ score: insertRest(score, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+          return;
+        }
+        if (overId) {
+          const s1 = setDegree(score, overId, d);
+          setScore(oct !== 0 ? setOctave(s1, overId, oct) : s1);
+          previewReplace(overId, d, oct !== 0 ? oct : undefined);
+          return;
+        }
+        const next = insertNote(score, snap.cursor, d as Degree, oct);
+        commit({ score: next, cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+        previewInput(d, oct);
+      },
+      rest: () => {
+        if (overId) setScore(setDegree(score, overId, 0));
+        else commit({ score: insertRest(score, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+      },
+      barline: () => {
+        const r = pressBarline(score, snap.cursor);
+        commit({ score: r.score, cursor: r.cursor, anchor: null, mode: 'insert' });
+      },
+      barlineAs: (kind) => {
+        // 反复 / 终止 / 双细线都是**这一根线**的属性：光标左边（或被选中）的那根线就地改，
+        // 左边没有线才插一根新的。绝不新增第二条线（见 setBarlineRepeat 的说明）。
+        const focused = focus && focus.kind === 'barline' ? (focus as BarlineEvent) : null;
+        const left = snap.cursor > 0 ? score.events[snap.cursor - 1] : undefined;
+        const target = focused ?? (left && left.kind === 'barline' ? (left as BarlineEvent) : null);
+        const apply = (s: Score, id: string): Score => {
+          const styled = setBarlineStyle(s, id, kind === 'final' ? 'final' : kind === 'double' ? 'double' : 'single');
+          // 终止线不能同时挂着反复，反过来改成反复时也清掉终止属性
+          return setBarlineRepeat(
+            styled,
+            id,
+            kind === 'repeat-start' ? 'start' : kind === 'repeat-end' ? 'end' : kind === 'repeat-both' ? 'both' : undefined,
+            2,
+          );
+        };
+        if (target) {
+          setScore(apply(score, target.id));
+          return;
+        }
+        const s = insertBarline(score, snap.cursor);
+        const fresh = s.events[snap.cursor];
+        if (!fresh || fresh.kind !== 'barline') return;
+        commit({ score: apply(s, fresh.id), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+      },
+      accidental: () => {
+        // 与属性面板那排按钮同一顺序：升 → 降 → 还原 → 无（跟随调号）
+        const id = padLeftId();
+        if (!id) return;
+        const ev = score.events.find((e) => e.id === id);
+        if (!ev || ev.kind !== 'note') return;
+        const i = ACCIDENTAL_CHOICES.indexOf(ev.accidental);
+        setScore(setAccidental(score, id, ACCIDENTAL_CHOICES[(i + 1) % ACCIDENTAL_CHOICES.length]));
+      },
+      dot: () => {
+        const id = padLeftId();
+        if (id) setScore(cycleDot(score, id));
+      },
+      breakLine: () => {
+        // 换行是小节线的属性：光标要落在某根竖线上（barlineFocus 声明在后面，这里就地判断）。
+        // 再按一次取消——不然想撤掉换行只能去属性面板改
+        if (focus && focus.kind === 'barline') {
+          const bar = focus as BarlineEvent;
+          setScore(setBarNotation(score, bar.id, { breakAfter: bar.breakAfter === 'line' ? undefined : 'line' }));
+        }
+      },
+      octave: (delta) => {
+        // 升 / 降 8 度对选区同样有意义：所有选中音一起移动（封顶规则与单音一致）
+        if (selectedTimedIds.length >= 2) {
+          setScore(shiftOctaveMany(score, selectedTimedIds, delta));
+          return;
+        }
+        const id = padLeftId();
+        if (id) setScore(shiftOctave(score, id, delta));
+      },
+      paren: (side) => {
+        const id = focus && (focus.kind === 'note' || focus.kind === 'rest') ? focus.id : padLeftId();
+        if (id) setScore(toggleParen(score, id, side));
+      },
+      slur: () => {
+        if (selectedTimedIds.length >= 2) {
+          commit({ ...snap, score: toggleSlur(score, selectedTimedIds) });
+          return;
+        }
+        const id = padLeftId();
+        if (id) setScore(extendSlurRight(score, id));
+      },
+      duration: (ticks) => {
+        if (selectedTimedIds.length >= 2) {
+          useTier(ticks);
+          return;
+        }
+        const id = padLeftId();
+        if (id) setScore(setTicks(score, id, ticks));
+      },
+      group: (ticks) => {
+        // 音值组合：选好几个音 → 先定「合起来凑多少」→ 弹出常用组合候选
+        //（候选就地渲染在输入板里）
+        if (selectedTimedIds.length < 2) {
+          setMsg('音值组合：先选中至少两个音符（拖选或 Shift+方向键）');
+          return;
+        }
+        setPending({ ids: selectedTimedIds, ticks, cands: groupCandidates(selectedTimedIds.length, ticks, meterAt(score, snap.cursor)) });
+      },
+      applyGroup: (cand) => {
+        if (!pending) return;
+        const next = applyTierOp(score, pending.ids, pending.ticks, cand.ticks, cand.tuplet, cand.dots);
+        if (next) commit({ ...snap, score: next });
+        setPending(null);
+      },
+      openCustomGroup: () => setCustomGroupOpen(true),
+      cancelGroup: () => setPending(null),
+      del: () => {
+        // 批量选中（拖选区间）→ 一次删光整个选区（与右侧「删除所选」同路径）；
+        // 否则与键盘 Backspace 同一条路径：替换模式删当前音，插入模式删光标左边的音
+        if (range) {
+          deleteSelection();
+          return;
+        }
+        if (overId) {
+          commit({
+            score: removeEvent(score, overId),
+            cursor: Math.max(0, snap.cursor - 1),
+            anchor: null,
+            mode: 'insert',
+          });
+        } else if (snap.cursor > 0) {
+          commit({
+            score: removeEvent(score, score.events[snap.cursor - 1].id),
+            cursor: snap.cursor - 1,
+            anchor: null,
+          });
+        }
+      },
+    }),
+    [overId, score, snap, commit, setScore, setMsg, padLeftId, focus, selectedTimedIds, useTier, pending, range, deleteSelection],
+  );
 
   /**
    * 选中完整小节时，「区间操作」里给出跳房子：比逐根点小节线直观。
@@ -2588,7 +2919,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   /** 把选中的小节线变成 `|` / `|:` / `:|`；再点一次当前状态 = 取消 */
   const setRepeat = useCallback(
-    (repeat?: 'start' | 'end') => {
+    (repeat?: 'start' | 'end' | 'both') => {
       if (!barlineFocus) return;
       const next = barlineFocus.repeat === repeat ? undefined : repeat;
       setScore(setBarlineRepeat(score, barlineFocus.id, next));
@@ -2604,6 +2935,45 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setScore(setBarlineVolta(score, barlineFocus.id, cur.includes(n) ? undefined : [n]));
     },
     [barlineFocus, score, setScore],
+  );
+
+  /**
+   * 浮动板的小节线动作集：与右侧检查器同一条写谱路径（点线时整个面板切换）。
+   */
+  const padBarlineActions = useMemo(
+    () => ({
+      setBeatAfter: (v?: string) => {
+        if (!barlineFocus) return;
+        setScore(resplitOversizedGroups(setBarNotation(score, barlineFocus.id, { beatAfter: v })));
+      },
+      setBreakAfter: (v?: 'line' | 'page') => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { breakAfter: v }));
+      },
+      setRepeat,
+      setRepeatTimes: (n: number) => {
+        if (!barlineFocus) return;
+        setScore(setRepeatTimes(score, barlineFocus.id, n));
+      },
+      setVolta,
+      toggleFinal: () => {
+        if (!barlineFocus) return;
+        setScore(setBarlineStyle(score, barlineFocus.id, barlineFocus.style === 'final' ? 'single' : 'final'));
+      },
+      toggleDouble: () => {
+        if (!barlineFocus) return;
+        setScore(setBarlineStyle(score, barlineFocus.id, barlineFocus.style === 'double' ? 'single' : 'double'));
+      },
+      toggleVoltaOpen: () => {
+        if (!barlineFocus) return;
+        setScore(setBarlineVoltaOpen(score, barlineFocus.id, !barlineFocus.voltaOpen));
+      },
+      toggleJump: (mark: JumpMark | null) => {
+        if (!barlineFocus) return;
+        setScore(toggleJumpAfterBarline(score, barlineFocus.id, mark));
+      },
+    }),
+    [barlineFocus, score, setScore, setRepeat, setVolta],
   );
 
   // ─────────── 键盘 ───────────
@@ -2700,8 +3070,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           // 否则 1-7 是「替换」、而 - ^ v . t 是「作用于左边的音」，
           // 两组键语义不一致：输入 1--0 时那个 0 会回头把刚输入的 1 吃掉。
           commit({ score: setDegree(score, overId, d), mode: 'insert', anchor: null });
+          previewReplace(overId, d);
         } else {
           commit({ score: insertNote(score, cur, d), cursor: cur + 1, anchor: null, mode: 'insert' });
+          previewInput(d);
         }
         return;
       }
@@ -2742,7 +3114,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           if (prev.kind !== 'note' && prev.kind !== 'rest') return;
           const dot = prev.dot ?? 0;
           const base = undotTicks(prev.ticks, dot);
-          commit({ score: setTicks(score, prev.id, base > 6 ? base / 2 : TICKS_PER_BEAT) });
+          commit({ score: setTicks(score, prev.id, base > TICKS_PER_BEAT / 8 ? base / 2 : TICKS_PER_BEAT) });
           return;
         }
         case '^':
@@ -2763,6 +3135,21 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 ? toggleTongue(score, prev.id)
                 : shiftOctave(score, prev.id, e.key === '^' ? 1 : -1);
           commit({ score: next });
+          return;
+        }
+        // 八度：· 降 8、~ 升 8（中文标点下同一颗键的上下档，手不用挪）。
+        // 英文布局下这颗键是 `（无 Shift）/ ~（Shift），所以 ` 一并认作降 8。
+        // 与 ^ / v 并存：那两个是英文写法，这一对是同一颗键上下档。
+        case '·':
+        case '`':
+        case '~': {
+          e.preventDefault();
+          // 与 ^ / v 同一套：作用于光标左边最近的那个音（选中时就是被选中的那个）
+          const k = prevTimed(score, cur);
+          if (k < 0) return;
+          const prev = score.events[k];
+          if (prev.kind !== 'note') return;
+          commit({ score: shiftOctave(score, prev.id, e.key === '~' ? 1 : -1) });
           return;
         }
         case 'ArrowLeft':
@@ -2949,18 +3336,25 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       }}
       onReplay={() => { stopPlay(); androidResumeTick.current = null; setPlayPick(null); setSnap(s => ({ ...s, cursor: 0, mode: 'insert', anchor: null })); requestAnimationFrame(() => startPlay(0)); }}
       onBack={() => { androidAlive.current = false; stopPlay(); onAndroidBack?.(); }}
-      notation={notation} onNotation={setStaffViewOn} source={playSource}
+      notation={notation} onNotation={setStaffViewOn} pitch={staffPitchMode} onPitch={setStaffPitchMode} source={playSource}
       parts={androidParts.map(part => ({ id: part.id, name: part.name }))} selectedPart={androidViewPart} allowTotal={!androidNarrow}
       onPart={id => { setAndroidPartPick(id); if (id !== 'total') selectPart(id); }}
       onSource={source => { const at = getPlayTick() ?? 0; stopPlay(); androidResumeTick.current = at; clockRef.current.seek(at / TICKS_PER_BEAT); setPlaySource(source); }}
       font={effFont} onFont={setPlayFont} onResetFont={() => setPlayFont(null)} gap={effGap} onGap={setPlayGap}
+      lineGap={effLineGap} onLineGap={setPlayLineGap}
       style={playStyle} onStyle={setPlayStyle} expanded={expandView} canExpand={canExpandView} onExpand={setExpandView}
       stems={stems.map(s => ({ name: s.name, on: s.on, vocal: isVocalName(s.name) }))}
       onStem={toggleStem} onStemsAll={() => setStemsOn(() => true)} onStemsNoVocal={() => setStemsOn((name: string) => !isVocalName(name))}
       transpose={transpose} onTranspose={changeTranspose} speed={speed} onSpeed={changeSpeed}
+      metronomeFollow={metronomeFollow} onMetronomeFollow={setMetronomeFollow}
+      metronomePattern={metronomePatternId} onMetronomePattern={setMetronomePatternId}
+      metronomeVolume={metronomeVolume} onMetronomeVolume={setMetronomeVolume}
+      onMetronomeTest={() => metronomeRef.current?.clickOnce(true)}
+      scoreBeat={score.meta.beat}
+      metronomeBpm={Math.round(score.meta.bpm * speed * 100) / 100}
       message={msg.includes('失败') ? msg : undefined}
       renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
-        unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} responsive
+        unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} responsive
         selectedIds={EMPTY_SELECTED} cursor={0} timeline={displayTimeline} playStyle={playStyle}
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
         getPlayTick={getPlayTick} showCaret={false} focusId={activePlayPick?.id ?? null}
@@ -2982,7 +3376,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }
   return (
     <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry={entry}>
-      {/* play.html 是独立入口：整行顶栏（含返回首页、品牌、文件状态、校验、深色）不显示，播放页有自己的工具条。要切深浅色去记谱页，那里切过一次这里就沿用。 */}
+      {/* play.html 是独立入口：整行顶栏（含返回首页、品牌、文件状态、校验）不显示，播放页有自己的工具条（含月亮主题开关）。 */}
       <header className="v2-head">
         <div className="v2-brand">
           {/*
@@ -3124,6 +3518,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </button>
               <button
                 className="v2-btn"
+                title="打开机器上的 .wspack（谱面 + 伴奏 + 对轨标定），装回这里继续对轨编辑——「打包」的逆操作"
+                onClick={() => packRef.current?.click()}
+              >
+                导入打包
+              </button>
+              <button
+                className="v2-btn"
                 title="先把整首歌分成人声 / 伴奏分轨，再把分轨载入这里对齐"
                 onClick={() => setTramaOpen(true)}
               >
@@ -3145,6 +3546,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           {mode !== 'play' && mode !== 'discover' ? <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button> : null}
           {/* 文件选择框两种模式共用（浏览器预览时没有 Tauri 对话框，靠它兜底） */}
           <input ref={fileRef} type="file" accept=".jps,.txt" hidden onChange={onFilePicked} />
+          <input ref={packRef} type="file" accept=".wspack" hidden onChange={onPackPicked} />
         </div>
         </header>
       {/*
@@ -3214,6 +3616,32 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 合成音
               </button>
             </div>
+            {/* 合成音音色：整谱 + 各声部覆盖（不改谱面，按曲子记住）；伴奏场景不出现 */}
+            {playSource === 'synth' ? (
+              <button
+                className={`v2-btn ${playTimbre ? 'is-on' : ''}`}
+                onClick={() => setTimbreOpen(true)}
+                title="合成音音色：整谱与各声部（不改谱面，按曲子记住）"
+              >
+                音色{playTimbre ? ' •' : ''}
+              </button>
+            ) : null}
+            {/* 节拍器：只跟着谱面（伴奏场景不出现，见 metronomeAvailable） */}
+            {metronomeAvailable ? (
+              <MetronomeButton
+                on={metronomeFollow}
+                onToggle={() => {
+                  const next = !metronomeFollow;
+                  if (next) metronomeRef.current?.unlock(); // 用户手势窗口内建好音频上下文
+                  else metronomeRef.current?.stop();
+                  setMetronomeFollow(next);
+                }}
+                onOpen={() => {
+                  metronomeRef.current?.unlock(); // 这次点击顺手把音频上下文建好
+                  setMetronomeOpen(true);
+                }}
+              />
+            ) : null}
             {/* 字号 / 字距：观看偏好，只影响播放界面的显示，谱面文件不变；⟲ 恢复跟随谱面 */}
             <div className="v2-play-adj" title="字号（只影响播放界面，谱面本身不变）">
               <span>字号</span>
@@ -3326,6 +3754,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               导出
             </button>
             <button className="v2-btn" aria-haspopup="dialog" onClick={() => setHelpOpen(true)}>帮助</button>
+            <ThemeToggle dark={dark} onChange={setDark} />
           </div>
           {/*
             分轨开关：打包进去几条就能挑几条放。人声常常已经录在伴奏里，
@@ -3557,6 +3986,74 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       {helpOpen ? <HelpDialog dark={dark} initialTopic={mode === 'score' ? view === 'source' ? 'jps' : 'editing' : mode === 'align' ? 'alignment' : mode === 'library' ? 'library' : 'playback'} onClose={() => setHelpOpen(false)} /> : null}
 
       {/*
+        节拍器面板：播放页 / 记谱页 / 动态谱生成页共用一份（挂在最外层，
+        切屏不重开）。伴奏场景下按钮不出现，面板也会跟着关掉。
+        开关已挪到播放条上（节拍器|⌄），面板只管配置。
+      */}
+      {metronomeOpen && metronomeAvailable ? (
+        <MetronomePanel
+          follow={metronomeFollow}
+          bpm={Math.round(score.meta.bpm * speed * 100) / 100}
+          scoreMeter={score.meta.beat}
+          patternId={metronomePatternId}
+          onPattern={setMetronomePatternId}
+          volume={metronomeVolume}
+          onVolume={setMetronomeVolume}
+          playing={playing}
+          onClose={() => setMetronomeOpen(false)}
+        />
+      ) : null}
+      {/* 播放页的合成音音色（整谱 + 各声部覆盖，不改谱面）：仅合成音场景 */}
+      {timbreOpen ? (
+        <PlayTimbreDialog
+          score={timbreScore}
+          timbre={playTimbre}
+          onChange={(t) => {
+            // 播放中改音色：已经排程出去的音换不了了，停掉让下一次播放整曲用新音色
+            if (playing) stopPlay();
+            setPlayTimbre(t);
+          }}
+          onClose={() => setTimbreOpen(false)}
+        />
+      ) : null}
+
+      {/*
+        自定义音值组合：依附于「选择划分」的选区（pending）——点候选面板的
+        「自定义组合…」打开，写回走 applyTier 同一条路（组 / 连音 / 附点
+        全部由它处理，绘制层的拍组减时线自动连起来）。
+      */}
+      {customGroupOpen && pending ? (
+        <CustomGroupDialog
+          totalTicks={pending.ticks}
+          beat={meterAt(score, snap.cursor)}
+          members={pending.ids.map((id) => {
+            const e = score.events.find((x) => x.id === id);
+            return {
+              id,
+              kind: e && (e.kind === 'note' || e.kind === 'rest') ? e.kind : 'note',
+              degree: e && e.kind === 'note' ? e.degree : 0,
+            };
+          })}
+          initialTicks={pending.ids.map((id) => {
+            const e = score.events.find((x) => x.id === id);
+            return e && (e.kind === 'note' || e.kind === 'rest') ? e.ticks : 0;
+          })}
+          initialTuplet={
+            score.groups.find(
+              (g) => g.totalTicks === pending.ticks && pending.ids.every((id) => g.memberIds.includes(id)),
+            )?.tuplet
+          }
+          onApply={(ticks, tuplet, dots) => {
+            const next = applyTierOp(score, pending.ids, pending.ticks, ticks, tuplet, dots);
+            if (next) commit({ ...snap, score: next });
+            setCustomGroupOpen(false);
+            setPending(null);
+          }}
+          onClose={() => setCustomGroupOpen(false)}
+        />
+      ) : null}
+
+      {/*
         编辑器主体只在「记谱 / 对轨」两屏渲染。
         gate 必须逐个排除新 mode：discover 是后来加的，漏在这里的结果是
         play.html 首页和整套编辑器（谱面 + 右侧属性栏）同时渲染——
@@ -3604,6 +4101,22 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               >
                 {playing ? '⏹ 停止' : '▶ 播放'}
               </button>
+              {/* 节拍器：记谱页与动态谱生成页也放得下（只在合成音场景出现） */}
+              {metronomeAvailable ? (
+                <MetronomeButton
+                  on={metronomeFollow}
+                  onToggle={() => {
+                    const next = !metronomeFollow;
+                    if (next) metronomeRef.current?.unlock();
+                    else metronomeRef.current?.stop();
+                    setMetronomeFollow(next);
+                  }}
+                  onOpen={() => {
+                    metronomeRef.current?.unlock();
+                    setMetronomeOpen(true);
+                  }}
+                />
+              ) : null}
               {/* 「69 音序」原来是播放序列总长，不跟着光标走——
                   跟着光标走的是「第几拍起」。写清楚，别让人以为是光标位置 */}
               <span
@@ -3665,18 +4178,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </button>
             </div>
 
-            {/* 深浅主题：CSS 变量与画布配色一起切，不跟系统走 */}
-            <div className="v2-view-switch">
-              <button
-                className={!dark ? 'v2-seg is-on' : 'v2-seg'}
-                onClick={() => setDark(false)}
-              >
-                浅色
-              </button>
-              <button className={dark ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setDark(true)}>
-                深色
-              </button>
-            </div>
+            {/* 深浅主题：月亮一枚，实心 = 深色，线条 = 浅色；CSS 变量与画布配色一起切 */}
+            <ThemeToggle dark={dark} onChange={setDark} />
           </div>
 
           {/* 音轨分离入口已移到顶部工具条（对轨组），波形上方腾出一行竖向空间 */}
@@ -4020,7 +4523,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 label="拍号"
                 value={score.meta.beat}
                 placeholder="4/4"
-                onCommit={(v) => setScore(setMeta(score, { beat: v }))}
+                onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: v })))}
               />
               <MetaInput
                 label="速度"
@@ -4030,13 +4533,24 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 max={300}
                 onCommit={(v) => setScore(setMeta(score, { bpm: Number(v) }))}
               />
-              <MetaInput
+              <MetaSelect
                 label="音色"
-                type="number"
-                value={score.meta.patch}
-                min={0}
-                max={127}
+                value={String(score.meta.patch)}
+                options={[
+                  '钢琴',
+                  ...instrumentPatches().map(
+                    (p) => `${instrumentLabel(p) ?? p}（真采样 · ${instrumentSource(p)}）`,
+                  ),
+                ]}
+                values={['0', ...instrumentPatches().map(String)]}
                 onCommit={(v) => setScore(setMeta(score, { patch: Number(v) }))}
+              />
+              <MetaSelect
+                label="音色八度"
+                value={String(score.meta.patchOctave ?? 0)}
+                options={['不移动', '升高一个八度 ↑8', '降低一个八度 ↓8']}
+                values={['0', '1', '-1']}
+                onCommit={(v) => setScore(setMeta(score, { patchOctave: Number(v) }))}
               />
               {/* 谱头说明：居中一行 + 右侧最多 4 行（@sub / @note），打印排版与图示简谱一致 */}
               <MetaInput
@@ -4066,7 +4580,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               <MetaInput
                 label="字号"
                 type="number"
-                value={score.meta.fontSize ?? 21}
+                value={score.meta.fontSize ?? DEFAULT_FONT_SIZE}
                 min={12}
                 max={56}
                 onCommit={(v) => setScore(setMeta(score, { fontSize: Number(v) }))}
@@ -4074,7 +4588,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               <MetaInput
                 label="字间距"
                 type="number"
-                value={score.meta.letterSpacing ?? 0}
+                value={score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING}
                 min={-20}
                 max={20}
                 onCommit={(v) => setScore(setMeta(score, { letterSpacing: Number(v) }))}
@@ -4098,770 +4612,67 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </label>
             </div>
             <p className="v2-hint">
-              调号支持升降号：1=bB、1=#F（♭B / ♯F 也认）。速度单位是 BPM，音色是 MIDI 音色号
-              0–127。字号 / 字间距 / 行间距 / 小节号随文件保存。改完按回车或点别处生效。
+              调号支持升降号：1=bB、1=#F（♭B / ♯F 也认）。速度单位是 BPM；音色下拉里是
+              FluidR3 真采样音色，其余 MIDI 音色号（0–127）暂以钢琴合成音播放。
+              字号 / 字间距 / 行间距 / 小节号随文件保存。改完按回车或点别处生效。
             </p>
           </div>
 
           {/*
-            小节线属性：点谱面里那条竖线选中它，在这里把它改成 |: / :| 或挂上房子。
-            反复是**这条线的状态**——不会再插出第二条线。
-            反复本身不参与排版的「逐音」流程——播放时由 expand.ts 展开成线性谱，
-            编辑始终作用在这份带反复记号的原谱上。
+            输入板（原浮动输入板并入右栏）：音符录入 / 小节线 / 音符属性一个面板全包。
+            点谱面竖线选中它时，整块切换成小节线编辑（与音符编辑互斥）；
+            打开曲目信息时让位（is-hidden）。
           */}
           <div className={songInfoOpen ? 'v2-side-block is-hidden' : 'v2-side-block'}>
             <div className="v2-side-title v2-inspector-title">
-              <span>小节线</span>
+              <span>
+                {barlineFocus
+                  ? '输入板 · 小节线'
+                  : focus
+                    ? `输入板 · 选中 ${eventLabel(focus)}${focusMeasure ? ` · 第 ${focusMeasure} 小节` : ''}`
+                    : '输入板'}
+              </span>
               {expansion.repeatedSections > 0 && expansion.score ? (
                 <span className="v2-title-token" title="反复展开成顺序演奏后的事件数">
                   展开后 {expansion.score.events.filter((e) => e.kind === 'note').length} 音
                 </span>
-              ) : null}
-            </div>
-            {barlineFocus && canEditConductor ? (
-              <>
-                <div className="v2-field">
-                  <span className="v2-field-label">此线之后的拍号</span>
-                  <select className="v2-meta-input" aria-label="此线之后的拍号" value={barlineFocus.beatAfter ?? ''} onChange={(e) => setScore(setBarNotation(score, barlineFocus.id, { beatAfter: e.target.value || undefined }))}>
-                    <option value="">沿用之前的拍号</option>
-                    {['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8'].map((beat) => <option key={beat} value={beat}>{beat}</option>)}
-                    {barlineFocus.beatAfter && !['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8'].includes(barlineFocus.beatAfter) ? <option value={barlineFocus.beatAfter}>{barlineFocus.beatAfter}</option> : null}
-                  </select>
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">此线之后的排版</span>
-                  <div className="v2-grid">
-                    <button className={`v2-btn ${!barlineFocus.breakAfter ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: undefined }))}>自动</button>
-                    <button className={`v2-btn ${barlineFocus.breakAfter === 'line' ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: 'line' }))}>换行</button>
-                    <button className={`v2-btn ${barlineFocus.breakAfter === 'page' ? 'is-on' : ''}`} onClick={() => setScore(setBarNotation(score, barlineFocus.id, { breakAfter: 'page' }))}>分页</button>
-                  </div>
-                </div>
-                <div className="v2-grid v2-grid-4">
-                  <button
-                    className={`v2-btn ${barlineFocus.repeat === 'start' ? 'is-on' : ''}`}
-                    onClick={() => setRepeat('start')}
-                    title="把这条线改成反复开始 |:（再点一次取消）"
-                  >
-                    |:
-                  </button>
-                  <button
-                    className={`v2-btn ${barlineFocus.repeat === 'end' ? 'is-on' : ''}`}
-                    onClick={() => setRepeat('end')}
-                    title="把这条线改成反复结束 :|（再点一次取消）"
-                  >
-                    :|
-                  </button>
-                  <span className="v2-field-label v2-inline-label">遍数</span>
-                  <select
-                    className="v2-grace-pick"
-                    value={barlineFocus.repeat === 'end' ? (barlineFocus.times ?? 2) : 2}
-                    disabled={barlineFocus.repeat !== 'end'}
-                    onChange={(e) =>
-                      setScore(setRepeatTimes(score, barlineFocus.id, Number(e.target.value)))
-                    }
-                  >
-                    {[2, 3, 4, 5].map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="v2-grace-bar">
-                  <span className="v2-field-label v2-inline-label">房子</span>
-                  {[1, 2, 3].map((n) => (
-                    <button
-                      key={n}
-                      className={`v2-btn ${(barlineFocus.volta ?? []).includes(n) ? 'is-on' : ''}`}
-                      onClick={() => setVolta(n)}
-                      title={`房子 [${n}] 的左墙设在这根线，向右自动延伸到 :| 或下一间房。要罩住反复号前几个小节，就点那几小节的第 1 根小节线再来点这里`}
-                    >
-                      [{n}]
-                    </button>
-                  ))}
-                  <button
-                    className="v2-btn"
-                    onClick={() => setScore(setBarlineStyle(score, barlineFocus.id, barlineFocus.style === 'final' ? 'single' : 'final'))}
-                    title="终止线 ||（再点一次变回普通小节线）"
-                  >
-                    ||
-                  </button>
-                  {barlineFocus.volta ? (
-                    <button
-                      className={`v2-btn ${barlineFocus.voltaOpen ? 'is-on' : ''}`}
-                      title="手动强制右端开放。通常自动判断：横线只盖连着标了同号的线，下一根线是 :| 就封闭，否则开放；这里点一下可覆盖自动判断"
-                      onClick={() => setScore(setBarlineVoltaOpen(score, barlineFocus.id, !barlineFocus.voltaOpen))}
-                    >
-                      右端开放
-                    </button>
-                  ) : null}
-                </div>
-                {/*
-                  跳转记号（L2）：挂在选中线**后面**（与 DSL 的 `$s` 写在线后一致）。
-                  点亮 = 已挂；再点 = 摘掉；点另一颗 = 原地换。展开器负责跳转执行
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">跳转记号（挂在这条线后面）</span>
-                  <div className="v2-grid">
-                    {(
-                      [
-                        ['segno', '𝄋 起点', 'D.S. 的跳回目标（记号出现在反复起点）'],
-                        ['ds', 'D.S.', '唱到这里跳回 𝄋'],
-                        ['tocoda', 'To ⊕', 'D.S. 遍唱到这里，跳到 ⊕'],
-                        ['coda', '⊕', '结束句从这里开始'],
-                        ['fine', 'Fine', '到此结束（al Fine）'],
-                        ['dc', 'D.C.', '从头再唱一遍'],
-                      ] as [JumpMark, string, string][]
-                    ).map(([mark, label, tip]) => (
-                      <button
-                        key={mark}
-                        className={`v2-btn ${jumpAfterFocus === mark ? 'is-on' : ''}`}
-                        title={tip}
-                        onClick={() => setScore(toggleJumpAfterBarline(score, barlineFocus.id, jumpAfterFocus === mark ? null : mark))}
-                      >
-                        {mark === 'segno' ? <><span style={{ fontFamily: MUSIC_SYMBOL_FONT, fontSize: '1.2em', lineHeight: 1, verticalAlign: '-0.12em' }}>{SEGNO_SYMBOL}</span> 起点</> : label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {playOrder ? (
-                  <p className="v2-hint">
-                    演奏顺序：<b>第 {playOrder.join(' → ')} 小节</b>
-                  </p>
-                ) : null}
-                <p className="v2-hint">
-                  反复记号是这条线的属性：<b>|:</b> 开始、<b>:|</b> 结束，两点就画在这条线两侧。
-                  播放会自动展开成顺序演奏。
-                </p>
-              </>
-            ) : !canEditConductor ? (
-              <p className="v2-hint">全谱的反复、跳房子与跳转由首声部控制。切换到「{documentScore.part?.name}」编辑，对应记号会同步到各声部。</p>
-            ) : (
-              <p className="v2-hint">
-                点谱面里那条<b>竖线</b>选中它，就能把它改成 <b>|:</b> / <b>:|</b>，或给它挂上跳房子{' '}
-                <b>[1]</b> / <b>[2]</b>。房子挂在它的<b>左墙</b>那根线上，向右自动延伸到 <b>:|</b>{' '}
-                或下一间房——想罩住反复号前面的几个小节，点那几小节的<b>第 1 根</b>小节线再挂。
-              </p>
-            )}
-          </div>
-
-          {/* 属性检查器：点选什么就改什么，不需要记语法。打开曲目信息时让位 */}
-          {/* 属性检查器：点选什么就改什么，不需要记语法。打开曲目信息时让位 */}
-          <div className={songInfoOpen ? 'v2-side-block is-hidden' : 'v2-side-block'}>
-            <div className="v2-side-title v2-inspector-title">
-              <span>
-                {range
-                  ? `已选 ${range[1] - range[0]} 个事件`
-                  : focus
-                    ? `选中 ${eventLabel(focus)}${focusMeasure ? ` · 第 ${focusMeasure} 小节` : ''}`
-                    : snap.mode === 'insert'
-                      ? '插入点：未选中任何音'
-                      : '属性'}
-              </span>
-              {/* 当前时值排进标题行。带附点的音显示去点后的值——
-                  「2..」的档位是八分那颗，附点在附点行单独表达。
-                  用拍数标签（1/2 拍）而不是谱面写法（5/2）：后者会被读成五分之二 */}
-              {focus && (focus.kind === 'note' || focus.kind === 'rest') ? (
+              ) : focus && (focus.kind === 'note' || focus.kind === 'rest') ? (
                 <span className="v2-title-token">
                   时值 {durLabel(undotTicks(focus.ticks, focus.dot ?? 0))}
                 </span>
               ) : null}
             </div>
-
-            {range ? (
-              <>
-                <div className="v2-field">
-                  {/*
-                    多选时档位是「整个选区的总时值」，不是每个音的时值。
-                    受 I2 约束总时值 ≤ 1 拍，所以这里只列 1 拍及以内的档位——
-                    简谱里超过一拍的长音用增时线写在单个音上，没有「几个音连起来合计 2 拍」的写法。
-                  */}
-                  <span className="v2-field-label">
-                    总时值（{selectedTimedIds.length} 个音均分，上限 1 拍）
-                  </span>
-                  <div className="v2-grid v2-grid-4">
-                    {groupTierList.map((t) => (
-                      <button key={t.label} className="v2-btn" onClick={() => useTier(t.ticks)}>
-                        {t.label}
-                      </button>
-                    ))}
-                    {groupTierList.length < tiers.length ? (
-                      <span className="v2-tiers-label">
-                        2 拍以上长音请写增时线（-）
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-                {/*
-                  划分候选紧跟在总时值按钮下面：点「1 拍」弹出多个方案时，
-                  视线不用跳到面板底部去找（旧版渲染在整个检查器之后，隔了一整屏）。
-                */}
-                {pending ? (
-                  <div className="v2-field">
-                    <span className="v2-field-label">选择划分（{pending.ids.length} 个音）</span>
-                    {/*
-                      候选不用文字描述，直接画出选中音符的实际样子——
-                      每个方案一排记号（选中什么音就画什么音，休止符画 0），
-                      连音方案带标号。文字标签降级为悬停提示。
-                    */}
-                    <ul className="v2-diag">
-                      {pending.cands.map((c, i) => {
-                        const degrees = pending.ids.map((id) => {
-                          const e = score.events.find((x) => x.id === id);
-                          return e && e.kind === 'note' ? e.degree : 0;
-                        });
-                        return (
-                          <li key={i}>
-                            <button
-                              className="v2-btn v2-cand"
-                              title={c.label}
-                              onClick={() => {
-                                const next = applyTierOp(score, pending.ids, pending.ticks, c.ticks, c.tuplet, c.dots);
-                                if (next) commit({ ...snap, score: next });
-                                setPending(null);
-                              }}
-                            >
-                              <GroupGlyph
-                                degrees={degrees}
-                                beams={c.ticks.map((t, i) =>
-                                  c.tuplet
-                                    ? tupletBeamCount(pending.ticks, c.tuplet)
-                                    : beamCount(undotTicks(t, c.dots?.[i] ?? 0)),
-                                )}
-                                tuplet={c.tuplet}
-                                dots={c.dots}
-                              />
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                    <button className="v2-btn" onClick={() => setPending(null)}>
-                      取消
-                    </button>
-                  </div>
-                ) : null}
-                <div className="v2-field">
-                  <span className="v2-field-label">区间操作</span>
-                  <div className="v2-grid">
-                    <button
-                      className="v2-btn"
-                      onClick={doSlur}
-                      disabled={selectedTimedIds.length < 2}
-                    >
-                      连音线
-                    </button>
-                    <button className="v2-btn" onClick={deleteSelection}>
-                      删除所选
-                    </button>
-                    {/* 灰显 / 复原：批量标记前奏 / 间奏——这些音画成灰色，提示不用吹奏。
-                        仍照常播放与计时，纯视觉标记。对应 DSL 的 g 后缀 */}
-                    <button
-                      className="v2-btn"
-                      disabled={selectedTimedIds.length === 0}
-                      onClick={() => setScore(setGray(score, selectedTimedIds, true))}
-                      title="把选中的音符 / 休止画成灰色：提示这段是前奏或间奏，不用吹奏（播放不受影响）"
-                    >
-                      灰显
-                    </button>
-                    <button
-                      className="v2-btn"
-                      disabled={selectedTimedIds.length === 0}
-                      onClick={() => setScore(setGray(score, selectedTimedIds, false))}
-                      title="把选中的音符 / 休止恢复为正常颜色"
-                    >
-                      复原
-                    </button>
-                  </div>
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">跨音力度范围（首音至末音）</span>
-                  <div className="v2-grid">
-                    <button className="v2-btn" disabled={selectedTimedIds.filter((id) => score.events.find((e) => e.id === id)?.kind === 'note').length < 2} onClick={() => setScore(setHairpinRange(score, selectedTimedIds, 'cresc'))}>渐强</button>
-                    <button className="v2-btn" disabled={selectedTimedIds.filter((id) => score.events.find((e) => e.id === id)?.kind === 'note').length < 2} onClick={() => setScore(setHairpinRange(score, selectedTimedIds, 'dim'))}>渐弱</button>
-                    <button className="v2-btn" onClick={() => setScore(setHairpinRange(score, selectedTimedIds))}>清除范围</button>
-                  </div>
-                </div>
-                {/*
-                  跳房子走选区：选中一整个（或几个）小节直接设为第 n 房——
-                  比逐根点小节线、脑补「房子从哪根线开始」直观得多。
-                  条件与效果见 setVoltaFromSelection：选区头前是墙、尾后那根自动变 :|。
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">跳房子（选中完整小节）</span>
-                  <div className="v2-grid">
-                    {[1, 2, 3].map((nv) => (
-                      <button
-                        key={nv}
-                        className="v2-btn"
-                        disabled={!selectionVolta.score || !canEditConductor}
-                        title="选区头前那根线挂上房子（左墙），选区尾的小节线自动变成 :|"
-                        onClick={() => doSelectionVolta(nv)}
-                      >
-                        [{nv}]
-                      </button>
-                    ))}
-                  </div>
-                  <p className="v2-hint">
-                    {selectionVolta.error ??
-                      '整段小节一次跨进房子；再加第二间房时选中它的完整小节点 [2]，旧 :| 会自动并进同一段。'}
-                  </p>
-                </div>
-              </>
-            ) : focus && focus.kind === 'note' ? (
-              <>
-                {/*
-                  单选时不出现连音相关的东西：连音线至少要两个音，
-                  3/6 连音也要正好选中那么多音，单选下一律不可用，
-                  摆在这里只会让面板多一块永远点不动的区域。
-                  连音线在选区的「区间操作」里，连音在选 1 拍弹出的候选面板里。
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">音级</span>
-                  <div className="v2-grid v2-grid-7">
-                    {[1, 2, 3, 4, 5, 6, 7].map((d) => (
-                      <button
-                        key={d}
-                        className={focus.degree === d ? 'v2-btn is-on' : 'v2-btn'}
-                        onClick={() => setScore(setDegree(score, focus.id, d))}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">
-                    八度
-                    {/* 快捷键写进标签：v 这个键位用户猜不到（大写 V 还是换气记号） */}
-                    <span className="v2-tiers-label">（键盘 ^ 升八度 / v 降八度，可叠加，上限 3 颗点）</span>
-                  </span>
-                  <div className="v2-grid v2-grid-5">
-                    {[2, 1, 0, -1, -2].map((o) => (
-                      <button
-                        key={o}
-                        className={focus.octave === o ? 'v2-btn is-on' : 'v2-btn'}
-                        onClick={() => setScore(setOctave(score, focus.id, o))}
-                        title={octaveName(o)}
-                      >
-                        {/* 八度用简谱本来的样子：高音数字上加圆点，低音数字下加圆点 */}
-                        <NotationGlyph degree={focus.degree} dots={o} />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {/*
-                  时值 + 附点合并成一排：时值组内单选（点亮的再点一次回到 1 拍），
-                  附点组内单选（点亮的再点一次 = 无）。两组互不干预。
-                  与休止符分支共用同一个组件——休止符的时值设定和音符完全一样。
-                */}
-                <DurationDotsField
-                  focus={focus}
-                  tiers={tiers}
-                  useTier={useTier}
-                  onDot={(d) => setScore(setDot(score, focus.id, d))}
-                />
-                <div className="v2-field">
-                  {/*
-                    倚音：不占时值，挂在主音上。1 颗 = 单倚音，2 颗以上 = 复倚音。
-                    录制顺序按谱面念法：勾前 / 后（互斥）→ 点格子 → 在下面的输入框里点音符。
-                    播放时前倚音吃主音开头、后倚音吃结尾，各切 1/4 拍。
-                  */}
-                  <span className="v2-field-label">倚音（不占时值，最多 3 颗）</span>
-                  <div className="v2-grace-bar">
-                    <label className="v2-grace-check" title="勾上 = 这三格是前倚音">
-                      <input
-                        type="checkbox"
-                        checked={graceSide === 'before'}
-                        onChange={() => pickGraceSide('before')}
-                      />
-                      前
-                    </label>
-                    {GRACE_SLOTS.map((i) => {
-                      const g = graceList[i];
-                      return (
-                        <button
-                          key={i}
-                          className={`v2-grace-slot ${g ? 'is-filled' : ''} ${
-                            graceSlot === i ? 'is-open' : ''
-                          }`}
-                          title={g ? '点击修改这一颗' : '点击输入这一颗'}
-                          onClick={() => openGraceSlot(i)}
-                        >
-                          {g ? (
-                            <NotationGlyph
-                              degree={g.degree}
-                              dots={g.octave}
-                              accidental={g.accidental}
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                    <label className="v2-grace-check" title="勾上 = 这三格是后倚音">
-                      <input
-                        type="checkbox"
-                        checked={graceSide === 'after'}
-                        onChange={() => pickGraceSide('after')}
-                      />
-                      后
-                    </label>
-                    <button
-                      className="v2-btn"
-                      disabled={graceList.length === 0}
-                      title="删除这个音上的全部倚音（前后两侧都清）"
-                      onClick={clearGrace}
-                    >
-                      清除
-                    </button>
-                  </div>
-                  {graceSlot !== null ? (
-                    <div className="v2-grace-picker">
-                      {GRACE_ROWS.map((row) => (
-                        <div key={row.name} className="v2-grace-row" title={row.name}>
-                          {GRACE_KEYS.map((key) => (
-                            <button
-                              key={`${row.octave}-${key.degree}-${key.accidental ?? ''}`}
-                              className={`v2-btn v2-grace-key${key.accidental ? ' is-acc' : ''}`}
-                              title={key.accidental ? `${key.accidental}${key.degree}（变音键）` : undefined}
-                              onClick={() => putGrace(row.octave, key)}
-                            >
-                              <NotationGlyph
-                                degree={key.degree}
-                                dots={row.octave}
-                                accidental={key.accidental}
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                      <div className="v2-grace-foot">
-                        <span className="v2-hint">正在输入第 {graceSlot + 1} 格</span>
-                        <span className="v2-grace-foot-btns">
-                          {graceList[graceSlot] ? (
-                            <button className="v2-btn" onClick={clearGraceSlot}>
-                              清空本格
-                            </button>
-                          ) : null}
-                          {graceSide && graceList.length > 0 ? (
-                            <button
-                              className="v2-btn"
-                              title="把这几颗倚音还原成普通音符（各 1 拍）"
-                              onClick={() => setScore(dropGrace(score, focus.id, graceSide))}
-                            >
-                              还原成音符
-                            </button>
-                          ) : null}
-                        </span>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">
-                    变音记号
-                    {focus.accidental
-                      ? `，当前 ${ACCIDENTAL_NAME[focus.accidental]}`
-                      : '（跟随调号）'}
-                  </span>
-                  <div className="v2-grid v2-grid-4">
-                    {ACCIDENTAL_CHOICES.map((a) => (
-                      <button
-                        key={a ?? 'none'}
-                        className={focus.accidental === a ? 'v2-btn is-on' : 'v2-btn'}
-                        onClick={() => setScore(setAccidental(score, focus.id, a))}
-                        title={a ? `${ACCIDENTAL_NAME[a]}半音` : '去掉记号，跟随调号'}
-                      >
-                        {a ? ACCIDENTAL_GLYPH[a] : '本位'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="v2-field">
-                  {/*
-                    转调：演奏到此音起，后面的音都改用这个调。
-                    下拉框给常用调（五度圈 15 个，含升降），不用手打、也不怕写错。
-                  */}
-                  <span className="v2-field-label">转调（演奏到此音起改用新调，选第一项清除）</span>
-                  <select
-                    className="v2-meta-input"
-                    value={focus.keyChange ?? ''}
-                    onChange={(e) =>
-                      setScore(setKeyChange(score, focus.id, e.target.value || undefined))
+            <PadBody
+              actions={padActions}
+              score={score}
+              target={padTarget}
+              batchIds={selectedTimedIds}
+              onSetScore={setScore}
+              onAnnotate={padAnnotate}
+              barline={barlineFocus}
+              barlineActions={padBarlineActions}
+              jumpAfter={jumpAfterFocus}
+              playOrder={playOrder}
+              canEditConductor={canEditConductor}
+              volta={{ ok: canEditConductor && !!selectionVolta.score, error: selectionVolta.error ?? null }}
+              doSelectionVolta={doSelectionVolta}
+              tiers={tiers}
+              groupTargets={groupTargets}
+              selectedCount={selectedTimedIds.length}
+              pending={
+                pending
+                  ? {
+                      count: pending.ids.length,
+                      ticks: pending.ticks,
+                      degrees: pending.ids.map((id) => {
+                        const e = score.events.find((x) => x.id === id);
+                        return e && e.kind === 'note' ? e.degree : 0;
+                      }),
+                      cands: pending.cands,
                     }
-                  >
-                    <option value="">（不转调）</option>
-                    {KEY_CHOICES.map((k) => (
-                      <option key={k} value={k}>
-                        转{k}
-                      </option>
-                    ))}
-                    {focus.keyChange && !KEY_CHOICES.includes(focus.keyChange) ? (
-                      <option value={focus.keyChange}>转{focus.keyChange}</option>
-                    ) : null}
-                  </select>
-                </div>
-                {/*
-                  吐音 + 技法合成一排。同一类内互斥：一个音同时只有一种技法、
-                  一种吐音（T 与 K 也互斥）；符号在音符上方横向排列。
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">气息与技法（标在音符上方）</span>
-                  <div className="v2-grid v2-grid-4">
-                    {/* 换气 V 固定第一排第一个。黄边一组 = 演奏时舌头 / 换气的小动作，
-                        其余技法走默认配色，点亮后统一加深 */}
-                    <button
-                      className={`v2-btn v2-btn-breath ${
-                        (focus.techniques ?? []).includes('breath') ? 'is-on' : ''
-                      }`}
-                      onClick={() => setScore(toggleTechnique(score, focus.id, 'breath'))}
-                      title="换气，谱面标作 V"
-                    >
-                      换气 V
-                    </button>
-                    <button
-                      className={`v2-btn v2-btn-breath ${focus.tongue === 'T' ? 'is-on' : ''}`}
-                      onClick={() =>
-                        setScore(setTongue(score, focus.id, focus.tongue === 'T' ? undefined : 'T'))
-                      }
-                      title="单吐"
-                    >
-                      单吐 T
-                    </button>
-                    <button
-                      className={`v2-btn v2-btn-breath ${focus.tongue === 'K' ? 'is-on' : ''}`}
-                      onClick={() =>
-                        setScore(setTongue(score, focus.id, focus.tongue === 'K' ? undefined : 'K'))
-                      }
-                      title="双吐的第二音"
-                    >
-                      双吐 K
-                    </button>
-                    <button
-                      className={`v2-btn v2-btn-breath ${
-                        (focus.articulations ?? []).includes('staccato') ? 'is-on' : ''
-                      }`}
-                      onClick={() => setScore(toggleArticulation(score, focus.id, 'staccato'))}
-                      title="断音 / 顿音，谱面标作小圆点"
-                    >
-                      断音 ·
-                    </button>
-                    <button
-                      className={focus.fermata ? 'v2-btn is-on' : 'v2-btn'}
-                      onClick={() => setScore(setFermata(score, focus.id))}
-                      title="延长音，谱面标作 ⌒ 加点"
-                    >
-                      延长音
-                    </button>
-                    {Object.entries(TECHNIQUE_GLYPH)
-                      .filter(([value]) => value !== 'breath')
-                      .map(([value, g]) => (
-                        <button
-                          key={value}
-                          className={
-                            (focus.techniques ?? []).includes(value) ? 'v2-btn is-on' : 'v2-btn'
-                          }
-                          onClick={() => setScore(toggleTechnique(score, focus.id, value))}
-                          title={g.path ? `${g.label}，谱面使用与此图标一致的记号` : `${g.label}，谱面标作 ${g.mark}`}
-                        >
-                          {g.path ? <svg width={20 * TECHNIQUE_PATH_SCALE[g.path]} height={18 * TECHNIQUE_PATH_SCALE[g.path]} viewBox="-10 -9 20 18" aria-hidden="true" style={{ verticalAlign: 'middle', marginRight: 4 }}>
-                            <path d={TECHNIQUE_PATHS[g.path].d} transform={TECHNIQUE_PATHS[g.path].flip ? 'scale(1 -1)' : undefined} fill={TECHNIQUE_PATHS[g.path].fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={TECHNIQUE_PATHS[g.path].strokeWidth} strokeLinejoin={TECHNIQUE_PATHS[g.path].fill ? 'round' : 'miter'} strokeLinecap={TECHNIQUE_PATHS[g.path].fill ? 'round' : 'butt'} />
-                          </svg> : null}
-                          {g.label}
-                        </button>
-                      ))}
-                  </div>
-                  {/*
-                    自定义记号：最多 3 个汉字 / 符号，原样标在音符上方（跟在技法后面）。
-                    **非受控**输入框（defaultValue + key=focus.id）：React 全程不碰
-                    DOM value——受控值一改（哪怕是 slice 截断）就会中止中文组曲、
-                    把未转换的拼音原样提交（想打「又一春」变成「you」）；
-                    组曲事件再漏一个（compositionend 没送到本实例）整框就彻底打不了
-                    字。key 挂 focus.id：换选中音时重挂载，defaultValue 自然换成
-                    新音自己的记号，不会串。写谱只在回车 / 失焦 / 按 ✓ 时发生
-                    （每键写谱会挪动选中下标、把输入框卸载掉）。
-                    也不加 maxLength：拼音约 3 字符就顶到上限，同样会提前提交组曲；
-                    3 字上限在提交时截断 + setNoteMark 内校验，双保险。
-                  */}
-                  <div className="v2-grace-bar" style={{ marginTop: 6 }}>
-                    <input
-                      key={focus.id}
-                      ref={markInputRef}
-                      className="v2-meta-input"
-                      defaultValue={focus.mark ?? ''}
-                      placeholder="自定义记号（≤3 字，如：气、滑、花）"
-                      title="最多 3 个汉字或符号，原样写在音符上方。清空 = 去掉。回车、点别处或按 ✓ 生效"
-                      onBlur={(e) => {
-                        setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return;
-                        setScore(setNoteMark(score, focus.id, e.currentTarget.value.slice(0, 3)));
-                        markInputRef.current?.blur();
-                      }}
-                    />
-                    {/* 显式确认：光靠「光标离开才写谱」太隐晦，给个明确的 ✓ */}
-                    <button
-                      className="v2-btn v2-btn-breath"
-                      title="确认，写进谱面"
-                      // 按下时不让输入框失焦——否则 onBlur 会先提交一次，
-                      // 这里的点击再提交一次，白多一条撤销记录
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() =>
-                        setScore(
-                          setNoteMark(score, focus.id, (markInputRef.current?.value ?? '').slice(0, 3)),
-                        )
-                      }
-                    >
-                      ✓
-                    </button>
-                  </div>
-                </div>
-                <div className="v2-field">
-                  {/*
-                    力度跟音符绑定（画在音符下方），不再是插在缝隙里的独立事件：
-                    按钮即开关，点亮的再点一次就去掉。
-                    单音渐强 / 渐弱按钮已移除——渐强渐弱是**范围**记号，
-                    用「区间操作」里的跨音力度范围设置（见上）。
-                  */}
-                  <span className="v2-field-label">力度（标在音符下方）</span>
-                  <div className="v2-grid v2-grid-4">
-                    {DYNAMICS.map((v) => (
-                      <button
-                        key={v}
-                        className={focus.dynamic === v ? 'v2-btn is-on' : 'v2-btn'}
-                        onClick={() => setScore(setNoteDynamic(score, focus.id, v))}
-                        title={focus.dynamic === v ? '再点一次去掉' : `标 ${v}`}
-                      >
-                        {v}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="v2-field">
-                  <span className="v2-field-label">标注（段落文字）</span>
-                  {/*
-                    草稿式输入（回车 / 点别处 / 按 ✓ 才提交），不能每敲一个字就写谱：
-                    写谱会在音符前插入一个 directive，而「当前选中的音」是按下标取的
-                    （events[cursor-1]）——下标一挪，焦点就落到新插入的标注上，
-                    输入框当场卸载，中文输入法直接被打断（第一个字之后再也打不进去）。
-                  */}
-                  <div className="v2-grace-bar">
-                    <input
-                      className="v2-meta-input"
-                      value={annotDraft ?? annotationTextOf(score, focus.id)}
-                      placeholder="如：前奏（与下面的括号互不影响）"
-                      title="段落文字标注（谱面显示为 (文字)）。左右括号是独立的一对按钮，在这里打字不会动括号、点括号也不会动文字。回车、点别处或按 ✓ 提交"
-                      onChange={(e) => setAnnotDraft(e.target.value)}
-                      onBlur={() => {
-                        if (annotDraft === null) return;
-                        commitAnnotation(annotDraft);
-                        setAnnotDraft(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return;
-                        commitAnnotation(annotDraft ?? '');
-                        setAnnotDraft(null);
-                        (e.target as HTMLInputElement).blur();
-                      }}
-                    />
-                    {/* 显式确认：光靠「光标离开才写谱」太隐晦，给个明确的 ✓ */}
-                    <button
-                      className="v2-btn v2-btn-breath"
-                      title="确认，写进谱面"
-                      // 按下时不让输入框失焦——否则 onBlur 会先提交一次，
-                      // 这里的点击再提交一次，白多一条撤销记录
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        commitAnnotation(annotDraft ?? annotationTextOf(score, focus.id));
-                        setAnnotDraft(null);
-                      }}
-                    >
-                      ✓
-                    </button>
-                  </div>
-                </div>
-                {/*
-                  括号：两个独立记号——头一个音前放左括号、末一个音后放右括号，
-                  中间隔几行都行（所以不做「选中区间加括号」那种成对操作）
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">括号（画在音符左右两侧，可跨行）</span>
-                  <div className="v2-grace-bar">
-                    <button
-                      className={parenFlags.open ? 'v2-btn is-on' : 'v2-btn'}
-                      title="在这个音左边加左括号（再点一次去掉）"
-                      onClick={() => setScore(toggleParen(score, focus.id, 'open'))}
-                    >
-                      ( 左括号
-                    </button>
-                    <button
-                      className={parenFlags.close ? 'v2-btn is-on' : 'v2-btn'}
-                      title="在这个音右边加右括号（再点一次去掉）"
-                      onClick={() => setScore(toggleParen(score, focus.id, 'close'))}
-                    >
-                      右括号 )
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : focus && focus.kind === 'rest' ? (
-              <>
-                <div className="v2-field">
-                  <span className="v2-field-label">休止符，点音级可转成音符</span>
-                  <div className="v2-grid v2-grid-7">
-                    {[1, 2, 3, 4, 5, 6, 7].map((d) => (
-                      <button
-                        key={d}
-                        className="v2-btn"
-                        onClick={() => setScore(setDegree(score, focus.id, d))}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {/* 休止符的时值 / 附点与音符完全同一套：0. = 1.5 拍休止 */}
-                <DurationDotsField
-                  focus={focus}
-                  tiers={tiers}
-                  useTier={useTier}
-                  onDot={(d) => setScore(setDot(score, focus.id, d))}
-                />
-                {/*
-                  括号：休止符与音符一视同仁（(0 0) 这种反复/可选段里包休止的
-                  写法很常见）。toggleParen / parenFlagsOf 本来就吃任意 timed 事件，
-                  这里只是把和音符分支同样的两个按钮摆出来。
-                */}
-                <div className="v2-field">
-                  <span className="v2-field-label">括号（画在休止符左右两侧，可跨行）</span>
-                  <div className="v2-grace-bar">
-                    <button
-                      className={parenFlags.open ? 'v2-btn is-on' : 'v2-btn'}
-                      title="在这个休止符左边加左括号（再点一次去掉）"
-                      onClick={() => setScore(toggleParen(score, focus.id, 'open'))}
-                    >
-                      ( 左括号
-                    </button>
-                    <button
-                      className={parenFlags.close ? 'v2-btn is-on' : 'v2-btn'}
-                      title="在这个休止符右边加右括号（再点一次去掉）"
-                      onClick={() => setScore(toggleParen(score, focus.id, 'close'))}
-                    >
-                      右括号 )
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="v2-hint">
-                  {focus
-                    ? `当前是${eventLabel(focus)}，可以用 Delete 删除。`
-                    : '点谱面上的音符来修改，或直接按 1-7 输入。'}
-                </p>
-              </>
-            )}
+                  : null
+              }
+            />
           </div>
 
           </>) : null}
@@ -5189,6 +5000,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           homeHref="./index.html"
           onHelp={() => setHelpOpen(true)}
           msg={msg}
+          dark={dark}
+          onDark={setDark}
         />
       ) : null}
 
@@ -5211,6 +5024,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           }}
           msg={msg}
           readOnly={entry === 'play'}
+          dark={dark}
+          onDark={setDark}
           {...(entry === 'play' ? { onBackHome: () => setMode('discover') } : {})}
         />
       ) : null}
@@ -5230,9 +5045,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           <div className="v2-exp" role="dialog" aria-label="音轨分离工具">
             <div className="v2-exp-head">
               <span className="v2-exp-song">音轨分离工具</span>
-              <button className="v2-btn" onClick={() => setTramaOpen(false)}>
-                关闭
-              </button>
+              <ExpClose onClose={() => setTramaOpen(false)} />
             </div>
             <div className="v2-exp-body">
               <p className="v2-exp-hint">
@@ -5419,15 +5232,21 @@ function MetaSelect({
   label,
   value,
   options,
+  values,
   onCommit,
 }: {
   label: string;
   value: string;
   options: string[];
+  /** 与 options 一一对应的提交值；缺省 = 值与标签相同（调号这类文本选项） */
+  values?: string[];
   onCommit: (v: string) => void;
 }) {
   const external = String(value);
-  const opts = options.includes(external) ? options : [external, ...options];
+  const valList = values ?? options;
+  const has = valList.includes(external);
+  const opts = has ? options : [external, ...options];
+  const vals = has ? valList : [external, ...valList];
   return (
     <label className="v2-meta-row">
       <span className="v2-meta-label">{label}</span>
@@ -5436,8 +5255,8 @@ function MetaSelect({
         value={external}
         onChange={(e) => onCommit(e.target.value)}
       >
-        {opts.map((o) => (
-          <option key={o} value={o}>
+        {opts.map((o, i) => (
+          <option key={vals[i] ?? o} value={vals[i] ?? o}>
             {o}
           </option>
         ))}
@@ -5446,177 +5265,6 @@ function MetaSelect({
   );
 }
 
-/**
- * 组划分候选的预览：按**谱面的实际画法**渲染——
- * 减时线在组内连成横线（第 lv 层线从第一个带 lv+1 条线的音连到最后一个），
- * 连音在上方画断弧、断口里坐标号。与 canvas 的 BeatGroup / tuplet 绘制同构。
- */
-function GroupGlyph({
-  degrees,
-  beams,
-  tuplet,
-  dots,
-}: {
-  degrees: number[];
-  /** 每个音的减时线条数 */
-  beams: number[];
-  tuplet?: number;
-  /** 每个音的附点数（附点切分候选用，缺省无点） */
-  dots?: (0 | 1 | 2)[];
-}) {
-  const max = Math.max(0, ...beams);
-  const n = degrees.length || 1;
-  return (
-    <span className="v2-ggroup">
-      {tuplet ? (
-        <span className="v2-ggroup-arc">
-          <i className="v2-ggroup-tuplet">{tuplet}</i>
-        </span>
-      ) : null}
-      <span className="v2-ggroup-row">
-        {degrees.map((d, j) => (
-          <span key={j} className="v2-ggroup-note">
-            {d}
-            {dots?.[j] ? <span className="v2-dotglyph-dot">{'.'.repeat(dots[j])}</span> : null}
-          </span>
-        ))}
-        {Array.from({ length: max }, (_, lv) => {
-          // 同一层级的线按「连续段」分段画：1/4+1/2+1/4 的二级线是
-          // 两侧各一段短线，中间的八分音只有一级——不能一条线穿过去
-          const idx = beams.map((b, j) => (b > lv ? j : -1)).filter((j) => j >= 0);
-          const runs: number[][] = [];
-          for (const j of idx) {
-            const last = runs[runs.length - 1];
-            if (last && j === last[last.length - 1] + 1) last.push(j);
-            else runs.push([j]);
-          }
-          // 与 canvas 一致：一级线贴着音符，级别越大越往下（短线在长线下方）
-          return runs.map((run, k) => {
-            const from = run[0];
-            const to = run[run.length - 1];
-            const left = (from + 0.18) / n;
-            const width = ((to - from + 0.64) / n) * 100;
-            return (
-              <i
-                key={`${lv}-${k}`}
-                className="v2-ggroup-beam"
-                style={{ left: `${left * 100}%`, width: `${width}%`, bottom: (max - 1 - lv) * 5 + 1 }}
-              />
-            );
-          });
-        })}
-      </span>
-    </span>
-  );
-}
-
-/**
- * 倚音录入框的音级键（三排共用）：`1 #1 2 #2 3 4 #4 5 #5 6 #6 7`。
- * 三排分别是高八度 / 正常 / 低八度，所以这里只管音级与变音记号。
- */
-const GRACE_KEYS: { degree: Degree; accidental?: Accidental }[] = [
-  { degree: 1 },
-  { degree: 1, accidental: '#' },
-  { degree: 2 },
-  { degree: 2, accidental: '#' },
-  { degree: 3 },
-  { degree: 4 },
-  { degree: 4, accidental: '#' },
-  { degree: 5 },
-  { degree: 5, accidental: '#' },
-  { degree: 6 },
-  { degree: 6, accidental: '#' },
-  { degree: 7 },
-];
-
-/** 倚音输入框的三排：上=高八度、中=正常、下=低八度 */
-const GRACE_ROWS: { octave: number; name: string }[] = [
-  { octave: 1, name: '高八度' },
-  { octave: 0, name: '正常' },
-  { octave: -1, name: '低八度' },
-];
-
-/** 三格录入框（单倚音 / 复倚音，最多三颗） */
-const GRACE_COUNT = 3;
-const GRACE_SLOTS = Array.from({ length: GRACE_COUNT }, (_, i) => i);
-
-/** 附点按钮的基准时值：带点按点数还原；不带点归一到「加点前基准」（0/2- → 48） */
-function dotBase(focus: { ticks: number; dot?: 0 | 1 | 2 }): number {
-  const dot = focus.dot ?? 0;
-  if (dot > 0) return undotTicks(focus.ticks, dot);
-  return canonicalDurationBase(focus.ticks) ?? focus.ticks;
-}
-
-/**
- * 时值档位 + 附点：音符与休止符共用——休止符的时值设定和音符完全一样
- * （`0-`、`0/2`、`0.` 都是合法写法），休止符用 0 当音级。
- */
-function DurationDotsField({
-  focus,
-  tiers,
-  useTier,
-  onDot,
-}: {
-  focus: { ticks: number; dot?: 0 | 1 | 2; degree?: number };
-  tiers: { label: string; ticks: number }[];
-  useTier: (ticks: number) => void;
-  onDot: (dots: 0 | 1 | 2) => void;
-}) {
-  const degree = focus.degree ?? 0;
-  return (
-    <div className="v2-field">
-      <span className="v2-field-label">时值（再点一次取消，回到 1 拍）· 附点</span>
-      <div className="v2-grid v2-grid-5">
-        {tiers.map((t) => {
-          const active = undotTicks(focus.ticks, focus.dot ?? 0) === t.ticks;
-          return (
-            <button
-              key={t.label}
-              className={active ? 'v2-btn is-on' : 'v2-btn'}
-              onClick={() => useTier(active ? TICKS_PER_BEAT : t.ticks)}
-              title={t.label}
-            >
-              {/*
-                一拍以内用减时线画（1/2 拍 = 数字下一条横线），
-                一拍以上用增时线写（2 拍 = 3-）——各自本来的样子
-              */}
-              {t.ticks < TICKS_PER_BEAT ? (
-                <NotationGlyph degree={degree} beams={beamCount(t.ticks)} />
-              ) : (
-                renderNoteToken(degree, t.ticks)
-              )}
-            </button>
-          );
-        })}
-        {([1, 2] as const).map((d) => (
-          <button
-            key={d}
-            /* 附点是「装饰记号」不是时值本身，配色要和左边的时值档位区分开 */
-            className={`v2-btn v2-btn-orn ${(focus.dot ?? 0) === d ? 'is-on' : ''}`}
-            onClick={() => onDot((focus.dot ?? 0) === d ? 0 : d)}
-            title={`${d} 个附点`}
-          >
-            {/* 显示成「音符后加点」。一拍以内画实际样子（数字 + 减时线 + 右侧的点），
-                与左边时值按钮同构——写成 DSL 文本会出现 1./4 这种没人读得懂的东西。
-                先把当前时值归一到加点前基准（0/2- 这类 1.5 拍写法的基准是一拍），
-                所以 1.5 拍的休止符显示 0. / 0..，而不是拼出非法的 0/2-. */}
-            {(() => {
-              const b = dotBase(focus);
-              return b < TICKS_PER_BEAT ? (
-                <span className="v2-dotglyph">
-                  <NotationGlyph degree={degree} beams={beamCount(b)} />
-                  <span className="v2-dotglyph-dot">{'.'.repeat(d)}</span>
-                </span>
-              ) : (
-                renderNoteToken(degree, withDots(b, d), d)
-              );
-            })()}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function eventLabel(e: Event): string {
   switch (e.kind) {
@@ -5629,9 +5277,10 @@ function eventLabel(e: Event): string {
     case 'barline': {
       // 反复 / 房子都是这条线的属性，标签里一并说清
       if (e.repeat === 'start') return '反复开始 |:';
+      if (e.repeat === 'both') return '双向反复 :||:';
       if (e.repeat === 'end') return `反复结束 :|${e.times && e.times > 2 ? e.times : ''}`;
       if (e.volta) return `跳房子 [${e.volta.join(',')}]`;
-      return e.style === 'final' ? '终止线 ||' : e.partial ? '弱起小节线' : '小节线';
+      return e.style === 'final' ? '终止线 ||' : e.style === 'double' ? '双细线 ‖' : e.partial ? '弱起小节线' : '小节线';
     }
     case 'jump':
       return '跳转记号';
@@ -5642,8 +5291,40 @@ function eventLabel(e: Event): string {
   }
 }
 
-function StaffViewButton({ active, onSelect, onSettings }: { active: boolean; onSelect: () => void; onSettings: () => void }) {
-  return <div className={active ? 'v2-staff-choice is-on' : 'v2-staff-choice'}>
+/**
+ * 节拍器按钮：播放页 / 记谱页 / 动态谱生成页共用一个。
+ *
+ * 「什么时候出现」由 metronomeAvailable 决定（只在合成音场景）。
+ * 左半是**开关**：按下开、再按关，开着时点亮；右半的 ⌄ 只负责
+ * 弹出配置窗（节奏型 / 音量）——「开不开」与「怎么配」分开。
+ */
+function MetronomeButton({ on, onToggle, onOpen }: { on: boolean; onToggle: () => void; onOpen: () => void }) {
+  return (
+    <div className="v2-split-choice">
+      <button
+        className={on ? 'v2-seg is-on' : 'v2-seg'}
+        aria-pressed={on}
+        onClick={onToggle}
+        title={on ? '节拍器：开着，点一下关闭' : '节拍器：点一下开始跟着谱面打拍'}
+      >
+        节拍器
+      </button>
+      <button
+        className="v2-seg v2-split-caret"
+        aria-haspopup="dialog"
+        aria-label="节拍器设置"
+        onClick={onOpen}
+        title="节拍器设置：节奏型 / 音量"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function StaffViewButton({ active, onSelect, onSettings }: { active: boolean; onSelect: () => void; onSettings: () => void }) {  return <div className={active ? 'v2-staff-choice is-on' : 'v2-staff-choice'}>
     <button className="v2-seg" aria-pressed={active} onClick={onSelect}>五线谱</button>
     <button className="v2-seg v2-staff-gear" aria-label="五线谱设置" aria-haspopup="dialog" onClick={onSettings} title="五线谱设置：实音／移调、记谱乐器、谱号">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -5673,7 +5354,7 @@ function StaffSettingsDialog({ children, onClose }: { children: ReactNode; onClo
       const rect = e.currentTarget.getBoundingClientRect();
       if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) onClose();
     }}>
-    <div className="v2-exp-head"><strong>五线谱设置</strong><button className="v2-btn" onClick={onClose}>完成</button></div>
+    <div className="v2-exp-head"><strong>五线谱设置</strong><ExpClose onClose={onClose} title="完成并关闭" /></div>
     {children}
   </dialog>;
 }
@@ -5687,9 +5368,17 @@ function emptyScore(): Score {
   return {
     version: 2,
     format: 3,
-    // 新谱默认字间距 -10（用户实测最美观）；老文件没写 @space 的仍按 0 排，
-    // 不改变已有谱面的样子。可调范围 -20–20。
-    meta: { title: '未命名曲谱', key: '1=C', beat: '4/4', bpm: 90, patch: 73, letterSpacing: -10 },
+    // 新谱默认字号 24、字间距 -10（用户 2026-10-23 定）。可调范围见 setMeta 校验。
+    meta: {
+      title: '未命名曲谱',
+      key: '1=C',
+      beat: '4/4',
+      bpm: 90,
+      // 与 DEFAULT_META 一致：没指定音色就是钢琴
+      patch: 0,
+      fontSize: DEFAULT_FONT_SIZE,
+      letterSpacing: DEFAULT_LETTER_SPACING,
+    },
     events: [],
     groups: [],
   };

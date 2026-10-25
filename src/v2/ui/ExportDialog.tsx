@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Score } from '../types';
+import { DEFAULT_FONT_SIZE, type Score } from '../types';
 import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
 import { exportTheme, footerText, paintExportPage, prepareExportLayout, type ExportNotation, type PageGeometry } from '../export/render';
 import type { AudioStem } from '../audio';
@@ -22,6 +22,8 @@ import { exportScoreImageToFile } from '../export/image';
 import { VIDEO_RATIOS, recordSeconds, videoGeometry, videoLayoutFor, stripCanvasSize, type VideoRatio } from '../export/video';
 import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
+import { METRONOME_PATTERNS, meterSegmentsOf, patternFor } from '../metronome';
+import { ExpClose } from './ExpClose';
 
 export interface ExportDialogProps extends ExportNotation {
   songName: string;
@@ -96,7 +98,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   const [landscape, setLandscape] = useState(false);
   const [dpi, setDpi] = useState<number>(150);
   const pdfLayout = useMemo(() => {
-    const k = (visibleOptions?.fontSize ?? score.meta.fontSize ?? 21) / 21;
+    const k = (visibleOptions?.fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21;
     const base = partId === initialPartId && visibleLayout
       ? visibleLayout
       : layoutScore(score, { ...(visibleOptions ?? { contentWidth: 900 }),
@@ -116,6 +118,10 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   // 声音：默认跟着伴奏（`auto` = 有伴奏就录伴奏，没有才退回合成音）。
   // 用户显式选「合成音」时才不听伴奏。
   const [audio, setAudio] = useState<'auto' | 'stems' | 'synth'>('auto');
+  /** 导出音轨里要不要带节拍器（可选） */
+  const [withMetronome, setWithMetronome] = useState(false);
+  /** 节拍器的拍内细分 */
+  const [metroPattern, setMetroPattern] = useState('quarter');
   // 只导一段（0 = 到末尾）
   const [mFrom, setMFrom] = useState(1);
   const [mTo, setMTo] = useState(0);
@@ -290,6 +296,16 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         fps,
         audio: useAudio,
         displayTimeline: video.displayTimeline,
+        ...(withMetronome
+          ? {
+              metronome: {
+                pattern: patternFor(metroPattern),
+                // 强弱跟谱面拍号段：中途换拍（DSL「拍3/4」）导出的视频里也跟着换
+                meterAt: meterSegmentsOf(score.events, score.meta.beat),
+                volume: 0.45,
+              },
+            }
+          : {}),
         playStyle: video.playStyle,
         activePartId: partId || video.activePartId,
         showMeasureNumbers: showBars,
@@ -335,9 +351,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
           <span className="v2-exp-song" title={songName}>
             {songName}
           </span>
-          <button className="v2-btn" onClick={onClose} disabled={busy}>
-            关闭
-          </button>
+          <ExpClose onClose={onClose} disabled={busy} />
         </div>
 
         {fullScore.part ? <label className="v2-exp-row v2-exp-part">
@@ -581,12 +595,40 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                   className={useAudio === 'synth' ? 'v2-seg is-on' : 'v2-seg'}
                   onClick={() => setAudio('synth')}
                   disabled={busy}
-                  title="用合成音按谱面奏（三角波，只有旋律没有伴奏）"
+                  title="用合成音按谱面奏（钢琴音色，只有旋律没有伴奏）"
                 >
                   合成音
                 </button>
               </div>
             </div>
+            <div className="v2-exp-row">
+              <label className="v2-grace-check" title="在导出的音轨里叠加节拍器 click（小节第一拍重音）">
+                <input
+                  type="checkbox"
+                  checked={withMetronome}
+                  disabled={busy}
+                  onChange={(e) => setWithMetronome(e.target.checked)}
+                />
+                带节拍器
+              </label>
+              {withMetronome ? (
+                <select
+                  aria-label="节拍器细分"
+                  value={metroPattern}
+                  disabled={busy}
+                  onChange={(e) => setMetroPattern(e.target.value)}
+                >
+                  {METRONOME_PATTERNS.map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+            {withMetronome ? (
+              <p className="v2-exp-hint">
+                节拍器按谱面的拍号（{score.meta.beat}）打拍：小节第一拍重音，其余轻拍。click 混在音轨里，和视频里的画面严格对齐。
+              </p>
+            ) : null}
             <p className="v2-exp-hint">
               约 {Math.floor(preview.seconds / 60)}:{String(Math.round(preview.seconds % 60)).padStart(2, '0')} · 画面按播放位置滚动。离线渲染：不用守着页面，也不用听一遍。
             </p>

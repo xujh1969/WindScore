@@ -9,11 +9,20 @@
 
 import { tickToSec, secToTick, type TempoMap } from './tempo';
 import { TICKS_PER_BEAT } from './ticks';
+import { pianoSpec, renderNote } from './timbre';
+import { instrumentSampleFor, renderSampledNote } from './instrumentSamples';
 import type { TimelineEntry } from './timeline';
 import { timelineTicks } from './timeline';
 
 /** 排一次音的提前量（秒）：建 AudioContext 与解算要时间，太紧会切掉开头 */
 const START_LEAD = 0.1;
+/**
+ * 倚音的发声延长（秒）：真采样的松键淡出收在时值终点那一瞬，主音起音又是
+ * 一记全新的起音瞬态，接缝上一瞬安静一瞬爆开，听感生硬（用户实测「倚音
+ * 演奏过渡不够丝滑」）。倚音多渲染 80ms，让淡出尾巴盖过主音的起音——
+ * 接缝从「切断再起」变成重叠过渡。钢琴合成本来就有 release 拖尾，多加无害。
+ */
+const GRACE_TAIL = 0.08;
 /** 合成音调度的时间窗（秒）：只提前排这么多，省得一次性排几千个音 */
 const SCHEDULE_AHEAD = 0.3;
 const TIMER_MS = 40;
@@ -72,8 +81,8 @@ export class Player {
   private index = 0;
   private fromTick = 0;
   private timeline: TimelineEntry[] = [];
-  /** 合成音总音量（三角波比正弦响，0.22 是听感合适的值） */
-  gain = 0.22;
+  /** 合成音总音量（钢琴音色的峰值约 0.6，0.28 是听感合适的值） */
+  gain = 0.28;
   private audioMode = false;
   /** ctx 时刻 when 对应的音频位置 startSec（秒） */
   private when = 0;
@@ -156,7 +165,7 @@ export class Player {
         if (at > until) break;
         const endAt = this.startedAt + (e.endTick - this.fromTick) / this.ticksPerSec;
         if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) {
-          this.tone(ctx, e.midi, at, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1);
+          this.tone(ctx, e.midi, at, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
         }
         this.index += 1;
       }
@@ -233,7 +242,7 @@ export class Player {
         const t1 = at(e.endTick);
         if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0) && t1 > this.ctx.currentTime) {
           this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1, e.gain, e.partId,
-            e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1);
+            e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
         }
         this.index += 1;
       }
@@ -274,9 +283,13 @@ export class Player {
   }
 
   /**
-   * 一个音：三角波 + 20ms 淡入 / 末尾 50ms 淡出。
-   * `dyn`／`dynTo` 是力度与渐强渐弱的包络（F06）：两者不同就在音符内部
-   * 线性推进，于是长音听起来是连续涨落；相等时与原来的恒音量完全一致。
+   * 一个音：钢琴音色（泛音列各自衰减 + 槌击噪声 + 非谐性 + 音区滤波）。
+   *
+   * 音色与离线导出**共用一份代码**（`src/v2/timbre.ts`）：这里把音渲染成
+   * 样本再塞进 AudioBuffer，导出时把同样的样本混进总轨——
+   * 所以导出的成品和耳朵里听到的必然是同一个声音。
+   * `dyn`／`dynTo` 是力度与渐强渐弱（F06）：两者不同就在音符内部线性推进，
+   * 长音听起来是连续涨落；相等时与恒音量完全一致。
    */
   private tone(
     ctx: AudioContext,
@@ -287,30 +300,45 @@ export class Player {
     partId?: string,
     dyn = 1,
     dynTo = dyn,
+    patch?: number,
+    patchOctave = 0,
+    grace = false,
   ): void {
-    const freq = 440 * 2 ** ((midi - 69 + this.semitones) / 12);
-    const end = Math.max(t1, t0 + 0.06);
-    const rel = Math.max(t0 + 0.03, end - 0.05);
+    const dur = Math.max(0.06, t1 - t0) + (grace ? GRACE_TAIL : 0);
+    // 发声音高 = 记谱音高 + 变调 + 音色八度（音色八度只挪发声，不动记谱）
+    const at = midi + this.semitones + patchOctave * 12;
+    // 音色选择：条目带了 patch 且真采样已加载 → 循环采样回放；
+    // 没加载 / 没采样的 patch → 回落钢琴合成（「还在加载」和「没有」都静默处理）
+    const inst = instrumentSampleFor(patch, at);
+    const pcm = inst
+      ? renderSampledNote(inst.pcm, inst.point, at, {
+          sampleRate: ctx.sampleRate,
+          durationSec: dur,
+          dyn,
+          dynTo,
+        })
+      : renderNote(pianoSpec(at, dyn), {
+          sampleRate: ctx.sampleRate,
+          durationSec: dur,
+          dyn,
+          dynTo,
+        });
+    const buf = ctx.createBuffer(1, pcm.length, ctx.sampleRate);
+    buf.getChannelData(0).set(pcm);
 
-    const osc = ctx.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.value = freq;
-
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
     const g = ctx.createGain();
     const base = partId ? 1 : gain;
-    g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(this.gain * base * dyn, t0 + 0.02);
-    g.gain.linearRampToValueAtTime(this.gain * base * dynTo, rel);
-    g.gain.linearRampToValueAtTime(0, end);
+    g.gain.value = this.gain * base;
 
-    osc.connect(g);
+    src.connect(g);
     if (partId) {
       let bus = this.partBuses.get(partId);
       if (!bus) { bus = ctx.createGain(); bus.gain.value = gain; bus.connect(ctx.destination); this.partBuses.set(partId, bus); }
       g.connect(bus);
     } else g.connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(end + 0.02);
+    src.start(t0);
   }
 }
 

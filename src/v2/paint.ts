@@ -173,15 +173,15 @@ const M = {
   dotGap: 7,
   octaveStep: 7,
   octaveBase: 17,
-  octaveClear: 7,
-  beamLine: 1.6,
-  beamTop: 15,
-  beamStep: 5.5,
+  octaveClear: 5,
+  beamLine: 1.1,
+  beamTop: 10,
+  beamStep: 3,
   barHalf: 21,
   arcBase: 24,
   arcTieBase: 19,
   selPad: 3,
-  selHalfH: 14,
+  selHalfH: 12,
   caretHalf: 16,
   caretSerif: 4,
   dashW: 10,
@@ -247,6 +247,68 @@ function applyMetrics(g: GlyphMetrics): void {
   M.markTop = g.markTop;
   M.tupletDrop = g.tupletDrop;
   M.markBottom = g.markBottom;
+}
+
+interface XY {
+  x: number;
+  y: number;
+}
+interface CurveSeg {
+  p0: XY;
+  c: XY;
+  p1: XY;
+}
+
+/**
+ * 变宽度曲线：中心线沿给定贝塞尔段（与 quadraticCurveTo 完全同一形状），
+ * 宽度从两端向中点渐增、两端尖灭（w = peak·(4s(1-s))^0.65，s 为弧长参数）
+ * ——乐谱连线两端收细的标准画法。canvas 没有变宽描边，
+ * 用「沿曲线采样 → 法线偏移出上下轮廓 → 闭合填充」实现。
+ * 中段宽度 = peak，与原来的固定 lineWidth 视觉厚度一致。
+ */
+function fillTaperedCurve(ctx: CanvasRenderingContext2D, segs: CurveSeg[], peakW: number): void {
+  if (!segs.length) return;
+  // 1. 逐段采样中心点（每段 24 点，跨段共享端点）
+  const PER = 24;
+  const pts: XY[] = [];
+  for (const s of segs) {
+    for (let i = pts.length ? 1 : 0; i <= PER; i++) {
+      const t = i / PER;
+      const u = 1 - t;
+      pts.push({
+        x: u * u * s.p0.x + 2 * u * t * s.c.x + t * t * s.p1.x,
+        y: u * u * s.p0.y + 2 * u * t * s.c.y + t * t * s.p1.y,
+      });
+    }
+  }
+  // 2. 累计弧长 → 宽度函数
+  const n = pts.length;
+  const cum = new Array<number>(n);
+  cum[0] = 0;
+  for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  const total = cum[n - 1] || 1;
+  // 3. 法线偏移出上下轮廓（端点宽度 0，自然尖灭）
+  const left: XY[] = [];
+  const right: XY[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(n - 1, i + 1)];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const s = cum[i] / total;
+    const h = (peakW * Math.pow(4 * s * (1 - s), 0.65)) / 2;
+    const nx = (-dy / len) * h;
+    const ny = (dx / len) * h;
+    left.push({ x: pts[i].x + nx, y: pts[i].y + ny });
+    right.push({ x: pts[i].x - nx, y: pts[i].y - ny });
+  }
+  ctx.beginPath();
+  ctx.moveTo(left[0].x, left[0].y);
+  for (let i = 1; i < n; i++) ctx.lineTo(left[i].x, left[i].y);
+  for (let i = n - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /**
@@ -554,6 +616,35 @@ export function paintScoreTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, g
   ctx.restore();
 }
 
+/**
+ * 调号文字里的升降号用**乐理记号**画：`1=bB` 的 b 画成小一号的 ♭、抬到字母左上，
+ * 与谱面音符的变音记号同款式——直接印 ASCII 的 b / # 与谱面记号视觉割裂，
+ * 用户实测「不专业」。返回合成后的总宽度（拍号的起点依赖它）。
+ */
+function paintTitleKey(ctx: CanvasRenderingContext2D, key: string, x: number, y: number): number {
+  const m = /^(1\s*=\s*)([#b♯♭]?)([A-G])([#b♯♭]?)$/.exec(key);
+  if (!m) {
+    ctx.fillText(key, x, y);
+    return ctx.measureText(key).width;
+  }
+  const fam = '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
+  ctx.fillText(m[1], x, y);
+  let cx = x + ctx.measureText(m[1]).width;
+  let w = ctx.measureText(m[1]).width;
+  const acc = m[2] || m[4];
+  if (acc) {
+    ctx.save();
+    ctx.font = `700 12px ${fam}`;
+    const glyph = acc === '#' || acc === '♯' ? '♯' : '♭';
+    ctx.fillText(glyph, cx, y - 5);
+    w += ctx.measureText(glyph).width;
+    cx += ctx.measureText(glyph).width;
+    ctx.restore();
+  }
+  ctx.fillText(m[3], cx, y);
+  return w + ctx.measureText(m[3]).width;
+}
+
 function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintTheme, showEdit: boolean): void {
   ctx.fillStyle = theme.ink;
   // 中：标题（大字居中）+ 说明行
@@ -567,14 +658,14 @@ function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintT
   // 左：调号 + 拍号（叠成分数）+ 速度，两行
   ctx.textAlign = 'left';
   ctx.font = M.titleKeyFont;
-  ctx.fillText(t.key, t.leftX, t.colY + 6);
+  const keyW = paintTitleKey(ctx, t.key, t.leftX, t.colY + 6);
   const [num, den] = t.beat.split('/');
   if (num && den) {
     // 拍号叠写：分子在上、分母在下（简谱惯例，如图示 4/4）。
     // 分数线显式画并与数字同色（靠两数字自然贴近会出字体伪影）；
     // 位置按实测字形边界取正中——不同字体的数字上伸/下延不一样，
     // 拿基线硬算会贴住其中一个数字
-    const bx = t.leftX + ctx.measureText(t.key).width + 10;
+    const bx = t.leftX + keyW + 10;
     ctx.font = M.titleBeatFont;
     const nm = ctx.measureText(num);
     const dm = ctx.measureText(den);
@@ -868,6 +959,13 @@ function paintLine(
       ctx.moveTo(bx - 4, y - M.barHalf);
       ctx.lineTo(bx - 4, y + M.barHalf);
       ctx.stroke();
+    } else if (it.double) {
+      // 双细线（乐段结束）：主线已是细线，左边再补一根等粗的
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx - 4, y - M.barHalf);
+      ctx.lineTo(bx - 4, y + M.barHalf);
+      ctx.stroke();
     }
 
     // 对轨配对：小节线变成「绑定靶标」
@@ -888,8 +986,30 @@ function paintLine(
     }
 
     // 反复记号：粗线 + 细线 + 两点，粗线总在**外侧**（远离反复的音乐）——
-    // |: 是粗、细、点（点在右）；:| 是点、细、粗（点在左）
-    if (it.repeat) {
+    // |: 是粗、细、点（点在右）；:| 是点、细、粗（点在左）；
+    // :||: 双向反复 = 点、细、粗、细、点（粗线居中，两边都是「点在外」）
+    if (it.repeat === 'both') {
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(bx, y - M.barHalf);
+      ctx.lineTo(bx, y + M.barHalf);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      for (const dx of [-4, 4]) {
+        ctx.beginPath();
+        ctx.moveTo(bx + dx * M.k, y - M.barHalf);
+        ctx.lineTo(bx + dx * M.k, y + M.barHalf);
+        ctx.stroke();
+      }
+      ctx.fillStyle = theme.bar;
+      for (const dx of [-9, 9]) {
+        for (const dy of [-6, 6]) {
+          ctx.beginPath();
+          ctx.arc(bx + dx * M.k, y + dy * M.k, 2.2 * M.k, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    } else if (it.repeat) {
       const dir = it.repeat === 'start' ? 1 : -1;
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -923,15 +1043,15 @@ function paintLine(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     for (const v of line.voltas) {
-      // 括线贴着小节线顶端（barHalf 上方 5px）。房子两壁再加高 15px（21→36），
-      // 遍数数字写在**房子里**并上移（横线下方 11px 基线）——印刷谱的标准画法，
-      // 数字吊在横线正下方靠上位置；简谱里房子是贴着小节线走的，
-      // 不是吊在换气标记那层。两壁沿小节线下探，不碰数字
-      const vy = y - M.barHalf - 5;
+      // 括线悬在小节线上方：横线抬高到 barHalf 上方 16px，两壁下探到
+      // 细线顶端上方 3px 为止——原来两壁沿小节线一路画进谱内（y+10），
+      // 正好压在小节线上。遍数数字吊在横线正下方，随横线一起抬高。
+      const vy = y - M.barHalf - 16;
+      const wallBottom = y - M.barHalf - 3;
       ctx.beginPath();
       // 跨行延续段没有左墙，不画左钩
       if (!v.cont) {
-        ctx.moveTo(v.x0, vy + 36);
+        ctx.moveTo(v.x0, wallBottom);
         ctx.lineTo(v.x0, vy);
       } else {
         ctx.moveTo(v.x0, vy);
@@ -939,10 +1059,14 @@ function paintLine(
       ctx.lineTo(v.x1, vy);
       // 右端开放（简谱惯例：长房 / 跨行房）不画右钩——横线拉到收口处为止，
       // 表示「一直演奏到 :|」；短房才两头都带钩
-      if (!v.open) ctx.lineTo(v.x1, vy + 36);
+      if (!v.open) ctx.lineTo(v.x1, wallBottom);
       ctx.stroke();
       ctx.fillStyle = theme.ink;
-      ctx.fillText(v.numbers.join(','), (v.x0 + v.x1) / 2, vy + 11);
+      // 号码标在**第一小节靠近小节线**的地方（印刷谱惯例），
+      // 居中会飘到房子中段找不到归属——单小节短房也一样靠左
+      ctx.textAlign = 'left';
+      ctx.fillText(v.numbers.join(','), v.x0 + 6 * M.k, vy + 11);
+      ctx.textAlign = 'center';
       // 非末遍房子的段尾：明确提示「唱完这里跳回反复起点」——
       // 印刷谱靠 [1] 房末尾的 :| 传达这个信息，本应用的反复段里没有它
       if (v.jump) {
@@ -1024,14 +1148,18 @@ function paintLine(
   // 整串在音符上方居中，逐个按自身宽度推进。
   ctx.font = M.markFont;
   ctx.textAlign = 'center';
-  for (const it of line.items) {
+  for (let mi = 0; mi < line.items.length; mi++) {
+    const it = line.items[mi]!;
+    const prevItem = mi > 0 ? line.items[mi - 1] : undefined;
+    const prevRight = prevItem ? prevItem.x + prevItem.w : -Infinity;
     // 转调记号：紧贴数字顶部（写法带「转」字，如 转1=#A）。
     // 技法记号行贴在音符上方 10px（墨顶 ≈ y−26），转调文字抬到 y−32k，
     // 两者各占一层不打架——演奏者要一眼看出它属于哪个音
     if (it.keyChange) {
       ctx.font = M.badgeFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(`转${it.keyChange}`, it.x + 11 + (it.graceInk ?? 0), y - 32 * M.k);
+      // 升降号换成乐理字符，与谱头调号、谱面变音记号同一套写法
+      ctx.fillText(`转${it.keyChange.replace('#', '♯').replace('b', '♭')}`, it.x + 11 + (it.graceInk ?? 0), y - 32 * M.k);
       ctx.font = M.markFont;
     }
     const run: {
@@ -1043,7 +1171,10 @@ function paintLine(
     }[] = [];
     if (it.tongue) run.push({ mark: it.tongue, color: theme.tongue });
     if (it.staccato) run.push({ mark: '·', color: theme.ink }); // 断音 / 顿音：小圆点
+    // 换气 V 不进居中的记号串：单独画在音符**左上方**——先换气，后吹奏
+    const breath = (it.techniques ?? []).includes('breath');
     for (const v of it.techniques ?? []) {
+      if (v === 'breath') continue;
       const g = TECHNIQUE_GLYPH[v];
       if (g) run.push({ mark: g.mark, color: theme.tech, flip: g.flip, path: g.path });
     }
@@ -1051,7 +1182,7 @@ function paintLine(
     if (it.custom) run.push({ mark: it.custom, color: theme.tech });
     // 延长音：弧线加弧线正下方的小圆点（对应 DSL 的 @）
     if (it.fermata) run.push({ mark: '⌒', color: theme.tech, dot: true });
-    if (run.length === 0) continue;
+    if (run.length === 0 && !breath) continue;
     // 记号行的纵向位置：**贴在音符上方、只留 5px 间距**（用户要求）。
     // 记号与数字都以 middle 基线画：数字墨顶 ≈ y − 0.35em，
     // 记号墨底 ≈ my + 0.35×12px——按这两个反推 my，间距就是 10px
@@ -1060,7 +1191,7 @@ function paintLine(
     // （转调文字已相应抬高，见上）
     const markHalf = Math.max(...run.map(r => r.path
       ? (r.path === 'bendUp' || r.path === 'bendDown' ? 6.8 : 3.6) * TECHNIQUE_PATH_SCALE[r.path]
-      : 4.2)) * M.k;
+      : 4.2), breath ? 4.2 : -Infinity) * M.k;
     const markGap = 10 * M.k; // 记号墨底与数字墨顶的净距
     let baseY = y - 0.35 * 21 * M.k - markGap - markHalf;
     if ((it.octave ?? 0) > 0) {
@@ -1072,6 +1203,20 @@ function paintLine(
     );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
     let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
+    if (breath) {
+      // 换气 V：**完全在音符数字的左侧**（先换气，后吹奏）——V 的右缘贴着数字墨迹左缘外
+      // 2px，同一行高不另抬高。右不压居中记号串；左边：前一个内容是音 / 休止符时要躲开，
+      // 是小节线 / 跳转记号（细竖线）则允许压在线上——那样空隙太小，宁可碰线也不能盖住数字
+      const vw = ctx.measureText('V').width;
+      const digitLeft = it.x + 11 + (it.graceInk ?? 0) - 7 * M.k; // 数字墨迹左缘（数字半宽 ≈ 7px）
+      const target = digitLeft - 2 * M.k - vw / 2;                // V 右缘 = 数字左缘 − 2px
+      const runEdge = mx - vw / 2 - 4 * M.k;                      // 不压居中记号串
+      const avoidNote = prevItem && prevItem.kind !== 'barline' && prevItem.kind !== 'jump';
+      const floorX = avoidNote ? prevRight + 2 + vw / 2 : -Infinity;
+      const vx = Math.max(Math.min(target, runEdge), floorX);
+      ctx.fillStyle = theme.tongue;
+      ctx.fillText('V', vx, baseY);
+    }
     run.forEach((r, i) => {
       const tx = mx + widths[i] / 2;
       mx += widths[i] + 3;
@@ -1194,13 +1339,14 @@ function paintLine(
 
   // 连线（上方弧线）。带技法记号：抬高 5px 给记号行让位；
   // 没带（layout 标记 tight）：反过来下压 5px，弧线贴着音符画——
-  // 位置不再一刀切（用户实测要求）
-  ctx.lineWidth = 1.5;
+  // 位置不再一刀切（用户实测要求）。
+  // 线宽不再是常数：中段 1.5px 与原线宽一致，两端逐渐变细到尖灭
+  //（弧形不变，只是描边换成了变宽度填充——乐谱连线的标准画法）
+  ctx.fillStyle = theme.curve;
   for (const a of line.arcs) {
-    ctx.strokeStyle = theme.curve;
     const base = a.kind === 'tie' ? M.arcTieBase : M.arcBase;
     const ay = y - base + (a.tight ? 5 * M.k : -5 * M.k) - a.octaveUp * M.octaveStep;
-    ctx.beginPath();
+    let segs: CurveSeg[];
     if (a.flat) {
       // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，
       // 既压上方标记又笨拙。端弧的控制点取在与直线**同一高度**，
@@ -1209,20 +1355,18 @@ function paintLine(
       // 另一端照常画端弧：前一段左端弧、后一段右端弧都要保留（用户实测要求）。
       const endW = Math.min(12 * M.k, (a.x1 - a.x0) / 4);
       const top = ay - a.lift;
-      const start = a.openStart ? { x: a.x0, y: top } : null;
-      const end = a.openEnd ? { x: a.x1, y: top } : null;
-      if (start) ctx.moveTo(start.x, start.y);
-      else {
-        ctx.moveTo(a.x0, ay);
-        ctx.quadraticCurveTo(a.x0 + endW * 0.35, top, a.x0 + endW, top);
-      }
-      ctx.lineTo(end ? end.x : a.x1 - endW, top);
-      if (!end) ctx.quadraticCurveTo(a.x1 - endW * 0.35, top, a.x1, ay);
+      segs = [];
+      if (!a.openStart)
+        segs.push({ p0: { x: a.x0, y: ay }, c: { x: a.x0 + endW * 0.35, y: top }, p1: { x: a.x0 + endW, y: top } });
+      const xs = a.openStart ? a.x0 : a.x0 + endW;
+      const xe = a.openEnd ? a.x1 : a.x1 - endW;
+      if (xe > xs) segs.push({ p0: { x: xs, y: top }, c: { x: (xs + xe) / 2, y: top }, p1: { x: xe, y: top } });
+      if (!a.openEnd)
+        segs.push({ p0: { x: a.x1 - endW, y: top }, c: { x: a.x1 - endW * 0.35, y: top }, p1: { x: a.x1, y: ay } });
     } else {
-      ctx.moveTo(a.x0, ay);
-      ctx.quadraticCurveTo((a.x0 + a.x1) / 2, ay - a.lift * 2, a.x1, ay);
+      segs = [{ p0: { x: a.x0, y: ay }, c: { x: (a.x0 + a.x1) / 2, y: ay - a.lift * 2 }, p1: { x: a.x1, y: ay } }];
     }
-    ctx.stroke();
+    fillTaperedCurve(ctx, segs, 1.5);
   }
 
   // 连音标号：组上方一条向下弯的弧线，**中间断开**、断口里写数字（3 / 6 …）——
@@ -1345,7 +1489,7 @@ function drawGlyph(
   }
 
   // 八度点。低音点必须让开下方的减时线：
-  // 减时线一级在中线下 15px，低音点原本也在 17px，两者会叠在一起。
+  // 减时线一级在中线下 10px（beamTop），低音点挂在最下面一条线之下 5px（lowDotOffset）。
   if (it.octave) {
     const up = it.octave > 0;
     const dy0 = up ? M.octaveBase : lowDotOffset(it.beams ?? 0);
@@ -1458,9 +1602,9 @@ function drawGraces(
     }
   });
 
-  // 两条减时线：第一条在数字墨底下 1px，第二条再往下 3px
+  // 两条减时线：第一条在数字墨底下 1px，第二条再往下 3px（线宽与主谱减时线一致）
   ctx.strokeStyle = ink;
-  ctx.lineWidth = 1.3;
+  ctx.lineWidth = M.beamLine;
   const span = list.length * w - 3;
   const bx = x0 + 1.5;
   const by = gy + beamDy;

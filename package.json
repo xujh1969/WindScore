@@ -1,7 +1,7 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.2.82",
+  "version": "0.4.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,9 +14,9 @@
     "icon": "node scripts/gen-icon.cjs",
     "version": "node scripts/bump-version.mjs",
     "perf": "esbuild scripts/perf-test.ts --bundle --platform=node --format=esm --outfile=.tmp-perf-test.mjs --log-level=error && node .tmp-perf-test.mjs",
-    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-play-test.mjs --log-level=error && node .tmp-play-test.mjs && esbuild scripts/pitch-test.ts --bundle --platform=node --format=esm --outfile=.tmp-pitch-test.mjs --log-level=error && node .tmp-pitch-test.mjs",
+    "test": "esbuild scripts/v2-test.ts --bundle --platform=node --format=esm --outfile=.tmp-v2-test.mjs --log-level=error && node .tmp-v2-test.mjs && esbuild scripts/expand-test.ts --bundle --platform=node --format=esm --outfile=.tmp-expand-test.mjs --log-level=error && node .tmp-expand-test.mjs && esbuild scripts/beat-test.ts --bundle --platform=node --format=esm --outfile=.tmp-beat-test.mjs --log-level=error && node .tmp-beat-test.mjs && esbuild scripts/discover-test.ts --bundle --platform=node --format=esm --outfile=.tmp-discover-test.mjs --log-level=error && node .tmp-discover-test.mjs && esbuild scripts/export-test.ts --bundle --platform=node --format=esm --outfile=.tmp-export-test.mjs --log-level=error && node .tmp-export-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-store-test.mjs --log-level=error && node .tmp-store-test.mjs && esbuild scripts/mp3-test.ts --bundle --platform=node --format=esm --outfile=.tmp-mp3-test.mjs --log-level=error && node .tmp-mp3-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-play-test.mjs --log-level=error && node .tmp-play-test.mjs && esbuild scripts/pitch-test.ts --bundle --platform=node --format=esm --outfile=.tmp-pitch-test.mjs --log-level=error && node .tmp-pitch-test.mjs && esbuild scripts/metronome-test.ts --bundle --platform=node --format=esm --outfile=.tmp-metronome-test.mjs --log-level=error && node .tmp-metronome-test.mjs && esbuild scripts/timbre-test.ts --bundle --platform=node --format=esm --outfile=.tmp-timbre-test.mjs --log-level=error && node .tmp-timbre-test.mjs",
     "build:skill": "esbuild scripts/build-skill-validator.ts --bundle --platform=node --format=esm --outfile=skills/windscore-jps/validate.mjs --log-level=error",
-    "test:android": "esbuild scripts/android-layout-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-layout-test.mjs --log-level=error && node .tmp-android-layout-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-play-test.mjs --log-level=error && node .tmp-android-play-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-store-test.mjs --log-level=error && node .tmp-android-store-test.mjs"
+    "test:android": "esbuild scripts/android-layout-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-layout-test.mjs --log-level=error && node .tmp-android-layout-test.mjs && esbuild scripts/play-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-play-test.mjs --log-level=error && node .tmp-android-play-test.mjs && esbuild scripts/store-test.ts --bundle --platform=node --format=esm --outfile=.tmp-android-store-test.mjs --log-level=error && node .tmp-android-store-test.mjs && esbuild scripts/android-ui-test.ts --bundle --platform=node --format=cjs --outfile=.tmp-aui.cjs --external:jsdom --loader:.jps=text --loader:.png=dataurl --loader:.svg=text --loader:.mp3=file --loader:.md=text --log-level=error && node .tmp-aui.cjs"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
@@ -27,10 +27,13 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@audio-samples/piano-mp3-velocity12": "^1.0.5",
     "@tauri-apps/cli": "^1.6.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "audio-decode": "^3.12.0",
+    "jsdom": "^30.1.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

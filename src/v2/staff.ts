@@ -59,7 +59,9 @@ export interface StaffBarGlyph {
   kind: 'barline';
   x: number;
   final?: boolean;
-  repeat?: 'start' | 'end';
+  /** 双细线（乐段结束）：画两根细线 */
+  double?: boolean;
+  repeat?: 'start' | 'end' | 'both';
   repeatTimes?: number;
   volta?: number[];
   voltaOpen?: boolean;
@@ -199,7 +201,7 @@ export function staffPosOf(
   };
 }
 
-/** 符尾条数（与简谱减时线同一口径：24 tick=1、12=2、6=3） */
+/** 符尾条数（与简谱减时线同一口径：1/2 拍=1 条、1/4 拍=2 条、1/8 拍=3 条） */
 export function beamCountOf(ticks: number, dots: number): number {
   const base = dots === 1 ? ticks / 1.5 : dots === 2 ? ticks / 1.75 : ticks;
   if (base <= TICKS_PER_BEAT / 8) return 3;
@@ -374,6 +376,7 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
           kind: 'barline',
           x: it.x + it.w / 2,
           ...(it.final ? { final: true } : {}),
+          ...(it.double ? { double: true } : {}),
           ...(it.repeat ? { repeat: it.repeat } : {}),
           ...(it.repeatTimes ? { repeatTimes: it.repeatTimes } : {}),
           ...(it.measure !== undefined ? { measure: it.measure } : {}),

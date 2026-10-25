@@ -38,6 +38,8 @@ body {
   --fs-ui: 12px;
   --fs-title: 14px;
   --lh: 1.5;
+  /* 右侧属性栏宽度 */
+  --side-w: 320px;
 
   height: 100%;
   display: grid;
@@ -224,7 +226,7 @@ body {
 /* ── 主体 ── */
 .v2-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
   min-height: 0;
 }
 
@@ -508,6 +510,10 @@ details.v2-side-block[open] > summary::before {
   gap: 3px;
 }
 
+.v2-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .v2-grid-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -522,6 +528,10 @@ details.v2-side-block[open] > summary::before {
 
 .v2-grid-7 {
   grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.v2-grid-8 {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
 }
 
 .v2-grid .v2-btn {
@@ -575,6 +585,12 @@ details.v2-side-block[open] > summary::before {
 
 .v2-glyph-digit {
   font-size: 12px;
+  font-weight: 600;
+}
+
+/* 数字右边的增时线 / 附点：跟着数字基线走，与谱面同一行 */
+.v2-glyph-tail {
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -775,6 +791,59 @@ details.v2-side-block[open] > summary::before {
   color: var(--surface);
 }
 
+/*
+  深浅主题开关：浅色 = 线条月亮（点它进深色），深色 = 实心太阳（点它回浅色）。
+  太阳和月亮是同一个位置的两种画法，别做成两个图标叠在一起——切换时闪一下更难受。
+  所有网页端页面共用一个观感（记谱 / 对轨 / 播放 / 曲库 / 动态谱首页 / 帮助）。
+*/
+.v2-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.v2-theme-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.v2-theme-toggle svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.v2-theme-toggle svg circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+/* 悬停只变图标颜色：按钮本身永远透明，不出现外圈或底色 */
+.v2-theme-toggle:hover {
+  color: var(--text);
+}
+
+.v2-theme-toggle.is-dark {
+  color: var(--accent);
+}
+
+/* 深色下的太阳：圆心填实、光芒描边，跟原来的「实心月亮」一个分量 */
+.v2-theme-toggle.is-dark svg circle {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
 /* 附点按钮（一拍以内）：数字 + 减时线 + 右侧的附点，点与数字同高 */
 .v2-dotglyph {
   display: inline-flex;
@@ -787,11 +856,19 @@ details.v2-side-block[open] > summary::before {
 }
 
 /* 划分候选：按谱面实际画法渲染的组——连横的减时线 + 连音断弧标号。
-   按钮比普通按钮高：数字下方要留出减时线的空间，横线绝不与音符重叠 */
+   按钮比普通按钮高：数字下方要留出减时线的空间，横线绝不与音符重叠。
+   候选一行尽量多排：列表横向流式、按钮按内容自适应（不再占满整行） */
+.v2-cands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.v2-cands li {
+  flex: 0 0 auto;
+}
 .v2-cand {
   display: block;
-  width: 100%;
-  padding: 4px 8px 0;
+  padding: 4px 4px 0;
   line-height: 1;
   text-align: center;
 }
@@ -800,7 +877,336 @@ details.v2-side-block[open] > summary::before {
   position: relative;
   display: inline-block;
   padding-top: 13px;
-  min-width: 72px;
+  min-width: 40px;
+}
+
+/* ── 自定义音值组合弹窗 ─────────────────────────────────────────────
+   逐音点亮附点（两颗圆点）与减时线（三条横线），实时合计凑目标时值。
+   点与线都是无边框的透明热区，hover 有明暗 / 缩放反馈 */
+.v2-custom-group {
+  width: min(720px, 94vw);
+}
+.v2-cg-tuplet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: var(--fs-ui);
+  color: var(--text);
+  cursor: pointer;
+}
+.v2-cg-tuplet input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.v2-cg-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0;
+  padding: 10px 6px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.v2-cg-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 76px;
+  padding: 6px 8px 4px;
+}
+.v2-cg-col + .v2-cg-col {
+  border-left: 1px solid var(--border);
+}
+/* 音符行：数字在左、附点贴在右侧（与记谱一致） */
+.v2-cg-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 30px;
+}
+.v2-cg-digit {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text);
+}
+.v2-cg-digit.is-rest {
+  color: var(--muted);
+}
+/* 附点：两颗小圆点，亮 = 墨色，灭 = 淡灰；hover 放大提示可点 */
+.v2-cg-dots {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+  align-items: center;
+}
+.v2-cg-dot {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.v2-cg-dot::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text);
+  opacity: 0.16;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.v2-cg-dot:hover::after {
+  opacity: 0.45;
+  transform: scale(1.3);
+}
+.v2-cg-dot.is-on::after {
+  opacity: 1;
+}
+.v2-cg-dot.is-on:hover::after {
+  opacity: 0.55;
+  transform: scale(0.85);
+}
+.v2-cg-dot:disabled {
+  cursor: default;
+}
+.v2-cg-dot:disabled:hover::after {
+  opacity: 0.16;
+  transform: none;
+}
+/* 减时线：三条横线，亮 = 墨色；hover 加粗提示可点 */
+.v2-cg-beams {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  padding: 0 12px;
+}
+.v2-cg-beam {
+  position: relative;
+  height: 17px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.v2-cg-beam::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2.5px;
+  margin-top: -1.25px;
+  border-radius: 2px;
+  background: var(--text);
+  opacity: 0.16;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.v2-cg-beam:hover::after {
+  opacity: 0.45;
+  transform: scaleY(1.7);
+}
+.v2-cg-beam.is-on::after {
+  opacity: 1;
+}
+.v2-cg-beam.is-on:hover::after {
+  opacity: 0.6;
+}
+.v2-cg-beam:disabled {
+  cursor: default;
+}
+.v2-cg-beam:disabled:hover::after {
+  opacity: 0.16;
+  transform: none;
+}
+.v2-cg-value {
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 1.5em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+/* 连音锁定态：整排淡显、不可交互；已点亮的线/点保持墨色
+（连音均分时每音固定 1 条线——「自动被点亮」，不能被锁定样式盖灰） */
+.v2-cg-row.is-locked .v2-cg-col {
+  opacity: 0.8;
+}
+.v2-cg-row.is-locked .v2-cg-dot:not(.is-on)::after,
+.v2-cg-row.is-locked .v2-cg-beam:not(.is-on)::after {
+  opacity: 0.16;
+}
+/* 底部：合计进度槽 + 对勾 */
+.v2-cg-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+}
+.v2-cg-meter {
+  flex: 1;
+  min-width: 0;
+}
+.v2-cg-meter-slot {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.v2-cg-meter-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--accent);
+  opacity: 0.55;
+  transition: width 0.15s;
+}
+.v2-cg-meter-fill.is-exact {
+  background: var(--ok);
+  opacity: 1;
+}
+.v2-cg-meter-fill.is-over {
+  background: var(--error);
+  opacity: 1;
+}
+.v2-cg-sum {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.v2-cg-apply {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: not-allowed;
+  background: var(--surface-2);
+  color: var(--muted);
+  flex: none;
+  transition: background 0.15s, color 0.15s;
+}
+.v2-cg-apply.is-ready {
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--surface);
+}
+.v2-cg-apply.is-ready:hover {
+  filter: brightness(1.1);
+}
+/* 候选面板里的入口行：自定义按钮与取消并排 */
+.v2-cg-entry {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* ── 输入板（右侧编辑栏内的音符录入面板）──
+   原浮动输入板并入右栏：不再有 fixed 定位与标题栏把手，
+   宽度跟侧栏走；键位排样式与原来完全一致。 */
+.v2-pad-body {
+  display: grid;
+  gap: 5px;
+}
+.v2-pad-row {
+  display: grid;
+  gap: 4px;
+}
+.v2-pad-row .v2-field-label {
+  padding: 0;
+}
+/* 音级按钮：八度点占两行，留够高度别把点挤扁 */
+.v2-pad-num {
+  padding: 4px 0;
+  min-height: 30px;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* 连音线图标：跟着按钮文字的颜色走（禁用 / 主色都自动一致） */
+.v2-slur-icon {
+  display: block;
+}
+
+/* 升 8 / 降 8：箭头与 8 居中对齐成一排。
+   箭头字形的基线高于数字，直接写「↑8」会一高一低，看着歪 */
+.v2-pad-octbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  line-height: 1;
+}
+.v2-pad-arrow {
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+/* 技法按钮的谱面记号前缀：与文字留 4px，略抬一点点对齐文字重心 */
+.v2-mark-prefix {
+  margin-right: 4px;
+  font-size: 0.92em;
+  vertical-align: -0.5px;
+}
+
+/* 延长音按钮的记号（弧线上、点下，与谱面画法一致）：
+   两行内联列排，压紧行距让点贴在弧线正下方 */
+.v2-ferm-glyph {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+.v2-ferm-glyph i {
+  font-style: normal;
+}
+.v2-ferm-glyph i + i {
+  font-size: 0.7em;
+  margin-top: -6px;
+}
+
+/* 中音排是基准八度（不加点）：只有数字换主色，边框照旧——
+   边框也变色会跟「按下 / 选中」的样式撞车（is-on 就是描边 + 底色） */
+.v2-grid .v2-btn.v2-pad-mid {
+  color: var(--accent);
+}
+/* 音值组合候选（输入板内）：与属性面板同一份 pending，就地画出来 */
+.v2-pad-pending {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+.v2-pad-cands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.v2-pad-cands .v2-btn {
+  flex: 0 0 auto;
+}
+
+/* 次要工具键（小节线 / 0 / 附点 / 增时线 / 升8 / 括号…）：
+   宽度跟着内容走、高度矮一截——它们是配角，不能跟五排音级键抢地方 */
+.v2-pad-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.v2-pad-tools .v2-btn {
+  flex: 0 0 auto;
+  min-width: 30px;
+  min-height: 22px;
+  padding: 2px 7px;
+  line-height: 1.2;
 }
 
 /* 连音弧：向下弯的拱，断口由中间的标号（带面板底色）遮出 */
@@ -834,7 +1240,7 @@ details.v2-side-block[open] > summary::before {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  padding-bottom: 13px;
+  padding-bottom: 6px;
 }
 
 .v2-ggroup-note {
@@ -846,7 +1252,7 @@ details.v2-side-block[open] > summary::before {
 /* 减时线：第 lv 层从第一个带 lv+1 条线的音连到最后一个，与谱面一致 */
 .v2-ggroup-beam {
   position: absolute;
-  height: 1.6px;
+  height: 1.1px;
   background: var(--text);
 }
 
@@ -1322,6 +1728,42 @@ details.v2-side-block[open] > summary::before {
   color: var(--muted);
 }
 
+/* 音色包管理弹窗（曲库页「音色包…」）：每包一行，移除带两步确认；曲库列表不再被 chip 挤占 */
+.v2-bank-dialog { width: min(540px, 100%); }
+.v2-bank-dialog .v2-exp-head { justify-content: space-between; }
+.v2-bank-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.v2-bank-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.v2-bank-row-meta { color: var(--muted); font-size: 11px; }
+.v2-bank-row-actions { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--muted); font-size: 11px; }
+/* 播放音色弹窗：每声部一行 = 音色下拉 + 竖排 +8/-8 互斥扁按钮（与下拉等高） */
+.v2-timbre-row { display: flex; align-items: stretch; justify-content: space-between; gap: 10px; }
+.v2-timbre-part { flex: 1; min-width: 0; }
+.v2-timbre-oct { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; }
+.v2-timbre-oct button {
+  flex: 1;
+  min-width: 40px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.v2-timbre-oct button:hover { color: var(--text); }
+.v2-timbre-oct button.is-on { border-color: var(--accent); color: var(--accent); }
+/* 移除 / 确认移除 / 取消这类短按钮不许折行（窄窗口折成两行很丑） */
+.v2-bank-row .v2-btn { white-space: nowrap; flex: 0 0 auto; }
+
 /* 曲库界面里的全局消息（导入 / 打包的结果） */
 .v2-lib-msg {
   flex-shrink: 0;
@@ -1384,6 +1826,13 @@ details.v2-side-block[open] > summary::before {
 .v2-staff-gear::before { content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: currentColor; opacity: .3; }
 .v2-staff-gear:hover { background: var(--accent-soft); }
 .v2-staff-choice.is-on .v2-staff-gear:hover { color: var(--accent); }
+
+/* 「开关 + ⌄」两段按钮（节拍器用）：左半是开关，右半只弹配置窗 */
+.v2-split-choice { display: flex; }
+.v2-split-choice > .v2-seg:first-child { padding-right: 10px; }
+.v2-split-choice > .v2-split-caret { position: relative; display: grid; place-items: center; padding-inline: 7px; }
+.v2-split-caret::before { content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: currentColor; opacity: .3; }
+.v2-split-caret:hover { background: var(--accent-soft); }
 
 /* 弹窗里的外链：主题色 + 下划线，长网址允许换行 */
 .v2-exp-link {
@@ -1847,6 +2296,54 @@ details.v2-side-block[open] > summary::before {
    遮罩 + 居中卡片。选项都是「一眼能选完」的那种：纸张 / 清晰度 / 比例 /
    分辨率 / 帧率 / 声音，底部一行进度 + 主按钮。录视频要等一整首曲子的时间，
    所以进度条和「取消」必须在，页脚那行预计时长也提前说清楚 */
+/* 节拍器面板 */
+.v2-metronome-panel {
+  width: min(520px, 100%);
+}
+/* 节拍器状态：正在打拍 / 已关闭，一眼能看出「到底开没开」 */
+.v2-metronome-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.12);
+  line-height: 1.4;
+}
+.v2-metronome-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: rgba(128, 128, 128, 0.55);
+}
+.v2-metronome-state.is-on {
+  background: rgba(46, 160, 67, 0.16);
+  color: #2ea043;
+}
+.v2-metronome-state.is-on .v2-metronome-dot {
+  background: #2ea043;
+  box-shadow: 0 0 0 3px rgba(46, 160, 67, 0.22);
+}
+[data-theme='dark'] .v2-metronome-state.is-on {
+  background: rgba(46, 160, 67, 0.22);
+  color: #57d364;
+}
+[data-theme='dark'] .v2-metronome-state.is-on .v2-metronome-dot {
+  background: #57d364;
+}
+.v2-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.v2-inline-field input[type='number'] {
+  width: 72px;
+}
+
 .v2-exp-mask {
   position: fixed;
   inset: 0;
@@ -1877,6 +2374,37 @@ details.v2-side-block[open] > summary::before {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* 关闭按钮永远贴右上角：两个孩子的头（标题 + ×）靠它分开，
+     三个孩子的头（如导出的 页签/歌名/×）里歌名本来就是 flex:1，不受影响 */
+  justify-content: space-between;
+}
+
+/* 弹窗右上角的 × 关闭按钮：所有弹窗统一（见 ui/ExpClose.tsx） */
+.v2-exp-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.v2-exp-close:hover {
+  color: var(--text);
+  background: rgba(128, 128, 128, 0.16);
+}
+
+.v2-exp-close:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .v2-exp-song {
@@ -2580,6 +3108,11 @@ details.v2-side-block[open] > summary::before {
 .v2-part-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .v2-part-number { font-family: var(--mono); font-size: 10px; opacity: 0.7; }
 .v2-part-tag { font-size: 10px; font-weight: 400; }
+/* 输入试听静音开关（声部条右侧）：开着是金色喇叭「试听」，关掉是灰色叉喇叭「静音」 */
+.v2-preview-mute { display: inline-flex; align-items: center; gap: 4px; }
+.v2-preview-mute:not(.is-off) { border-color: var(--accent); color: var(--accent); }
+.v2-preview-mute.is-off { color: var(--muted); }
+.v2-preview-mute.is-off:hover { border-color: var(--accent); color: var(--muted); }
 .v2-part-volume input { width: 90px; accent-color: var(--accent); }
 .v2-part-volume span { min-width: 32px; font-family: var(--mono); }
 .v2-part-dialog { width: min(420px, 100%); }
@@ -2615,4 +3148,24 @@ details.v2-side-block[open] > summary::before {
   padding: 14px 20px;
   font-size: 18px;
   font-weight: 700;
+}
+
+
+/* 浮动面板的折叠分区（技法 / 选区操作）：summary 做成细条标题 */
+.v2-pad-sec {
+  border-top: 1px solid var(--v2-border, #ddd);
+  padding-top: 4px;
+}
+.v2-pad-sec > summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--v2-muted, #888);
+  padding: 2px 0;
+}
+.v2-pad-sec[open] > summary {
+  margin-bottom: 4px;
+}
+.v2-pad-sec .v2-field {
+  margin-bottom: 8px;
 }

@@ -66,6 +66,14 @@ export function AndroidLanUpload({ service, disabled, onNotice }: { service: Ret
   const { state, native, toggle } = service;
   const active = state.jobs.find(job => job.state === 'receiving' || job.state === 'importing');
   const completed = state.jobs.length > 0 && state.jobs.every(job => job.state === 'success' || job.state === 'error');
+  // 服务开着但电脑迟迟连不上：20 秒后给出「设备隔离 / 热点」提示（公司网络最常见）
+  const [stuckTip, setStuckTip] = useState(false);
+  useEffect(() => {
+    setStuckTip(false);
+    if (!state.running || state.connected) return;
+    const id = setTimeout(() => setStuckTip(true), 20_000);
+    return () => clearTimeout(id);
+  }, [state.running, state.connected]);
   const status = !state.running ? state.message : active ? `${labels[active.state]}：${active.name}` : completed
     ? `本批完成：成功 ${state.jobs.filter(job => job.state === 'success').length} 首，失败 ${state.jobs.filter(job => job.state === 'error').length} 首`
     : state.connected ? '电脑已连接，等待上传' : state.connectedBefore ? '等待电脑重新连接' : !native ? '等待电脑连接 · 预览' : state.message;
@@ -78,9 +86,9 @@ export function AndroidLanUpload({ service, disabled, onNotice }: { service: Ret
     } catch { onNotice('复制失败，请长按地址复制'); }
   };
   return <section className="an-lan" aria-labelledby="an-lan-heading">
-    <div className={`an-transfer-visual ${state.running ? 'is-running' : ''}`} aria-label="电脑与手机连接同一 Wi-Fi">
+    <div className={`an-transfer-visual ${state.running ? 'is-running' : ''}`} aria-label="电脑与手机处于同一局域网（同一 Wi-Fi 或手机热点）">
       <div className="an-transfer-device"><AndroidIcon name="computer"/><span>电脑</span></div>
-      <div className="an-transfer-link"><AndroidIcon name="wifi"/><i/><span>同一 Wi-Fi</span></div>
+      <div className="an-transfer-link"><AndroidIcon name="wifi"/><i/><span>同一局域网</span></div>
       <div className="an-transfer-device an-transfer-phone"><AndroidIcon name="phone"/><span>手机</span></div>
     </div>
     <div className="an-lan-heading"><h2 id="an-lan-heading">局域网传曲</h2><div className="an-transfer-limits"><span>.wspack</span><span>每批 ≤ 9 个</span></div></div>
@@ -88,7 +96,11 @@ export function AndroidLanUpload({ service, disabled, onNotice }: { service: Ret
     <ol className="an-transfer-steps" aria-label="传曲步骤">{['启动服务', '电脑打开地址', '上传乐曲'].map((label, i) => <li key={label} className={(i === 0 && state.running || i === 1 && state.connected || i === 2 && completed) ? 'is-done' : ''}><span>{i + 1}</span>{label}</li>)}</ol>
     {state.running && <>
       <div className="an-lan-address"><label htmlFor="an-lan-url">电脑浏览器地址</label><input id="an-lan-url" readOnly value={state.url || '安卓 App 中显示连接地址'} onFocus={e => e.target.select()}/><button className="an-secondary" disabled={!state.url} onClick={() => { void copy(); }}><AndroidIcon name="copy"/>复制地址</button></div>
-      <div className="an-transfer-notes"><p><AndroidIcon name="sun"/>传输时保持双端亮屏</p><p><AndroidIcon name="chevron"/>可切到聊天软件发地址，返回本页完成导入</p></div>
+      {stuckTip && !state.connected && <div className="an-lan-hotspot" role="note">
+        <p><strong>电脑一直连不上？</strong>当前 Wi-Fi 可能开启了「设备隔离」（公司网络常见：同一 Wi-Fi 的设备互相不可见）。</p>
+        <p>改用手机热点：手机开个人热点 → 电脑连这个热点 → 停用后重新启动乐曲服务 → 用新地址打开。</p>
+      </div>}
+      <div className="an-transfer-notes"><p><AndroidIcon name="sun"/>传输时保持双端亮屏</p><p><AndroidIcon name="chevron"/>可切到聊天软件发地址，返回本页完成导入</p><p><AndroidIcon name="chevron"/>公司 Wi-Fi 常开设备隔离，连不上时可用手机热点让电脑接入</p></div>
       {!native && <p className="an-lan-demo">界面预览，不启动网络服务 · <a href="windscore-upload.html?demo=1" target="_blank" rel="noreferrer">电脑上传页</a></p>}
     </>}
     <button className={state.running ? 'an-secondary' : 'an-primary'} onClick={toggle} disabled={disabled && !state.running}>{state.running ? '停用乐曲服务' : '启动乐曲服务'}</button>

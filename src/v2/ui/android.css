@@ -116,6 +116,12 @@ body[data-entry='android'] { overflow: hidden; overscroll-behavior: none; }
 .an-lan-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--an-muted); flex-shrink: 0; }
 .an-app p.an-lan-status.is-running { color: var(--an-accent); }
 .an-lan-status.is-running i { background: var(--an-accent); box-shadow: 0 0 0 4px var(--an-accent-soft); }
+
+/* 传曲卡滞提示：服务开着但电脑一直没连上时出现，指向热点连接方式 */
+.an-lan-hotspot { margin: 14px 0 4px; padding: 12px 14px; border: 1px solid var(--an-accent); border-radius: 12px; background: var(--an-accent-soft); }
+.an-lan-hotspot p { margin: 0 0 6px; font-size: 13px; color: var(--an-text); }
+.an-lan-hotspot p:last-child { margin-bottom: 0; }
+.an-lan-hotspot strong { color: var(--an-accent); }
 .an-transfer-steps { display: grid; grid-template-columns: repeat(3, 1fr); padding: 18px 0; margin: 0 0 20px; list-style: none; border-block: 1px solid var(--an-line); }
 .an-transfer-steps li { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--an-muted); font-size: 11px; text-align: center; }
 .an-transfer-steps li > span { display: flex; justify-content: center; align-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--an-surface-soft); font-size: 11px; }
@@ -196,6 +202,16 @@ body[data-entry='android'] { overflow: hidden; overscroll-behavior: none; }
 .an-settings-section h3 { color: var(--an-text); font-weight: 700; font-size: 16px; line-height: 1.5; margin-bottom: 12px; }
 .an-setting { display: flex; justify-content: space-between; align-items: center; gap: 20px; min-height: 54px; font-size: 14px; }
 .an-setting select { min-height: 44px; color: var(--an-text); border: 1px solid var(--an-line); background: var(--an-surface-soft); border-radius: 10px; padding: 6px 10px; max-width: 60%; }
+
+/* 自绘下拉：替代原生 select（原生弹层字体跟系统字体缩放，弹窗里显得巨大） */
+.an-select { min-height: 44px; min-width: 96px; max-width: 60%; color: var(--an-text); font-size: 14px; border: 1px solid var(--an-line); background: var(--an-surface-soft); border-radius: 10px; padding: 6px 12px; text-align: center; }
+.an-select:disabled { opacity: .45; }
+.an-select-sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .35); }
+/* 选项卡：坐标由 AndroidSelect 按触发按钮位置内联指定（按钮正下方，放不下则向上） */
+.an-select-list { position: fixed; left: 12px; right: 12px; top: 30%; overflow-y: auto; background: var(--an-surface); border: 1px solid var(--an-line); border-radius: 12px; box-shadow: 0 14px 36px rgba(0, 0, 0, .3); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.an-select-option { min-height: 48px; text-align: left; padding: 10px 16px; font-size: 15px; color: var(--an-text); background: transparent; border: 0; border-radius: 10px; }
+.an-select-option.is-on { color: var(--an-accent); font-weight: 600; background: var(--an-accent-soft); }
+.an-select-option:disabled { opacity: .45; }
 .an-setting input[type='checkbox'] { width: 22px; height: 22px; margin: 11px; }
 .an-range-setting { flex-direction: column; align-items: stretch; gap: 4px; padding: 10px 0; }
 .an-range-setting > span { display: flex; justify-content: space-between; }

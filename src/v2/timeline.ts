@@ -24,6 +24,10 @@ export interface TimelineEntry {
   grace?: boolean;
   partId?: string;
   gain?: number;
+  /** 这条音用什么音色渲染（GM patch 号）：多声部来自声部设置（缺省跟曲目），单声部来自曲目 */
+  patch?: number;
+  /** 音色的八度偏移（±1 = 升/降八度）：音区不合适时整体挪，不改记谱 */
+  patchOctave?: number;
   /**
    * 力度乘数：音符的力度记号（pp…ff）乘上它所在的渐强/渐弱范围在**起音时刻**
    * 的取值。1 = 不变。
@@ -120,7 +124,13 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       const single = partScore(score, part.id);
       const { part: _part, ...plain } = single;
       const gain = part.muted || (solo && !part.solo) ? 0 : part.gain / Math.max(1, Math.sqrt(parts.length));
-      return buildTimeline(plain, opts).map((e) => ({ ...e, partId: part.id, gain }));
+      return buildTimeline(plain, opts).map((e) => ({
+        ...e,
+        partId: part.id,
+        gain,
+        patch: part.patch ?? score.meta.patch,
+        patchOctave: part.patchOctave ?? score.meta.patchOctave,
+      }));
     }).sort((a, b) => a.startTick - b.startTick || a.endTick - b.endTick);
   }
   const out: TimelineEntry[] = [];
@@ -291,7 +301,12 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     chainMainIdx = out.length - 1;
   }
 
-  return out.sort((a, b) => a.startTick - b.startTick);
+  // 单声部：音色跟曲目设置走（多声部已在上面按声部附好各自的 patch）
+  return out.sort((a, b) => a.startTick - b.startTick).map((e) => ({
+    ...e,
+    patch: score.meta.patch,
+    patchOctave: score.meta.patchOctave,
+  }));
 }
 
 export function timelineTicks(tl: TimelineEntry[]): number {

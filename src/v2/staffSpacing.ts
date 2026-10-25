@@ -4,6 +4,7 @@ import type { StaffLayout } from './staff';
 import type { StaffCurve } from './staffCurves';
 import type { StaffMark } from './staffMarks';
 import { staffCurveYBounds } from './staffBounds';
+import { TICKS_PER_BEAT } from './ticks';
 
 export function spaceStaffLines(staff: StaffLayout): void {
   const sp = staff.sp;
@@ -31,7 +32,7 @@ export function spaceStaffLines(staff: StaffLayout): void {
     for (const s of line.symbols) {
       if (s.kind === 'barline' && s.repeat === 'end' && (s.repeatTimes ?? 2) > 2) top = Math.min(top, line.y - 3.8 * sp);
       if ((s.kind !== 'note' && s.kind !== 'rest') || s.hidden) continue;
-      const stem = s.kind === 'note' && (s.baseTicks ?? s.ticks) < 192
+      const stem = s.kind === 'note' && (s.baseTicks ?? s.ticks) < TICKS_PER_BEAT * 4
         ? s.beamEnd ?? s.y + (s.up ? -3.5 : 3.5) * sp : s.y;
       top = Math.min(top, s.y - sp, stem - sp * 0.4);
       bottom = Math.max(bottom, s.y + sp, stem + sp * 0.4);

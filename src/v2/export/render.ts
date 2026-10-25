@@ -11,7 +11,7 @@
 
 import { layoutScore, type LayoutResult } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout, type PaintTheme } from '../paint';
-import type { Score } from '../types';
+import { DEFAULT_FONT_SIZE, type Score } from '../types';
 import type { BallDraw } from '../ball';
 import { buildStaffLayout, type StaffLayout } from '../staff';
 import { paintStaffLayout } from '../staffPaint';
@@ -71,7 +71,7 @@ export function exportLayout(
   score: Score,
   opts: { contentWidth: number; unit?: number; showTitle?: boolean } & ExportNotation,
 ): ExportLayoutResult {
-  const k = (score.meta.fontSize ?? 21) / 21;
+  const k = (score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21;
   const base = layoutScore(score, {
     contentWidth: opts.contentWidth,
     ...(opts.unit !== undefined ? { unit: opts.unit } : {}),

@@ -13,6 +13,7 @@ import { playbackX } from './spacing';
 import { paintLyricLines } from './lyricLines';
 import { paintStaffGrace } from './staffGracePaint';
 import { paintStaffMarks } from './staffMarks';
+import { TICKS_PER_BEAT } from './ticks';
 import { paintStaffStructure } from './staffStructure';
 import { paintStaffSystems, type StaffLineStart } from './staffSystems';
 import {
@@ -237,7 +238,7 @@ function drawStaffLine(
   // 1.5px 起跳在 7.5px 线间距下偏粗（用户实测），1px 起跳又细到看不清
   ctx.lineWidth = Math.max(1.15, 0.15 * sp);
   for (const s of glyphs) {
-    if (s.kind !== 'note' || (s.baseTicks ?? s.ticks) >= 192) continue;
+    if (s.kind !== 'note' || (s.baseTicks ?? s.ticks) >= TICKS_PER_BEAT * 4) continue;
     // 与 staff.ts 的 stemX 同一公式：符干贴着符头右缘（上）/ 左缘（下）
     const sx = s.x + (s.up ? 1 : -1) * (sp * HEAD_RX - 0.4);
     const end = s.beamEnd ?? s.y + (s.up ? -STEM_OCT * u : STEM_OCT * u);
@@ -343,7 +344,7 @@ function drawCell(
   // 符头：二分 / 全音符空心，其余实心
   ctx.beginPath();
   ctx.ellipse(s.x, s.y, rx, ry, -0.35, 0, Math.PI * 2);
-  if ((s.baseTicks ?? s.ticks) >= 96) ctx.stroke();
+  if ((s.baseTicks ?? s.ticks) >= TICKS_PER_BEAT * 2) ctx.stroke();
   else ctx.fill();
 
   // 附点：贴在符头右侧、略高一点（避开谱线）
@@ -478,7 +479,20 @@ function drawBarline(
   };
   const thin = Math.max(.9, sp * .115), heavy = Math.max(2.2, sp * .28);
   stroke(s.x, s.repeat || s.final ? heavy : thin);
-  if (s.repeat) {
+  if (s.repeat === 'both') {
+    // 双向反复（:||:）：粗线居中，两侧各「细线 + 点」（画法与单侧反复一致）
+    stroke(s.x, heavy);
+    stroke(s.x - sp * 0.6, thin);
+    stroke(s.x + sp * 0.6, thin);
+    ctx.fillStyle = theme.ink;
+    for (const yy of [bottom - sp * 1.5, bottom - sp * 2.5]) {
+      for (const dx of [-sp * 1.25, sp * 1.25]) {
+        ctx.beginPath();
+        ctx.arc(s.x + dx, yy, Math.max(1.2, sp * 0.17), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (s.repeat) {
     const dir = s.repeat === 'start' ? 1 : -1;
     stroke(s.x + dir * sp * .6, thin);
     ctx.fillStyle = theme.ink;
@@ -493,5 +507,6 @@ function drawBarline(
       ctx.fillText(`×${s.repeatTimes}`, s.x, y0 - sp);
     }
   } else if (s.final) stroke(s.x - sp * .6, thin);
+  else if (s.double) stroke(s.x - sp * .6, thin);
   ctx.restore();
 }

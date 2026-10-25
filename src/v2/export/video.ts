@@ -215,7 +215,7 @@ export function videoLayoutFor(score: Score, ratio: VideoRatio, shortSide: numbe
   const layout = layoutScore(score, {
     contentWidth: (geo.pageW - geo.marginX * 2) / geo.scale,
     fontSize: 21,
-    unit: 0.42,
+    unit: 20.16 / TICKS_PER_BEAT,
     letterSpacing: -8,
     padding: notationOptions.notation === 'staff' ? 96 : 0,
     ...(notationOptions.notation === 'staff' ? { staffKeySpace: 104, staffPitchMode: notationOptions.staffPitchMode ?? 'concert' } : {}),

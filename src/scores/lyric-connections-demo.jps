@@ -3,8 +3,8 @@
 @key 1=C
 @beat 4/4
 @bpm 90
-@size 26
-@space 0
+@size 24
+@space -10
 
 5/ 6/ 5 3 2 | 换行
 1 2 3 4 | 换行

@@ -5,6 +5,7 @@ import { scoreParts } from './parts';
 import { TECHNIQUE_GLYPH, TECHNIQUE_PATHS, paintTechniqueGeometry, type PaintTheme } from './paint';
 import { staffContentRight, staffCurveYBounds } from './staffBounds';
 import { staffAccWidth } from './staffInk';
+import { TICKS_PER_BEAT } from './ticks';
 
 type TechniquePath = keyof typeof TECHNIQUE_PATHS;
 type Shape = 'staccato' | 'tenuto' | 'accent' | 'marcato' | 'fermata' | 'turn' | 'breath';
@@ -42,7 +43,7 @@ export function buildStaffMarks(score: Score, staff: StaffLayout): StaffMark[] {
         box(s.x - 2 * sp, line.y - 3.8 * sp, 4 * sp, 1.6 * sp);
       }
       if ((s.kind !== 'note' && s.kind !== 'rest') || s.hidden) continue;
-      const end = s.kind === 'note' && (s.baseTicks ?? s.ticks) < 192
+      const end = s.kind === 'note' && (s.baseTicks ?? s.ticks) < TICKS_PER_BEAT * 4
         ? s.beamEnd ?? s.y + (s.up ? -3.5 : 3.5) * sp : s.y;
       const left = s.x - sp - staffAccWidth(s.accMark, sp);
       box(left, Math.min(s.y - sp, end - sp * .4), s.x + sp - left, Math.abs(s.y - end) + 2 * sp);

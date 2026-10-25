@@ -1,6 +1,9 @@
 import { Fragment, useRef, useState } from 'react';
+import { ExpClose } from './ExpClose';
 import { assembleParts, scoreParts } from '../parts';
 import { lyricTrackNames } from '../lyrics';
+import { instrumentLabel, instrumentPatches, instrumentSource } from '../instrumentSamples';
+import { isPreviewMuted, setPreviewMuted } from '../notePreview';
 import { TrackDialog } from './TrackDialog';
 import type { PartInfo, Score } from '../types';
 import { STAFF_INSTRUMENTS, type StaffInstrument, type StaffClefSetting } from '../pitch';
@@ -27,6 +30,8 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
   const [config, setConfig] = useState<PartInfo | null>(null);
   const [removeId, setRemoveId] = useState<string | null>(null);
   const [trackDialog, setTrackDialog] = useState<{ partId: string; verse?: number; remove?: boolean } | null>(null);
+  /** 输入试听静音（存在 notePreview 里并落 localStorage，切页签 / 重开页面都记得） */
+  const [muted, setMuted] = useState(isPreviewMuted);
   const removing = parts.find((p) => p.id === removeId);
   const closeDialog = () => { setConfig(null); setRemoveId(null); dialogTrigger.current?.focus(); };
   return (
@@ -87,6 +92,14 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
           </div>) : null}</Fragment>)}
         </div>
         {!readOnly ? <button className="v2-btn" onClick={(e) => { dialogTrigger.current = e.currentTarget; setTrackDialog({ partId: activeId }); }}>＋ 新增声部</button> : null}
+        {!readOnly ? <button className={`v2-btn v2-preview-mute ${muted ? 'is-off' : ''}`} aria-pressed={muted}
+          title={muted ? '输入试听已静音：输入音符和点击音符都不发声，点一下恢复' : '输入音符、点击音符时会响一声；点一下静音'}
+          onClick={() => { const next = !muted; setPreviewMuted(next); setMuted(next); }}>
+          {muted
+            ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z" /><path d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
+            : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z" /><path d="M16 9a4 4 0 0 1 0 6" /><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11" /></svg>}
+          <span>{muted ? '静音' : '试听'}</span>
+        </button> : null}
         {parts.length > 1 ? <div className="v2-view-switch">
           <button className={`v2-seg ${total ? 'is-on' : ''}`} onClick={() => onTotal(true)}>总谱</button>
           <button className={`v2-seg ${!total ? 'is-on' : ''}`} onClick={() => onTotal(false)}>当前分谱</button>
@@ -108,20 +121,30 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
             else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
           }
         }}>
-          <div className="v2-exp-head"><strong>{config ? '配置声部' : '删除声部'}</strong><button className="v2-btn" onClick={closeDialog}>关闭</button></div>
+          <div className="v2-exp-head"><strong>{config ? '配置声部' : '删除声部'}</strong><ExpClose onClose={closeDialog} /></div>
           {config ? <form onSubmit={(e) => {
             e.preventDefault();
             const name = config.name.trim();
             if (!name) return;
             const original = parts.find((p) => p.id === config.id);
-            onChange(assembleParts(score, parts.map((p) => p.id === config.id ? { ...p, ...config, name } : p)), undefined, name === original?.name && config.staffInstrument === original?.staffInstrument && config.staffClef === original?.staffClef);
+            onChange(assembleParts(score, parts.map((p) => p.id === config.id ? { ...p, ...config, name } : p)), undefined, name === original?.name && config.staffInstrument === original?.staffInstrument && config.staffClef === original?.staffClef && config.patch === original?.patch && config.patchOctave === original?.patchOctave);
             closeDialog();
           }}>
             <div className="v2-exp-body v2-part-settings">
               <label>声部名称<input autoFocus required disabled={readOnly} maxLength={32} value={config.name} onChange={(e) => setConfig({ ...config, name: e.target.value })} /></label>
               <label>五线谱记谱乐器<select disabled={readOnly} value={config.staffInstrument ?? 'concert'} onChange={e => setConfig({ ...config, staffInstrument: e.target.value as StaffInstrument })}>{STAFF_INSTRUMENTS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
               <label>五线谱谱号<select disabled={readOnly} value={config.staffClef ?? 'auto'} onChange={e => setConfig({ ...config, staffClef: e.target.value as StaffClefSetting })}><option value="auto">默认（高音优先，明确低音时切换）</option><option value="treble">高音谱号</option><option value="bass">低音谱号</option></select></label>
-              <p className="v2-exp-hint">记谱乐器与音色独立，只改变移调谱的写法。电吹管演奏时请核对设备的指法与移调设置。</p>
+              <label>合成音色<select disabled={readOnly} value={config.patch === undefined ? '' : String(config.patch)} onChange={e => setConfig({ ...config, patch: e.target.value === '' ? undefined : Number(e.target.value) })}>
+                <option value="">跟随曲目音色</option>
+                <option value="0">钢琴（真采样）</option>
+                {instrumentPatches().map((p) => <option key={p} value={p}>{instrumentLabel(p) ?? p}（真采样 · {instrumentSource(p)}）</option>)}
+              </select></label>
+              <label>音色八度<select disabled={readOnly} value={config.patchOctave === undefined ? '' : String(config.patchOctave)} onChange={e => setConfig({ ...config, patchOctave: e.target.value === '' ? undefined : Number(e.target.value) })}>
+                <option value="">跟随曲目</option>
+                <option value="1">升高一个八度 ↑8</option>
+                <option value="-1">降低一个八度 ↓8</option>
+              </select></label>
+              <p className="v2-exp-hint">记谱乐器只改变移调谱的写法，与合成音色独立。暂未提供真采样的音色以钢琴合成音播放。「音色八度」把这件乐器的发声整体挪八度（不动记谱），乐器音区不合适、太低发闷或太高失真时用。电吹管演奏时请核对设备的指法与移调设置。</p>
               <label>音量<span className="v2-part-volume"><input autoFocus={readOnly} type="range" min="0" max="1" step="0.05" value={config.gain} onChange={(e) => setConfig({ ...config, gain: Number(e.target.value) })} /><span>{Math.round(config.gain * 100)}%</span></span></label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.solo} onChange={(e) => setConfig({ ...config, solo: e.target.checked })} />独奏此声部</label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.muted} onChange={(e) => setConfig({ ...config, muted: e.target.checked })} />静音此声部</label>

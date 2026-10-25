@@ -9,8 +9,8 @@
  * 原则（§7.2）：只报错，绝不静默修正。
  */
 
-import { isLegalTick, LEGAL_TICKS } from './ticks';
-import { isTimed, TICKS_PER_BEAT, type Event, type Score } from './types';
+import { isLegalTick, LEGAL_TICKS, TICKS_PER_BEAT } from './ticks';
+import { isTimed, type Event, type Score } from './types';
 import { groupTicks, meterAt, validMeter } from './meter';
 
 export type InvariantCode = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'E1' | 'E2';

@@ -2,7 +2,7 @@ import type { LayoutLine, LayoutOptions, LayoutResult, PlacedItem } from './layo
 import { METER_LEAD } from './layout';
 import { partMeasures, partScore, scoreParts } from './parts';
 import type { Score } from './types';
-import { TICKS_PER_BEAT } from './ticks';
+import { PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT } from './ticks';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing } from './spacing';
 
 type Position = { x: number; w: number; line: number; dashXs?: number[] };
@@ -59,7 +59,7 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
         return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k)
           + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));
-      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? 1.3) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
+      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === 'barline' && e.tick > 0).map((e) => e.item.w));
     const close = Math.max(x, 60 * k - barW);

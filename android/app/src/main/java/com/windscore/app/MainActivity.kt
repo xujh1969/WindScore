@@ -147,11 +147,33 @@ class MainActivity : Activity() {
             ): Boolean {
                 filePathCallback?.onReceiveValue(null)
                 filePathCallback = callback
-                return try {
-                    startActivityForResult(params.createIntent(), FILE_CHOOSER_CODE)
-                    true
+                // 页面的 accept 里是 .wspack 这种自造扩展名，各 ROM 有两层坑：
+                // ① GET_CONTENT 被厂商文件管理器接管：按 MIME 藏文件、多选失效；
+                // ② MIUI 的系统「文档」选择器把识别不出 MIME 的扩展名置灰，*/* 也救不了，
+                //    但会放行 application/octet-stream（未知扩展名的默认归类）。
+                // 所以：OPEN_DOCUMENT + octet-stream 为主，异常时退回 */*。
+                // 选什么由页面按扩展名校验（importFiles 里已有校验与错误提示）。
+                val intent = try {
+                    params.createIntent().apply {
+                        action = Intent.ACTION_OPEN_DOCUMENT
+                        type = "application/octet-stream"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        removeExtra(Intent.EXTRA_MIME_TYPES)
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
                 } catch (_: Exception) {
+                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
+                }
+                return try {
+                    startActivityForResult(intent, FILE_CHOOSER_CODE)
+                    true
+                } catch (e: Exception) {
                     filePathCallback = null
+                    Toast.makeText(this@MainActivity, "打不开文件选择器：${e.localizedMessage ?: e}", Toast.LENGTH_LONG).show()
                     false
                 }
             }
@@ -168,7 +190,34 @@ class MainActivity : Activity() {
         if (requestCode == FILE_CHOOSER_CODE) {
             val callback = filePathCallback
             filePathCallback = null
-            callback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
+            // MIUI 兼容诊断：结果可能不在标准位置（getData 为空但 ClipData 有货，
+            // 或干脆返回取消码）。逐层探测并提示，反馈问题时把提示原文发回来
+            var uris: Array<Uri>? = WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+            var detail = when {
+                resultCode != RESULT_OK -> "选择器被取消(code=$resultCode)"
+                data == null -> "选择器未返回内容"
+                else -> null
+            }
+            if (uris == null && data != null) {
+                val clip = data.clipData
+                val manual = when {
+                    data.data != null -> arrayOf(data.data!!)
+                    clip != null && clip.itemCount > 0 -> Array(clip.itemCount) { clip.getItemAt(it)!!.uri }
+                    else -> null
+                }
+                if (manual != null && manual.all { it.toString().isNotEmpty() }) {
+                    uris = manual
+                    detail = null
+                } else if (detail == null) {
+                    detail = "选择器返回空结果(action=${data.action})"
+                }
+            }
+            val picked = uris?.size ?: 0
+            val note = detail ?: "已选择 $picked 个文件"
+            Toast.makeText(this, note, Toast.LENGTH_LONG).show()
+            // 契约：onShowFileChooser 的回调必须恰好调用一次（取消时也要用 null 调）。
+            // 漏调会让 WebView 认为选择器还开着，之后所有文件按钮都失灵。
+            callback?.onReceiveValue(uris)
         } else {
             super.onActivityResult(requestCode, resultCode, data)
         }

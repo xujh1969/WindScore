@@ -10,6 +10,10 @@
 
 手册覆盖重奏、歌词、变拍号、换行/分页、反复与跳转，以及 PDF、视频、PNG 和 SVG 输出；以下章节保留项目背景与开发说明，日常操作以分类手册和当前界面为准。实验入口目前隐藏。
 
+## 音色素材与许可
+
+合成音的钢琴来自 [Salamander Grand Piano v3](https://archive.org/details/SalamanderGrandPianoV3)（Yamaha C5 实录，作者 Alexander Holm，[CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/)），由 `scripts/build-piano-samples.mjs` 按音区裁到 3~8s 完整自然衰减（含包络整形：抹平录音自带的拍音起伏与音腹后回鼓），拼接为 `public/piano-samples.mp3`（96kbps 单声道，约 1.9MB）+ `public/piano-samples.json`（偏移清单），运行时经 `AudioContext.decodeAudioData` 解码整段回放——绝大多数音符从头到尾都是真实录音，合成只兜底并续超长音尾部；琴体共鸣/混响（`src/v2/reverb.ts`）为本项目纯合成。按 CC-BY 3.0 要求在此署名。
+
 ## 页面入口
 
 | 页面 | 作用 |

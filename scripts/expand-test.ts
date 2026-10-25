@@ -12,6 +12,7 @@ import { buildTimeline } from '../src/v2/timeline';
 import { layoutScore } from '../src/v2/layout';
 import { validateGroups } from '../src/v2/validate';
 import type { NoteEvent } from '../src/v2/types';
+import { TICKS_PER_BEAT } from '../src/v2/ticks';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -113,7 +114,7 @@ console.log('\n[反复展开 · 基本反复]');
       '1 1 1 1 | 5 5 5 5 | 5 5 5 5 | 2 2 2 2 ‖',
     expandedShape('@beat 4/4\n\n1 1 1 1 | |: 5 5 5 5 :| 2 2 2 2 ||\n'),
   );
-  check('两遍总时值 = 单遍 × 2', totalTicks('@beat 4/4\n\n|: 5 5 5 5 :| ||\n') === 384);
+  check('两遍总时值 = 单遍 × 2', totalTicks('@beat 4/4\n\n|: 5 5 5 5 :| ||\n') === TICKS_PER_BEAT * 8);
 }
 
 console.log('\n[反复展开 · 跳房子]');
@@ -180,7 +181,7 @@ console.log('\n[反复展开 · 嵌套与拍内组]');
     s.groups[0].id === 'g1' && s.groups[1].id === 'g1~2' && s.groups[1].memberIds.length === 2,
     s.groups.map((g) => `${g.id}(${g.memberIds.length})`).join(' '),
   );
-  check('组总时值重算正确', s.groups.every((g) => g.totalTicks === 48), s.groups.map((g) => g.totalTicks).join(','));
+  check('组总时值重算正确', s.groups.every((g) => g.totalTicks === TICKS_PER_BEAT), s.groups.map((g) => g.totalTicks).join(','));
   check(
     '组内成员 id 与展开事件一致',
     s.groups[0].memberIds.every((id) => s.events.some((e) => e.id === id)),
@@ -216,7 +217,7 @@ console.log('\n[反复展开 · 完整一段曲子]');
       '5 5 5 5 | 1 2 3 4 | 3 2 1 2 | 5 5 5 5 | 1 2 3 4 | 3 2 1 2 | 6 6 6 6 | 1 1 1 1 ‖',
     expandedShape(src),
   );
-  check('展开后共 8 小节 × 4 拍', totalTicks(src) === 8 * 4 * 48, String(totalTicks(src)));
+  check('展开后共 8 小节 × 4 拍', totalTicks(src) === 8 * 4 * TICKS_PER_BEAT, String(totalTicks(src)));
 
   // 回归：`|: A [1] B :| [2] C`——第二房子写在 :| 之后（其他简谱软件的常见
   // 写法，那道 :| 只是第一房子的收尾）。旧实现报「[2] 不在反复段内」拒绝展开

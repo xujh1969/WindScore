@@ -12,7 +12,9 @@
  */
 
 import { useState } from 'react';
+import { ExpClose } from './ExpClose';
 import { configureLibraryLocation, useDefaultLocation } from './storeInit';
+import { isPickCancelled } from './storeBackend';
 
 export function LibrarySetupDialog({
   isExe,
@@ -37,7 +39,7 @@ export function LibrarySetupDialog({
       .then(onDone)
       .catch((e) => {
         // 用户在系统对话框里点了取消不算错，安静收回即可
-        if ((e as Error).message === '未选择文件夹') onSkip();
+        if (isPickCancelled(e)) onSkip();
         else setError((e as Error).message);
       })
       .finally(() => setBusy(false));
@@ -53,9 +55,7 @@ export function LibrarySetupDialog({
       <div className="v2-exp" role="dialog" aria-label="配置曲库位置">
         <div className="v2-exp-head">
           <span className="v2-exp-song">先配置曲库位置</span>
-          <button className="v2-btn" onClick={onSkip} disabled={busy}>
-            暂不
-          </button>
+          <ExpClose onClose={onSkip} disabled={busy} title="暂不配置" />
         </div>
         <div className="v2-exp-body">
           <p className="v2-exp-hint">

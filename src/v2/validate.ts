@@ -32,6 +32,8 @@ export function validateGroups(score: Score): Violation[] {
   score.events.forEach((e, i) => index.set(e.id, i));
   for (const [i, e] of score.events.entries()) {
     if (e.kind === 'barline' && e.beatAfter && !validMeter(e.beatAfter)) out.push({ code: 'E2', message: `拍号不合法：${e.beatAfter}` });
+    if (e.kind === 'barline' && e.bpmAfter !== undefined && (!Number.isInteger(e.bpmAfter) || e.bpmAfter < 20 || e.bpmAfter > 300)) out.push({ code: 'E2', message: `速度不合法（应为 20-300 的整数）：${e.bpmAfter}` });
+    if (e.kind === 'barline' && e.patchAfter !== undefined && (!Number.isInteger(e.patchAfter) || e.patchAfter < 0 || e.patchAfter > 255)) out.push({ code: 'E2', message: `音色号不合法（应为 0-255 的整数）：${e.patchAfter}` });
     if (e.kind === 'note' && e.hairpinTo) {
       const target = index.get(e.hairpinTo) ?? -1;
       if (!e.hairpin || target <= i || score.events[target]?.kind !== 'note') out.push({ code: 'I5', message: '渐强/渐弱终点必须是同声部的后续音符' });

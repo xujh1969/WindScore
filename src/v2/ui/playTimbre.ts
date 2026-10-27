@@ -32,7 +32,7 @@ function normalizePart(x: unknown): PlayTimbrePart | null {
   if (!x || typeof x !== 'object') return null;
   const o = x as PlayTimbrePart;
   const out: PlayTimbrePart = {};
-  if (typeof o.patch === 'number' && o.patch >= 0 && o.patch <= 127) out.patch = o.patch;
+  if (typeof o.patch === 'number' && o.patch >= 0 && o.patch <= 255) out.patch = o.patch;
   if (o.octave === 1 || o.octave === -1) out.octave = o.octave;
   return out.patch !== undefined || out.octave !== undefined ? out : null;
 }

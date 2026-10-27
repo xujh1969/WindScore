@@ -45,6 +45,11 @@ export interface VideoExportOptions extends ExportNotation {
   toTick?: number;
   bpm: number;
   tempo: TempoMap | null;
+  /**
+   * 合成音导出用的谱中变速曲线（小节线「速96」）：audio === 'synth' 时 tick ↔ 秒
+   * 走它；伴奏导出（'stems'）不用它——那边的秒一律跟对轨标定（tempo）走。
+   */
+  synthTempo?: TempoMap | null;
   stems: AudioStem[];
   dark: boolean;
   ratio: VideoRatio;
@@ -78,9 +83,10 @@ export function tickClock(opts: VideoExportOptions): {
   tickAt: (sec: number) => number;
 } {
   const useTempo = opts.audio === "stems" && !!opts.tempo;
+  const useSynthTempo = opts.audio === "synth" && !!opts.synthTempo;
   const tps = (opts.bpm / 60) * TICKS_PER_BEAT;
-  if (useTempo) {
-    const tempo = opts.tempo as TempoMap;
+  if (useTempo || useSynthTempo) {
+    const tempo = (useTempo ? opts.tempo : opts.synthTempo) as TempoMap;
     const startSec = tickToSec(tempo, opts.fromTick);
     return {
       secondsOf: (tick) => tickToSec(tempo, tick) - startSec,

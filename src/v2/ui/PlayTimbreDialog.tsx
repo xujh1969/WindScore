@@ -9,7 +9,7 @@
 import type { ReactNode } from 'react';
 import { ExpClose } from './ExpClose';
 import { scoreParts } from '../parts';
-import { instrumentLabel, instrumentPatches, instrumentSource } from '../instrumentSamples';
+import { instrumentLabel, instrumentPatches, instrumentSource, shortInstrumentLabel } from '../instrumentSamples';
 import type { PlayTimbre, PlayTimbrePart } from './playTimbre';
 import type { Score } from '../types';
 
@@ -20,12 +20,14 @@ interface Props {
   onClose: () => void;
 }
 
-/** 音色下拉的公共选项（「跟随谱面」由调用方给，默认值各声部不同） */
+/** 音色下拉的公共选项（「跟随谱面」由调用方给，默认值各声部不同）。括号备注只留在下拉里，谱面标注用简略名 */
 function TimbreOptions(): ReactNode {
+  const patches = instrumentPatches();
   return (
     <>
-      <option value="0">钢琴（真采样）</option>
-      {instrumentPatches().map((p) => (
+      {/* 0 号没被包覆盖时才是合成钢琴；覆盖了（如 GM 包的三角钢琴）就跟包走，不重复列 */}
+      {patches.includes(0) ? null : <option value="0">钢琴（合成）</option>}
+      {patches.map((p) => (
         <option key={p} value={p}>
           {instrumentLabel(p) ?? p}（真采样 · {instrumentSource(p)}）
         </option>
@@ -72,7 +74,7 @@ export function PlayTimbreDialog({ score, timbre, onChange, onClose }: Props) {
                 <label className="v2-timbre-part">
                   声部「{p.name}」
                   <select value={patchValue(ov?.patch)} onChange={(e) => setPart(p.id, 'patch', e.target.value === '' ? undefined : Number(e.target.value))}>
-                    <option value="">跟随谱面（{instrumentLabel(p.patch ?? score.meta.patch) ?? `音色 ${p.patch ?? score.meta.patch}`}）</option>
+                    <option value="">跟随谱面（{shortInstrumentLabel(p.patch ?? score.meta.patch) ?? `音色 ${p.patch ?? score.meta.patch}`}）</option>
                     <TimbreOptions />
                   </select>
                 </label>

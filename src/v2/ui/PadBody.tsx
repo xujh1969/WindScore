@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { candidateGlyph } from '../edit';
 import type { TierCandidate } from '../edit';
 import { TICKS_PER_BEAT } from '../ticks';
@@ -14,6 +15,7 @@ import {
   TechniqueField,
 } from './NoteFields';
 import type { BarlineEvent, JumpMark, NoteEvent, RestEvent, Score } from '../types';
+import { instrumentPatches, instrumentLabel } from '../instrumentSamples';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from '../musicSymbols';
 
 /**
@@ -119,6 +121,10 @@ export interface PadActions {
 /** 小节线模式的动作集（互斥：点中竖线时整个面板切换成这些） */
 export interface PadBarlineActions {
   setBeatAfter: (v?: string) => void;
+  /** 此线之后的速度（BPM，20–300）：只影响合成音播放/导出/节拍器，伴奏跟对轨同步点走 */
+  setBpmAfter: (v?: number) => void;
+  /** 此线之后的音色（0–255）：只影响合成音 */
+  setPatchAfter: (v?: number) => void;
   setBreakAfter: (v?: 'line' | 'page') => void;
   setRepeat: (repeat: 'start' | 'end' | 'both') => void;
   setRepeatTimes: (n: number) => void;
@@ -130,6 +136,61 @@ export interface PadBarlineActions {
 }
 
 const BAR_BEATS = ['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8'];
+
+/**
+ * 小节线换音色的候选：真采样音色（内置 ∪ 已装音色包）∪ 钢琴（0）。
+ * **必须在渲染时现取**：音色包是运行时注册的，模块顶层缓存一次会把后导入的
+ * 排箫等全部漏掉（0.4.12 实测「导入的音色不在列表里」）。
+ * 0 号特殊：没包覆盖时是合成钢琴；包覆盖了（如整套 GM 包的「三角钢琴」）就
+ * 跟随包——不能两个都列（都是 0 号，选哪个都是同一个声音）。
+ */
+const patchOptions = (): number[] => {
+  const list = instrumentPatches();
+  return list.includes(0) ? list : [0, ...list];
+};
+const patchOptionLabel = (p: number): string =>
+  p === 0 && !instrumentLabel(p) ? '钢琴（合成）' : `${p} ${instrumentLabel(p) ?? ''}`.trim();
+
+/**
+ * 谱中变速输入：自由输入 20–300 的整数，失焦 / 回车才提交；
+ * 提交时钳到合法区间，并与该线之前的有效 BPM 比较——
+ * 一次跳变超过一倍（≥2× 或 ≤½×）时提示确认，避免手滑写出离谱的速度。
+ */
+function BpmAfterField({ value, prevBpm, onCommit }: { value?: number; prevBpm: number; onCommit: (v?: number) => void }) {
+  const [draft, setDraft] = useState(value === undefined ? '' : String(value));
+  useEffect(() => { setDraft(value === undefined ? '' : String(value)); }, [value]);
+  const raw = draft.trim();
+  const n = raw === '' ? NaN : Math.round(Number(raw));
+  const valid = Number.isFinite(n);
+  const clamped = Math.max(20, Math.min(300, n));
+  const outOfRange = valid && clamped !== n;
+  const jump = valid && !outOfRange && (clamped >= prevBpm * 2 || clamped <= prevBpm / 2);
+  const commit = () => {
+    if (raw === '') { onCommit(undefined); return; }
+    if (!valid) { setDraft(value === undefined ? '' : String(value)); return; }
+    onCommit(clamped);
+  };
+  return (
+    <div className="v2-field">
+      <span className="v2-field-label">此线之后的速度（BPM）</span>
+      <input
+        className="v2-bpm-input"
+        type="number"
+        inputMode="numeric"
+        min={20}
+        max={300}
+        step={1}
+        placeholder="沿用之前的速度"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      />
+      {outOfRange ? <p className="v2-hint">超出 20–300，将按边界处理</p> : null}
+      {jump ? <p className="v2-hint">与该线之前的 {prevBpm} BPM 相比变化超过一倍，请确认是否需要这么大的幅度</p> : null}
+    </div>
+  );
+}
 
 interface Props {
   actions: PadActions;
@@ -267,6 +328,15 @@ export function PadBody({
   };
   const parenOpen = tIdx >= 0 && evAt(tIdx - 1) === '(';
   const parenClose = tIdx >= 0 && evAt(tIdx + 1) === ')';
+  // 该小节线之前的有效速度：谱头 BPM 或上游小节线的「速xx」——变速跳变检查的基准
+  let prevBpm = score.meta.bpm;
+  {
+    const bIdx = barline ? score.events.findIndex((e) => e.id === barline.id) : -1;
+    for (let i = 0; i < bIdx; i++) {
+      const ev = score.events[i];
+      if (ev.kind === 'barline' && typeof ev.bpmAfter === 'number') prevBpm = ev.bpmAfter;
+    }
+  }
 
   return (
     <div className="v2-pad-body">
@@ -282,6 +352,24 @@ export function PadBody({
             <option value="">沿用之前的拍号</option>
             {BAR_BEATS.map((beat) => <option key={beat} value={beat}>{beat}</option>)}
             {barline.beatAfter && !BAR_BEATS.includes(barline.beatAfter) ? <option value={barline.beatAfter}>{barline.beatAfter}</option> : null}
+          </select>
+        </div>
+        <BpmAfterField value={barline.bpmAfter} prevBpm={prevBpm} onCommit={(v) => barlineActions.setBpmAfter(v)} />
+        <div className="v2-field">
+          <span className="v2-field-label">此线之后的音色</span>
+          <select
+            className="v2-meta-input"
+            value={barline.patchAfter ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              barlineActions.setPatchAfter(v === '' ? undefined : Number(v));
+            }}
+          >
+            <option value="">沿用之前的音色</option>
+            {patchOptions().map((p) => <option key={p} value={p}>{patchOptionLabel(p)}</option>)}
+            {barline.patchAfter != null && !patchOptions().includes(barline.patchAfter) ? (
+              <option value={barline.patchAfter}>{patchOptionLabel(barline.patchAfter)}</option>
+            ) : null}
           </select>
         </div>
         <div className="v2-field">

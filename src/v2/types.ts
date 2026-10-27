@@ -135,6 +135,16 @@ export interface BarlineEvent extends BaseEvent {
   style: 'single' | 'double' | 'final';
   /** 从这条小节线之后起使用的新拍号。 */
   beatAfter?: string;
+  /**
+   * 从这条小节线之后起的新速度（BPM，20-300）：**只影响合成音**的拍长与节拍器
+   * （DSL 写「速96」，UI 在小节线面板里改）；伴奏模式跟对轨标定走，完全不看它。
+   */
+  bpmAfter?: number;
+  /**
+   * 从这条小节线之后起本声部的新音色（音色号，0-255，扩展号 128-255 给
+   * 自定义音色包；DSL 写「音5」）。只改发声，不动谱面记谱。
+   */
+  patchAfter?: number;
   /** 此小节线后强制换行，page 同时要求 PDF 换页。 */
   breakAfter?: 'line' | 'page';
   /** 弱起 / 不完全小节开关（§8.2） */

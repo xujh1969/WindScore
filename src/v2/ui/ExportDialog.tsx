@@ -55,6 +55,8 @@ export interface ExportDialogProps extends ExportNotation {
     fromTick: number;
     bpm: number;
     tempo: TempoMap | null;
+    /** 合成音导出用的谱中变速曲线（小节线「速96」）；伴奏导出不用它 */
+    synthTempo?: TempoMap | null;
     stems: AudioStem[];
     /**
      * 演奏顺序里每一小节的起始 tick（`[小节1, 小节2, …]`）。
@@ -160,6 +162,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       ...(toTick !== undefined ? { toTick } : {}),
       bpm: video.bpm,
       tempo: video.tempo,
+      ...(useAudio === 'synth' && video.synthTempo ? { synthTempo: video.synthTempo } : {}),
       stems: video.stems,
       audio: useAudio,
     });
@@ -289,6 +292,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
           : {}),
         bpm: video.bpm,
         tempo: video.tempo,
+        ...(useAudio === 'synth' && video.synthTempo ? { synthTempo: video.synthTempo } : {}),
         stems: video.stems,
         dark: videoDark,
         ratio,

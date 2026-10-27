@@ -8,6 +8,7 @@
 import { playbackX } from './spacing';
 import { paintLyricLines } from './lyricLines';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
+import { shortInstrumentLabel } from './instrumentSamples';
 import {
   clusterSpan,
   SCORE_START_ID,
@@ -1136,6 +1137,21 @@ function paintLine(
     ctx.fillText(label, it.x + it.w / 2, y - M.markTop);
   }
   ctx.font = M.markFont;
+
+  // 谱中变速 / 换音色（0.4.10）：小节线上方「♩=96 · 小提琴」。
+  // 用 muted 灰（与小节号同层级的辅助信息）——用户 0.4.12 实测墨色太重会抢音符的注意力；
+  // 音色只写简略名（没有名字的裸号兜底「音色 N」），括号备注只留在下拉列表里
+  ctx.textAlign = 'center';
+  for (const it of line.items) {
+    if (it.kind !== 'barline') continue;
+    const parts: string[] = [];
+    if (it.bpmAfter !== undefined) parts.push(`♩=${it.bpmAfter}`);
+    if (it.patchAfter !== undefined) parts.push(shortInstrumentLabel(it.patchAfter) ?? `音色 ${it.patchAfter}`);
+    if (!parts.length) continue;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(parts.join(' · '), it.x + it.w / 2, y - M.markTop);
+  }
+  ctx.textAlign = 'left';
 
   // 播放头按节奏锚点连续前进，长音内部经过增时线，最后接到下一音的拍位。
   if (headItem && playhead && o.playStyle === 'head') {

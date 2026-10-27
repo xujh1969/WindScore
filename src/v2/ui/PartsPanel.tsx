@@ -136,7 +136,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
               <label>五线谱谱号<select disabled={readOnly} value={config.staffClef ?? 'auto'} onChange={e => setConfig({ ...config, staffClef: e.target.value as StaffClefSetting })}><option value="auto">默认（高音优先，明确低音时切换）</option><option value="treble">高音谱号</option><option value="bass">低音谱号</option></select></label>
               <label>合成音色<select disabled={readOnly} value={config.patch === undefined ? '' : String(config.patch)} onChange={e => setConfig({ ...config, patch: e.target.value === '' ? undefined : Number(e.target.value) })}>
                 <option value="">跟随曲目音色</option>
-                <option value="0">钢琴（真采样）</option>
+                {instrumentPatches().includes(0) ? null : <option value="0">钢琴（合成）</option>}
                 {instrumentPatches().map((p) => <option key={p} value={p}>{instrumentLabel(p) ?? p}（真采样 · {instrumentSource(p)}）</option>)}
               </select></label>
               <label>音色八度<select disabled={readOnly} value={config.patchOctave === undefined ? '' : String(config.patchOctave)} onChange={e => setConfig({ ...config, patchOctave: e.target.value === '' ? undefined : Number(e.target.value) })}>

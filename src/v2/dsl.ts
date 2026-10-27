@@ -169,7 +169,7 @@ export function parseDsl(text: string): ParseResult {
       // 声部级音色：必须写在 @part 声明之后（谱头里的全局 @patch blocks 为空，走 header 分支）
       const m = /^@patch\s+(\d+)\s*$/i.exec(line);
       const block = blocks[blocks.length - 1];
-      if (!m || Number(m[1]) > 127) errors.push('声部音色应为 @patch 66（0-127 的整数），放在声部声明之后');
+      if (!m || Number(m[1]) > 255) errors.push('声部音色应为 @patch 66（0-255 的整数），放在声部声明之后');
       else block.patch = Number(m[1]);
     } else if (/^@patchoct\b/i.test(line) && blocks.length) {
       // 声部级音色八度：同样必须写在 @part 声明之后
@@ -277,7 +277,7 @@ function parseSingle(text: string, modern = false): ParseResult {
         }
         case 'patch': {
           const n = Number(v);
-          if (Number.isInteger(n) && n >= 0 && n <= 127) meta.patch = n;
+          if (Number.isInteger(n) && n >= 0 && n <= 255) meta.patch = n;
           else errors.push(`patch 解析失败：${v}`);
           break;
         }
@@ -702,13 +702,23 @@ function parseSingle(text: string, modern = false): ParseResult {
       }
 
       if (raw !== '') {
-        if (/^拍/.test(raw) || raw === '换行' || raw === '分页') {
+        if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === '换行' || raw === '分页') {
           const bar = events[events.length - 1];
           if (!modern || bar?.kind !== 'barline') errors.push(`${raw} 需要 @format 3，并紧接小节线书写`);
           else if (raw.startsWith('拍')) {
             const beat = raw.slice(1);
             if (!validMeter(beat)) errors.push(`拍号不合法：${beat}`);
             else { bar.beatAfter = beat; currentBeat = beat; }
+          } else if (raw.startsWith('速')) {
+            // 谱中变速：这根小节线之后合成音按新 BPM 走（伴奏不受影响）
+            const bpm = Number(raw.slice(1));
+            if (!Number.isInteger(bpm) || bpm < 20 || bpm > 300) errors.push(`速度不合法（应为 20-300 的整数）：${raw}`);
+            else bar.bpmAfter = bpm;
+          } else if (raw.startsWith('音')) {
+            // 谱中换音色：这根小节线之后本声部用新音色（0-255，扩展号给音色包）
+            const patch = Number(raw.slice(1));
+            if (!Number.isInteger(patch) || patch < 0 || patch > 255) errors.push(`音色号不合法（应为 0-255 的整数）：${raw}`);
+            else bar.patchAfter = patch;
           } else bar.breakAfter = raw === '分页' ? 'page' : 'line';
         } else if (raw === 'cresc[' || raw === 'dim[') {
           if (!modern) errors.push('跨音力度范围需要 @format 3');
@@ -1103,6 +1113,8 @@ function serializeSingle(score: Score): string {
         else tok = '|';
         out.push(tok);
         if (ev.beatAfter) out.push(`拍${ev.beatAfter}`);
+        if (ev.bpmAfter) out.push(`速${ev.bpmAfter}`);
+        if (ev.patchAfter !== undefined) out.push(`音${ev.patchAfter}`);
         if (ev.breakAfter) out.push(ev.breakAfter === 'page' ? '分页' : '换行');
         // 房子写在这条线后面：`| [1] 3 3 | [2] 4 4 :|`；开放右端写不闭合的 `[1`
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(',')}` : `[${ev.volta.join(',')}]`);

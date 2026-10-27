@@ -99,7 +99,7 @@ export function withConductor(score: Score, id: string): Score {
   if (headBar) keptBars.add(headBar.id);
   const clean = target.events.filter((e) => e.kind !== 'jump' && (e.kind !== 'barline' || keptBars.has(e.id))).map((e): Event => {
     if (e.kind !== 'barline') return e;
-    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, ...bar } = e;
+    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, bpmAfter: _bm, patchAfter: _p, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
@@ -110,7 +110,7 @@ export function withConductor(score: Score, id: string): Score {
     const dstOriginal = boundary === 0 ? targetHead.find((e) => e.kind === 'barline') : target.events[(targetStarts[boundary] ?? 0) - 1];
     let index = dstOriginal ? clean.findIndex((e) => e.id === dstOriginal.id) : -1;
     if (src?.kind === 'barline') {
-      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter };
+      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter, patchAfter: src.patchAfter };
       if (clean[index]?.kind === 'barline') clean[index] = { ...clean[index], ...attributes } as BarlineEvent;
       else if (boundary === 0) {
         clean.unshift({ id: `p${id}:conductor:start`, kind: 'barline', style: 'single', ...attributes });

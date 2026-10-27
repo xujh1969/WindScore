@@ -116,26 +116,33 @@ export class Player {
     return this.ctx !== null;
   }
 
-  /** 音频模式下的当前音频位置（秒）；合成音 / 未播放时 null */
+  /** 当前音频位置（秒）：伴奏模式 / 合成音变速曲线模式有值；恒定合成音为 null（走线性时钟） */
   get currentSec(): number | null {
-    if (!this.ctx || !this.audioMode) return null;
-    return Math.max(0, this.ctx.currentTime - this.when) + this.startSec;
+    if (!this.ctx) return null;
+    if (this.audioMode) return Math.max(0, this.ctx.currentTime - this.when) + this.startSec;
+    if (this.tempo) return Math.max(0, this.ctx.currentTime - this.startedAt) + this.startSec;
+    return null;
   }
 
   /** 两种模式都以实际发声的 AudioContext 为时钟，保留任意起播 tick。 */
   get currentTick(): number | null {
     if (!this.ctx) return null;
-    if (!this.audioMode) return this.fromTick + Math.max(0, this.ctx.currentTime - this.startedAt) * this.ticksPerSec;
     const sec = this.currentSec;
-    if (sec === null || !this.tempo) return null;
-    return secToTick(this.tempo, sec);
+    if (sec !== null && this.tempo) return secToTick(this.tempo, sec);
+    if (!this.audioMode) return this.fromTick + Math.max(0, this.ctx.currentTime - this.startedAt) * this.ticksPerSec;
+    return null;
   }
 
   /**
    * 合成音起播。返回真实起播延迟（秒）：建 AudioContext 与解算要时间，
    * 调用方要拿它对轨（例如把波形标定的起点往后挪）。
+   *
+   * `bpmOrMap`：传 BPM（恒定速度，tick 线性换算）或 **TempoMap**（谱中变速
+   * 「速96」的曲线，秒走 tickToSec；调用方负责先按倍速 scaleTempo）。
+   * 变速只改变发声时刻，排程循环的「按 tick 排」结构不变——曲线在 tick 域
+   * 单调递增，`at > until` 的提前截断依然正确。
    */
-  start(timeline: TimelineEntry[], bpm: number, fromTick = 0, semitones = 0): number {
+  start(timeline: TimelineEntry[], bpmOrMap: number | TempoMap, fromTick = 0, semitones = 0): number {
     this.stop();
     if (timeline.length === 0) return 0;
     claimAudio(this);
@@ -143,6 +150,7 @@ export class Player {
     const first = timeline.findIndex((e) => e.endTick > fromTick);
     if (first < 0) return 0;
 
+    const map = typeof bpmOrMap === 'object' ? bpmOrMap : null;
     const calledAt = performance.now();
     const ctx = newAudioContext();
     this.ctx = ctx;
@@ -150,27 +158,36 @@ export class Player {
     this.index = first;
     this.fromTick = fromTick;
     this.audioMode = false;
-    this.tempo = null;
-    this.ticksPerSec = (bpm / 60) * TICKS_PER_BEAT;
+    this.tempo = map;
+    this.ticksPerSec = map ? 0 : ((bpmOrMap as number) / 60) * TICKS_PER_BEAT;
     this.startedAt = ctx.currentTime + START_LEAD;
+    // 曲线模式的 currentSec 复用音频模式的公式：when = 起播 ctx 时刻，startSec = 起播 tick 的秒
+    if (map) {
+      this.when = this.startedAt;
+      this.startSec = tickToSec(map, fromTick);
+    }
 
     const lead = (performance.now() - calledAt) / 1000 + START_LEAD;
     this.timer = window.setInterval(() => {
       if (!this.ctx) return;
       const until = this.ctx.currentTime + SCHEDULE_AHEAD;
+      const at = (tick: number): number =>
+        map
+          ? this.startedAt + tickToSec(map, tick) - this.startSec
+          : this.startedAt + (tick - this.fromTick) / this.ticksPerSec;
       for (; this.index < this.timeline.length; ) {
         const e = this.timeline[this.index]!;
         const from = Math.max(e.startTick, this.fromTick);
-        const at = this.startedAt + (from - this.fromTick) / this.ticksPerSec;
-        if (at > until) break;
-        const endAt = this.startedAt + (e.endTick - this.fromTick) / this.ticksPerSec;
+        const at0 = at(from);
+        if (at0 > until) break;
+        const endAt = at(e.endTick);
         if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) {
-          this.tone(ctx, e.midi, at, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
+          this.tone(ctx, e.midi, at0, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
         }
         this.index += 1;
       }
       const lastEnd = timelineTicks(this.timeline);
-      const finishAt = this.startedAt + (lastEnd - this.fromTick) / this.ticksPerSec;
+      const finishAt = at(lastEnd);
       if (this.index >= this.timeline.length && this.ctx.currentTime > finishAt + 0.3) this.stop();
     }, TIMER_MS);
     return lead;

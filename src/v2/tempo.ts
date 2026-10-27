@@ -207,6 +207,59 @@ export function curveFromAnchors(
   return { kind: 'curve', beatTimes, scoreOriginBeat: 0 };
 }
 
+// ── 谱中变速段（M13 的谱面侧来源：小节线上的「速96」） ──────────
+
+/**
+ * 谱中变速段 → **谱面拍索引**的变速曲线（beatTimes[i] = 谱面第 i 拍的秒，
+ * scoreOriginBeat = 0）。没有变速段返回 null——调用方继续走恒定 BPM 的老路。
+ *
+ * tick 累计口径与 buildTimeline / tickAtEvent 一致：只有 note / rest 占时值，
+ * 小节线、换气、力度记号都不推进。拍号段的组 tick 在解析期已烤进音符，
+ * 所以这里不需要自己理解拍号。
+ *
+ * **只用于合成音**：伴奏模式的 tick ↔ 秒 走对轨标定（audioTempo），谱中变速
+ * 对伴奏的同步点没有任何影响——这正是「变速只适用于合成音演奏」的实现方式：
+ * 两条换算链完全独立。
+ */
+export function tempoCurveFromScore(
+  events: { kind: string; ticks?: number; bpmAfter?: number }[],
+  initialBpm: number,
+  totalBeats: number,
+): TempoCurve | null {
+  // 收集变速段（同一根小节线重复标速以后写的为准；连续同速合并掉）
+  const segs: { fromBeat: number; bpm: number }[] = [{ fromBeat: 0, bpm: initialBpm }];
+  let tick = 0;
+  for (const ev of events) {
+    if (ev.kind === 'barline' && typeof ev.bpmAfter === 'number') {
+      const fromBeat = tick / TICKS_PER_BEAT;
+      const cur = segs[segs.length - 1];
+      if (!(cur.fromBeat === fromBeat && cur.bpm === ev.bpmAfter) && ev.bpmAfter > 0) {
+        segs.push({ fromBeat, bpm: ev.bpmAfter });
+      }
+    }
+    if (ev.kind === 'note' || ev.kind === 'rest') tick += ev.ticks ?? 0;
+  }
+  if (segs.length <= 1) return null;
+  const n = Math.max(1, Math.ceil(totalBeats));
+  const beatTimes = new Array<number>(n + 1);
+  let t = 0; // 时间游标跨段接续：seg[s].fromBeat 恰是 seg[s-1] 的填满点，起点时间就是游标现值
+  for (let s = 0; s < segs.length; s += 1) {
+    const seg = segs[s];
+    if (!(seg.bpm > 0)) return null; // 脏数据宁可不成曲线（恒定回退），也不产出 NaN 时间轴
+    const fromBeat = Math.round(seg.fromBeat);
+    const to = s + 1 < segs.length ? Math.round(segs[s + 1].fromBeat) : n + 1;
+    const step = 60 / seg.bpm;
+    for (let b = fromBeat; b < to && b <= n; b += 1) {
+      beatTimes[b] = t;
+      t += step;
+    }
+  }
+  for (let i = 1; i < beatTimes.length; i += 1) {
+    if (!(beatTimes[i] > beatTimes[i - 1])) return null;
+  }
+  return { kind: 'curve', beatTimes, scoreOriginBeat: 0 };
+}
+
 // ── align.json（sidecar）读取 ────────────────────────────────
 
 export interface AlignFile {

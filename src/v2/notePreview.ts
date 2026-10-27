@@ -73,7 +73,7 @@ export function previewNote(midi: number, gain = 0.28, patch?: number, patchOcta
   // 指定的音色是真采样但**还没解码**（懒加载：播放前才批量解码）→ 现在拉起解码，
   // 解码完成用真音色补这一声。不能先响一声钢琴凑合：点音听到的必须是指定的
   // 声部音色，否则用户以为音色没生效（0.3.8 修，用户实测）。解码失败回落钢琴。
-  if (patch !== undefined && patch > 0 && !instrumentSampleFor(patch, at) && !isInstrumentLoaded(patch)) {
+  if (patch !== undefined && !instrumentSampleFor(patch, at) && !isInstrumentLoaded(patch)) {
     void loadInstrumentSamples(patch)
       .catch(() => false)
       .then(() => {

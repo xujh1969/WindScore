@@ -116,6 +116,30 @@ export function toMidi(
  */
 export type TimelineIdFlavor = 'source' | 'own';
 
+/**
+ * 谱中换音色点（小节线「音5」）：fromTick 起本声部改用此音色。
+ * tick 口径与 tickAtEvent 相同：只有 note / rest 占时值。
+ */
+function patchChangesOf(events: ScoreEvent[]): { fromTick: number; patch: number }[] {
+  const out: { fromTick: number; patch: number }[] = [];
+  let tick = 0;
+  for (const ev of events) {
+    if (ev.kind === 'barline' && typeof ev.patchAfter === 'number') out.push({ fromTick: tick, patch: ev.patchAfter });
+    if (ev.kind === 'note' || ev.kind === 'rest') tick += ev.ticks;
+  }
+  return out;
+}
+
+/** tick 处生效的谱中音色覆盖（没有则 undefined，沿用谱头 / 声部设置） */
+function patchAt(changes: { fromTick: number; patch: number }[], tick: number): number | undefined {
+  let patch: number | undefined;
+  for (const c of changes) {
+    if (c.fromTick > tick) break;
+    patch = c.patch;
+  }
+  return patch;
+}
+
 export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; mergeTies?: boolean } = {}): TimelineEntry[] {
   if (score.part || score.parts?.length) {
     const parts = scoreParts(score);
@@ -124,11 +148,12 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       const single = partScore(score, part.id);
       const { part: _part, ...plain } = single;
       const gain = part.muted || (solo && !part.solo) ? 0 : part.gain / Math.max(1, Math.sqrt(parts.length));
+      const changes = patchChangesOf(plain.events ?? []);
       return buildTimeline(plain, opts).map((e) => ({
         ...e,
         partId: part.id,
         gain,
-        patch: part.patch ?? score.meta.patch,
+        patch: patchAt(changes, e.startTick) ?? part.patch ?? score.meta.patch,
         patchOctave: part.patchOctave ?? score.meta.patchOctave,
       }));
     }).sort((a, b) => a.startTick - b.startTick || a.endTick - b.endTick);
@@ -301,10 +326,11 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     chainMainIdx = out.length - 1;
   }
 
-  // 单声部：音色跟曲目设置走（多声部已在上面按声部附好各自的 patch）
+  // 单声部：音色跟曲目设置走（小节线「音5」从那根线之后覆盖；多声部已在上面按声部附好各自的 patch）
+  const changes = patchChangesOf(score.events);
   return out.sort((a, b) => a.startTick - b.startTick).map((e) => ({
     ...e,
-    patch: score.meta.patch,
+    patch: patchAt(changes, e.startTick) ?? score.meta.patch,
     patchOctave: score.meta.patchOctave,
   }));
 }

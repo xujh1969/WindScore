@@ -93,7 +93,7 @@ import {
 } from '../timeline';
 import { previewNote, disposePreview } from '../notePreview';
 import type { Accidental, BarlineEvent, BeatGroup, Degree, Event, JumpMark, Score } from '../types';
-import { beatToSec, secToBeat, constantTempo, curveFromAnchors, scaleTempo as scaleTempoMap, secToTick, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
+import { beatToSec, secToBeat, constantTempo, curveFromAnchors, scaleTempo as scaleTempoMap, secToTick, tempoCurveFromScore, tempoFromAlign, tickToSec, type Anchor, type TempoMap } from '../tempo';
 import { detectVocalEntry, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
@@ -129,6 +129,7 @@ import {
 } from '../metronome';
 import { MetronomePanel } from './MetronomePanel';
 import { PlayTimbreDialog } from './PlayTimbreDialog';
+import { AndroidTimbreDialog } from './AndroidTimbreDialog';
 import { applyTimbre, readTimbreMap, writeTimbre, type PlayTimbre } from './playTimbre';
 import { CustomGroupDialog } from './CustomGroupDialog';
 import { PadBody } from './PadBody';
@@ -328,6 +329,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const androidAlive = useRef(true);
   const [androidNarrow, setAndroidNarrow] = useState(() => window.innerWidth < 760);
   const [androidPartPick, setAndroidPartPick] = useState<string | null>(null);
+  /** 安卓播放设置里的「合成音音色」弹窗（数据与 PC 版共用 playTimbre） */
+  const [anTimbreOpen, setAnTimbreOpen] = useState(false);
   useEffect(() => {
     if (!androidPlayer) return;
     const media = matchMedia('(max-width: 759px)');
@@ -1699,6 +1702,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const playScore = expansion.score ?? timbreScore;
   const timeline = useMemo(() => buildTimeline(playScore), [playScore]);
   /**
+   * 谱中变速曲线（小节线「速96」）：合成音播放 / 导出 / 节拍器的 tick ↔ 秒 都走它。
+   * **伴奏不受影响**——伴奏的换算走 audioTempo（对轨标定），两条链完全独立。
+   * 以**展开谱**为准：反复段里标的速同样生效。没有变速段 = null，一切照旧。
+   */
+  const synthTempo = useMemo(
+    () => tempoCurveFromScore(playScore.events, score.meta.bpm, timelineTicks(timeline) / TICKS_PER_BEAT),
+    [playScore, score.meta.bpm, timeline],
+  );
+  /**
    * 节拍器的强弱按**谱面拍号段**走：曲头拍号定基调，小节线上标了新拍号
    * （DSL「拍3/4」）就从那根线起换——2/4、3/4、4/4 各按各的小节响重音。
    * 从展开谱取：反复段里的换拍同样生效。
@@ -1768,9 +1780,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       const pattern = patternFor(metronomePatternId);
       const fromBeat = fromTick / TICKS_PER_BEAT;
       const bpmEff = score.meta.bpm * speed;
+      // 谱中变速：拍点秒走同一条曲线（倍速已缩放），起播拍之前的秒差做锚。
+      // 伴奏模式绝不使用（它的秒走对轨标定）——节拍器本来只在合成音场景出现，双保险。
+      const map = playSource !== 'audio' && synthTempo ? (speed === 1 ? synthTempo : scaleTempoMap(synthTempo, speed)) : null;
+      const anchorSec = map ? tickToSec(map, fromTick) : 0;
       m.start(
         {
-          beatToSec: (b) => (b - fromBeat) * (60 / bpmEff),
+          beatToSec: (b) => (map ? tickToSec(map, b * TICKS_PER_BEAT) - anchorSec : (b - fromBeat) * (60 / bpmEff)),
           meterAt: metronomeMeter,
           pattern,
           volume: metronomeVolume,
@@ -1779,7 +1795,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         delaySec,
       );
     },
-    [metronomeFollow, metronomeMeter, metronomePatternId, metronomeVolume, score.meta.bpm, speed],
+    [metronomeFollow, metronomeMeter, metronomePatternId, metronomeVolume, score.meta.bpm, speed, synthTempo, playSource],
   );
 
   /** 与音乐起播对齐用的 lead（秒）：startPlayNow 存进来，effect 起播时用掉 */
@@ -1858,14 +1874,19 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     }
     // 先起音频、拿到它真正发声的时刻，再让时钟对齐到那个时刻起跑。
     // 顺序不能反：AudioContext 初始化有耗时，时钟先跑就会跑到声音前面。
-    const lead = playerRef.current.start(timeline, bpm * speed, from, transpose);
+    // 谱中变速（小节线「速96」）→ 合成音按曲线算秒（倍速整体缩放，与伴奏同款）；
+    // 指示条读 player.currentTick（tempo 驱动），时钟仅在停止后兜底显示。
+    const playSynthTempo = synthTempo ? (speed === 1 ? synthTempo : scaleTempoMap(synthTempo, speed)) : null;
+    const lead = playSynthTempo
+      ? playerRef.current.start(timeline, playSynthTempo, from, transpose)
+      : playerRef.current.start(timeline, bpm * speed, from, transpose);
     clockRef.current.setBpm(bpm * speed);
     clockRef.current.seek(from / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
     // 起播对齐走 effect（那里读 lead）；这里只把 lead 带过去
     metronomeLeadRef.current = lead;
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed, synthTempo]);
 
   // 播放停止 → 节拍器跟着停
   useEffect(() => {
@@ -2375,17 +2396,25 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   );
 
   /**
-   * 输入试听用的音色：当前编辑声部的音色（声部未设置则跟曲目）。
+   * 输入 / 点音试听用的音色：**该位置生效的音色**——声部（或曲目）设置打底，
+   * 小节线「音N」从那根线之后覆盖（与 buildTimeline 的 patchChangesOf 同口径：
+   * 只数该声部事件流里排在目标位置之前的 barline，点音 N = 第 index 个音，
+   * 输入试听 = 光标处）。
    * **必须走 scoreParts()**：第一声部存在 `score.part` 而不是 `parts` 数组里——
    * 之前只查 parts，给第一声部（含单声部谱）配置的音色在点音试听时根本读不到，
    * 永远回落曲目音色（0.3.8 修，用户实测「点音符还是别的音色」）。
    * 真采样没解码时 notePreview 会先拉懒加载再用真音色补声，无需 await。
    */
-  const previewPatch = useMemo(() => {
+  const effectivePatchAt = useCallback((index: number): number => {
     const p = scoreParts(documentScore).find((x) => x.id === activePartId);
-    if (p?.patch !== undefined) return p.patch;
-    return documentScore.meta.patch;
-  }, [documentScore, activePartId]);
+    let patch = p?.patch ?? documentScore.meta.patch;
+    const n = Math.min(Math.max(index, 0), score.events.length);
+    for (let i = 0; i < n; i++) {
+      const e = score.events[i]!;
+      if (e.kind === 'barline' && typeof e.patchAfter === 'number') patch = e.patchAfter;
+    }
+    return patch;
+  }, [documentScore, activePartId, score]);
 
   /** 输入试听用的音色八度（与音色同源：声部未设置则跟曲目） */
   const previewOctave = useMemo(() => {
@@ -2430,7 +2459,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             const e = score.events[i]!;
             if (e.kind === 'note' && e.keyChange) key = e.keyChange;
           }
-          previewNote(toMidi(ev.degree, ev.octave, key, ev.accidental), 0.28, previewPatch, previewOctave);
+          previewNote(toMidi(ev.degree, ev.octave, key, ev.accidental), 0.28, effectivePatchAt(a.index), previewOctave);
         }
       }
       // 拖选（框选一段）**不发声**：0.2.182 试过「新选中的音依次响」，
@@ -2447,7 +2476,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         return { ...s, partId: a.partId ?? activePartId, cursor: a.cursor, anchor: null, mode: a.mode };
       });
     },
-    [bindPick, wavePos, activePartId, score, previewPatch, previewOctave],
+    [bindPick, wavePos, activePartId, score, effectivePatchAt, previewOctave],
   );
 
   /**
@@ -2566,19 +2595,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    */
   const previewInput = useCallback(
     (degree: number, octave = 0, accidental?: Accidental) => {
-      previewNote(toMidi(degree, octave, score.meta.key, accidental), 0.28, previewPatch, previewOctave);
+      previewNote(toMidi(degree, octave, score.meta.key, accidental), 0.28, effectivePatchAt(snap.cursor), previewOctave);
     },
-    [score.meta.key, previewPatch, previewOctave],
+    [score.meta.key, snap.cursor, effectivePatchAt, previewOctave],
   );
   /** 替换左侧音的音级时沿用它的八度 / 变音（octaveOverride 给八度按钮覆盖） */
   const previewReplace = useCallback(
     (id: string, degree: number, octaveOverride?: number) => {
       const e = score.events.find((x) => x.id === id);
       if (e && e.kind === 'note') {
-        previewNote(toMidi(degree, octaveOverride ?? e.octave, score.meta.key, e.accidental), 0.28, previewPatch, previewOctave);
+        const idx = score.events.findIndex((x) => x.id === id);
+        previewNote(toMidi(degree, octaveOverride ?? e.octave, score.meta.key, e.accidental), 0.28, effectivePatchAt(idx), previewOctave);
       }
     },
-    [score, previewPatch, previewOctave],
+    [score, effectivePatchAt, previewOctave],
   );
 
   /**
@@ -2950,6 +2980,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         if (!barlineFocus) return;
         setScore(setBarNotation(score, barlineFocus.id, { breakAfter: v }));
       },
+      setBpmAfter: (v?: number) => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { bpmAfter: v }));
+      },
+      setPatchAfter: (v?: number) => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { patchAfter: v }));
+      },
       setRepeat,
       setRepeatTimes: (n: number) => {
         if (!barlineFocus) return;
@@ -3317,10 +3355,17 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    */
   if (androidPlayer) {
     const totalTicks = timelineTicks(timeline);
-    const secondsAt = (tick: number) => playSource === 'audio' && audioTempo ? tickToSec(audioTempo, tick) / speed : tick / TICKS_PER_BEAT * 60 / (score.meta.bpm * speed);
+    // 合成音的秒换算：谱中变速走曲线（倍速缩放），恒定速度照旧线性
+    const synthTempoEff = synthTempo ? (speed === 1 ? synthTempo : scaleTempoMap(synthTempo, speed)) : null;
+    const secondsAt = (tick: number) =>
+      playSource === 'audio' && audioTempo ? tickToSec(audioTempo, tick) / speed
+      : synthTempoEff ? tickToSec(synthTempoEff, tick) / speed
+      : tick / TICKS_PER_BEAT * 60 / (score.meta.bpm * speed);
     const duration = playSource === 'audio' && stems.length ? Math.max(...stems.map(s => s.buffer.duration)) / speed : secondsAt(totalTicks);
     const seekAndroid = (seconds: number) => {
-      const tick = playSource === 'audio' && audioTempo ? secToTick(audioTempo, seconds * speed) : seconds * score.meta.bpm * speed / 60 * TICKS_PER_BEAT;
+      const tick = playSource === 'audio' && audioTempo ? secToTick(audioTempo, seconds * speed)
+        : synthTempoEff ? secToTick(synthTempoEff, seconds * speed)
+        : seconds * score.meta.bpm * speed / 60 * TICKS_PER_BEAT;
       const resume = playing;
       stopPlay(); androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
       if (resume) startPlay(tick);
@@ -3352,6 +3397,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       onMetronomeTest={() => metronomeRef.current?.clickOnce(true)}
       scoreBeat={score.meta.beat}
       metronomeBpm={Math.round(score.meta.bpm * speed * 100) / 100}
+      timbreLabel={playTimbre ? `已设 ${Object.keys(playTimbre.parts ?? {}).length} 个声部` : '跟随谱面'}
+      onOpenTimbre={() => setAnTimbreOpen(true)}
       message={msg.includes('失败') ? msg : undefined}
       renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
         unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} responsive
@@ -3372,7 +3419,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         }}
         onEnded={onAndroidScoreEnded}
       />}
-    /></div>;
+    />
+    {/* 安卓播放设置 → 合成音音色：数据与 PC 版共用（按曲名记），播放中改动先停再生效 */}
+      {anTimbreOpen ? <AndroidTimbreDialog
+        score={timbreScore}
+        timbre={playTimbre}
+        onChange={(t) => { if (playing) stopPlay(); setPlayTimbre(t); }}
+        onClose={() => setAnTimbreOpen(false)} /> : null}
+    </div>;
   }
   return (
     <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry={entry}>
@@ -3977,6 +4031,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             fromTick: 0,
             bpm: score.meta.bpm,
             tempo: audioTempo,
+            synthTempo,
             stems: stems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
             measureTicks,
           }}
@@ -4537,12 +4592,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 label="音色"
                 value={String(score.meta.patch)}
                 options={[
-                  '钢琴',
+                  // 0 号被包覆盖（如 GM 包的三角钢琴）时跟包走，不重复列「钢琴（合成）」
+                  ...(instrumentPatches().includes(0) ? [] : ['钢琴（合成）']),
                   ...instrumentPatches().map(
                     (p) => `${instrumentLabel(p) ?? p}（真采样 · ${instrumentSource(p)}）`,
                   ),
                 ]}
-                values={['0', ...instrumentPatches().map(String)]}
+                values={[...(instrumentPatches().includes(0) ? [] : ['0']), ...instrumentPatches().map(String)]}
                 onCommit={(v) => setScore(setMeta(score, { patch: Number(v) }))}
               />
               <MetaSelect

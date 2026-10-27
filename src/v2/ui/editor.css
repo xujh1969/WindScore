@@ -1637,6 +1637,38 @@ details.v2-side-block[open] > summary::before {
   border-color: var(--accent);
 }
 
+/* 浮动板里的元信息控件占满整行：.v2-field 不是 flex 容器，
+   v2-meta-input 的 flex:1 不生效，number input 只剩默认 ~170px，
+   占位文字「沿用之前的速度」被裁掉（0.4.9 实测） */
+.v2-pad-body .v2-meta-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 谱中变速输入（0.4.9）：整行宽、去数字步进箭头（占位文字要完整可见） */
+.v2-bpm-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-ui);
+}
+.v2-bpm-input::-webkit-outer-spin-button,
+.v2-bpm-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.v2-bpm-input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 @media (max-width: 900px) {
   .v2-body {
     grid-template-columns: minmax(0, 1fr);

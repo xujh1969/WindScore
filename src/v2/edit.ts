@@ -222,7 +222,7 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   if ('bpm' in patch && (!Number.isFinite(next.bpm) || next.bpm <= 0)) return score;
   if (
     'patch' in patch &&
-    (!Number.isInteger(next.patch) || next.patch < 0 || next.patch > 127)
+    (!Number.isInteger(next.patch) || next.patch < 0 || next.patch > 255)
   ) {
     return score;
   }
@@ -810,7 +810,7 @@ export function setHairpinRange(score: Score, ids: string[], kind?: 'cresc' | 'd
   return { ...score, format: 3, events };
 }
 
-export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter'>): Score {
+export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter'>): Score {
   return { ...score, format: 3, events: score.events.map((e) => e.id === id && e.kind === 'barline' ? { ...e, ...change } : e) };
 }
 

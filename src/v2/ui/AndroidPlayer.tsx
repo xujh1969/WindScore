@@ -13,8 +13,9 @@ import type { StaffPitchMode } from '../pitch';
  *    label 转发给关联控件（触发按钮），刚收起又立刻弹开。设置行一律用 <div>。
  * ② 选项卡/选项的点击仍保留 preventDefault + stopPropagation 双保险，任何一层
  *    转发/冒泡机制都吃不到这次点击；选项缝隙的点击冒泡到选项卡统一收起。
+ * 导出给同为安卓风格的弹窗复用（如合成音音色 AndroidTimbreDialog）。
  */
-function AndroidSelect({ value, options, onChange, disabled, label }: {
+export function AndroidSelect({ value, options, onChange, disabled, label }: {
   value: string;
   options: { value: string; label: string; disabled?: boolean }[];
   onChange: (value: string) => void;
@@ -87,6 +88,8 @@ interface Props {
   /** 谱面拍号与速度（跟随模式下强弱与速度按它们来，节拍器不自己定） */
   scoreBeat: string;
   metronomeBpm: number;
+  /** 合成音音色：行值文案与打开弹窗（仅合成音场景显示，undefined = 整个入口不出现） */
+  timbreLabel: string; onOpenTimbre?: () => void;
   message?: string;
 }
 function time(value: number) { const seconds = Math.max(0, Math.floor(value)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
@@ -163,6 +166,10 @@ export function AndroidPlayer(p: Props) {
         <p className="an-setting-hint">练习时关掉人声只留伴奏；切换即时生效，不用重播。</p>
       </section>}
       <section className="an-settings-section"><h3>阅读显示</h3><label className="an-setting an-range-setting"><span>字体大小 <output>{p.font}px</output></span><input aria-label="字体大小" type="range" min="14" max="42" value={p.font} onChange={e => p.onFont(Number(e.target.value))}/></label><label className="an-setting an-range-setting"><span>字间距 <output>{p.gap}px</output></span><input aria-label="字间距" type="range" min="-20" max="24" value={p.gap} onChange={e => p.onGap(Number(e.target.value))}/></label><label className="an-setting an-range-setting"><span>行间距 <output>{p.lineGap}px</output></span><input aria-label="行间距" type="range" min="0" max="48" value={p.lineGap} onChange={e => p.onLineGap(Number(e.target.value))}/></label><div className="an-setting"><span>光标类型</span><AndroidSelect label="光标类型" value={p.style} onChange={v => p.onStyle(v as PlayStyle)} options={[{ value: 'head', label: '光标' }, { value: 'band', label: '高亮条' }, { value: 'ball', label: '光球' }]} /></div><p className="an-setting-hint">双指调整字号，自动按屏宽排版；双击恢复原字号。行间距拉开谱行，长谱可少翻一些。</p></section>
+      {p.source === 'synth' && p.onOpenTimbre ? <section className="an-settings-section"><h3>合成音音色</h3>
+        <div className="an-setting"><span>每声部音色</span><button type="button" className="an-select" onClick={p.onOpenTimbre} title="打开音色选择弹窗">{p.timbreLabel} ›</button></div>
+        <p className="an-setting-hint">按声部选合成音用哪种乐器（钢琴、音色包里的音色…），不改谱面，按这首曲子记住。</p>
+      </section> : null}
       {p.source === 'synth' ? <section className="an-settings-section"><h3>节拍器</h3>
         <label className="an-setting"><span>跟着谱面打拍</span><input type="checkbox" checked={p.metronomeFollow} onChange={e => p.onMetronomeFollow(e.target.checked)}/></label>
         <div className="an-setting"><span>节奏型</span><AndroidSelect label="节奏型" value={p.metronomePattern} onChange={p.onMetronomePattern} options={METRONOME_PATTERNS.map(m => ({ value: m.id, label: m.label }))} /></div>

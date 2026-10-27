@@ -168,12 +168,18 @@ export function recordSeconds(opts: {
   toTick?: number;
   bpm: number;
   tempo: TempoMap | null;
+  /** 合成音导出的谱中变速曲线（小节线「速96」）；给了就按曲线算时长 */
+  synthTempo?: TempoMap | null;
   stems: AudioStem[];
   audio: "stems" | "synth" | "none";
 }): number {
   const tps = (opts.bpm / 60) * TICKS_PER_BEAT;
   const endTick = Math.max(opts.fromTick + 1, opts.toTick ?? timelineTicks(opts.timeline));
   const scoreSec = Math.max(0.1, (endTick - opts.fromTick) / tps);
+  if (opts.audio === "synth" && opts.synthTempo) {
+    const startSec = tickToSec(opts.synthTempo, opts.fromTick);
+    return Math.max(0.1, tickToSec(opts.synthTempo, endTick) - startSec) + 0.4;
+  }
   if (opts.audio === "stems" && opts.tempo && opts.stems.length > 0) {
     const startSec = tickToSec(opts.tempo, opts.fromTick);
     const audioEnd = Math.min(...opts.stems.map((s) => s.buffer.duration));

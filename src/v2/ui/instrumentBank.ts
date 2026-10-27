@@ -82,7 +82,7 @@ export function parseBank(bytes: Uint8Array): { manifest: BankManifest; entries:
   if (!Array.isArray(manifest.instruments) || manifest.instruments.length === 0) throw new Error('音色包里没有音色');
   if (manifest.instruments.length > 128) throw new Error('音色包里的音色超过 128 件');
   for (const inst of manifest.instruments) {
-    if (typeof inst?.patch !== 'number' || inst.patch < 0 || inst.patch > 127) throw new Error('音色包里有非法的音色号（应为 0-127）');
+    if (typeof inst?.patch !== 'number' || !Number.isInteger(inst.patch) || inst.patch < 0 || inst.patch > 255) throw new Error('音色包里有非法的音色号（应为 0-255 的整数）');
     if (!entries.has(inst.mp3) || !entries.has(inst.json)) throw new Error(`音色包里缺 ${inst.mp3} 或 ${inst.json}`);
   }
   return { manifest: manifest as BankManifest, entries };

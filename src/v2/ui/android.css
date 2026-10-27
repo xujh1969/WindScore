@@ -213,6 +213,8 @@ body[data-entry='android'] { overflow: hidden; overscroll-behavior: none; }
 .an-select-option.is-on { color: var(--an-accent); font-weight: 600; background: var(--an-accent-soft); }
 .an-select-option:disabled { opacity: .45; }
 .an-setting input[type='checkbox'] { width: 22px; height: 22px; margin: 11px; }
+/* 合成音音色弹窗：每声部「音色 + 八度」两行成组，组间用分隔线区分 */
+.an-timbre-group + .an-timbre-group { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--an-line); }
 .an-range-setting { flex-direction: column; align-items: stretch; gap: 4px; padding: 10px 0; }
 .an-range-setting > span { display: flex; justify-content: space-between; }
 .an-range-setting output { color: var(--an-muted); font-variant-numeric: tabular-nums; }

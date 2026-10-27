@@ -100,6 +100,10 @@ export interface PlacedItem {
   double?: boolean;
   partial?: boolean;
   beatAfter?: string;
+  /** 谱中变速（小节线「速96」）：画在小节线上方的 ♩=96 标注 */
+  bpmAfter?: number;
+  /** 谱中换音色（小节线「音5」）：画在小节线上方的 音色=5 标注 */
+  patchAfter?: number;
   breakAfter?: 'line' | 'page';
   /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
   hidden?: boolean;
@@ -1018,6 +1022,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           ...(bar.hidden ? { hidden: true } : {}),
           ...(bar.partial ? { partial: true } : {}),
           ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
+          ...(bar.bpmAfter !== undefined ? { bpmAfter: bar.bpmAfter } : {}),
+          ...(bar.patchAfter !== undefined ? { patchAfter: bar.patchAfter } : {}),
           ...(bar.breakAfter ? { breakAfter: bar.breakAfter } : {}),
           ...(bar.repeat ? { repeat: bar.repeat } : {}),
           ...(bar.repeat === 'end' && bar.times ? { repeatTimes: bar.times } : {}),

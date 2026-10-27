@@ -28,6 +28,7 @@ import {
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
 import { assembleParts, namespacePart, partScore, scoreParts } from '../src/v2/parts';
+import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
 import { groupTicks, groupTierBeats } from '../src/v2/meter';
 import {
   applyTier as applyTierOp,
@@ -133,6 +134,7 @@ import {
   expandBeatTimes,
   secToBeat,
   secToTick,
+  tempoCurveFromScore,
   tempoFromAlign,
   tickToSec,
   type TempoMap,
@@ -1009,7 +1011,8 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
 
   check('bpm 为 0 被拒', setMeta(s, { bpm: 0 }).meta.bpm === 90);
   check('bpm 为 NaN 被拒', setMeta(s, { bpm: Number('x') }).meta.bpm === 90);
-  check('音色越界被拒', setMeta(s, { patch: 200 }).meta.patch === 73);
+  check('音色越界被拒', setMeta(s, { patch: 300 }).meta.patch === 73);
+  check('扩展音色号可用', setMeta(s, { patch: 200 }).meta.patch === 200);
   check('音色小数被拒', setMeta(s, { patch: 1.5 }).meta.patch === 73);
   check('拍号非 N/M 被拒', setMeta(s, { beat: '四四拍' }).meta.beat === '4/4');
   check('被拒时原样返回同一引用', setMeta(s, { bpm: -1 }) === s);
@@ -4136,6 +4139,196 @@ console.log('\n[文字标注（段落 (文字) 的编辑器操作）]');
   check('三连竖线 ||| 也算双细线', (parseDsl('@format 3\n1 2 |||').score!.events.find((e) => e.kind === 'barline') as BarlineEvent).style === 'double');
   const fin = parseDsl('@format 3\n1 2 ||').score!;
   check('|| 仍是终止线（老谱不变）', (fin.events.find((e) => e.kind === 'barline') as BarlineEvent).style === 'final');
+}
+
+{
+  // ── 合成音色：扩展音色号（0.4.8） ──
+  // GM 0-127 没有中国乐器；128-255 留给音色包自定义（民族乐器用），名字跟包内的 label
+  {
+    const r = parseDsl('@bpm 80\n@beat 4/4\n@patch 200\n| 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    check('谱头 @patch 200（扩展音色号）可解析', (r.errors ?? []).length === 0 && r.score!.meta.patch === 200, JSON.stringify(r.errors ?? []));
+  }
+  {
+    const r = parseDsl('@bpm 80\n@beat 4/4\n@patch 300\n| 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    check('@patch 300（越界）被拒', (r.errors ?? []).length > 0 && r.score!.meta.patch !== 300, JSON.stringify(r.errors ?? []));
+  }
+  {
+    const r = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n@part 1 "主旋律"\n@patch 150\n| 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    const parts = scoreParts(r.score!);
+    check('声部级 @patch 150（扩展音色号）可解析', (r.errors ?? []).length === 0 && parts[0]?.patch === 150, JSON.stringify(r.errors ?? []));
+  }
+}
+
+{
+  // ── 谱中变速与换音色（0.4.9）：小节线「速96」「音5」，只影响合成音 ──
+  {
+    const r = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n| 速96 1 1 1 | 音5 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    check('速96 / 音5 解析无错', (r.errors ?? []).length === 0, JSON.stringify(r.errors ?? []));
+    const bars = (r.score!.events.filter((e) => e.kind === 'barline') as BarlineEvent[]);
+    check('第一根线带 bpmAfter=96', bars[0]?.bpmAfter === 96);
+    check('第二根线带 patchAfter=5', bars[1]?.patchAfter === 5);
+    const text = serializeDsl(r.score!);
+    check('速96 往返写回', text.includes('速96'), text);
+    check('音5 往返写回', text.includes('音5'), text);
+  }
+  {
+    // 非法值被拒
+    const r1 = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n| 速10 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    check('速10（低于 20）被拒', (r1.errors ?? []).length > 0);
+    const r2 = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n| 音999 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    check('音999（高于 255）被拒', (r2.errors ?? []).length > 0);
+  }
+  {
+    // 变速曲线：80 BPM 两拍后切 160 BPM，节距从 0.75s 变 0.375s
+    const curve = tempoCurveFromScore(
+      [
+        { kind: 'note', ticks: TICKS_PER_BEAT } as never,
+        { kind: 'note', ticks: TICKS_PER_BEAT } as never,
+        { kind: 'barline', bpmAfter: 160 } as never,
+        { kind: 'note', ticks: TICKS_PER_BEAT } as never,
+        { kind: 'note', ticks: TICKS_PER_BEAT } as never,
+      ],
+      80,
+      4,
+    );
+    check('变速曲线产出', !!curve);
+    if (curve) {
+      check('第 0 拍在 0 秒', curve.beatTimes[0] === 0);
+      check('第 2 拍 = 2×0.75s（80 BPM 段）', Math.abs(curve.beatTimes[2] - 1.5) < 1e-9, String(curve.beatTimes[2]));
+      check('第 3 拍 = +0.375s（160 BPM 段）', Math.abs(curve.beatTimes[3] - 1.875) < 1e-9, String(curve.beatTimes[3]));
+      check('scoreOriginBeat = 0', curve.scoreOriginBeat === 0);
+    }
+    const none = tempoCurveFromScore([{ kind: 'note', ticks: TICKS_PER_BEAT } as never], 80, 1);
+    check('无变速段返回 null（恒定回退）', none === null);
+    const dirty = tempoCurveFromScore([{ kind: 'barline', bpmAfter: 0 } as never, { kind: 'note', ticks: TICKS_PER_BEAT } as never], 80, 1);
+    check('脏 bpm（0）回退恒定', dirty === null);
+  }
+  {
+    // buildTimeline：小节线「音5」之后的条目 patch=5；之前的跟谱头
+    const score = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n@patch 40\n| 1 1 1 1 | 音5 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    const tl = buildTimeline(score.score!);
+    const first = tl.find((e) => e.startTick < TICKS_PER_BEAT * 4)!;
+    const second = tl.find((e) => e.startTick >= TICKS_PER_BEAT * 4)!;
+    check('变音色前的条目 patch=40', first?.patch === 40, String(first?.patch));
+    check('变音色后的条目 patch=5', second?.patch === 5, String(second?.patch));
+    // 排版层要带上这两个字段，画谱才有「♩=96 · 音色=5」上方标注
+    const layScore = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n| 速96 1 1 1 | 音5 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    const lay = layoutScore(layScore.score!, { contentWidth: 1200 });
+    const bars = lay.lines.flatMap((l) => l.items).filter((it): it is PlacedItem => it.kind === 'barline');
+    check('排版条目带 bpmAfter（画 ♩=96）', bars.some((b) => b.bpmAfter === 96));
+    check('排版条目带 patchAfter（画 音色=5）', bars.some((b) => b.patchAfter === 5));
+  }
+}
+{
+  // ── 合成音色：采样循环段的平铺治理（0.4.7） ──
+  // 背景：MusyngKite 音色包的长音在每个循环周期（约 1 秒）回卷处有一记「断音」，
+  // 慢速长音（80BPM 的 3 拍）正好跨 2~3 次回卷，所以只在某些音、慢速时才出现。
+  const SR = 44100;
+  const makePoint = (start: number, loopStart: number, loopEnd: number) => ({ midi: 60, start, loopStart, loopEnd, length: loopEnd - start, gain: 1 });
+  /** 段尾 embodied 差sample 与段头差距 -> seamCost 应下降 */
+  {
+    const loopLen = SR; // 1 秒循环
+    const pcm = new Float32Array(2 * SR);
+    for (let i = 0; i < SR; i++) pcm[SR + i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR); // 循环段
+    for (let i = 0; i < SR; i++) pcm[i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR); // 前导（起音）
+    pcm[2 * SR - 1] = 0.35; // 人为制造回卷断层
+    const point = makePoint(0, SR, 2 * SR);
+    const before = Math.abs(pcm[point.loopStart] - pcm[point.loopEnd - 1]);
+    seamlessLoop(pcm, point, SR);
+    const after = Math.abs(pcm[point.loopStart] - pcm[point.loopEnd - 1]);
+    check('回卷断层被淡化掉', before > 0.3 && after < before * 0.2, `${before.toFixed(3)}→${after.toFixed(3)}`);
+  }
+  {
+    // 已经平滑的采样点不应被改坏（治理是守恒动作）
+    const loopLen = SR;
+    const pcm = new Float32Array(2 * SR);
+    for (let i = 0; i < 2 * SR; i++) pcm[i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    const point = makePoint(0, SR, 2 * SR);
+    const before = Math.abs(pcm[point.loopStart] - pcm[point.loopEnd - 1]);
+    seamlessLoop(pcm, point, SR);
+    const after = Math.abs(pcm[point.loopStart] - pcm[point.loopEnd - 1]);
+    check('已平滑的循环段不会被改坏', after <= Math.max(before * 1.5, 1e-3), `${before.toFixed(4)}→${after.toFixed(4)}`);
+  }
+  {
+    // 循环段内的周期性鼓包被压平（手风琴实测「中间突然增强」）：来回起伏，不是单向衰减
+    const pcm = new Float32Array(2 * SR);
+    for (let i = 0; i < SR; i++) {
+      const t = i / SR;
+      pcm[SR + i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR) * (1 + 0.7 * Math.sin(2 * Math.PI * 3 * t));
+    }
+    for (let i = 0; i < SR; i++) pcm[i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    const point = makePoint(0, SR, 2 * SR);
+    const ratio = (x: Float32Array): number => {
+      const win = Math.round(0.05 * SR);
+      const rms: number[] = [];
+      for (let s = SR; s + win <= 2 * SR; s += win) {
+        let acc = 0;
+        for (let i = s; i < s + win; i++) acc += x[i] * x[i];
+        rms.push(Math.sqrt(acc / win));
+      }
+      return Math.max(...rms) / Math.max(1e-6, Math.min(...rms)); // 最响窗 / 最弱窗
+    };
+    const before = ratio(pcm);
+    steadySustain(pcm, point, SR);
+    const after = ratio(pcm);
+    check('循环段内的电平起伏被多轮整形压平', before > 3 && after < before * 0.6, `${before.toFixed(2)}→${after.toFixed(2)}`);
+    // 环形一致：两端更容易接回去
+    check('整形后循环两端仍然连续', Math.abs(pcm[point.loopStart] - pcm[point.loopEnd - 1]) < 0.05);
+  }
+  {
+    // 衰减型音色（钢琴 / 钟琴 / 马林巴…）的自然衰减不能当成起伏压平，
+    // 否则长音变成不衰减的风琴声 —— 实测 40 多个包里有十几个属于这类
+    const pcm = new Float32Array(2 * SR);
+    for (let i = 0; i < SR; i++) {
+      const t = i / SR;
+      pcm[SR + i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR) * Math.exp(-3 * t);
+    }
+    for (let i = 0; i < SR; i++) pcm[i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    const point = makePoint(0, SR, 2 * SR);
+    const snap = pcm.slice(SR, 2 * SR);
+    steadySustain(pcm, point, SR);
+    let diff = 0;
+    for (let i = 0; i < SR; i++) diff = Math.max(diff, Math.abs(pcm[SR + i] - snap[i]));
+    check('衰减型循环段保持自然衰减（不动）', diff < 1e-6, `最大改动 ${diff.toExponential(1)}`);
+  }
+  {
+    // 衰减型采样点渲染**不回卷**（0.4.12）：钢琴长音若按持续乐器平铺，
+    // 每个循环周期电平跳回循环头（实测 MusyngKite 钢琴 1s 循环头 0.042 / 尾 0.020），
+    // 听感是周期性「重新敲响」。衰减点应顺着读、循环段尽头快速淡出。
+    const pcm = new Float32Array(3 * SR);
+    for (let i = 0; i < SR; i++) pcm[i] = 0.3; // 起音段（占位）
+    for (let i = 0; i < 2 * SR; i++) {
+      const t = i / SR;
+      pcm[SR + i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR) * Math.exp(-3 * t); // 循环段单向衰减
+    }
+    const point = makePoint(0, SR, 3 * SR);
+    const out = renderSampledNote(pcm, point, 60, { sampleRate: SR, durationSec: 6 }); // 6s ≫ 循环段 2s
+    const winRms = (from: number, to: number): number => {
+      let acc = 0;
+      for (let i = from; i < to; i++) acc += out[i] * out[i];
+      return Math.sqrt(acc / Math.max(1, to - from));
+    };
+    const w1 = winRms(Math.round(1.2 * SR), Math.round(1.7 * SR)); // 循环头附近
+    const w2 = winRms(Math.round(2.2 * SR), Math.round(2.7 * SR)); // 回卷点之后（若回卷会重新变响）
+    const w3 = winRms(Math.round(4.5 * SR), Math.round(5.5 * SR)); // 循环段尽头之后（应已淡出）
+    check('衰减采样长音不回卷（不会周期性重新变响）', w2 < w1, `循环头后 ${w2.toFixed(4)} vs 循环头 ${w1.toFixed(4)}`);
+    check('衰减采样长音在循环段尽头后淡出', w3 < w2 * 0.2, `尽头后 ${w3.toFixed(4)}`);
+  }
+  {
+    // 持续型（来回起伏的循环段）仍照旧平铺：长音不会中途消失
+    const pcm = new Float32Array(3 * SR);
+    for (let i = 0; i < 3 * SR; i++) pcm[i] = 0.4 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    const point = makePoint(0, SR, 3 * SR);
+    const out = renderSampledNote(pcm, point, 60, { sampleRate: SR, durationSec: 6 });
+    const winRms = (from: number, to: number): number => {
+      let acc = 0;
+      for (let i = from; i < to; i++) acc += out[i] * out[i];
+      return Math.sqrt(acc / Math.max(1, to - from));
+    };
+    const w1 = winRms(Math.round(0.5 * SR), Math.round(1 * SR));
+    const w4 = winRms(Math.round(5 * SR), Math.round(5.5 * SR));
+    check('持续采样长音继续平铺（不提前淡出）', w4 > w1 * 0.5, `5s 处 ${w4.toFixed(4)} vs 0.5s 处 ${w1.toFixed(4)}`);
+  }
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

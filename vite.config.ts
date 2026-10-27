@@ -16,6 +16,12 @@ function versionInject(): Plugin {
 export default defineConfig(({ mode }) => ({
   base: mode === 'android' ? './' : '/',
   plugins: [react(), versionInject()],
+  define: {
+    // 采样资源的缓存版本号：piano-samples / instrument-samples 这类**文件名固定**的
+    // public 资源随包更新时，浏览器启发式缓存可能留下新旧错配（json 新 mp3 旧之类），
+    // 偏移表与音频错位 = 特定音区的音整体变调。URL 带上版本参数强制刷新。
+    __WS_VERSION__: JSON.stringify(pkg.version),
+  },
   clearScreen: false,
   server: {
     port: 5173,

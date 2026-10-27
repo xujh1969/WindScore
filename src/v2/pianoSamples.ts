@@ -32,6 +32,43 @@ interface SamplesManifest {
 let registry: PianoSample[] = [];
 let loading: Promise<boolean> | null = null;
 
+/** 采样资源的缓存版本号（vite define 注入；node 测试环境无此常量 → 空串） */
+declare const __WS_VERSION__: string | undefined;
+function cacheBust(url: string): string {
+  const v = typeof __WS_VERSION__ !== 'undefined' ? __WS_VERSION__ : '';
+  return v ? `${url}?v=${v}` : url;
+}
+
+/**
+ * 解码后音高自检：抽一个中音区采样点测主频，偏差超过 ±60 音分判定
+ * 「偏移表与音频错配」（典型原因：HTTP 缓存留下了新旧版本的 json / mp3 组合）。
+ * 错配的采样会**整体变调**（0.4.13 用户实测「换到钢琴音色就变调」），
+ * 此时宁可不装采样回纯合成（频率精确），绝不能带着错位采样出声。
+ */
+function verifySamplePitch(pcm: Float32Array, sr: number, notes: { midi: number; start: number; len: number }[]): boolean {
+  const probe = notes.find((n) => n.midi === 69) ?? notes.find((n) => n.midi >= 57 && n.midi <= 72);
+  if (!probe) return true;
+  const from = probe.start + Math.round(0.3 * sr);
+  const to = Math.min(probe.start + Math.round(1.0 * sr), pcm.length);
+  if (to - from < 4096) return true; // 段太短没法测，放行
+  const seg = pcm.subarray(from, to);
+  const expect = 440 * 2 ** ((probe.midi - 69) / 12);
+  const mag = (freq: number): number => {
+    const w = (2 * Math.PI * freq) / sr;
+    const cw = 2 * Math.cos(w);
+    let s0 = 0, s1 = 0, s2 = 0;
+    for (let i = 0; i < seg.length; i++) { s0 = seg[i] + cw * s1 - s2; s2 = s1; s1 = s0; }
+    return Math.sqrt(s1 * s1 + s2 * s2 - cw * s1 * s2) / seg.length;
+  };
+  let best = 0;
+  for (let c = -300; c <= 300; c += 10) {
+    const m = mag(expect * 2 ** (c / 1200));
+    if (m > best) best = m;
+  }
+  const at0 = mag(expect);
+  return at0 >= best * 0.6; // 主频就在基频附近（±60 音分内）才算对齐
+}
+
 /** 测试用：直接注入采样表（node 测试不经过 fetch / decodeAudioData） */
 export function setPianoSamplesForTest(notes: PianoSample[]): void {
   registry = notes;
@@ -70,13 +107,19 @@ export function loadPianoSamples(
     loading = (async () => {
       const ctx = decodeContext();
       if (!ctx) return false;
-      const [mp3Buf, jsonRes] = await Promise.all([fetch(mp3Url), fetch(jsonUrl)]);
+      const [mp3Buf, jsonRes] = await Promise.all([fetch(cacheBust(mp3Url)), fetch(cacheBust(jsonUrl))]);
       if (!mp3Buf.ok || !jsonRes.ok) return false;
       const manifest = JSON.parse(await jsonRes.text()) as SamplesManifest;
       const decoded = await ctx.decodeAudioData(await mp3Buf.arrayBuffer());
       const ch = decoded.getChannelData(0);
       // decodeAudioData 自动重采样到上下文采样率：清单里的偏移按比例换算
       const ratio = decoded.sampleRate / manifest.sr;
+      // 音高自检：偏移表与音频错配（典型是 HTTP 缓存留了新旧组合）会整体变调，
+      // 不装采样回纯合成，绝不带着错位出声
+      if (!verifySamplePitch(ch, decoded.sampleRate, manifest.notes)) {
+        if (typeof console !== 'undefined') console.warn('[WindScore] 钢琴采样自检未通过（疑似缓存了新旧错配的资源），本次会话回退纯合成钢琴');
+        return false;
+      }
       registry = manifest.notes.map((n) => ({
         midi: n.midi,
         sr: decoded.sampleRate,

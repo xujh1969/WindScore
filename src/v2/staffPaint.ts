@@ -14,6 +14,7 @@ import { paintLyricLines } from './lyricLines';
 import { paintStaffGrace } from './staffGracePaint';
 import { paintStaffMarks } from './staffMarks';
 import { TICKS_PER_BEAT } from './ticks';
+import { shortInstrumentLabel } from './instrumentSamples';
 import { paintStaffStructure } from './staffStructure';
 import { paintStaffSystems, type StaffLineStart } from './staffSystems';
 import {
@@ -509,4 +510,18 @@ function drawBarline(
   } else if (s.final) stroke(s.x - sp * .6, thin);
   else if (s.double) stroke(s.x - sp * .6, thin);
   ctx.restore();
+  // 谱中变速 / 换音色标注（0.4.10）：小节线上方「♩=96 · 小提琴」，
+  // muted 灰不抢音符的注意力；音色只写简略名，括号备注只留在下拉列表里
+  const labels: string[] = [];
+  if (s.bpmAfter !== undefined) labels.push(`♩=${s.bpmAfter}`);
+  if (s.patchAfter !== undefined) labels.push(shortInstrumentLabel(s.patchAfter) ?? `音色 ${s.patchAfter}`);
+  if (labels.length) {
+    ctx.save();
+    ctx.font = `600 ${Math.round(sp * 1.4)}px ${FAM}`;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(labels.join(' · '), s.x, y0 - sp * 1.4);
+    ctx.restore();
+  }
 }

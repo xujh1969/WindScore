@@ -15,10 +15,10 @@ import { A4_PT, buildPdf, type PdfImagePage, type PagePlan } from './pdf';
 import {
   exportLayout,
   exportTheme,
-  footerText,
   paintExportPage,
   planScorePages,
   prepareExportLayout,
+  regionHasInk,
   type ExportLayoutResult,
   type ExportNotation,
   type PageGeometry,
@@ -136,15 +136,30 @@ export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportR
   if (!ctx) throw new Error('拿不到 2D 画布');
 
   const pages: PdfImagePage[] = [];
+  // 编码副本固定走内存后备：个别显卡驱动对 GPU 画布的读回会丢瓦片（整页空白/断段）。
+  // 每页先在 GPU 画布上绘制（与界面同一渲染路径，好机器零变化），整页拷贝到副本再编码；
+  // 副本上做墨迹自检，空白就在副本上用 CPU 重画这一页，仍空白才报错。
+  const copy = document.createElement('canvas');
+  copy.width = canvas.width;
+  copy.height = canvas.height;
+  const copyCtx = copy.getContext('2d', { willReadFrequently: true });
+  if (!copyCtx) throw new Error('拿不到 2D 画布');
   for (let i = 0; i < plans.length; i += 1) {
     opts.onProgress?.(i / plans.length, `正在画第 ${i + 1} / ${plans.length} 页`);
+    const pageOpts = { showMeasureNumbers: opts.showMeasureNumbers ?? true };
     // 画布复用、排版只做一次：每页重画一遍即可
-    paintExportPage(ctx, layout, theme, plans[i]!, geo, {
-      footer: footerText(opts.name, i + 1, plans.length),
-      showMeasureNumbers: opts.showMeasureNumbers ?? true,
-    });
+    paintExportPage(ctx, layout, theme, plans[i]!, geo, pageOpts);
+    copyCtx.setTransform(1, 0, 0, 1, 0, 0);
+    copyCtx.clearRect(0, 0, copy.width, copy.height);
+    copyCtx.drawImage(canvas, 0, 0);
+    if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
+      paintExportPage(copyCtx, layout, theme, plans[i]!, geo, pageOpts);
+      if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
+        throw new Error(`第 ${i + 1} 页画不上内容，请改导出 SVG 或 PNG 长图，或更新显卡驱动后重试`);
+      }
+    }
     pages.push({
-      jpeg: await canvasToJpeg(canvas, opts.quality ?? 0.92),
+      jpeg: await canvasToJpeg(copy, opts.quality ?? 0.92),
       width: geo.pageW,
       height: geo.pageH,
     });

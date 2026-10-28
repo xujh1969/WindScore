@@ -64,6 +64,20 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
         }
       }}>
         <div className="v2-exp-head"><strong>已装音色包</strong><ExpClose onClose={onClose} /></div>
+        <input ref={fileRef} type="file" accept=".wsbank" multiple hidden onChange={(e) => {
+          void handleImport(e.target.files);
+          e.target.value = '';
+        }} />
+        <div className="v2-bank-toolbar">
+          <button className="v2-btn" disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? '导入中…' : '导入音色包…'}
+          </button>
+          <span className="v2-bank-toolbar-info">
+            {banks.length > 0
+              ? `已装 ${banks.length} 个包 · 共 ${(banks.reduce((acc, b) => acc + b.size, 0) / 1048576).toFixed(1)}MB`
+              : '支持 .wsbank 音色包'}
+          </span>
+        </div>
         <div className="v2-exp-body">
           {banks.length === 0 ? (
             <p className="v2-exp-hint">
@@ -90,15 +104,6 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
               </div>
             ))
           )}
-        </div>
-        <div className="v2-part-dialog-footer">
-          <input ref={fileRef} type="file" accept=".wsbank" multiple hidden onChange={(e) => {
-            void handleImport(e.target.files);
-            e.target.value = '';
-          }} />
-          <button className="v2-btn" disabled={busy} onClick={() => fileRef.current?.click()}>
-            {busy ? '导入中…' : '导入音色包…'}
-          </button>
         </div>
       </div>
     </div>

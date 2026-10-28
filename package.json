@@ -1,7 +1,7 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.4.13",
+  "version": "0.4.17",
   "type": "module",
   "scripts": {
     "dev": "vite",

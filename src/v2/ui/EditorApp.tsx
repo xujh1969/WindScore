@@ -117,7 +117,7 @@ import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
 import { loadPianoSamples } from '../pianoSamples';
 import { buildPack, PACK_EXT, packFileName, readPack } from './packBundle';
-import { updateLibraryItem, type LibraryItem } from './libraryStore';
+import { importLibrary, updateLibraryItem, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
@@ -1240,8 +1240,35 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       const tLib = performance.now() - t0;
       console.debug(`[save] 只写曲库 ${tLib.toFixed(0)}ms`, { libraryId, okLib });
       if (!okLib) {
-        setMsg('曲库里已没有这一条，保存失败');
-        toastFail('保存失败', '曲库里已没有这一条');
+        // 曲库里这一条已被删除（编辑期间在曲库把歌删了就会出现）：别把用户锁死——
+        // 解除曲库绑定，退回「存为文件」，并给一个一键重新收录的后悔药
+        const text = serializeDsl(cur);
+        setLibraryId(null);
+        setMsg('保存中…');
+        toastProgress('正在保存…', '曲库里已没有这一条，改为写入文件');
+        const r = await saveScore(cur, `${name}.jps`, fileHandle);
+        if (!r.ok) {
+          setMsg('保存取消');
+          toastInfo('保存已取消');
+          return;
+        }
+        if (r.handle) setFileHandle(r.handle);
+        if (r.path && !r.inPlace) setPath(r.path);
+        setSavedRev(snap.rev);
+        setMsg('已保存到文件（曲库里已没有这一条）');
+        toastOk('已保存到文件', '曲库里已没有这一条', {
+          label: '重新收录进曲库',
+          onClick: () => {
+            const item = importLibrary(name, text);
+            if (item) {
+              setLibraryId(item.id);
+              setMsg(`已重新收录进曲库「${name}」，之后再保存直接写回曲库`);
+              toastOk('已收录', `曲库「${name}」`);
+            } else {
+              toastFail('收录失败', '曲库写不进去，请检查存储位置');
+            }
+          },
+        });
         return;
       }
       setSavedRev(snap.rev);

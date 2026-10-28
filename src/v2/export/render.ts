@@ -154,6 +154,42 @@ export function footerText(songName: string, page: number, total: number): strin
   return `${songName || '未命名'}-${page}/${total}`;
 }
 
+function parseHex(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * 低成本的自检：把画布区域缩到 96px 宽的探针上，数与底色差得够远的像素。
+ * 谱面页/条永远该有墨（音符、小节线、页脚），探针上连 0.4% 墨都没有就是这块丢了。
+ * 个别显卡驱动会丢大画布的 GPU 回读瓦片（导出空白/断段），用它做「自检 + 降级」的判据；
+ * 空白检测场景下它是安全的（音高场景才要提防谐波误导）。
+ */
+export function regionHasInk(
+  source: HTMLCanvasElement,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  bg: string,
+): boolean {
+  const w = 96;
+  const h = Math.max(1, Math.round((sh / sw) * w));
+  const probe = document.createElement('canvas');
+  probe.width = w;
+  probe.height = h;
+  const pctx = probe.getContext('2d', { willReadFrequently: true });
+  if (!pctx) return true; // 探针都拿不到就不拦，别误伤正常导出
+  pctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
+  const { data } = pctx.getImageData(0, 0, w, h);
+  const [br, bgn, bb] = parseHex(bg);
+  let ink = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (Math.abs(data[i] - br) + Math.abs(data[i + 1] - bgn) + Math.abs(data[i + 2] - bb) > 60) ink += 1;
+  }
+  return ink >= data.length / 4 * 0.004;
+}
+
 export interface PagePaintOptions {
   /** 页脚文字；不给就不画（导出视频时不要页脚） */
   footer?: string;
@@ -221,6 +257,59 @@ export function paintExportPage(
 /** 行与行之间那点空隙（房子括线跨行时会探出行高，所以多留一点） */
 function lineSlack(layout: LayoutResult): number {
   return layout.lineHeight * 0.5;
+}
+
+/**
+ * 连续长图某一横条该画的行区间：行坐标是绝对值，只画与本条相交的行
+ * （越界的行交给画布裁剪也正确，这里省掉白画的）。
+ * 区间为空（from === to）说明这条是纯留白——自检必须据此跳过，
+ * 不能拿 layout.height 推边界（它含收尾空白，会虚报「这一条丢了」）。
+ */
+export function imageBandLineRange(
+  layout: ExportLayoutResult,
+  geo: PageGeometry,
+  bandTop: number,
+  bandH: number,
+): { from: number; to: number } {
+  const sl = layout.lineHeight;
+  const top = (bandTop - geo.marginTop) / geo.scale;
+  const bottom = top + bandH / geo.scale;
+  let from = layout.lines.findIndex((l) => l.y + sl / 2 > top - sl);
+  if (from < 0) from = layout.lines.length;
+  let to = layout.lines.length;
+  for (let i = from; i < layout.lines.length; i += 1) {
+    if (layout.lines[i]!.y - sl / 2 > bottom + sl) {
+      to = i;
+      break;
+    }
+  }
+  return { from, to };
+}
+
+/**
+ * 连续长图的一横条：图片导出（PNG/SVG）不分页，整谱从上到下一次画完。
+ * 长图按 2048px 一条分条绘制——每条仍是完整排版坐标（画布自动裁掉条外内容），
+ * 条与条在拼接画布上首尾相接，接缝两侧绘制内容完全一致，视觉上就是一张连续的图。
+ * 分条是为了让文字/矢量始终画在与 PDF 页同级尺寸的小画布上（大画布 GPU 回读会丢瓦片）。
+ */
+export function paintExportImageBand(
+  ctx: CanvasRenderingContext2D,
+  layout: ExportLayoutResult,
+  theme: PaintTheme,
+  geo: PageGeometry,
+  opts: { bandTop: number; bandW: number; bandH: number; showMeasureNumbers?: boolean },
+): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, opts.bandW, opts.bandH);
+  ctx.setTransform(geo.scale, 0, 0, geo.scale, geo.marginX, geo.marginTop - opts.bandTop);
+  const { from, to } = imageBandLineRange(layout, geo, opts.bandTop, opts.bandH);
+  const paintOpts = { showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false };
+  if (layout.staff) {
+    paintStaffLayout(ctx, layout.staff, theme, { ...paintOpts, background: false, lineRange: { from, to } });
+  } else {
+    paintLayout(ctx, { ...layout, lines: layout.lines.slice(from, to) }, theme, paintOpts);
+  }
 }
 
 const videoBounds = new WeakMap<ExportLayoutResult, { left: number; right: number; top: number; bottom: number }[]>();

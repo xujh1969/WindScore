@@ -94,6 +94,12 @@ export function uniqueName(base: string, taken: string[]): string {
   return `${name} (${Date.now()})`;
 }
 
+/** 纯谱面文件（没有伴奏与对轨标定），曲库可直接收录，播放走合成音 */
+export function isJpsFile(name: string): boolean {
+  const n = name.toLowerCase();
+  return n.endsWith('.jps') || n.endsWith('.txt');
+}
+
 /** 从 .jps 文本提取摘要；解析失败标记为 broken（导入校验用） */
 export function metaOfText(text: string, fallbackName = ''): LibraryMeta {
   const fallback = normalizeName(fallbackName);

@@ -1761,7 +1761,44 @@ details.v2-side-block[open] > summary::before {
 }
 
 /* 音色包管理弹窗（曲库页「音色包…」）：每包一行，移除带两步确认；曲库列表不再被 chip 挤占 */
-.v2-bank-dialog { width: min(540px, 100%); }
+/* 音色包弹窗（0.4.14 改版）：固定标题栏 + 工具条（导入按钮 / 统计）+ 可滚动列表。
+   滚动只发生在列表区——标题栏和工具条钉住，包多时不会把导入按钮顶出视野 */
+.v2-bank-dialog {
+  width: min(540px, 100%);
+  height: min(560px, 92vh);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.v2-bank-dialog .v2-exp-head {
+  justify-content: space-between;
+  flex: none;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.v2-bank-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: none;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(128, 128, 128, 0.06);
+}
+.v2-bank-toolbar-info {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+  text-align: right;
+}
+.v2-bank-dialog .v2-exp-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+.v2-bank-dialog .v2-exp-hint { margin: 0; }
 .v2-bank-dialog .v2-exp-head { justify-content: space-between; }
 .v2-bank-row {
   display: flex;

@@ -20,6 +20,7 @@ import { buildPack, packFileName, readPack } from './packBundle';
 import {
   describeMeta,
   importLibrary,
+  isJpsFile,
   removeLibraryItem,
   restoreLibraryItem,
   flushLibraryWrites,
@@ -135,12 +136,19 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
     if (!files || files.length === 0) return;
     setBusy(true);
     let ok = 0;
+    let jps = 0;
     const bad: string[] = [];
     for (const f of Array.from(files)) {
       try {
         // 音色包走「音色列表」弹窗的独立导入（0.3.4 起入口分开，别在这混着收）
         if (isBankFile(f.name)) {
           bad.push(`${f.name}（音色包请到「音色列表」里导入）`);
+          continue;
+        }
+        // 纯谱面（.jps/.txt）没有伴奏与标定，直接收录进曲库，播放走合成音
+        if (isJpsFile(f.name)) {
+          if (importLibrary(f.name, await f.text())) jps += 1;
+          else bad.push(`${f.name}（写不进曲库）`);
           continue;
         }
         const b = await readPack(new Uint8Array(await f.arrayBuffer()));
@@ -167,8 +175,12 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
     setBusy(false);
     onNotify(
       bad.length === 0
-        ? `已导入 ${ok} 个打包（谱面 + 伴奏 + 标定）`
-        : `已导入 ${ok} 个；失败：${bad.join('、')}`,
+        ? jps === 0
+          ? `已导入 ${ok} 个打包（谱面 + 伴奏 + 标定）`
+          : ok === 0
+            ? `已收录 ${jps} 份谱面（只有谱，没有伴奏与标定）`
+            : `已导入 ${ok} 个打包、${jps} 份谱面`
+        : `已导入 ${ok + jps} 项；失败：${bad.join('、')}`,
     );
   };
 
@@ -293,10 +305,10 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
             <button
               className="v2-btn"
               disabled={busy}
-              title="导入 .wspack：谱面 + 伴奏 + 对轨标定一起进曲库（别人分享的也能用）"
+              title="导入乐谱：.wspack 打包（谱面+伴奏+标定）或 .jps 纯谱面"
               onClick={() => packRef.current?.click()}
             >
-              {busy ? '导入中…' : '导入打包'}
+              {busy ? '导入中…' : '导入乐谱'}
             </button>
             <button
               className="v2-btn"
@@ -317,7 +329,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
         <input
           ref={packRef}
           type="file"
-          accept=".wspack,.zip,.wsbank"
+          accept=".wspack,.zip,.wsbank,.jps,.txt"
           multiple
           hidden
           onChange={(e) => {

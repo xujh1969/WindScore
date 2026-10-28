@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_FONT_SIZE, type Score } from '../types';
 import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
-import { exportTheme, footerText, paintExportPage, prepareExportLayout, type ExportNotation, type PageGeometry } from '../export/render';
+import { exportTheme, paintExportPage, prepareExportLayout, type ExportNotation, type PageGeometry } from '../export/render';
 import type { AudioStem } from '../audio';
 import type { TempoMap } from '../tempo';
 import type { TimelineEntry } from '../timeline';
@@ -210,10 +210,10 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     if (ctx) {
       // 缩放必须走 geo：paintExportPage 内部会 setTransform 重置矩阵，
       // 在外面 pre-scale 会被抹掉（放大后内容不变大的根源）。
-      // 整套几何等比缩，页面比、页脚、页边距全部一致
-      paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], zoomedGeo(plan.geo, z), { footer: footerText(exportName, pageIndex + 1, plan.plans.length), showMeasureNumbers: showBars });
+      // 整套几何等比缩，页面比、页边距全部一致
+      paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], zoomedGeo(plan.geo, z), { showMeasureNumbers: showBars });
     }
-  }, [preview.pdfPlan, pageIndex, tab, exportName, showBars, pdfZoom]);
+  }, [preview.pdfPlan, pageIndex, tab, showBars, pdfZoom]);
 
   const run = async (task: () => Promise<string>): Promise<void> => {
     setBusy(true);
@@ -255,7 +255,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         },
       });
       if (!res.ok) return '已取消保存';
-      return `已导出 ${res.pageCount} 页 PDF，页脚格式 ${songName}-1/${res.pageCount}`;
+      return 'PDF 导出成功';
     });
 
   const doImage = (): Promise<void> => run(async () => {
@@ -267,10 +267,9 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       dark: videoDark,
       showMeasureNumbers: showBars,
       layout: plan.layout,
-      plans: plan.plans,
       geo: plan.geo,
     });
-    return res.ok ? `已导出 ${imageFormat.toUpperCase()}（${plan.plans.length} 页，与 PDF 同版式）` : '已取消保存';
+    return res.ok ? `已导出 ${imageFormat.toUpperCase()} 长图（连续不分页）` : '已取消保存';
   });
 
   const doVideo = (): Promise<void> =>

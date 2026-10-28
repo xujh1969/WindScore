@@ -3,7 +3,7 @@ import { EditorApp } from './EditorApp';
 import { AndroidSongList } from './AndroidSongList';
 import { AndroidLanUpload, useLanUpload } from './AndroidLanUpload';
 import { AndroidBrand, AndroidDialog, AndroidIcon, type AndroidIconName } from './AndroidComponents';
-import { importLibrary, metaOfText, normalizeName, onLibraryChange, readLibrary, removeLibraryItem, searchLibrary, setFavorite, uniqueName, type LibraryItem } from './libraryStore';
+import { importLibrary, isJpsFile, metaOfText, normalizeName, onLibraryChange, readLibrary, removeLibraryItem, searchLibrary, setFavorite, uniqueName, type LibraryItem } from './libraryStore';
 import { renameLibraryWithAssets } from './renameLibrary';
 import { readPack } from './packBundle';
 import { isBankFile, loadSavedBanks, saveBank } from './instrumentBank';
@@ -142,7 +142,18 @@ export function AndroidApp() {
           setNotice(`已装入音色包「${info.name}」：${info.patches.length} 件音色`);
           continue;
         }
-        if (!picked.name.toLowerCase().endsWith('.wspack')) throw new Error('请选择 .wspack 乐谱包（或 .wsbank 音色包）');
+        // 纯谱面（.jps/.txt）：没有伴奏与标定，直接收录，播放走合成音
+        if (isJpsFile(picked.name)) {
+          const text = await picked.text();
+          if (metaOfText(text).broken) throw new Error('谱面内容无法解析');
+          if (preview) {
+            const name = uniqueName(picked.name.replace(/\.(jps|txt)$/i, '') || '未命名', previewItems.current.map(it => it.name));
+            updatePreview([...previewItems.current, { id: `preview-import-${Date.now()}-${ok}`, name, text, updatedAt: Date.now(), meta: metaOfText(text, name) }]);
+          } else if (!importLibrary(picked.name, text)) throw new Error('设备存储无法写入');
+          ok++;
+          continue;
+        }
+        if (!picked.name.toLowerCase().endsWith('.wspack')) throw new Error('请选择 .wspack 乐谱包、.jps 谱面（或 .wsbank 音色包）');
         const pack = await readPack(new Uint8Array(await picked.arrayBuffer()));
         if (metaOfText(pack.text).broken) throw new Error('谱面内容无法解析');
         if (preview) {
@@ -171,14 +182,14 @@ export function AndroidApp() {
         {uploadPage ? <AndroidLanUpload service={lan} disabled={busy} onNotice={setNotice}/> : tab === 'library' ? <>
           <div className="an-search-row"><label className="an-search"><AndroidIcon name="search"/><input type="search" placeholder="搜索曲名、拼音或首字母" value={query} onChange={e => { resetScroll(); setQuery(e.target.value); }} aria-label="搜索乐谱"/></label><button className={`an-favorite-filter ${favorites ? 'is-on' : ''}`} aria-label="我的收藏" aria-pressed={favorites} onClick={() => { resetScroll(); setFavorites(!favorites); }}><AndroidIcon name="star" filled={favorites}/><span>我的收藏</span></button></div>
           <div className="an-list-caption"><span>{favorites ? '收藏的乐谱' : '全部乐谱'}<small className="an-song-count">{visible.length} 首</small></span><span>{query ? '搜索结果' : '按拼音排序'}</span></div>
-          {visible.length ? <AndroidSongList items={visible} hasAudio={item => preview ? (previewPacks.current.get(item.id)?.stems.length ?? 0) > 0 : (loadAlign(item.name)?.audio?.length ?? 0) > 0} onOpen={item => { if (item.meta.broken) setNotice('这份谱面无法打开，请删除后重新导入。'); else navigate('library', item); }} onMenu={setMenu}/> : <section className="an-empty"><AndroidIcon name={query ? 'search' : favorites ? 'star' : 'music'}/><h2>{query ? `没有找到“${query}”` : favorites ? '还没有收藏乐谱' : '从第一首乐谱开始'}</h2><p>{query ? '试试其他曲名、拼音或首字母' : favorites ? '打开曲目菜单，将喜欢的乐谱收入收藏。' : '导入 .wspack 乐谱包，开启你的演奏。'}</p>{!query && !favorites && <button className="an-primary" onClick={() => file.current?.click()}><AndroidIcon name="upload"/>导入乐谱</button>}</section>}
+          {visible.length ? <AndroidSongList items={visible} hasAudio={item => preview ? (previewPacks.current.get(item.id)?.stems.length ?? 0) > 0 : (loadAlign(item.name)?.audio?.length ?? 0) > 0} onOpen={item => { if (item.meta.broken) setNotice('这份谱面无法打开，请删除后重新导入。'); else navigate('library', item); }} onMenu={setMenu}/> : <section className="an-empty"><AndroidIcon name={query ? 'search' : favorites ? 'star' : 'music'}/><h2>{query ? `没有找到“${query}”` : favorites ? '还没有收藏乐谱' : '从第一首乐谱开始'}</h2><p>{query ? '试试其他曲名、拼音或首字母' : favorites ? '打开曲目菜单，将喜欢的乐谱收入收藏。' : '导入 .wspack 乐谱包或 .jps 谱面，开启你的演奏。'}</p>{!query && !favorites && <button className="an-primary" onClick={() => file.current?.click()}><AndroidIcon name="upload"/>导入乐谱</button>}</section>}
           {preview && <p className="an-preview-note">浏览器预览 · 示例曲库，操作仅在本次预览生效</p>}
-        </> : tab === 'community' ? <section className="an-coming"><span className="an-empty-art"><AndroidIcon name="community"/></span><h1>社区即将开放</h1><p>期待与更多热爱音乐的人相遇。</p><button className="an-text-button" onClick={() => navigate('library')}>回曲库练一曲<AndroidIcon name="chevron"/></button></section> : <section className="an-profile"><div className="an-user"><span className="an-avatar"><AndroidIcon name="user"/></span><div><h2>{user}</h2><p>本地个人资料</p></div></div><button className="an-management" onClick={() => file.current?.click()} disabled={busy || lan.state.running}><span className="an-management-icon"><AndroidIcon name="upload"/></span><span><strong>从本地导入乐曲</strong><small>选择设备中的 .wspack 文件</small></span><AndroidIcon name="chevron"/></button><button className="an-management" onClick={() => navigate('my', null, true)}><span className="an-management-icon"><AndroidIcon name="wifi"/></span><span><strong>从网络传入乐曲</strong><small>{lan.state.running ? '服务运行中 · 点击查看' : '电脑通过同一 Wi-Fi 上传'}</small></span><AndroidIcon name="chevron"/></button><p className="an-local-note">乐谱和个人资料保存在当前设备。</p></section>}
+        </> : tab === 'community' ? <section className="an-coming"><span className="an-empty-art"><AndroidIcon name="community"/></span><h1>社区即将开放</h1><p>期待与更多热爱音乐的人相遇。</p><button className="an-text-button" onClick={() => navigate('library')}>回曲库练一曲<AndroidIcon name="chevron"/></button></section> : <section className="an-profile"><div className="an-user"><span className="an-avatar"><AndroidIcon name="user"/></span><div><h2>{user}</h2><p>本地个人资料</p></div></div><button className="an-management" onClick={() => file.current?.click()} disabled={busy || lan.state.running}><span className="an-management-icon"><AndroidIcon name="upload"/></span><span><strong>从本地导入乐曲</strong><small>选择设备中的 .wspack 或 .jps 文件</small></span><AndroidIcon name="chevron"/></button><button className="an-management" onClick={() => navigate('my', null, true)}><span className="an-management-icon"><AndroidIcon name="wifi"/></span><span><strong>从网络传入乐曲</strong><small>{lan.state.running ? '服务运行中 · 点击查看' : '电脑通过同一 Wi-Fi 上传'}</small></span><AndroidIcon name="chevron"/></button><p className="an-local-note">乐谱和个人资料保存在当前设备。</p></section>}
       </main>
       {tab === 'my' && !uploadPage && appBuild && <p className="an-build-info">安卓版 {appBuild}</p>}
       {!uploadPage && <nav className="an-nav" aria-label="主导航">{tabs.map(t => <button key={t.id} className={tab === t.id ? 'is-on' : ''} aria-current={tab === t.id ? 'page' : undefined} onClick={() => { if (t.id !== tab) navigate(t.id); }}><span><AndroidIcon name={t.icon}/></span>{t.label}</button>)}</nav>}
     </>}
-    <input ref={file} type="file" accept=".wspack,.zip,.wsbank" multiple hidden onChange={e => { void importFiles(e.target.files); e.target.value = ''; }}/>
+    <input ref={file} type="file" accept=".wspack,.zip,.wsbank,.jps,.txt" multiple hidden onChange={e => { void importFiles(e.target.files); e.target.value = ''; }}/>
     {menu && <AndroidDialog title={menu.name} onClose={() => setMenu(null)} className="an-action-sheet"><button className="an-menu-action" onClick={() => toggleFavorite(menu)}><AndroidIcon name="star"/>{menu.favorite ? '取消收藏' : '收藏乐谱'}</button><button className="an-menu-action" onClick={() => { setRenameValue(menu.name); setRenameError(''); setRenaming(menu); setMenu(null); }} disabled={busy || lan.state.running}><AndroidIcon name="rename"/>重命名</button>{lan.state.running && <p className="an-setting-hint">停用上传服务后可重命名。</p>}<button className="an-menu-action an-danger" onClick={() => { setDeleting(menu); setMenu(null); }}><AndroidIcon name="trash"/>从曲库删除</button></AndroidDialog>}
     {renaming && <AndroidDialog title="重命名乐谱" onClose={() => { if (!renameBusy) setRenaming(null); }}><form onSubmit={e => { e.preventDefault(); void commitRename(); }}>
       <label className="an-rename-field" htmlFor="an-rename-input">乐谱名称<input ref={renameInput} id="an-rename-input" value={renameValue} onChange={e => { setRenameValue(e.target.value); setRenameError(''); }} disabled={renameBusy} autoComplete="off" enterKeyHint="done" aria-invalid={!!renameError} aria-describedby={renameError ? 'an-rename-error' : undefined}/></label>

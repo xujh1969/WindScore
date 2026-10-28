@@ -1125,12 +1125,17 @@ details.v2-side-block[open] > summary::before {
 .v2-pad-row .v2-field-label {
   padding: 0;
 }
-/* 音级按钮：八度点占两行，留够高度别把点挤扁 */
+/* 音级按钮：八度点占两行，留够高度别把点挤扁。
+   数字加大（12 → 16）：网格等分所以宽度不动，按钮高度随内容长；
+   八度点保持原尺寸不跟涨——点大了反而丑 */
 .v2-pad-num {
-  padding: 4px 0;
-  min-height: 30px;
+  padding: 5px 0;
+  min-height: 36px;
   font-size: 13px;
   font-weight: 600;
+}
+.v2-pad-num .v2-glyph-digit {
+  font-size: 16px;
 }
 /* 连音线图标：跟着按钮文字的颜色走（禁用 / 主色都自动一致） */
 .v2-slur-icon {

@@ -360,7 +360,8 @@ function noteBox(
   ctx: CanvasRenderingContext2D,
   it: PlacedItem,
 ): { x: number; w: number } {
-  const glyph = it.kind === 'rest' ? '0' : String(it.degree ?? 0);
+  // X 符号（无音高音符）：画 X 不画 0（noteBox 量宽与 drawGlyph 画字两处同口径）
+  const glyph = it.kind === 'rest' ? (it.xnote ? 'X' : '0') : String(it.degree ?? 0);
   // 口径统一走 layout.clusterSpan（含变音 / 倚音位移），左右各留 3px 不切附点
   const span = clusterSpan(it, ctx.measureText(glyph).width);
   return { x: span.x - 3, w: span.w + 6 };
@@ -1490,7 +1491,8 @@ function drawGlyph(
   }
 
   const gx = it.x + M.glyphPad + accW + ink;
-  const glyph = it.kind === 'rest' ? '0' : String(it.degree ?? 0);
+  // X 符号（无音高音符）：画 X 不画 0（noteBox 量宽与 drawGlyph 画字两处同口径）
+  const glyph = it.kind === 'rest' ? (it.xnote ? 'X' : '0') : String(it.degree ?? 0);
   ctx.fillText(glyph, gx, y);
   const gw = ctx.measureText(glyph).width;
   const cx = gx + gw / 2;

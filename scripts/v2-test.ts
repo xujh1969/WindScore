@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WindScore v2 M0 验收测试（命令行可跑，零 UI、零 Tauri 依赖）
  *
  *   M0-1  types.ts 与 spec §5 一致 + 不变量校验
@@ -4329,6 +4329,49 @@ console.log('\n[文字标注（段落 (文字) 的编辑器操作）]');
     const w4 = winRms(Math.round(5 * SR), Math.round(5.5 * SR));
     check('持续采样长音继续平铺（不提前淡出）', w4 > w1 * 0.5, `5s 处 ${w4.toFixed(4)} vs 0.5s 处 ${w1.toFixed(4)}`);
   }
+}
+
+console.log('\n[X 无音高音符与休止符附点]');
+
+{
+  // 解析：X 与小写 x 都认；时值语法与休止符一致（附点在除法前：x./2）
+  const r = parseDsl('@beat 4/4\n\nX- 0. 0/2 | x./2 0./2 4. 4');
+  check('X 解析无错误', r.errors.length === 0, r.errors.join('；'));
+  const s = r.score!;
+  const xs = s.events.filter((e): e is RestEvent => e.kind === 'rest' && e.x === true);
+  check('X- 与 x./2 都解析为 X 记号', xs.length === 2, 'got ' + xs.length);
+  check('X- 两拍', xs[0]?.ticks === TICKS_PER_BEAT * 2, 'ticks=' + xs[0]?.ticks);
+  check('x./2 附点八分（3/4 拍）', xs[1]?.ticks === Math.round(TICKS_PER_BEAT * 3 / 4) && xs[1]?.dot === 1, 'ticks=' + xs[1]?.ticks + ' dot=' + xs[1]?.dot);
+  const rest = s.events.find((e): e is RestEvent => e.kind === 'rest' && !e.x && e.dot === 1);
+  check('0. 附点休止 1.5 拍', !!rest && rest.ticks === Math.round(TICKS_PER_BEAT * 3 / 2), 'ticks=' + rest?.ticks);
+  const back = serializeDsl(s);
+  check('回写 X-', /(^|\s)X-(\s|\||$)/.test(back), back.split('\n').slice(-2).join(' / '));
+  check('回写 0.', /(^|\s)0\.(\s|\||$)/.test(back), back.split('\n').slice(-2).join(' / '));
+  const reopen = parseDsl(back);
+  check('重新打开无损（X 仍是 X、0 仍是 0）', reopen.errors.length === 0 &&
+    reopen.score!.events.filter((e): e is RestEvent => e.kind === 'rest' && e.x).length === 2 &&
+    reopen.score!.events.filter((e): e is RestEvent => e.kind === 'rest' && !e.x).length === 3, 'x=' + reopen.score!.events.filter((e): e is RestEvent => e.kind === 'rest' && e.x).length + ' nonx=' + reopen.score!.events.filter((e): e is RestEvent => e.kind === 'rest' && !e.x).length + ' err=' + reopen.errors.length);
+  // 编辑：cycleDot 对休止符与 X 生效（0 加附点修复的回归）
+  const c1 = cycleDot(s, rest!.id);
+  const c1rest = c1.events.find((e) => e.id === rest!.id) as RestEvent;
+  check('cycleDot 对 0 生效（0. -> 0..）', c1rest.dot === 2 && c1rest.ticks === Math.round(TICKS_PER_BEAT * 7 / 4));
+  const c2 = cycleDot(c1, xs[0]!.id);
+  const c2x = c2.events.find((e) => e.id === xs[0]!.id) as RestEvent;
+  check('cycleDot 对 X 生效（X- -> X-.）', c2x.x === true && c2x.dot === 1 && c2x.ticks === Math.round(TICKS_PER_BEAT * 3));
+  // 播放：X 产出打击声条目（midi null + perc），休止静默
+  const exp = expandScore(s);
+  check('展开无结构错误', !!exp.score && exp.errors.length === 0, exp.errors.join(' / '));
+  const tl = buildTimeline(exp.score!);
+  const perc = tl.filter((e) => e.perc);
+  check('X 在时间轴上产出打击条目（不发声高）', perc.length === 2 && perc.every((e) => e.midi === null), 'got ' + perc.length);
+  const silent = tl.filter((e) => e.midi === null && !e.perc);
+  check('休止静默（无 perc）', silent.length === 3, 'got ' + silent.length);
+  // 排版：X 进 item 且带 xnote 标记，普通 0 不带
+  const L = layoutScore(s, { contentWidth: 800 });
+  const xn = L.lines.flatMap((ln) => ln.items).filter((it) => it.xnote);
+  const zn = L.lines.flatMap((ln) => ln.items).filter((it) => it.kind === 'rest' && !it.xnote);
+  check('X 进排版并带 xnote 标记', xn.length === 2 && xn.every((it) => it.w > 0), 'got ' + xn.length);
+  check('普通 0 休止不带 xnote', zn.length === 3, 'got ' + zn.length);
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

@@ -1,6 +1,7 @@
 /** 导出相关测试（纯计算部分，不需要 canvas） */
 import { planPages, buildPdf, pdfTextString, A4_PT } from '../src/v2/export/pdf';
 import { a4Geometry, planExport, safeFileName } from '../src/v2/export/tasks';
+import { isInkPixel } from '../src/v2/export/render';
 import { videoGeometry, VIDEO_RATIOS as RATIOS, videoCanvasSize as canvasSize } from '../src/v2/export/video';
 import { estimateBitrate, planCodecs } from '../src/v2/export/encode';
 import { mixStems, peakOf, synthNotes, type PcmSource } from '../src/v2/export/mix';
@@ -480,6 +481,22 @@ console.log('\n[视频 · 横向长条（strip）]');
   check('终点钳到长条末端', xEnd <= strip.width * 2 - 800 + 1, `${xEnd} vs max ${strip.width * 2 - 800}`);
   const xMid = scrollTargetX(ranges, timelineTicks(tl) / 2, 2, 800, strip.width);
   check('中段滚动位置在起点与终点之间', xMid >= x0 && xMid <= xEnd, String(xMid));
+}
+
+console.log('\n[导出 · 墨迹自检判据]');
+{
+  // 透明像素（丢失/未落地的内容在探针画布上读出来是全透明）必须按背景算，不能算墨。
+  // 只比 RGB 的话整页丢失 = 「整页黑墨」，自检假阳性放行空白页（0.4.18 PDF 空白根因）
+  const white: [number, number, number] = [255, 255, 255];
+  const dark: [number, number, number] = [24, 24, 28];
+  check('全透明不算墨', !isInkPixel(0, 0, 0, 0, white));
+  check('低透明度（<16）不算墨', !isInkPixel(0, 0, 0, 15, white));
+  check('不透明黑是墨', isInkPixel(0, 0, 0, 255, white));
+  check('与背景同色不算墨', !isInkPixel(255, 255, 255, 255, white));
+  check('接近背景（总差 ≤60）不算墨', !isInkPixel(240, 240, 240, 255, white));
+  check('刚过阈（总差 >60）算墨', isInkPixel(230, 230, 230, 255, white));
+  check('深底浅字算墨', isInkPixel(255, 255, 255, 255, dark));
+  check('深底全透明也不算墨', !isInkPixel(24, 24, 28, 0, dark));
 }
 
 console.log(failed === 0 ? '\n导出测试全部通过' : `\n导出测试失败 ${failed} 项`);

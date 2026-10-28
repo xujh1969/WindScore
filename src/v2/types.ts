@@ -119,6 +119,11 @@ export interface RestEvent extends BaseEvent {
   groupId?: string;
   /** 隐藏休止（DSL `8`）：占位但不画字形，用于行中混排前的空拍占位 */
   hidden?: boolean;
+  /**
+   * X 符号（无音高音符）：画 X 不画 0，发声为一记打击声（木鱼音色），
+   * 没有固定音高——打击、拍手、念节奏用。时值 / 附点 / 增减时线与休止符一致。
+   */
+  x?: boolean;
   /** 灰显（DSL 后缀 `g`）：同音符，前奏 / 间奏里的休止也可以灰 */
   gray?: boolean;
 }

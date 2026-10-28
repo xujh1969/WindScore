@@ -107,6 +107,8 @@ export interface PlacedItem {
   breakAfter?: 'line' | 'page';
   /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
   hidden?: boolean;
+  /** X 符号（无音高音符）：画 X 不画 0，发声为打击声 */
+  xnote?: boolean;
   /** 灰显（前奏 / 间奏提示）：数字与随附记号画成灰色 */
   gray?: boolean;
 }
@@ -956,6 +958,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         };
         // 隐藏休止（8）：占位宽度照算，字形由绘制层跳过
         if (ev.kind === 'rest' && ev.hidden) item.hidden = true;
+        if (ev.kind === 'rest' && ev.x) item.xnote = true;
         if (ev.gray) item.gray = true;
         if (ev.kind === 'note') {
           const n = ev as NoteEvent;

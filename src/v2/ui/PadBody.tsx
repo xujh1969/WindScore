@@ -90,6 +90,8 @@ export interface PadActions {
   note: (degree: number, octave: number) => void;
   /** 0：休止符 */
   rest: () => void;
+  /** X：无音高音符（打击 / 拍手 / 念节奏），发声、无固定音高 */
+  x: () => void;
   barline: () => void;
   /**
    * 带属性的小节线：反复开始 `|:` / 反复结束 `:|` / 双细线 `‖`（乐段结束）/ 终止 `||`。
@@ -319,7 +321,8 @@ export function PadBody({
 
   // ── 按钮点亮：目标音当前的属性直接映到对应按钮上（选了什么亮什么）──
   const note = target && target.kind === 'note' ? target : null;
-  const isRest = target?.kind === 'rest';
+  const isRest = target?.kind === 'rest' && !target.x;
+  const isX = target?.kind === 'rest' && target.x === true;
   // 括号是独立的 directive 事件，紧贴在目标音前 / 后（toggleParen 就这么插）
   const tIdx = target ? score.events.findIndex((e) => e.id === target.id) : -1;
   const evAt = (i: number): string | null => {
@@ -531,8 +534,14 @@ export function PadBody({
           <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
             0
           </button>
+          <button className={`v2-btn${isX ? ' is-on' : ''}`} onClick={() => actions.x()} title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符">
+            X
+          </button>
           <button className={`v2-btn${(target?.dot ?? 0) > 0 ? ' is-on' : ''}`} onClick={() => actions.dot()} title="附点 .（目标音带附点时点亮）">
-            ·
+            {/* 文本「·」太细小，画成加粗的实心圆点 */}
+            <svg width="15" height="18" viewBox="0 0 16 18" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
+              <circle cx={8} cy={9} r={3.2} fill="currentColor" />
+            </svg>
           </button>
           {/* 增时线 - 不给按钮：与时值排的 x− 系长音按钮重复（键盘 - 键仍可用） */}
           <button

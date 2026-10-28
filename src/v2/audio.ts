@@ -10,6 +10,7 @@
 import { tickToSec, secToTick, type TempoMap } from './tempo';
 import { TICKS_PER_BEAT } from './ticks';
 import { pianoSpec, renderNote } from './timbre';
+import { clickSample } from './metronome';
 import { instrumentSampleFor, renderSampledNote } from './instrumentSamples';
 import type { TimelineEntry } from './timeline';
 import { timelineTicks } from './timeline';
@@ -96,6 +97,9 @@ export class Player {
   private tempo: TempoMap | null = null;
   /** 整体升降调（半音）：只作用于合成声部的振荡器频率；伴奏变调在 buffer 层完成 */
   private semitones = 0;
+  /** 无音高音符（X）的打击声缓存：与节拍器同一记木鱼音源，按采样率各存一份 */
+  private percBuf: AudioBuffer | null = null;
+  private percBufRate = 0;
 
   /** 播放中热切某条 stem 的音量（30ms 平滑，不会「啪」地一声） */
   setStemGain(index: number, value: number): void {
@@ -181,7 +185,9 @@ export class Player {
         const at0 = at(from);
         if (at0 > until) break;
         const endAt = at(e.endTick);
-        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) {
+        if (e.perc) {
+          this.percuss(ctx, at0, e.gain ?? 1);
+        } else if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0)) {
           this.tone(ctx, e.midi, at0, endAt, e.gain, e.partId, e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
         }
         this.index += 1;
@@ -257,7 +263,9 @@ export class Player {
         const t0 = at(from);
         if (t0 > until) break;
         const t1 = at(e.endTick);
-        if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0) && t1 > this.ctx.currentTime) {
+        if (e.perc && t1 > this.ctx.currentTime) {
+          this.percuss(this.ctx, Math.max(t0, this.ctx.currentTime), e.gain ?? 1);
+        } else if (e.midi !== null && (e.partId || (e.gain ?? 1) > 0) && t1 > this.ctx.currentTime) {
           this.tone(this.ctx, e.midi, Math.max(t0, this.ctx.currentTime), t1, e.gain, e.partId,
             e.dyn ?? 1, e.dynTo ?? e.dyn ?? 1, e.patch, e.patchOctave ?? 0, e.grace === true);
         }
@@ -356,6 +364,27 @@ export class Player {
       g.connect(bus);
     } else g.connect(ctx.destination);
     src.start(t0);
+  }
+
+  /**
+   * 无音高音符（X）的一记打击声：短促木鱼，与节拍器同一音源（clickSample）。
+   * 不跟调、不跟音色——X 的意义就是「有节奏、没音高」。
+   */
+  private percuss(ctx: AudioContext, t0: number, gain = 1): void {
+    if (!this.percBuf || this.percBufRate !== ctx.sampleRate) {
+      const pcm = clickSample(ctx.sampleRate, false);
+      this.percBuf = ctx.createBuffer(1, pcm.length, ctx.sampleRate);
+      this.percBuf.copyToChannel(new Float32Array(pcm), 0);
+      this.percBufRate = ctx.sampleRate;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = this.percBuf;
+    const g = ctx.createGain();
+    g.gain.value = this.gain * Math.min(1, 0.9 * gain);
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start(Math.max(ctx.currentTime, t0));
+    this.sources.push(src);
   }
 }
 

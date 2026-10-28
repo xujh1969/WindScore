@@ -49,6 +49,12 @@ export function safeFileName(name: string): string {
   return (name || '未命名').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
 }
 
+declare const __WS_VERSION__: string;
+
+/** 报错时附上内部版本号：区分用户跑的是新包还是 WebView2 缓存的旧脚本 */
+const DIAG = (): string =>
+  `（WindScore ${typeof __WS_VERSION__ === 'undefined' ? 'dev' : __WS_VERSION__}）`;
+
 /** A4 页面几何（像素）。横竖屏只差一个宽高比 */
 export function a4Geometry(
   landscape: boolean,
@@ -123,6 +129,8 @@ export interface PdfExportResult {
 
 /** 导出 PDF：A4 分页 + 每页页脚「歌名-页号/总页数」 */
 export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportResult> {
+  // 字体没就绪就画页，标题/音符字符会用回退字形
+  await document.fonts.ready;
   const paper = a4Geometry(opts.landscape ?? false, opts.dpi ?? 150, opts.scale ?? 1.55);
   const showTitle = opts.showTitle ?? true;
   const { layout, plans, geo } = planExport(opts.score, paper, showTitle, opts.layout, opts);
@@ -152,10 +160,16 @@ export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportR
     copyCtx.setTransform(1, 0, 0, 1, 0, 0);
     copyCtx.clearRect(0, 0, copy.width, copy.height);
     copyCtx.drawImage(canvas, 0, 0);
+    // 等一拍再自检：个别 WebView 上 GPU→软件画布的整页拷贝是异步落地的，
+    // 立刻读会读到空（PNG 长图同款教训；0.4.18 的同步自检在部分 Win11 上失效）
+    await new Promise((r) => setTimeout(r, 0));
     if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
+      // CPU 重画前先清干净：防止半落地的内容与重画混叠
+      copyCtx.clearRect(0, 0, copy.width, copy.height);
       paintExportPage(copyCtx, layout, theme, plans[i]!, geo, pageOpts);
+      await new Promise((r) => setTimeout(r, 0));
       if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
-        throw new Error(`第 ${i + 1} 页画不上内容，请改导出 SVG 或 PNG 长图，或更新显卡驱动后重试`);
+        throw new Error(`第 ${i + 1} 页画不上内容，请改导出 SVG 或 PNG 长图，或更新显卡驱动后重试 ${DIAG()}`);
       }
     }
     pages.push({

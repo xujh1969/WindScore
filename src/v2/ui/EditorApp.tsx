@@ -2683,6 +2683,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         if (overId) setScore(setDegree(score, overId, 0));
         else commit({ score: insertRest(score, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
       },
+      x: () => {
+        commit({ score: insertRest(score, snap.cursor, true), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+      },
       barline: () => {
         const r = pressBarline(score, snap.cursor);
         commit({ score: r.score, cursor: r.cursor, anchor: null, mode: 'insert' });
@@ -3153,6 +3156,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             commit({ score: insertRest(score, cur), cursor: cur + 1, anchor: null, mode: 'insert' });
           }
           return;
+        case 'x':
+        case 'X':
+          e.preventDefault();
+          // X 无音高音符：总是插入新的（没有音级可替换）
+          commit({ score: insertRest(score, cur, true), cursor: cur + 1, anchor: null, mode: 'insert' });
+          return;
         case '|':
         case '\\': {
           e.preventDefault();
@@ -3182,9 +3191,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           commit({ score: setTicks(score, prev.id, base > TICKS_PER_BEAT / 8 ? base / 2 : TICKS_PER_BEAT) });
           return;
         }
+        case '.': {
+          e.preventDefault();
+          // 附点对音符与休止符（含 X）都有效：一律作用于光标左边最近的那个音
+          const k = prevTimed(score, cur);
+          if (k < 0) return;
+          const prev = score.events[k];
+          if (prev.kind !== 'note' && prev.kind !== 'rest') return;
+          commit({ score: cycleDot(score, prev.id) });
+          return;
+        }
         case '^':
         case 'v':
-        case '.':
         case 't': {
           e.preventDefault();
           // 一律作用于光标左边最近的那个音：over 模式下就是被选中的音，
@@ -3194,11 +3212,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           const prev = score.events[k];
           if (prev.kind !== 'note') return;
           const next =
-            e.key === '.'
-              ? cycleDot(score, prev.id)
-              : e.key === 't'
-                ? toggleTongue(score, prev.id)
-                : shiftOctave(score, prev.id, e.key === '^' ? 1 : -1);
+            e.key === 't'
+              ? toggleTongue(score, prev.id)
+              : shiftOctave(score, prev.id, e.key === '^' ? 1 : -1);
           commit({ score: next });
           return;
         }

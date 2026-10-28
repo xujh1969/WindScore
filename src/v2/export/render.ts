@@ -182,12 +182,32 @@ export function regionHasInk(
   if (!pctx) return true; // 探针都拿不到就不拦，别误伤正常导出
   pctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
   const { data } = pctx.getImageData(0, 0, w, h);
-  const [br, bgn, bb] = parseHex(bg);
+  return inkRatio(data, parseHex(bg)) >= 0.004;
+}
+
+/**
+ * 单像素墨迹判据（纯函数，可进 node 单测）。
+ * **alpha 低于阈值的像素一律按背景算，不是墨**：探针画布是透明的，「丢失 /
+ * 还没落地」的像素读出来是 RGB 全 0 的全透明——只比 RGB 的话，整页丢失会被
+ * 误判成「整页黑墨」（|0-255|×3=765>60），自检形同虚设（0.4.18 PDF 空白根因）。
+ */
+export function isInkPixel(
+  r: number,
+  g: number,
+  b: number,
+  a: number,
+  bg: readonly [number, number, number],
+): boolean {
+  if (a < 16) return false;
+  return Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]) > 60;
+}
+
+function inkRatio(data: Uint8ClampedArray, bg: [number, number, number]): number {
   let ink = 0;
   for (let i = 0; i < data.length; i += 4) {
-    if (Math.abs(data[i] - br) + Math.abs(data[i + 1] - bgn) + Math.abs(data[i + 2] - bb) > 60) ink += 1;
+    if (isInkPixel(data[i]!, data[i + 1]!, data[i + 2]!, data[i + 3]!, bg)) ink += 1;
   }
-  return ink >= data.length / 4 * 0.004;
+  return ink / (data.length / 4);
 }
 
 export interface PagePaintOptions {

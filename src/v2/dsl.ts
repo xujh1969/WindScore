@@ -54,7 +54,9 @@ import type {
  * 简谱里升降号写在音级左边（`#5` `b3`），和八度点谁先谁后没有硬规矩。
  * ♯ ♭ ♮ 字形与 # b 等同。
  */
-const NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
+// 音级位支持 X/x：无音高音符（打击 / 拍手），小写 x 只在独立记号位生效，
+// 跟在音符后的 x 仍是下滑音后缀（5x）——正则的音级位在前，无歧义。
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
 
 /**
  * 技法记号的后缀字母 → 数据值。
@@ -403,11 +405,20 @@ function parseSingle(text: string, modern = false): ParseResult {
     }
     const dotCount = dots.length as 0 | 1 | 2;
     const ticks = withDots(base, dotCount) + dashes.length * TICKS_PER_BEAT;
-    const degree = Number(digit);
+    // X/x = 无音高音符：没有音级数值，走休止符的时值语法
+    const isX = digit === 'X' || digit === 'x';
+    const degree = isX ? 0 : Number(digit);
     const id = nextId();
 
     let ev: TimedEvent;
-    if (degree === 0) {
+    if (isX) {
+      if (gBefore || gAfter) errors.push('倚音只能加在音符上，不能加在 X 符号上');
+      const xe: RestEvent = { id, kind: 'rest', ticks, x: true };
+      if (dotCount) xe.dot = dotCount;
+      // 灰显（g 后缀）：X 同样可以灰（前奏 / 间奏提示）
+      if (artic.includes('g')) xe.gray = true;
+      ev = xe;
+    } else if (degree === 0) {
       if (gBefore || gAfter) errors.push('倚音只能加在音符上，不能加在休止符上');
       const rest: RestEvent = { id, kind: 'rest', ticks };
       // 休止符与音符一样可带附点（0. = 1.5 拍）
@@ -926,7 +937,7 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
-  if (ev.kind === 'rest') return `${ev.hidden ? '8' : '0'}${short}${ev.gray ? 'g' : ''}`;
+  if (ev.kind === 'rest') return `${ev.x ? 'X' : ev.hidden ? '8' : '0'}${short}${ev.gray ? 'g' : ''}`;
   const n = ev;
   const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
   // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致

@@ -195,9 +195,11 @@ export function insertNote(score: Score, at: number, degree: Degree, octave = 0)
   return insert(score, at, note);
 }
 
-export function insertRest(score: Score, at: number): Score {
+export function insertRest(score: Score, at: number, x = false): Score {
   const id = newIds(score).ev;
   const rest: RestEvent = { id, kind: 'rest', ticks: QUARTER };
+  // X 符号（无音高音符）：外形与发声都不同，时值机制与休止符一致
+  if (x) rest.x = true;
   return insert(score, at, rest);
 }
 
@@ -991,7 +993,7 @@ export function cycleDot(score: Score, id: string): Score {
   return {
     ...score,
     events: score.events.map((e) => {
-      if (e.id !== id || e.kind !== 'note') return e;
+      if (e.id !== id || (e.kind !== 'note' && e.kind !== 'rest')) return e;
       const next = (((e.dot ?? 0) + 1) % 3) as 0 | 1 | 2;
       // 去掉旧附点再按新附点数还原：base = ticks / 旧系数
       const prev = e.dot ?? 0;

@@ -20,6 +20,8 @@ export interface TimelineEntry {
   octave: number;
   /** 合并延音线后的 MIDI 音高；休止符为 null */
   midi: number | null;
+  /** 无音高音符（X）：不按 MIDI 音高发声，起音时刻打一记打击声（木鱼音色） */
+  perc?: boolean;
   /** 这条是倚音（挂在主音上的装饰音），不是主音本身 */
   grace?: boolean;
   partId?: string;
@@ -216,7 +218,8 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     if (ev.kind !== 'note' && ev.kind !== 'rest') continue; // 小节线 / 换气不占时值
 
     if (ev.kind === 'rest') {
-      out.push({ eventId: eid(ev), startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null });
+      // X 符号（x 变体）：起音时刻打一记打击声；普通休止完全静默
+      out.push({ eventId: eid(ev), startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null, ...(ev.x ? { perc: true } : {}) });
       tick += ev.ticks;
       chainTailId = null; // 休止切断延音链
       chainMainIdx = null;

@@ -156,7 +156,7 @@ function withConductor(score2, id) {
   if (headBar) keptBars.add(headBar.id);
   const clean = target.events.filter((e) => e.kind !== "jump" && (e.kind !== "barline" || keptBars.has(e.id))).map((e) => {
     if (e.kind !== "barline") return e;
-    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, ...bar } = e;
+    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, bpmAfter: _bm, patchAfter: _p, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
@@ -167,7 +167,7 @@ function withConductor(score2, id) {
     const dstOriginal = boundary === 0 ? targetHead.find((e) => e.kind === "barline") : target.events[(targetStarts[boundary] ?? 0) - 1];
     let index = dstOriginal ? clean.findIndex((e) => e.id === dstOriginal.id) : -1;
     if (src?.kind === "barline") {
-      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter };
+      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter, patchAfter: src.patchAfter };
       if (clean[index]?.kind === "barline") clean[index] = { ...clean[index], ...attributes };
       else if (boundary === 0) {
         clean.unshift({ id: `p${id}:conductor:start`, kind: "barline", style: "single", ...attributes });
@@ -199,7 +199,13 @@ function meterAt(score2, index) {
   return beat;
 }
 function groupTicks(beat) {
-  return /^(6|9|12)\/8$/.test(beat) ? TICKS_PER_BEAT * 1.5 : TICKS_PER_BEAT;
+  if (beat === "3/8") return Math.round(TICKS_PER_BEAT * 1.5);
+  const m = /^(\d+)\/(2|4|8|16)$/.exec(beat);
+  if (m && [6, 9, 12].includes(Number(m[1]))) {
+    const base = { 2: 2, 4: 1, 8: 0.5, 16: 0.25 }[Number(m[2])];
+    return Math.round(TICKS_PER_BEAT * base * 3);
+  }
+  return TICKS_PER_BEAT;
 }
 
 // src/v2/pitch.ts
@@ -482,7 +488,7 @@ function applyLyricLinks(score2, rows) {
 }
 
 // src/v2/dsl.ts
-var NOTE_RE = /^([v^#b♯♭♮]*)([0-7])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
+var NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
 var TECHNIQUE_LETTER = {
   V: "breath",
   // 换气 V（大写，避开低八度点 v）
@@ -521,7 +527,9 @@ var DEFAULT_META = {
   key: "1=C",
   beat: "4/4",
   bpm: 90,
-  patch: 73
+  // 没指定音色时一律**钢琴**（用户 0.2.186 定）：装上真采样音色后，
+  // 默认值要是某件乐器的话，老谱一播就变成那件乐器，不可预期
+  patch: 0
 };
 function parseGraceNotes(text2) {
   if (!text2) return null;
@@ -593,6 +601,16 @@ function parseDsl(text2) {
       } catch {
         errors.push('\u6B4C\u8BCD\u884C\u540D\u79F0\u5E94\u4E3A @lyricNames ["\u7B2C\u4E00\u6BB5", "\u7B2C\u4E8C\u6BB5"]\uFF0C\u653E\u5728\u5173\u8054\u58F0\u90E8\u58F0\u660E\u4E4B\u540E\uFF0C\u6700\u591A\u516D\u6761');
       }
+    } else if (/^@patch\b/i.test(line) && blocks.length) {
+      const m = /^@patch\s+(\d+)\s*$/i.exec(line);
+      const block = blocks[blocks.length - 1];
+      if (!m || Number(m[1]) > 255) errors.push("\u58F0\u90E8\u97F3\u8272\u5E94\u4E3A @patch 66\uFF080-255 \u7684\u6574\u6570\uFF09\uFF0C\u653E\u5728\u58F0\u90E8\u58F0\u660E\u4E4B\u540E");
+      else block.patch = Number(m[1]);
+    } else if (/^@patchoct\b/i.test(line) && blocks.length) {
+      const m = /^@patchoct\s+(-?\d+)\s*$/i.exec(line);
+      const block = blocks[blocks.length - 1];
+      if (!m || Number(m[1]) < -2 || Number(m[1]) > 2) errors.push("\u58F0\u90E8\u97F3\u8272\u516B\u5EA6\u5E94\u4E3A @patchOct 1\uFF08-2 \u5230 2 \u7684\u6574\u6570\uFF09\uFF0C\u653E\u5728\u58F0\u90E8\u58F0\u660E\u4E4B\u540E");
+      else block.patchOctave = Number(m[1]);
     } else if (line.startsWith("@")) header.push(raw);
     else if (blocks.length) blocks[blocks.length - 1].lines.push(raw);
     else if (line && !line.startsWith("//") && line !== "---") header.push(raw);
@@ -630,6 +648,10 @@ function parseSingle(text2, modern = false) {
   const errors = [];
   const meta = { ...DEFAULT_META };
   const body = [];
+  const hasBody = text2.split(/\r?\n/).some((raw) => {
+    const line = raw.trim();
+    return !!line && line !== "---" && !line.startsWith("//") && !line.startsWith("@") && !/^歌词(线)?[1-6]:/.test(line);
+  });
   const lyrics = [];
   const lyricNumbers = /* @__PURE__ */ new Set();
   const lyricLinks = [];
@@ -678,8 +700,13 @@ function parseSingle(text2, modern = false) {
         }
         case "patch": {
           const n = Number(v);
-          if (Number.isInteger(n) && n >= 0 && n <= 127) meta.patch = n;
+          if (Number.isInteger(n) && n >= 0 && n <= 255) meta.patch = n;
           else errors.push(`patch \u89E3\u6790\u5931\u8D25\uFF1A${v}`);
+          break;
+        }
+        case "patchoct": {
+          const n = Number(v);
+          if (Number.isInteger(n) && n >= -2 && n <= 2) meta.patchOctave = n;
           break;
         }
         case "patchname":
@@ -763,10 +790,17 @@ function parseSingle(text2, modern = false) {
     }
     const dotCount = dots.length;
     const ticks = withDots(base, dotCount) + dashes.length * TICKS_PER_BEAT;
-    const degree = Number(digit);
+    const isX = digit === "X" || digit === "x";
+    const degree = isX ? 0 : Number(digit);
     const id = nextId();
     let ev;
-    if (degree === 0) {
+    if (isX) {
+      if (gBefore || gAfter) errors.push("\u501A\u97F3\u53EA\u80FD\u52A0\u5728\u97F3\u7B26\u4E0A\uFF0C\u4E0D\u80FD\u52A0\u5728 X \u7B26\u53F7\u4E0A");
+      const xe = { id, kind: "rest", ticks, x: true };
+      if (dotCount) xe.dot = dotCount;
+      if (artic.includes("g")) xe.gray = true;
+      ev = xe;
+    } else if (degree === 0) {
       if (gBefore || gAfter) errors.push("\u501A\u97F3\u53EA\u80FD\u52A0\u5728\u97F3\u7B26\u4E0A\uFF0C\u4E0D\u80FD\u52A0\u5728\u4F11\u6B62\u7B26\u4E0A");
       const rest = { id, kind: "rest", ticks };
       if (dotCount) rest.dot = dotCount;
@@ -995,7 +1029,7 @@ function parseSingle(text2, modern = false) {
         }
       }
       if (raw !== "") {
-        if (/^拍/.test(raw) || raw === "\u6362\u884C" || raw === "\u5206\u9875") {
+        if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === "\u6362\u884C" || raw === "\u5206\u9875") {
           const bar = events[events.length - 1];
           if (!modern || bar?.kind !== "barline") errors.push(`${raw} \u9700\u8981 @format 3\uFF0C\u5E76\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199`);
           else if (raw.startsWith("\u62CD")) {
@@ -1005,6 +1039,14 @@ function parseSingle(text2, modern = false) {
               bar.beatAfter = beat;
               currentBeat = beat;
             }
+          } else if (raw.startsWith("\u901F")) {
+            const bpm = Number(raw.slice(1));
+            if (!Number.isInteger(bpm) || bpm < 20 || bpm > 300) errors.push(`\u901F\u5EA6\u4E0D\u5408\u6CD5\uFF08\u5E94\u4E3A 20-300 \u7684\u6574\u6570\uFF09\uFF1A${raw}`);
+            else bar.bpmAfter = bpm;
+          } else if (raw.startsWith("\u97F3")) {
+            const patch = Number(raw.slice(1));
+            if (!Number.isInteger(patch) || patch < 0 || patch > 255) errors.push(`\u97F3\u8272\u53F7\u4E0D\u5408\u6CD5\uFF08\u5E94\u4E3A 0-255 \u7684\u6574\u6570\uFF09\uFF1A${raw}`);
+            else bar.patchAfter = patch;
           } else bar.breakAfter = raw === "\u5206\u9875" ? "page" : "line";
         } else if (raw === "cresc[" || raw === "dim[") {
           if (!modern) errors.push("\u8DE8\u97F3\u529B\u5EA6\u8303\u56F4\u9700\u8981 @format 3");
@@ -1024,6 +1066,7 @@ function parseSingle(text2, modern = false) {
         } else if (raw === "|*") pushBarline("single", false, true);
         else if (raw === "|") pushBarline("single");
         else if (raw === "||") pushBarline("final");
+        else if (raw === "\u2016" || raw === "|||") pushBarline("double");
         else if (raw === "|{partial}") pushBarline("single", true);
         else if (raw === "'") {
           errors.push("\u4E0D\u518D\u652F\u6301\u6362\u6C14\u8BB0\u53F7 '\uFF08\u8BF7\u6539\u7528\u97F3\u7B26\u540E\u7F00 V\uFF0C\u5982 5V\uFF09");
@@ -1039,6 +1082,8 @@ function parseSingle(text2, modern = false) {
           byId.set(id, ev);
         } else if (raw === "|:") {
           pushRepeatBarline("start");
+        } else if (raw === ":||:") {
+          pushRepeatBarline("both");
         } else if (/^:\|\d*$/.test(raw)) {
           pushRepeatBarline("end", raw.length > 2 ? Number(raw.slice(2)) : 2);
         } else if (/^\[\d+(,\d+)*\]$/.test(raw)) {
@@ -1087,7 +1132,7 @@ function parseSingle(text2, modern = false) {
     closeGroup();
   }
   if (hairpinStart) errors.push("\u6E10\u5F3A/\u6E10\u5F31\u8303\u56F4\u7F3A\u5C11 ]hairpin \u6536\u5C3E");
-  if (events.length === 0) errors.push("\u8C31\u9762\u4E3A\u7A7A");
+  if (events.length === 0 && hasBody) errors.push("\u8C31\u9762\u4E3A\u7A7A");
   if (pendingKey) {
     errors.push(`\u8F6C\u8C03\u8BB0\u53F7 \u8F6C${pendingKey} \u540E\u9762\u6CA1\u6709\u97F3\u7B26\uFF0C\u65E0\u6CD5\u751F\u6548\uFF08\u8F6C\u8C03\u5FC5\u987B\u5199\u5728\u5B83\u751F\u6548\u7684\u7B2C\u4E00\u4E2A\u97F3\u524D\u9762\uFF09`);
     pendingKey = void 0;
@@ -1148,7 +1193,7 @@ function renderDuration(ticks, dot) {
 function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? "/1" : "");
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n2) => "/".repeat(Math.log2(Number(n2)))) : duration;
-  if (ev.kind === "rest") return `${ev.hidden ? "8" : "0"}${short}${ev.gray ? "g" : ""}`;
+  if (ev.kind === "rest") return `${ev.x ? "X" : ev.hidden ? "8" : "0"}${short}${ev.gray ? "g" : ""}`;
   const n = ev;
   const marks = n.octave > 0 ? "^".repeat(n.octave) : "v".repeat(-n.octave);
   const acc = n.accidental ?? "";
@@ -1177,8 +1222,12 @@ ${parts.map((part) => {
 @lyricNames ${JSON.stringify(part.lyricNames)}` : "";
       const staff = part.staffInstrument || part.staffClef ? `
 @staff ${part.staffInstrument ?? "concert"} ${part.staffClef ?? "auto"}` : "";
+      const patchLine = part.patch !== void 0 && part.patch !== score2.meta.patch ? `
+@patch ${part.patch}` : "";
+      const octLine = part.patchOctave !== void 0 && part.patchOctave !== score2.meta.patchOctave ? `
+@patchOct ${part.patchOctave}` : "";
       return `@part ${part.id} ${JSON.stringify(part.name)}
-@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${staff}${names}
+@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${patchLine}${octLine}${staff}${names}
 ${body}`;
     }).join("\n\n")}`;
   }
@@ -1193,6 +1242,7 @@ function serializeSingle(score2) {
     `@patch ${score2.meta.patch}`
   ];
   if (score2.format === 3) head.unshift("@format 3");
+  if (score2.meta.patchOctave) head.push(`@patchOct ${score2.meta.patchOctave}`);
   if (score2.meta.patchName) head.push(`@patchName ${score2.meta.patchName}`);
   if (score2.meta.sub) head.push(`@sub ${score2.meta.sub}`);
   for (const line of score2.meta.notes ?? []) {
@@ -1289,12 +1339,16 @@ function serializeSingle(score2) {
         let tok;
         if (ev.hidden && ev.style === "single" && !ev.repeat) tok = "|*";
         else if (ev.repeat === "start") tok = "|:";
+        else if (ev.repeat === "both") tok = ":||:";
         else if (ev.repeat === "end") tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ":|";
+        else if (ev.style === "double") tok = "\u2016";
         else if (ev.style === "final") tok = "||";
         else if (ev.partial) tok = "|{partial}";
         else tok = "|";
         out.push(tok);
         if (ev.beatAfter) out.push(`\u62CD${ev.beatAfter}`);
+        if (ev.bpmAfter) out.push(`\u901F${ev.bpmAfter}`);
+        if (ev.patchAfter !== void 0) out.push(`\u97F3${ev.patchAfter}`);
         if (ev.breakAfter) out.push(ev.breakAfter === "page" ? "\u5206\u9875" : "\u6362\u884C");
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(",")}` : `[${ev.volta.join(",")}]`);
         emitted.add(ev.id);
@@ -1789,7 +1843,7 @@ function beatsPerMeasureOf(beat) {
   return n * (4 / d);
 }
 function barlineWidthOf(bar, k, spacing) {
-  const base = bar.style === "final" ? 26 : bar.repeat ? 24 : 20;
+  const base = bar.style === "final" ? 26 : bar.repeat === "both" ? 32 : bar.style === "double" || bar.repeat ? 24 : 20;
   const extra = bar.beatAfter ? 30 : 0;
   return Math.max((base * 0.4 + extra) * k, (base + extra) * k + Math.max(0, spacing));
 }
@@ -1949,7 +2003,7 @@ function layoutScore(score2, opts) {
   for (let i = 0; i < widths.length; i++) {
     const ev = widths[i].ev;
     if (ev.kind !== "barline") continue;
-    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === "start" || ev.volta ? i : i + 1;
+    const cut = ev.breakAfter && !opts.fitWidth ? i + 1 : ev.repeat === "start" || ev.repeat === "both" || ev.volta ? i : i + 1;
     if (cut > measureCuts[measureCuts.length - 1]) measureCuts.push(cut);
   }
   if (measureCuts[measureCuts.length - 1] !== widths.length) measureCuts.push(widths.length);
@@ -2127,6 +2181,7 @@ function layoutScore(score2, opts) {
           dashXs: opts.positions?.get(ev.id)?.dashXs
         };
         if (ev.kind === "rest" && ev.hidden) item.hidden = true;
+        if (ev.kind === "rest" && ev.x) item.xnote = true;
         if (ev.gray) item.gray = true;
         if (ev.kind === "note") {
           const n = ev;
@@ -2174,6 +2229,7 @@ function layoutScore(score2, opts) {
           x: cx,
           w,
           final: bar.style === "final",
+          double: bar.style === "double",
           // 小节号：这条线**结束**的是第几小节（与报错「第 N 小节」同口径）。
           // 谱面开头那根线是第 1 小节的左边界，不编号也不推进计数——否则所有
           // 小节号会偏一位（|: 开头的谱实测踩到）
@@ -2181,6 +2237,8 @@ function layoutScore(score2, opts) {
           ...bar.hidden ? { hidden: true } : {},
           ...bar.partial ? { partial: true } : {},
           ...bar.beatAfter ? { beatAfter: bar.beatAfter } : {},
+          ...bar.bpmAfter !== void 0 ? { bpmAfter: bar.bpmAfter } : {},
+          ...bar.patchAfter !== void 0 ? { patchAfter: bar.patchAfter } : {},
           ...bar.breakAfter ? { breakAfter: bar.breakAfter } : {},
           ...bar.repeat ? { repeat: bar.repeat } : {},
           ...bar.repeat === "end" && bar.times ? { repeatTimes: bar.times } : {},
@@ -2247,7 +2305,11 @@ function layoutScore(score2, opts) {
     const seenGroups = /* @__PURE__ */ new Set();
     const inkLeft = (m) => m.x + glyph.pad + (m.accW ?? 0) + (m.graceInk ?? 0);
     const beamX0 = (m) => inkLeft(m) + 1.5;
-    const beamX1 = (m) => inkLeft(m) + glyph.nominalWidth - 0.5;
+    const beamX1 = (m) => {
+      const end = inkLeft(m) + glyph.nominalWidth - 0.5;
+      if (!m.dot) return end;
+      return inkLeft(m) + glyph.nominalWidth + 5 + (m.dot - 1) * glyph.dotGap + glyph.dotR + 1;
+    };
     const clusterRight = (m) => {
       const s = clusterSpan(m, glyph.nominalWidth, glyph);
       return s.x + s.w;
@@ -2281,8 +2343,7 @@ function layoutScore(score2, opts) {
         continue;
       }
       if (members.every((m) => (m.beams ?? 0) < 1)) continue;
-      beams.push({ x0, x1, level: 1, gray: groupGray });
-      for (let level = 2; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
+      for (let level = 1; level <= Math.max(...members.map((m) => m.beams ?? 0)); level++) {
         let s = 0;
         while (s < members.length) {
           if ((members[s].beams ?? 0) < level) {
@@ -2318,11 +2379,8 @@ function layoutScore(score2, opts) {
       });
     };
     const pushArc = (a, b, chain2, kind) => {
-      const fromRight = inkLeft(a) + glyph.nominalWidth;
-      const toLeft = inkLeft(b);
-      const toRight = clusterRight(b);
-      const x0 = toLeft - fromRight >= 10 ? fromRight : inkLeft(a);
-      const x1 = toRight;
+      const x0 = inkLeft(a) + glyph.nominalWidth / 2;
+      const x1 = inkLeft(b) + glyph.nominalWidth / 2;
       const span = x1 - x0;
       if (span < 10) return;
       const tight = !chain2.some(hasMarks);
@@ -2531,6 +2589,8 @@ function validateGroups(score2) {
   score2.events.forEach((e, i) => index.set(e.id, i));
   for (const [i, e] of score2.events.entries()) {
     if (e.kind === "barline" && e.beatAfter && !validMeter(e.beatAfter)) out.push({ code: "E2", message: `\u62CD\u53F7\u4E0D\u5408\u6CD5\uFF1A${e.beatAfter}` });
+    if (e.kind === "barline" && e.bpmAfter !== void 0 && (!Number.isInteger(e.bpmAfter) || e.bpmAfter < 20 || e.bpmAfter > 300)) out.push({ code: "E2", message: `\u901F\u5EA6\u4E0D\u5408\u6CD5\uFF08\u5E94\u4E3A 20-300 \u7684\u6574\u6570\uFF09\uFF1A${e.bpmAfter}` });
+    if (e.kind === "barline" && e.patchAfter !== void 0 && (!Number.isInteger(e.patchAfter) || e.patchAfter < 0 || e.patchAfter > 255)) out.push({ code: "E2", message: `\u97F3\u8272\u53F7\u4E0D\u5408\u6CD5\uFF08\u5E94\u4E3A 0-255 \u7684\u6574\u6570\uFF09\uFF1A${e.patchAfter}` });
     if (e.kind === "note" && e.hairpinTo) {
       const target = index.get(e.hairpinTo) ?? -1;
       if (!e.hairpin || target <= i || score2.events[target]?.kind !== "note") out.push({ code: "I5", message: "\u6E10\u5F3A/\u6E10\u5F31\u7EC8\u70B9\u5FC5\u987B\u662F\u540C\u58F0\u90E8\u7684\u540E\u7EED\u97F3\u7B26" });

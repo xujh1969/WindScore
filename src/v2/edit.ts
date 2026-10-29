@@ -497,6 +497,23 @@ export function shiftOctaveMany(score: Score, ids: readonly string[], delta: num
 }
 
 /**
+ * JP-Word 同款八度**循环**（` / ~ / · 三键）：同方向连按，1 个点 → 2 个点 →
+ * 3 个点 → 无点，再按重新开始。与 shiftOctave 的「封顶移动」是两种语义——
+ * 封顶是 ^ / v 的（到头就停住），循环是这颗键的（到头回无点）。
+ */
+export function cycleOctave(score: Score, id: string, dir: 1 | -1): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'note') return e;
+      const next = e.octave + dir;
+      // 越过 ±3 就回到无点：升 3 → 0、降 -3 → 0
+      return { ...e, octave: next > 3 || next < -3 ? 0 : next };
+    }),
+  };
+}
+
+/**
  * 吐音标记：v 传 T / K，省略 = 去掉。双吐就是 T K 交替标在连续音符上。
  * 与换气 V 互斥——三个都属于「气息」，一次只做一个：标吐音就摘掉换气。
  */

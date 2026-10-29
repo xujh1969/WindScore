@@ -49,6 +49,7 @@ import {
   setRepeatTimes,
   setOctave,
   setTicks,
+  cycleOctave,
   shiftOctave,
   shiftOctaveMany,
   toggleSlur,
@@ -3220,7 +3221,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         }
         // 八度：· 降 8、~ 升 8（中文标点下同一颗键的上下档，手不用挪）。
         // 英文布局下这颗键是 `（无 Shift）/ ~（Shift），所以 ` 一并认作降 8。
-        // 与 ^ / v 并存：那两个是英文写法，这一对是同一颗键上下档。
+        // 与 ^ / v 并存：那两个是英文写法（封顶移动），这一对是 JP-Word 同款
+        // **循环**——连按 1 个点 → 2 个点 → 3 个点 → 无点，再按重新开始。
         case '·':
         case '`':
         case '~': {
@@ -3230,7 +3232,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           if (k < 0) return;
           const prev = score.events[k];
           if (prev.kind !== 'note') return;
-          commit({ score: shiftOctave(score, prev.id, e.key === '~' ? 1 : -1) });
+          commit({ score: cycleOctave(score, prev.id, e.key === '~' ? 1 : -1) });
           return;
         }
         case 'ArrowLeft':

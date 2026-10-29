@@ -1639,35 +1639,10 @@ function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | 
   const k = layout.glyph.fontSize / 21;
 
   /**
-   * 首声部 id（多声部时）。小节线的属性——拍号、反复、房子、终止——都由它控制，
-   * 其余声部只读跟随（界面上二、三声部的这些设置是禁用状态）。
+   * 首声部 id（多声部时）。小节线的结构属性——拍号、反复、房子——由它控制，
+   * 其余声部在面板上只读（canEditConductor 门）；谱中换音色是声部私有的。
    */
   const firstPartId = layout.lines.find((ln) => ln.partId)?.partId;
-  /**
-   * 多声部：点任何声部的小节线，都落到**首声部同一时间点**的那根线
-   * （同一小节边界，重奏共用绝对坐标 ⇒ x 相同）。否则在二、三声部上
-   * 根本改不了拍号 / 反复这些属于首声部的属性。
-   */
-  const conductorBarline = (
-    it: PlacedItem,
-    line: LayoutLine,
-  ): { it: PlacedItem; line: LayoutLine } => {
-    if (!firstPartId || line.partId === firstPartId) return { it, line };
-    const target = layout.lines.find((ln) => ln.partId === firstPartId && ln.system === line.system);
-    if (!target) return { it, line };
-    const bx = it.x + it.w / 2;
-    let best: PlacedItem | null = null;
-    let bestDx = Infinity;
-    for (const cand of target.items) {
-      if (cand.kind !== 'barline') continue;
-      const dx = Math.abs(cand.x + cand.w / 2 - bx);
-      if (dx < bestDx) {
-        bestDx = dx;
-        best = cand;
-      }
-    }
-    return best && bestDx <= 10 ? { it: best, line: target } : { it, line };
-  };
 
   // 多声部连谱号（行首那条竖线，含它右侧的细竖线）与行首拍号：
   // 点它们 = 选中**行前那根小节线**（layout 已记录 leadingBarlineIndex）。
@@ -1723,15 +1698,21 @@ function pickSingleAt(layout: LayoutResult, x: number, y: number): LayoutPick | 
 
     if (it.kind === 'barline') {
       // 点竖线 = **选中这条线**（反复 / 终止线 / 房子都是它的属性，点它才能改）。
-      // 多声部：选中时落到首声部同一时间点的那根线（拍号 / 反复 / 房子归首声部管）。
+      // 多声部：**点到哪根就选中哪根**（0.4.23）——谱中换音色（patchAfter）是
+      // 声部私有的，必须能选中自己声部的线才改得了；拍号 / 反复 / 房子这些
+      // 首声部专属属性，面板对非首声部本来就只给提示不给控件（canEditConductor），
+      // 所以不再需要「映射回首声部」。早先映射是音色还全局同步时代的产物。
       // 线的两侧留作插入点：只有正中那一小条是「选线」，免得想插音却选中了线。
       // 插入时必须留在**被点击的声部**：不能被指挥映射拽到首声部——
       // 否则在圆号末尾的空小节后点一下，光标会跳进小号声部（用户实测）。
       const mid = it.x + it.w / 2;
       if (x >= mid - 5 && x <= mid + 5) {
-        const cb = conductorBarline(it, line);
-        const owner = cb.line.partId ? { partId: cb.line.partId } : {};
-        return { index: cb.it.eventIndex, mode: 'over', cursor: cb.it.eventIndex + 1, ...owner };
+        return {
+          index: it.eventIndex,
+          mode: 'over',
+          cursor: it.eventIndex + 1,
+          ...(line.partId ? { partId: line.partId } : {}),
+        };
       }
       return {
         index: it.eventIndex,

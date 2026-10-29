@@ -27,7 +27,7 @@ import {
 } from '../src/v2/layout';
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
-import { assembleParts, namespacePart, partScore, scoreParts } from '../src/v2/parts';
+import { assembleParts, namespacePart, partScore, scoreParts, withConductor } from '../src/v2/parts';
 import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
 import { groupTicks, groupTierBeats } from '../src/v2/meter';
 import {
@@ -78,6 +78,7 @@ import {
   toggleArticulation,
   setTongue,
   toggleTechnique,
+  cycleOctave,
   shiftOctave,
   toggleSlur,
   toggleTongue,
@@ -4218,6 +4219,64 @@ console.log('\n[文字标注（段落 (文字) 的编辑器操作）]');
     check('排版条目带 bpmAfter（画 ♩=96）', bars.some((b) => b.bpmAfter === 96));
     check('排版条目带 patchAfter（画 音色=5）', bars.some((b) => b.patchAfter === 5));
   }
+  {
+    // 多声部：谱中换音色（patchAfter）是**声部级**内容，不随首声部小节线同步。
+    // 0.4.21 修：改一个声部某小节的音色，其他声部不再跟着变
+    // 注意：第二声部用**独立内容**构造（真实场景各 @part 各自解析），不复制第一声部事件
+    const p1src = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n@patch 40\n| 1 1 1 1 | 音5 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    const p2src = parseDsl('@format 3\n@bpm 80\n@beat 4/4\n@patch 40\n| 1 1 1 1 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+    const ens = assembleParts(
+      { ...p1src.score!, meta: { ...p1src.score!.meta } },
+      [
+        namespacePart(p1src.score!, { id: '1', name: '一声部', gain: 1 }),
+        namespacePart(p2src.score!, { id: '2', name: '二声部', gain: 1 }),
+      ],
+    );
+    const barsOf = (s: Score, id: string) => partScore(s, id).events.filter((e): e is BarlineEvent => e.kind === 'barline');
+    check('首声部保留自己的音5', barsOf(ens, '1').some((b) => b.patchAfter === 5));
+    check('二声部不继承首声部的谱中换音色', !barsOf(ens, '2').some((b) => typeof b.patchAfter === 'number'),
+      JSON.stringify(barsOf(ens, '2').map((b) => b.patchAfter)));
+    // 二声部自己写 音7：经 withConductor 重同步后保留（此前会被首声部抄写覆盖）
+    const edited = { ...ens, parts: ens.parts!.map((p) => {
+      if (p.id !== '2') return p;
+      const mid = p.events.findIndex((e, i) => e.kind === 'barline' && i > 0);
+      return { ...p, events: p.events.map((e, i) => (i === mid ? { ...e, patchAfter: 7 } : e)) };
+    }) };
+    const resynced = withConductor(edited, '2');
+    check('二声部自己写的 音7 经重同步后保留', resynced.events.some((e) => e.kind === 'barline' && (e as BarlineEvent).patchAfter === 7));
+    check('首声部的 音5 不受影响', barsOf(edited, '1').some((b) => b.patchAfter === 5));
+    // 播放口径：buildTimeline 里各声部的 patch 互不串
+    const tl = buildTimeline(ens);
+    const p1second = tl.find((e) => e.partId === '1' && e.startTick >= TICKS_PER_BEAT * 4)!;
+    const p2second = tl.find((e) => e.partId === '2' && e.startTick >= TICKS_PER_BEAT * 4)!;
+    check('播放：一声部变音色后 patch=5', p1second?.patch === 5, String(p1second?.patch));
+    check('播放：二声部仍跟声部设置（40），不变音色', p2second?.patch === 40, String(p2second?.patch));
+  }
+}
+
+console.log('[多声部 · 小节线命中归属]');
+{
+  // 点小节线 = 选中**所在声部**的那根（0.4.23）：谱中换音色是声部私有的，
+  // 早先强制映射回首声部，二声部的音色怎么都改不了（用户实测）
+  const p1 = parseDsl('@format 3\n@beat 4/4\n| 1 1 1 1 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+  const p2 = parseDsl('@format 3\n@beat 4/4\n| 2 2 2 2 | 2 2 2 2 |') as unknown as { score?: Score; errors?: string[] };
+  check('两声部解析无错', (p1.errors ?? []).length === 0 && (p2.errors ?? []).length === 0);
+  const ens = assembleParts(
+    { ...p1.score!, meta: { ...p1.score!.meta } },
+    [
+      namespacePart(p1.score!, { id: '1', name: '一声部', gain: 1 }),
+      namespacePart(p2.score!, { id: '2', name: '二声部', gain: 1 }),
+    ],
+  );
+  const L = layoutScore(ens, { contentWidth: 900 });
+  const lineOf = (id: string) => L.lines.find((ln) => ln.partId === id)!;
+  const barOf = (id: string) => lineOf(id).items.find((it) => it.kind === 'barline' && it.measure === 1)!;
+  const pick2 = pickAt(L, barOf('2')!.x + barOf('2')!.w / 2, lineOf('2').y);
+  check('点二声部小节线 = partId 归二声部', pick2?.partId === '2', JSON.stringify(pick2));
+  const ev2 = partScore(ens, '2').events[pick2?.index ?? -1];
+  check('选中的事件是二声部自己的小节线', ev2?.kind === 'barline' && pick2?.index === barOf('2')!.eventIndex);
+  const pick1 = pickAt(L, barOf('1')!.x + barOf('1')!.w / 2, lineOf('1').y);
+  check('点首声部小节线仍归首声部', pick1?.partId === '1' && pick1?.index === barOf('1')!.eventIndex);
 }
 {
   // ── 合成音色：采样循环段的平铺治理（0.4.7） ──
@@ -4372,6 +4431,34 @@ console.log('\n[X 无音高音符与休止符附点]');
   const zn = L.lines.flatMap((ln) => ln.items).filter((it) => it.kind === 'rest' && !it.xnote);
   check('X 进排版并带 xnote 标记', xn.length === 2 && xn.every((it) => it.w > 0), 'got ' + xn.length);
   check('普通 0 休止不带 xnote', zn.length === 3, 'got ' + zn.length);
+}
+
+console.log('[编辑 · 八度循环（JP-Word 同款 ` / ~ 键）]');
+{
+  const s = parseDsl('@beat 4/4\n\n1 2 3 4 ||').score!;
+  const note = s.events[0]!;
+  // 升方向：无点 → 1 → 2 → 3 → 无点
+  const up = [0, 1, 2, 3].reduce((acc) => cycleOctave(acc, note.id, 1), s);
+  const upN = up.events.find((e) => e.id === note.id)!;
+  check('升 4 下回到无点', upN.kind === 'note' && upN.octave === 0, 'octave=' + (upN.kind === 'note' ? upN.octave : '?'));
+  const up1 = cycleOctave(s, note.id, 1).events.find((e) => e.id === note.id)!;
+  const up2 = [0, 1].reduce((acc) => cycleOctave(acc, note.id, 1), s).events.find((e) => e.id === note.id)!;
+  const up3 = [0, 1, 2].reduce((acc) => cycleOctave(acc, note.id, 1), s).events.find((e) => e.id === note.id)!;
+  check('升 1 下 = 高音 1 点', up1.kind === 'note' && up1.octave === 1);
+  check('升 2 下 = 2 点、升 3 下 = 3 点', up2.kind === 'note' && up2.octave === 2 && up3.kind === 'note' && up3.octave === 3);
+  // 降方向：无点 → -1 → -2 → -3 → 无点
+  const down = [0, 1, 2, 3].reduce((acc) => cycleOctave(acc, note.id, -1), s);
+  const dnN = down.events.find((e) => e.id === note.id)!;
+  check('降 4 下回到无点', dnN.kind === 'note' && dnN.octave === 0, 'octave=' + (dnN.kind === 'note' ? dnN.octave : '?'));
+  const dn3 = [0, 1, 2].reduce((acc) => cycleOctave(acc, note.id, -1), s).events.find((e) => e.id === note.id)!;
+  check('降 3 下 = 3 个低音点', dn3.kind === 'note' && dn3.octave === -3);
+  // 封顶移动 shiftOctave 语义不变：到头停住
+  const capped = [0, 1, 2, 3, 4].reduce((acc) => shiftOctave(acc, note.id, 1), s).events.find((e) => e.id === note.id)!;
+  check('shiftOctave 仍在 +3 封顶（^ 键语义不变）', capped.kind === 'note' && capped.octave === 3);
+  // 循环结果可无损写回
+  const threeUp = [0, 1, 2].reduce((acc) => cycleOctave(acc, note.id, 1), s);
+  const rt = parseDsl(serializeDsl(threeUp));
+  check('3 个高音点 round-trip 无错', rt.errors.length === 0 && serializeDsl(rt.score!) === serializeDsl(threeUp));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

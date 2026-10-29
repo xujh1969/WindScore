@@ -341,12 +341,37 @@ export function PadBody({
     }
   }
 
+  // 谱中换音色（patchAfter）是**声部私有**属性（0.4.22 起）：首声部与非首声部
+  // 都要能改自己这根线的音色，所以这个字段在 canEditConductor 门内外各渲染一份
+  const patchAfterField = (
+    <div className="v2-field">
+      <span className="v2-field-label">此线之后的音色{canEditConductor ? '' : '（本声部）'}</span>
+      <select
+        className="v2-meta-input"
+        value={barline?.patchAfter ?? ''}
+        onChange={(e) => {
+          const v = e.target.value;
+          barlineActions.setPatchAfter(v === '' ? undefined : Number(v));
+        }}
+      >
+        <option value="">沿用之前的音色</option>
+        {patchOptions().map((p) => <option key={p} value={p}>{patchOptionLabel(p)}</option>)}
+        {barline?.patchAfter != null && !patchOptions().includes(barline.patchAfter) ? (
+          <option value={barline.patchAfter}>{patchOptionLabel(barline.patchAfter)}</option>
+        ) : null}
+      </select>
+    </div>
+  );
+
   return (
     <div className="v2-pad-body">
       {barline ? (
         <>
         {!canEditConductor ? (
-          <p className="v2-hint">全谱的反复、跳房子与跳转由首声部控制，切回首声部再编辑。</p>
+          <>
+          <p className="v2-hint">全谱的拍号、速度、反复、跳房子与跳转由首声部控制，切回首声部再编辑。音色是各声部自己的设置，在这里改本声部的。</p>
+          {patchAfterField}
+          </>
         ) : (
         <>
         <div className="v2-field">
@@ -358,23 +383,7 @@ export function PadBody({
           </select>
         </div>
         <BpmAfterField value={barline.bpmAfter} prevBpm={prevBpm} onCommit={(v) => barlineActions.setBpmAfter(v)} />
-        <div className="v2-field">
-          <span className="v2-field-label">此线之后的音色</span>
-          <select
-            className="v2-meta-input"
-            value={barline.patchAfter ?? ''}
-            onChange={(e) => {
-              const v = e.target.value;
-              barlineActions.setPatchAfter(v === '' ? undefined : Number(v));
-            }}
-          >
-            <option value="">沿用之前的音色</option>
-            {patchOptions().map((p) => <option key={p} value={p}>{patchOptionLabel(p)}</option>)}
-            {barline.patchAfter != null && !patchOptions().includes(barline.patchAfter) ? (
-              <option value={barline.patchAfter}>{patchOptionLabel(barline.patchAfter)}</option>
-            ) : null}
-          </select>
-        </div>
+        {patchAfterField}
         <div className="v2-field">
           <span className="v2-field-label">此线之后的排版</span>
           <div className="v2-grid">

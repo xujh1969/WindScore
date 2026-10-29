@@ -970,6 +970,23 @@ function paintLine(
       ctx.stroke();
     }
 
+    // 焦点小节线（**精确选中的那根**）：左侧一枚小箭头指向这条线。
+    // 多声部里同一边界整列点亮（见上），箭头标出「正在编辑的值落在哪个声部」——
+    // 谱中换音色是声部私有的，用户需要一眼分清改的是哪一行的音色（0.4.23）
+    if (o.focusId === it.eventId) {
+      ctx.save();
+      ctx.fillStyle = theme.accent;
+      const ax = bx - 11 * M.k;
+      const r = 4.5 * M.k;
+      ctx.beginPath();
+      ctx.moveTo(ax + r, y);
+      ctx.lineTo(ax - r * 0.7, y - r);
+      ctx.lineTo(ax - r * 0.7, y + r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
     // 对轨配对：小节线变成「绑定靶标」
     if (o.pairing) {
       paintBindTarget(ctx, bx, y, theme, o.pairingHoverId === it.eventId);

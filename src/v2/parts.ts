@@ -94,12 +94,15 @@ export function withConductor(score: Score, id: string): Score {
   const sourceHead = score.events.slice(0, score.events.findIndex((e) => 'ticks' in e));
   const targetHead = target.events.slice(0, target.events.findIndex((e) => 'ticks' in e));
   // 小节末线保留；同一边界后的额外结构线由首声部重建，避免反复同步时累加。
+  // patchAfter（谱中换音色）是**声部级**内容：本声部写的不剥、也不从首声部抄——
+  // 否则改一个声部的某小节音色，所有声部一起变（0.4.21 用户实测）。
+  // bpmAfter（谱中变速）是全谱共享的，照旧随首声部同步。
   const keptBars = new Set(targetMeasures.map(m => target.events[m.to - 1]?.id));
   const headBar = targetHead.find(e => e.kind === 'barline');
   if (headBar) keptBars.add(headBar.id);
   const clean = target.events.filter((e) => e.kind !== 'jump' && (e.kind !== 'barline' || keptBars.has(e.id))).map((e): Event => {
     if (e.kind !== 'barline') return e;
-    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, bpmAfter: _bm, patchAfter: _p, ...bar } = e;
+    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, bpmAfter: _bm, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
@@ -110,7 +113,7 @@ export function withConductor(score: Score, id: string): Score {
     const dstOriginal = boundary === 0 ? targetHead.find((e) => e.kind === 'barline') : target.events[(targetStarts[boundary] ?? 0) - 1];
     let index = dstOriginal ? clean.findIndex((e) => e.id === dstOriginal.id) : -1;
     if (src?.kind === 'barline') {
-      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter, patchAfter: src.patchAfter };
+      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter };
       if (clean[index]?.kind === 'barline') clean[index] = { ...clean[index], ...attributes } as BarlineEvent;
       else if (boundary === 0) {
         clean.unshift({ id: `p${id}:conductor:start`, kind: 'barline', style: 'single', ...attributes });
@@ -137,7 +140,12 @@ export function addPart(score: Score): Score {
   const events: Event[] = [];
   let seq = 0;
   const eid = () => `p${id}:e${++seq}`;
-  if (score.events[0]?.kind === 'barline') events.push({ ...score.events[0], id: eid() });
+  // 谱中换音色（patchAfter）是首声部自己的内容，新声部不继承（音色跟声部设置走）
+  const stripPatch = (b: BarlineEvent): BarlineEvent => {
+    const { patchAfter: _p, ...bar } = b;
+    return bar;
+  };
+  if (score.events[0]?.kind === 'barline') events.push(stripPatch({ ...score.events[0], id: eid() }));
   for (const m of measures) {
     const dots = ([0, 1, 2] as const).find((dot) => {
       let base = m.ticks / (dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75);
@@ -150,7 +158,7 @@ export function addPart(score: Score): Score {
       if (e.kind === 'note' || e.kind === 'rest') events.push({ id: eid(), kind: 'rest', ticks: e.ticks, dot: e.dot });
     }
     const end = score.events[m.to - 1];
-    events.push(end?.kind === 'barline' ? { ...end, id: eid() } : { id: eid(), kind: 'barline', style: 'single' });
+    events.push(end?.kind === 'barline' ? stripPatch({ ...end, id: eid() }) : { id: eid(), kind: 'barline', style: 'single' });
   }
   return assembleParts(score, [...parts, { id, name: `声部 ${id}`, gain: 1, events, groups: [] }]);
 }

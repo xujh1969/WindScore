@@ -573,7 +573,7 @@ export function PadBody({
             title="变音记号循环：升 # → 降 b → 还原 ♮ → 无（跟随调号），对光标左侧的音"
             aria-label="变音记号循环"
           >
-            {note?.accidental ?? '#'}
+            {note?.accidental ?? <span style={{ fontSize: '0.85em' }}>#/b</span>}
           </button>
           <button className={`v2-btn${parenOpen ? ' is-on' : ''}`} onClick={() => actions.paren('open')} title="左括号（">
             （

@@ -10,7 +10,8 @@
 
 import type { LayoutResult } from '../layout';
 import type { Score } from '../types';
-import { saveBytesAsFile, type SaveResult } from '../io';
+import { isTauri, saveBytesAsFile, type SaveResult } from '../io';
+import { logPdfExport } from './pdfDiagnostic';
 import { A4_PT, buildPdf, type PdfImagePage, type PagePlan } from './pdf';
 import {
   exportLayout,
@@ -19,6 +20,7 @@ import {
   planScorePages,
   prepareExportLayout,
   regionHasInk,
+  footerText,
   type ExportLayoutResult,
   type ExportNotation,
   type PageGeometry,
@@ -33,6 +35,7 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Uint8
           reject(new Error('这一页画不出来（画布返回了空数据）'));
           return;
         }
+        if (blob.type !== 'image/jpeg') { reject(new Error(`页面编码格式异常：${blob.type || '未知'}，PDF 需要 JPEG`)); return; }
         blob.arrayBuffer().then(
           (buf) => resolve(new Uint8Array(buf)),
           () => reject(new Error('读取画布数据失败')),
@@ -63,8 +66,8 @@ export function a4Geometry(
 ): PageGeometry & { ptW: number; ptH: number } {
   const ptW = landscape ? A4_PT.h : A4_PT.w;
   const ptH = landscape ? A4_PT.w : A4_PT.h;
-  const pageW = (ptW / 72) * dpi;
-  const pageH = (ptH / 72) * dpi;
+  const pageW = Math.round((ptW / 72) * dpi);
+  const pageH = Math.round((ptH / 72) * dpi);
   return {
     pageW,
     pageH,
@@ -125,77 +128,116 @@ export interface PdfExportOptions extends ExportNotation {
 export interface PdfExportResult {
   bytes: Uint8Array;
   pageCount: number;
+  diagnosticPath?: string;
+}
+
+async function within<T>(job: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try { return await Promise.race([job, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label}超时，请重试或提供诊断日志`)), 20_000); })]); }
+  finally { clearTimeout(timer!); }
+}
+
+/** 逐行检查谱面内容，不让标题/页脚掩盖正文丢失；完全隐藏的休止行不要求有墨。 */
+function verifyPdfRows(canvas: HTMLCanvasElement, layout: ExportLayoutResult, plan: PagePlan, geo: PageGeometry, bg: string): number {
+  let checked = 0;
+  for (let i = plan.from; i < plan.to; i++) {
+    const row = layout.lines[i];
+    if (!row.items.some(it => (it.kind === 'note' || it.kind === 'rest') && !it.hidden)) continue;
+    const top = Math.max(0, geo.marginTop + (row.y - plan.offset - layout.lineHeight / 2 - 6) * geo.scale);
+    const bottom = Math.min(canvas.height - geo.marginBottom, geo.marginTop + (row.y - plan.offset + layout.lineHeight / 2 + 6) * geo.scale);
+    if (bottom <= top || !regionHasInk(canvas, geo.marginX, top, canvas.width - 2 * geo.marginX, bottom - top, bg, true)) {
+      throw new Error(`第 ${i + 1} 行谱面未通过内容校验，已阻止生成空白 PDF`);
+    }
+    checked++;
+  }
+  return checked;
+}
+
+/** 编码后重新解码检查，覆盖“像素正常、编码文件空白/格式错误”的另一条失败路径。 */
+async function verifyJpeg(bytes: Uint8Array, canvas: HTMLCanvasElement, layout: ExportLayoutResult, plan: PagePlan, geo: PageGeometry, bg: string): Promise<void> {
+  if (bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes[bytes.length - 2] !== 255 || bytes[bytes.length - 1] !== 217) throw new Error('PDF 页面编码不是完整的 JPEG');
+  const image = new Image();
+  const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }));
+  const decoded = document.createElement('canvas');
+  try {
+    image.src = url;
+    await within(image.decode(), '页面图片解码');
+    if (image.naturalWidth !== canvas.width || image.naturalHeight !== canvas.height) throw new Error('PDF 图片实际尺寸与页面声明不一致');
+    decoded.width = canvas.width; decoded.height = canvas.height;
+    const ctx = decoded.getContext('2d', { willReadFrequently: true, alpha: false });
+    if (!ctx || ctx.isContextLost?.()) throw new Error('页面图片校验画布不可用');
+    ctx.drawImage(image, 0, 0);
+    verifyPdfRows(decoded, layout, plan, geo, bg);
+  } finally { image.src = ''; URL.revokeObjectURL(url); decoded.width = 0; decoded.height = 0; }
 }
 
 /** 导出 PDF：A4 分页 + 每页页脚「歌名-页号/总页数」 */
 export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportResult> {
+  const diagnosticPath = await logPdfExport({ phase: 'start', version: DIAG(), userAgent: navigator.userAgent, visibility: document.visibilityState,
+    dpi: opts.dpi ?? 150, landscape: opts.landscape ?? false, notation: opts.notation ?? 'jianpu', events: opts.score.events.length }, true);
+  try {
   // 字体没就绪就画页，标题/音符字符会用回退字形
-  await document.fonts.ready;
+  await within(document.fonts.ready, '字体准备');
   const paper = a4Geometry(opts.landscape ?? false, opts.dpi ?? 150, opts.scale ?? 1.55);
   const showTitle = opts.showTitle ?? true;
   const { layout, plans, geo } = planExport(opts.score, paper, showTitle, opts.layout, opts);
   if (plans.length === 0) throw new Error('谱面是空的，没什么可导出的');
 
   const theme = exportTheme(opts.dark ?? false);
-  const canvas = document.createElement('canvas');
-  canvas.width = geo.pageW;
-  canvas.height = geo.pageH;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('拿不到 2D 画布');
-
   const pages: PdfImagePage[] = [];
-  // 编码副本固定走内存后备：个别显卡驱动对 GPU 画布的读回会丢瓦片（整页空白/断段）。
-  // 每页先在 GPU 画布上绘制（与界面同一渲染路径，好机器零变化），整页拷贝到副本再编码；
-  // 副本上做墨迹自检，空白就在副本上用 CPU 重画这一页，仍空白才报错。
-  const copy = document.createElement('canvas');
-  copy.width = canvas.width;
-  copy.height = canvas.height;
-  const copyCtx = copy.getContext('2d', { willReadFrequently: true });
-  if (!copyCtx) throw new Error('拿不到 2D 画布');
+  await logPdfExport({ phase: 'planned', pages: plans.length, width: geo.pageW, height: geo.pageH, scale: geo.scale, rows: layout.lines.length, fonts: document.fonts.status });
   for (let i = 0; i < plans.length; i += 1) {
     opts.onProgress?.(i / plans.length, `正在画第 ${i + 1} / ${plans.length} 页`);
-    const pageOpts = { showMeasureNumbers: opts.showMeasureNumbers ?? true };
-    // 画布复用、排版只做一次：每页重画一遍即可
-    paintExportPage(ctx, layout, theme, plans[i]!, geo, pageOpts);
-    copyCtx.setTransform(1, 0, 0, 1, 0, 0);
-    copyCtx.clearRect(0, 0, copy.width, copy.height);
-    copyCtx.drawImage(canvas, 0, 0);
-    // 等一拍再自检：个别 WebView 上 GPU→软件画布的整页拷贝是异步落地的，
-    // 立刻读会读到空（PNG 长图同款教训；0.4.18 的同步自检在部分 Win11 上失效）
-    await new Promise((r) => setTimeout(r, 0));
-    if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
-      // CPU 重画前先清干净：防止半落地的内容与重画混叠
-      copyCtx.clearRect(0, 0, copy.width, copy.height);
-      paintExportPage(copyCtx, layout, theme, plans[i]!, geo, pageOpts);
-      await new Promise((r) => setTimeout(r, 0));
-      if (!regionHasInk(copy, 0, 0, copy.width, copy.height, theme.bg)) {
-        throw new Error(`第 ${i + 1} 页画不上内容，请改导出 SVG 或 PNG 长图，或更新显卡驱动后重试 ${DIAG()}`);
-      }
-    }
-    pages.push({
-      jpeg: await canvasToJpeg(copy, opts.quality ?? 0.92),
-      width: geo.pageW,
-      height: geo.pageH,
-    });
+    await logPdfExport({ phase: 'page-render', page: i + 1, from: plans[i].from, to: plans[i].to });
+    // 从第一笔起在软件后备画布绘制，避免 GPU→CPU 拷贝和跨页复用的上下文残留。
+    const canvas = document.createElement('canvas');
+    try {
+      canvas.width = geo.pageW; canvas.height = geo.pageH;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+      if (!ctx || ctx.isContextLost?.()) throw new Error('PDF 绘制画布不可用');
+      paintExportPage(ctx, layout, theme, plans[i], geo, { showMeasureNumbers: opts.showMeasureNumbers ?? true, footer: footerText(opts.name, i + 1, plans.length) });
+      if (ctx.isContextLost?.()) throw new Error('PDF 绘制上下文在绘制期间丢失');
+      const rows = verifyPdfRows(canvas, layout, plans[i], geo, theme.bg);
+      await logPdfExport({ phase: 'page-pixels-verified', page: i + 1, rows });
+      const jpeg = await within(canvasToJpeg(canvas, opts.quality ?? .92), '页面图片编码');
+      await logPdfExport({ phase: 'page-encoded', page: i + 1, bytes: jpeg.length });
+      await verifyJpeg(jpeg, canvas, layout, plans[i], geo, theme.bg);
+      await logPdfExport({ phase: 'page-jpeg-verified', page: i + 1, width: canvas.width, height: canvas.height });
+      pages.push({ jpeg, width: canvas.width, height: canvas.height });
+    } finally { canvas.width = 0; canvas.height = 0; }
     // 让出主线程，几十页时界面才不会卡住
     await new Promise((r) => setTimeout(r, 0));
   }
   opts.onProgress?.(1, '正在生成 PDF 文件');
-  return {
-    bytes: buildPdf(pages, paper.ptW, paper.ptH, { title: opts.name }),
-    pageCount: plans.length,
-  };
+  const bytes = buildPdf(pages, paper.ptW, paper.ptH, { title: opts.name });
+  await logPdfExport({ phase: 'pdf-built', bytes: bytes.length, pages: plans.length });
+  return { bytes, pageCount: plans.length, diagnosticPath };
+  } catch (error) {
+    await logPdfExport({ phase: 'error', message: String(error) });
+    throw new Error(`${error instanceof Error ? error.message : error} ${DIAG()}${diagnosticPath ? `；诊断日志：${diagnosticPath}` : ''}`);
+  }
 }
 
 /** 导出 PDF 并落盘 */
 export async function exportScorePdfToFile(
   opts: PdfExportOptions,
 ): Promise<SaveResult & { pageCount: number }> {
-  const { bytes, pageCount } = await exportScorePdf(opts);
+  const { bytes, pageCount, diagnosticPath } = await exportScorePdf(opts);
+  try {
+  await logPdfExport({ phase: 'save-start', bytes: bytes.length });
   const res = await saveBytesAsFile(bytes, `${safeFileName(opts.name)}.pdf`, {
     ext: 'pdf',
     mime: 'application/pdf',
     label: 'PDF 文件',
   });
+  if (res.ok && res.path && isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/tauri');
+    await invoke('verify_pdf_export', { path: res.path, expectedSize: bytes.length });
+  }
+  await logPdfExport({ phase: res.ok ? 'save-complete' : 'save-cancelled', bytes: bytes.length, pageCount, diskVerified: res.ok && !!res.path && isTauri() });
   return { ...res, pageCount };
+  } catch (error) {
+    await logPdfExport({ phase: 'save-error', message: String(error) });
+    throw new Error(`${error instanceof Error ? error.message : error}${diagnosticPath ? `；诊断日志：${diagnosticPath}` : ''}`);
+  }
 }

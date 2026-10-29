@@ -31,6 +31,7 @@
 
 - `types.ts`：谱面、音符、休止符、小节线、跳转标记和拍内组的数据模型；每拍 6720 ticks（=2^6×3×5×7，能精确表达 5/6/7 连音）。
 - `dsl.ts`：`.jps` 文本的解析与序列化，是谱面文件格式的唯一入口。
+- `io.ts.fromText` 同时保留原文与解析错误；桌面/网页编辑器对错误谱面进入源码修复，保存和会话恢复不丢弃未知记号。曲库中的损坏条目可进入修复；Android 仍只播放，不引入编辑功能。
 - `lyrics.ts`：歌词行增删改名/关联、逐音附着与文本行序列化，中文词句逐字插入、补空位顺延（容量不足保留原谱）；`ui/TrackDialog.tsx` 创建演奏声部或关联歌词行，`ui/LyricCell.tsx` 与 `ScoreCanvas` 在谱面提供输入法完成选字后分格的输入。`PartInfo.lyricNames` 保存行名，文字仍在 `NoteEvent.lyrics` 中，歌词不进入播放时间线。歌词基础字号 16、段间距 24 同步用于画布输入框、布局、绘制和导出。
 - `ticks.ts`、`validate.ts`：时值换算和谱面结构/不变量检查。
 - `edit.ts`：编辑操作集中为纯函数，UI 通过这些函数改谱。
@@ -58,7 +59,8 @@
 
 - `render.ts` 复用 layout/paint，提供 PDF 页和视频帧绘制。
 - `pdf.ts` 做分页计划和 PDF 字节组装；`tasks.ts` 串联 PDF 绘制和保存。`ScoreCanvas.onLayout` 将当前排版与参数交给 `ExportDialog`，PDF 直接复用排版、按纸张宽度等比适配，再分页；逐页预览与导出共用 `paintExportPage`，DPI 不改变断行。
-- `image.ts` 输出 PNG 长图与 SVG；`svg.ts` 把共用绘制器的文字和路径指令记录为矢量元素。
+- PDF 图片尺寸使用整数位图尺寸（不可把 A4 的浮点像素直接写入图片字典）。`tasks.ts` 逐行及 JPEG 解码校验，`pdfDiagnostic.ts` 记录阶段；Tauri `log_pdf_export` 写独立日志，`verify_pdf_export` 在成功前核对落盘头尾和大小。排查方法及整数/小数 A/B 证据见 `docs/2026-10-29-pdf-and-source-recovery.md`。
+- `image.ts` 输出 PNG 长图与 SVG；PNG 按整数横条拼接，拼接后及编码解码后逐行校验，临时画布及时释放，回归入口 `scripts/png-reliability.html`；`svg.ts` 把共用绘制器的文字和路径指令记录为矢量元素。
 - `video.ts` 管画面比例、滚动与时长计算；`mix.ts` 离线混音/合成；`encode.ts` 选 WebCodecs 编码器；`videoExport.ts` 串起逐帧视频导出。
 
 ### 实验性听音成谱：已移除

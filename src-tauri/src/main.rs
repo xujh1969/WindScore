@@ -2,7 +2,7 @@
 
 use base64::Engine as _;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 /// 分块写大文件（视频导出用）。
@@ -54,13 +54,22 @@ async fn log_video_export(
     line: String,
     reset: bool,
 ) -> Result<String, String> {
+    write_export_log(app, line, reset, "video-export-latest.jsonl").await
+}
+
+#[tauri::command]
+async fn log_pdf_export(app: tauri::AppHandle, line: String, reset: bool) -> Result<String, String> {
+    write_export_log(app, line, reset, "pdf-export-latest.jsonl").await
+}
+
+async fn write_export_log(app: tauri::AppHandle, line: String, reset: bool, filename: &'static str) -> Result<String, String> {
     let dir = app
         .path_resolver()
         .app_log_dir()
         .ok_or("无法获取诊断日志目录")?;
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join("video-export-latest.jsonl");
+        let path = dir.join(filename);
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -75,9 +84,26 @@ async fn log_video_export(
     .map_err(|e| e.to_string())?
 }
 
+/// PDF 成功提示前检查磁盘上的大小、头尾，区分编码成功与文件实际写入失败。
+#[tauri::command]
+async fn verify_pdf_export(path: String, expected_size: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut file = std::fs::File::open(path).map_err(|e| format!("PDF 写后读取失败：{e}"))?;
+        let size = file.metadata().map_err(|e| e.to_string())?.len();
+        if size != expected_size || size < 16 { return Err(format!("PDF 文件长度不符：实际 {size}，应为 {expected_size}")); }
+        let mut head = [0; 5];
+        file.read_exact(&mut head).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::End(-16)).map_err(|e| e.to_string())?;
+        let mut tail = [0; 16];
+        file.read_exact(&mut tail).map_err(|e| e.to_string())?;
+        if &head != b"%PDF-" || !tail.ends_with(b"%%EOF\n") { return Err("PDF 文件头尾校验失败，请重试另存到本地目录".into()); }
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![write_file_chunk, log_video_export])
+        .invoke_handler(tauri::generate_handler![write_file_chunk, log_video_export, log_pdf_export, verify_pdf_export])
         .run(tauri::generate_context!())
         .expect("启动 WindScore 失败");
 }

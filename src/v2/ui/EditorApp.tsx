@@ -118,7 +118,7 @@ import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
 import { loadPianoSamples } from '../pianoSamples';
 import { buildPack, PACK_EXT, packFileName, readPack } from './packBundle';
-import { importLibrary, updateLibraryItem, type LibraryItem } from './libraryStore';
+import { flushLibraryWrites, importLibrary, updateLibraryItem, type LibraryItem } from './libraryStore';
 import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
@@ -406,6 +406,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [metronomeVolume, setMetronomeVolume] = useState(0.6);
   const metronomeRef = useRef<Metronome | null>(null);
   const [draft, setDraft] = useState('');
+  const [sourceRecovery, setSourceRecovery] = useState(false);
+  const sourceRecoveryRef = useRef(false);
+  const [savedSource, setSavedSource] = useState<string | null>(null);
   /** 整体视图：要么看简谱，要么看源码。源码不再塞在属性栏里。 */
   const [view, setView] = useState<'score' | 'source'>('score');
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1087,12 +1090,16 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 载入一份内容，并把「已保存」基准对齐到它 */
   const load = useCallback(
     (name: string, text: string, file: string | null = null, fromLibraryId: string | null = null) => {
-      const res = parseDsl(text);
-      if (!res.score) return;
+      const res = fromText(text, name, file);
+      if (!res.score && androidPlayer) return;
+      const opened = res.score ?? emptyScore();
+      sourceRecoveryRef.current = !res.score; setSourceRecovery(!res.score);
+      setSavedSource(!res.score ? text : null);
+      if (!res.score) { setDraft(text); setView('source'); setMode('score'); setMsg(`已打开源码修复：${res.errors[0] ?? '谱面无法解析'}`); }
       setLyricSelection(null);
       setSnap({
-        score: { ...res.score, format: 3 },
-        cursor: res.score.events.length,
+        score: { ...opened, format: 3 },
+        cursor: opened.events.length,
         anchor: null,
         mode: 'insert',
         rev: 0,
@@ -1107,7 +1114,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setSavedRev(0);
       stopPlay();
     },
-    [stopPlay],
+    [stopPlay, androidPlayer],
   );
 
   // 启动：优先接着上次改；没有草稿才载入内置曲
@@ -1115,14 +1122,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (androidItem) { load(androidItem.name, androidItem.text, null, androidItem.id); return; }
     const s = loadSession();
     if (s) {
-      const res = parseDsl(s.text);
-      if (res.score) {
-        load(s.name, s.text, s.path, s.libraryId ?? null);
-        setMsg('已恢复上次编辑的内容');
-        // 进来就看到一份谱面会让人发懵，说明一下它是上次没存完的草稿
-        toastInfo('已恢复上次编辑的内容', s.name);
-        return;
-      }
+      load(s.name, s.text, s.path, s.libraryId ?? null);
+      setMsg(fromText(s.text, s.name).score ? '已恢复上次编辑的内容' : '已恢复待修复源码，请根据错误提示继续修改');
+      // 进来就看到一份谱面会让人发懵，说明一下它是上次没存完的草稿
+      toastInfo('已恢复上次编辑的内容', s.name);
+      return;
     }
     load(BUILTIN[0].name, BUILTIN[0].text);
   }, [load, androidItem]);
@@ -1134,15 +1138,19 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   const adopt = useCallback(
     (res: OpenResult, fromLibraryId: string | null = null) => {
-      if (!res.score) {
+      if (!res.score && (res.text === undefined || androidPlayer)) {
         setMsg(res.errors.length ? `打开失败：${res.errors[0]}` : '解析失败');
         toastFail('打开失败', res.errors[0] ?? '这份内容解析不了');
         return;
       }
+      const opened = res.score ?? emptyScore();
+      sourceRecoveryRef.current = !res.score; setSourceRecovery(!res.score);
+      setSavedSource(!res.score ? res.text! : null);
+      if (!res.score) { setDraft(res.text!); setView('source'); setMode('score'); }
       setLyricSelection(null);
       setSnap({
-        score: { ...res.score, format: 3 },
-        cursor: res.score.events.length,
+        score: { ...opened, format: 3 },
+        cursor: opened.events.length,
         anchor: null,
         mode: 'insert',
         rev: 0,
@@ -1155,7 +1163,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setFileHandle(res.handle ?? null);
       setLibraryId(fromLibraryId);
       setSavedRev(0);
-      setMsg(`已打开 ${res.name}`);
+      setMsg(res.score ? `已打开 ${res.name}` : `已打开源码修复：${res.errors[0] ?? '谱面无法解析'}；原文完整保留`);
+      if (!res.score) toastInfo('已打开源码修复', '原始内容已保留，可继续修改或保存草稿');
       stopPlay();
       // 换谱面 = 换歌：旧伴奏与对轨标定作废（同 onNew），播放源回合成音
       setStems([]);
@@ -1168,10 +1177,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       // 换谱 = 重新走一遍恢复：同名重开时 active 没变，靠这个令牌才不会再读一次
       setRestoreToken((t) => t + 1);
     },
-    [stopPlay],
+    [stopPlay, androidPlayer, toastInfo, toastFail],
   );
 
   const onNew = useCallback(() => {
+    sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
     setLyricSelection(null);
     setSnap({ score: emptyScore(), cursor: 0, anchor: null, mode: 'insert', rev: 0 });
     setPast([]);
@@ -1228,6 +1238,26 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const onSave = useCallback(async () => {
     const t0 = performance.now();
     const cur = snap.score;
+    if (view === 'source') {
+      try {
+        const text = draft;
+        if (libraryId) {
+          if (!updateLibraryItem(libraryId, text)) { toastFail('保存失败', '曲库条目已不存在，源码仍保留在编辑器中'); return; }
+          await flushLibraryWrites();
+        } else {
+          const saved = await saveScore(text, `${active || '待修复谱面'}.jps`, fileHandle);
+          if (!saved.ok) { toastInfo('保存已取消'); return; }
+          if (saved.handle) setFileHandle(saved.handle);
+          if (saved.path && !saved.inPlace) setPath(saved.path);
+        }
+        setSavedRev(snap.rev); setSavedSource(text);
+        const parsed = parseDsl(text);
+        const invalid = !parsed.score || parsed.errors.length > 0;
+        setMsg(invalid ? '已保存待修复源码，重新打开后可继续修改' : '已保存当前源码');
+        toastOk(invalid ? '已保存待修复草稿' : '源码已保存', invalid ? '错误提示保留，重新打开可继续修改' : undefined);
+      } catch (error) { toastFail('源码保存失败', String(error)); }
+      return;
+    }
     const name = cur.meta.title || active || '未命名';
     /**
      * 从**曲库**打开的谱（对轨页点进来的）：保存 = 直接写回曲库那一条，
@@ -1310,7 +1340,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     );
     // 走到这里说明这份谱不是从曲库来的：只写文件，曲库不动
     toastOk('保存成功', `${nameOf(r.path ?? '') || name}（${seg}）`);
-  }, [snap, active, fileHandle, libraryId, toastProgress, toastOk, toastFail, toastInfo]);
+  }, [snap, active, fileHandle, libraryId, view, draft, toastProgress, toastOk, toastFail, toastInfo]);
 
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
@@ -1435,9 +1465,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (item: LibraryItem, target: 'play' | 'align'): boolean => {
       const res = fromText(item.text, item.name);
       if (!res.score) {
-        setMsg(`${item.name} 解析失败——曲库里这份内容有问题，建议删除后重新导入`);
-        // 状态栏那行小字太容易漏：打开失败必须拦在眼前
-        toastFail(`${item.name} 打不开`, '曲库里这份内容有问题，建议删除后重新导入');
+        if (target === 'align' && !androidPlayer) { adopt(res, item.id); return true; }
+        setMsg(`${item.name} 暂不能播放，请打开源码修复`);
+        toastFail('谱面需要修复后再播放', res.errors[0], androidPlayer ? undefined : { label: '打开源码修复', onClick: () => adopt(res, item.id) });
         return false;
       }
       adopt(res, item.id); // 记下来自曲库哪一条：保存时按 id 回写这一条
@@ -1458,7 +1488,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (item: LibraryItem) => {
       if (entry === 'app') { loadLibraryItem(item, 'align'); return; }
       const res = fromText(item.text, item.name);
-      if (!res.score) { setMsg(`${item.name} 解析失败，请先修正谱面`); return; }
       // 带上 libraryId：align.html 那边靠会话恢复内容，认得出来自曲库才不会去另存文件
       saveSession({ text: item.text, name: res.name, path: null, libraryId: item.id });
       // 一次性标记：告诉 align.html 左上角「返回」该回曲库（不是首页）
@@ -1467,7 +1496,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       } catch {
         /* 写不进去也不要拦着跳转 */
       }
-      window.location.href = './align.html';
+      window.location.href = res.score ? './align.html' : './editor.html';
     },
     [entry, loadLibraryItem],
   );
@@ -1482,8 +1511,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const effGap = playGap ?? (score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING);
   const effLineGap = playLineGap ?? (score.meta.lineGap ?? 0);
   /** 有未保存的改动 */
-  const dirty = snap.rev !== savedRev;
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
+  const dirty = snap.rev !== savedRev || (view === 'source' && draft !== (savedSource ?? serialized));
   const violations = useMemo(() => validateGroups(documentScore), [documentScore]);
 
   const audioGrid = useMemo<TempoMap>(() => tempoDraft.beatTimes
@@ -3317,8 +3346,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
-    setDraft(serialized);
-  }, [serialized]);
+    if (!sourceRecoveryRef.current) setDraft(serialized);
+  }, [serialized, sourceRecovery]);
 
   // 切到源码视图就把焦点交给编辑器，省一次多余的点击
   useEffect(() => {
@@ -3330,14 +3359,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   useEffect(() => {
     if (androidPlayer) return;
     const t = window.setTimeout(() => {
-      saveSession({ text: serialized, name: active, path, libraryId });
+      saveSession({ text: view === 'source' ? draft : serialized, name: active, path, libraryId });
     }, 600);
     return () => window.clearTimeout(t);
-  }, [serialized, active, path, libraryId]);
+  }, [serialized, view, draft, active, path, libraryId]);
 
   const applyDraft = () => {
     const res = parseDsl(draft);
-    if (!res.score) {
+    if (!res.score || res.errors.length) {
       // 错误已经在下方的实时解析列表里了，不用重复弹
       setMsg(res.errors.length ? res.errors[0] : '解析失败');
       return;
@@ -3345,6 +3374,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     // 播放中改谱必须先停：播放循环每帧重绘 + 强制滚动，
     // 谱面在它底下被换掉，新旧两套布局来回拉扯就是「画面一直抖」
     stopPlay();
+    sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
+    setMsg('源码已应用，可继续编辑谱面');
     commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
   };
 
@@ -3357,8 +3388,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (next: 'score' | 'source') => {
       if (next === 'score' && view === 'source' && draft !== serialized) {
         const res = parseDsl(draft);
-        if (res.score) {
+        if (res.score && !res.errors.length) {
           stopPlay();
+          sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
           commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
         } else {
           setMsg(res.errors.length ? res.errors[0] : '解析失败');
@@ -3515,15 +3547,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         {/* 谱面校验：挪到工具栏正中。通过时只显示一行字，有问题才可点开明细 */}
         <div className="v2-head-check">
           <button
-            className={issues.length === 0 ? 'v2-check is-ok' : 'v2-check is-bad'}
+            className={issues.length === 0 && !draftErrors.length ? 'v2-check is-ok' : 'v2-check is-bad'}
             onClick={() => setCheckOpen((v) => !v)}
             title={
-              issues.length === 0
+              draftErrors.length ? '请按源码下方的错误提示修复；原文仍可保存' : issues.length === 0
                 ? '每小节拍数、拍内组、连线、反复结构都没问题'
                 : '点开看具体问题'
             }
           >
-            {issues.length === 0 ? '谱面校验通过' : `谱面校验：${issues.length} 处问题`}
+            {draftErrors.length ? `源码校验：${draftErrors.length} 处问题` : issues.length === 0 ? '谱面校验通过' : `谱面校验：${issues.length} 处问题`}
           </button>
           {checkOpen && issues.length > 0 ? (
             <ul className="v2-diag v2-check-list">
@@ -3552,7 +3584,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               <button className="v2-btn" onClick={onOpen}>
                 打开
               </button>
-              <button className="v2-btn" onClick={onSave} disabled={score.events.length === 0}>
+              <button className="v2-btn" onClick={onSave} disabled={view !== 'source' && score.events.length === 0}>
                 保存
               </button>
               <button
@@ -4524,9 +4556,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             </>
           ) : (
             <div className="v2-source">
+              {sourceRecovery && <p className="v2-hint" role="status">正在修复原始源码；保存草稿会完整保留未识别内容。</p>}
               <textarea
                 ref={dslRef}
                 className="v2-dsl v2-dsl-full"
+                aria-label="乐谱源码"
                 value={draft}
                 spellCheck={false}
                 onChange={(e) => setDraft(e.target.value)}
@@ -4535,7 +4569,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 <button className="v2-btn" onClick={applyDraft}>
                   应用
                 </button>
-                <button className="v2-btn" onClick={() => setDraft(serialized)}>
+                <button className="v2-btn" onClick={() => setDraft(savedSource ?? serialized)}>
                   丢弃改动
                 </button>
                 <span className="v2-hint">

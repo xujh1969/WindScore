@@ -152,6 +152,12 @@ export function buildPdf(
   pageH: number,
   meta: { title?: string } = {},
 ): Uint8Array {
+  if (!pages.length || !Number.isFinite(pageW) || !Number.isFinite(pageH) || pageW <= 0 || pageH <= 0) throw new Error('PDF 页面尺寸或页数不合法');
+  for (const page of pages) {
+    if (!Number.isSafeInteger(page.width) || !Number.isSafeInteger(page.height) || page.width <= 0 || page.height <= 0 || !page.jpeg.length) {
+      throw new Error('PDF 图片尺寸必须为正整数，且图片数据不能为空');
+    }
+  }
   const sink = new ByteSink();
   const imgObj = (i: number): number => 4 + i * 3;
   const contentObj = (i: number): number => 5 + i * 3;

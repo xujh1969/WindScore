@@ -36,6 +36,8 @@ type FsWindow = Window & {
 
 export interface OpenResult {
   name: string;
+  /** 解析失败时仍保留原文，供编辑器打开源码修复，不能用部分解析结果覆盖它。 */
+  text?: string;
   score: Score | null;
   errors: string[];
   /** 真实文件路径；浏览器下用文件选择框，拿不到路径 */
@@ -73,14 +75,14 @@ export function canWriteInPlace(): boolean {
  * 调用方不要假设浏览器返回的那个名字是路径——它只是建议文件名 / 句柄名。
  */
 export async function saveScore(
-  score: Score,
+  score: Score | string,
   suggested: string,
   handle: FsFileHandle | null = null,
 ): Promise<SaveResult> {
-  if (score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
+  if (typeof score !== 'string' && score.events.length === 0 && !score.parts?.some((p) => p.events.length)) return { ok: false, path: null };
   // 计时只为定位「保存慢」到底慢在哪一步（浏览器里用户等对话框的时间也算在内）
   const t0 = performance.now();
-  const text = serializeDsl(score);
+  const text = typeof score === 'string' ? score : serializeDsl(score);
   const tSer = performance.now() - t0;
   // ① 有句柄（用「打开」进来的，或上次另存过）→ 直接改原文件，全程无对话框
   if (handle) {
@@ -315,5 +317,5 @@ export function nameOf(path: string): string {
 
 export function fromText(text: string, name: string, path: string | null = null): OpenResult {
   const res = parseDsl(text);
-  return { name, score: res.score, errors: res.errors, path };
+  return { name, text, score: res.errors.length ? null : res.score, errors: res.errors, path };
 }

@@ -172,6 +172,7 @@ export function regionHasInk(
   sw: number,
   sh: number,
   bg: string,
+  strict = false,
 ): boolean {
   const w = 96;
   const h = Math.max(1, Math.round((sh / sw) * w));
@@ -179,7 +180,8 @@ export function regionHasInk(
   probe.width = w;
   probe.height = h;
   const pctx = probe.getContext('2d', { willReadFrequently: true });
-  if (!pctx) return true; // 探针都拿不到就不拦，别误伤正常导出
+  if (!pctx) { if (strict) throw new Error('无法创建导出校验画布'); return true; }
+  if (strict && pctx.isContextLost?.()) throw new Error('导出校验画布上下文已丢失');
   pctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
   const { data } = pctx.getImageData(0, 0, w, h);
   return inkRatio(data, parseHex(bg)) >= 0.004;

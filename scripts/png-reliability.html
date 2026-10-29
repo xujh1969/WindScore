@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>PNG 导出检查</title><style>body{font:18px system-ui;margin:40px}button{padding:14px;margin:8px}pre{white-space:pre-wrap}</style>
+<button id="normal">简谱长图</button><button id="dark">深色长图</button><button id="staff">五线谱长图</button><button id="lost">模拟中段绘制丢失</button><button id="encoded">模拟编码后中段丢失</button><pre id="status">等待检查</pre>
+<script type="module">
+import {parseDsl} from '/src/v2/dsl.ts';
+import {a4Geometry,planExport} from '/src/v2/export/tasks.ts';
+import {exportScoreImageToFile} from '/src/v2/export/image.ts';
+const status=document.querySelector('#status');
+const score=parseDsl('@format 3\n@title PNG 连续长图检查\n@beat 4/4\n\n'+Array(64).fill('1 2 3 4 |').join(' ')+'|').score;
+for(const mode of ['normal','dark','staff','lost','encoded']) document.querySelector('#'+mode).onclick=async()=>{
+ const p=CanvasRenderingContext2D.prototype,text=p.fillText,stroke=p.stroke,fill=p.fill,encode=HTMLCanvasElement.prototype.toBlob;
+ status.textContent='检查中';
+ try{
+  const {layout,geo}=planExport(score,a4Geometry(false,150,1.55),true,undefined,{notation:mode==='staff'?'staff':'jianpu'});
+  if(mode==='lost'){
+   const skip=c=>{const t=c.getTransform();return t.f+t.d*600>0 && t.f+t.d*600<c.canvas.height};
+   p.fillText=function(...a){if(a[2]>450&&a[2]<950)return;text.apply(this,a)};
+   p.stroke=function(...a){if(!skip(this))stroke.apply(this,a)};p.fill=function(...a){if(!skip(this))fill.apply(this,a)};
+  }
+  if(mode==='encoded')HTMLCanvasElement.prototype.toBlob=function(cb,...args){const copy=document.createElement('canvas');copy.width=this.width;copy.height=this.height;const c=copy.getContext('2d');c.drawImage(this,0,0);c.fillStyle='#ffffff';c.fillRect(0,700,copy.width,600);encode.call(copy,cb,...args)};
+  const result=await exportScoreImageToFile({name:'png-'+mode,format:'png',dark:mode==='dark',showMeasureNumbers:true,layout,geo});
+  status.textContent='已保存 '+mode+' '+JSON.stringify(result)+'\n行数 '+layout.lines.length+' 尺寸 '+Math.ceil(layout.width*geo.scale+geo.marginX*2)+'×'+Math.ceil(geo.marginTop*2+layout.height*geo.scale);
+ }catch(e){status.textContent='已拦截 '+mode+' '+e}
+ finally{p.fillText=text;p.stroke=stroke;p.fill=fill;HTMLCanvasElement.prototype.toBlob=encode;}
+};
+status.textContent='检查脚本就绪';
+</script>

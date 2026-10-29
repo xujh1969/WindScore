@@ -104,7 +104,7 @@ export function isJpsFile(name: string): boolean {
 export function metaOfText(text: string, fallbackName = ''): LibraryMeta {
   const fallback = normalizeName(fallbackName);
   const res = parseDsl(text);
-  if (!res.score) return { ...EMPTY_META, title: fallback, broken: true };
+  if (!res.score || res.errors.length) return { ...EMPTY_META, title: fallback, broken: true };
   const meta = res.score.meta;
   const bars = res.score.events.filter((e) => e.kind === 'barline').length;
   const notes = res.score.events.filter((e) => e.kind === 'note').length;

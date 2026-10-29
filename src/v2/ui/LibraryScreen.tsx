@@ -445,10 +445,10 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
                     <>
                       <button
                         className="v2-btn"
-                        title="进对轨：配伴奏 / 调标定"
+                        title={it.meta.broken ? '打开源码修复，原始内容会完整保留' : '进对轨：配伴奏 / 调标定'}
                         onClick={() => onEdit(it)}
                       >
-                        对轨
+                        {it.meta.broken ? '修复' : '对轨'}
                       </button>
                       <button
                         className="v2-btn"

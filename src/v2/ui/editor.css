@@ -1602,6 +1602,36 @@ details.v2-side-block[open] > summary::before {
   color: var(--muted);
 }
 
+/* 播放指示颜色（浅色 / 深色背景各一档）：色块拾取器 + 恢复默认 */
+.v2-play-colors {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.v2-play-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-ui);
+  color: var(--text);
+}
+.v2-play-color input[type='color'] {
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+}
+.v2-play-color input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.v2-play-color input[type='color']::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
 /* 曲目信息：名称 / 调号 / 拍号 / 速度 / 音色 */
 .v2-meta {
   display: flex;
@@ -1649,6 +1679,18 @@ details.v2-side-block[open] > summary::before {
   display: block;
   width: 100%;
   box-sizing: border-box;
+}
+
+/* 自定义记号行：输入框与 ✓ 永远同一行。浮动板里 v2-meta-input 的
+   width:100% 会把 ✓ 挤到下一行——这里改回 flex 分宽（本条在其后，同
+   特异性后者胜），容器也禁止换行 */
+.v2-grace-bar.v2-mark-bar {
+  flex-wrap: nowrap;
+}
+.v2-pad-body .v2-mark-bar .v2-meta-input {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* 谱中变速输入（0.4.9）：整行宽、去数字步进箭头（占位文字要完整可见） */

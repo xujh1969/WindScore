@@ -8,10 +8,11 @@
 
 export type Degree = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /**
- * 变音记号：♯ 升、♭ 降、♮ 还原。
- * ♮ 是显式写出来的还原号，用来抵消调号自带的升降。
+ * 变音记号（GB/T 46845—2025 §6.2.5.1 共五种）：♯ 升、× 重升、♭ 降、♭♭ 重降、♮ 还原。
+ * ♮ 是显式写出来的还原号，用来抵消调号自带的升降；重升 / 重降在升号多 / 降号多的调里出现。
+ * DSL 写法：重升 `##`、重降 `bb`（如 `##4`、`bb3`）。
  */
-export type Accidental = '#' | 'b' | '♮';
+export type Accidental = '#' | 'x' | 'b' | 'bb' | '♮';
 export type Articulation = 'staccato' | 'tenuto' | 'accent' | 'marcato';
 export type OrnamentKind = 'trill' | 'mordent' | 'turn' | 'appoggiatura';
 
@@ -103,6 +104,37 @@ export interface NoteEvent extends BaseEvent {
   /** 单音音色覆盖，MIDI program 0-127 */
   patch?: number;
   /**
+   * 指法（GB/T 46845—2025 §7.11.5）：'0'=空弦，'1'–'5' 按手指序。
+   * 画在音符下方的小字。单字符——同音换指的并列弧线记法暂不支持。
+   */
+  fingering?: string;
+  /**
+   * 高 / 低八度演奏段（GB/T 46845—2025 §6.2.6）的**起点**：从此音起整体升 / 降八度，
+   * 到 octavaTo 指向的音为止（含两端）。DSL 写 `8va[ … ]8` / `8vb[ … ]8`。
+   * con-va / con-vb = 八度重复（con 8，DSL 写 `con8[` / `con8b[`）：段内音高不变，
+   * 除原声外再叠一份高 / 低八度同响。结构与 hairpin/hairpinTo 相同。
+   */
+  octava?: 'va' | 'vb' | 'con-va' | 'con-vb';
+  /** 八度段的终音 id */
+  octavaTo?: string;
+  /**
+   * 颤音波线的**终点音**标记（DSL 后缀 `R`）：选区套用颤音时 tr 标在首音上，
+   * 波浪线从 tr 右侧连续拉到本音（选区末音）的尾部（GB/T 46845—2025 §7.5.3）。
+   * 单音颤音不用它——带增时线的音波线与延音线等长，无增时线只标 tr。
+   */
+  trillEnd?: boolean;
+  /**
+   * 琶音（GB/T 46845—2025 §7.7）：音符左侧的波状竖线。
+   * 单声部简谱里它只是记谱标记（没有同时发声的和弦可滚）；
+   * 重奏和弦的逐音延迟起音待后续。
+   */
+  arpeggio?: boolean;
+  /**
+   * 震音（GB/T 46845—2025 §7.8）：音符右上的 1–3 条斜线。
+   * 播放时把该音均分成 2^n 等份快速重复（1 条 = 八分的重复，2 条 = 十六分…）。
+   */
+  tremolo?: 1 | 2 | 3;
+  /**
    * 灰显（DSL 后缀 `g`）：画成灰色，提示这段是前奏 / 间奏，不用吹奏。
    * 纯视觉标记——播放、时值、小节拍数校验都不受影响。
    */
@@ -114,6 +146,19 @@ export type LyricLink = 'extend' | 'hyphen';
 export interface RestEvent extends BaseEvent {
   kind: 'rest';
   ticks: number;
+  /**
+   * 多小节休止（GB/T 46845—2025 §6.3.7.3）的**首格**：N ≥ 2 表示这个休止共占 N 小节。
+   * DSL 写 `0*8`；解析时展开成 N 个逐小节休止 + N−1 根隐藏小节线（拍数校验天然通过），
+   * 序列化时合并回 `0*N`，谱面画成一条粗横线加数字。
+   */
+  multibar?: number;
+  /** 多小节休止的后续格（第 2…N 格），配合 multibar 首格画连续横线 */
+  multibarCont?: boolean;
+  /**
+   * 小节反复号（GB/T 46845—2025 §5.8.4，DSL 写 `%`）：整小节重复**上一小节**的内容。
+   * 时值恒为一整个小节；播放时展开为上一小节的拷贝，谱面画 𝄍（两条斜线加两点）。
+   */
+  repeatBar?: boolean;
   /** 附点：休止符与音符一样可带 1–2 个附点 */
   dot?: 0 | 1 | 2;
   groupId?: string;
@@ -171,6 +216,25 @@ export interface BarlineEvent extends BaseEvent {
   voltaOpen?: boolean;
   /** 隐藏小节线（DSL `|*`）：保留占位宽度、小节计数照常，但不画线 */
   hidden?: boolean;
+  /**
+   * 多小节休止的**结构化**隐藏小节线：由 `0*N` / 多小节休止插入生成，
+   * 是休止格之间的分隔（不是用户写的 `|*`）。编辑后剩余格数重算时，
+   * 没了左右休止格的这种线会被安全清掉——用户手写的 `|*` 永远不动。
+   */
+  multibarDiv?: boolean;
+  /**
+   * 虚小节线（GB/T 46845—2025 §5.2.2，DSL `|~`）：画成虚线。
+   * 混合拍子里「按节拍分组、但不拦拍感」的细分线——
+   * 占位、拦小节、计数、校验全部与实线一致，只是字形不同。
+   */
+  dashed?: boolean;
+  /**
+   * 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7，DSL 写「散」紧接小节线）：
+   * 从这条线之后起进入散板段落——拍号位置记「散」，
+   * 段内小节不做拍数校验（散板按词组自由延展，不满 / 超满是常态）。
+   * 直到某根线写「拍N/M」声明新拍号才退出。
+   */
+  free?: boolean;
 }
 
 export type JumpMark = 'segno' | 'coda' | 'fine' | 'dc' | 'ds' | 'tocoda';

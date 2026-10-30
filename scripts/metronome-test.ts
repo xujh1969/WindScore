@@ -97,6 +97,61 @@ console.log('\n[节拍器 · 拍号段（含中途换拍与弱起）]');
   check('3/8 重音给每个小节的第一个响拍（0、2）', a38.join(',') === '0,2', a38.join(','));
 }
 
+console.log('\n[节拍器 · 复拍子次强拍（GB/T 46845—2025 §6.3.13）]');
+{
+  const note = (id: string, beats = 1): { kind: string; id: string; ticks: number } => ({
+    kind: 'note', id, ticks: beats * 6720,
+  });
+  const barline = (id: string): { kind: string; id: string } => ({ kind: 'barline', id });
+
+  // 6/8 两小节，八分节奏型（每拍两下）：强弱序列 = 强弱弱 次强弱弱 | 强弱弱 次强弱弱
+  // （次强拍落在附点四分大拍上 = 拍内 +半拍的细分点，quarter 节奏型打不到它）
+  const ev68 = [note('a1'), note('a2'), note('a3'), barline('b1'), note('a4'), note('a5'), note('a6'), barline('b2')];
+  const h68 = scheduleHits({
+    fromSec: 0, toSec: 7,
+    beatToSec: (b) => b,
+    meterAt: meterSegmentsOf(ev68, '6/8'),
+    pattern: patternFor('eighth'),
+  });
+  const lv68 = h68.map((h) => h.level ?? (h.accent ? 'strong' : 'weak')).join(',');
+  check(
+    '6/8 八分型 = 强弱弱次强弱弱循环',
+    lv68 === 'strong,weak,weak,medium,weak,weak,strong,weak,weak,medium,weak,weak,strong,weak',
+    lv68,
+  );
+  // 四分节奏型只打整拍：大拍边界（+1.5 拍）上没有击打点，不出现次强
+  const h68q = scheduleHits({
+    fromSec: 0, toSec: 7,
+    beatToSec: (b) => b,
+    meterAt: meterSegmentsOf(ev68, '6/8'),
+    pattern: patternFor('quarter'),
+  });
+  check(
+    '6/8 四分型只有强弱两档',
+    h68q.every((h) => (h.level ?? (h.accent ? 'strong' : 'weak')) !== 'medium'),
+    h68q.map((h) => h.level).join(','),
+  );
+  // 12/8：四个大拍 = 强 + 三个次强（1.5、3、4.5 拍处）
+  const ev128 = Array.from({ length: 6 }, (_, i) => note(`t${i}`));
+  const h128 = scheduleHits({
+    fromSec: 0, toSec: 6.2,
+    beatToSec: (b) => b,
+    meterAt: meterSegmentsOf(ev128, '12/8'),
+    pattern: patternFor('eighth'),
+  });
+  const med128 = h128.filter((h) => h.level === 'medium').map((h) => h.timeSec);
+  check('12/8 次强在 1.5 / 3 / 4.5 拍', med128.join(',') === '1.5,3,4.5', med128.join(','));
+  // 3/8 只有一个大拍：没有次强
+  const ev38 = [note('s1'), note('s2'), note('s3')];
+  const h38m = scheduleHits({
+    fromSec: 0, toSec: 2,
+    beatToSec: (b) => b,
+    meterAt: meterSegmentsOf(ev38, '3/8'),
+    pattern: patternFor('eighth'),
+  });
+  check('3/8 无次强拍', h38m.every((h) => h.level !== 'medium'), h38m.map((h) => h.level).join(','));
+}
+
 console.log('\n[节拍器 · 排程]');
 {
   const beatToSec = (b: number): number => b * 0.5;

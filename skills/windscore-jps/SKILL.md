@@ -1,6 +1,6 @@
 ---
 name: windscore-jps
-description: WindScore 简谱内码（.jps）生成与校验。当用户上传简谱图片（或文字谱）要求转成可在 WindScore 程序中打开的谱面文件时使用。流程：两遍读图（框架先行）→ 分段裁剪识别 → 结构化 JSON → json2jps 转写 → 小节级拍数回压 → validate.mjs 终校验。附完整语法参考（reference.md）、图片预处理（tools/preprocess.mjs）、JSON 转写器（tools/json2jps.mjs）与独立校验器（validate.mjs）。触发词：简谱识别、简谱转文件、简谱图转 jps、WindScore、记谱、写谱。
+description: WindScore 简谱内码（.jps）生成与校验。当用户上传简谱图片（或文字谱）要求转成可在 WindScore 程序中打开的谱面文件时使用。流程：两遍读图（框架先行）→ 分段裁剪识别（或用 tools/ocr-prompt.md 的视觉大模型提示词走 LaTeX 中间格式）→ 结构化 JSON → json2jps 转写 → 小节级拍数回压 → validate.mjs 终校验。附完整语法参考（reference.md）、图片预处理（tools/preprocess.mjs）、JSON 转写器（tools/json2jps.mjs）、OCR 提示词与 LaTeX 对照表（tools/ocr-prompt.md）与独立校验器（validate.mjs）。触发词：简谱识别、简谱转文件、简谱图转 jps、WindScore、记谱、写谱。
 ---
 
 # WindScore 简谱转录与生成
@@ -36,6 +36,7 @@ description: WindScore 简谱内码（.jps）生成与校验。当用户上传�
 - **逐段识别**：每次只识别一行（或 2 个小节），避免整图一次读完细节丢失。
 - **每段识别两遍**（或用两个不同放大尺度各读一遍）：结果一致才接受；不一致的段记入「待人工核对清单」，先按更有把握的一版写，**并在交付时明确列出**。
 - 每段直接输出 `measures` 片段 JSON（字段表见 `tools/README.md`）。看到 `5-` 就写 `"dur": 2`，看到 `5.` 写 `"dur": 1.5`——**dur 速查表在 tools/README.md**。
+- **替代路径——视觉大模型 + 专用提示词**：图糊 / 细节多时，可把条图配上 `tools/ocr-prompt.md` 的识别提示词交给视觉大模型（LaTeX 简谱中间格式，内置「10 优先判高音 1」「附点不孤立」「减时线不嵌套」等实测纪律），再按该文件末尾的对照表把「乐谱LaTeX」机械转回 `measures` JSON。对账、回压、校验流程不变。
 
 ### 第 4 步：转写
 

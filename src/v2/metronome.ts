@@ -124,6 +124,8 @@ export interface MeterSegment {
   fromTick: number;
   anchorTick: number;
   barTicks: number;
+  /** 本段的拍号（如 6/8）：复拍子次强拍要靠它辨认（缺省按单拍子处理） */
+  beat?: string;
 }
 
 /** 「这个位置属于哪套拍号」的查询 */
@@ -151,6 +153,33 @@ function barAccentAt(seg: MeterSegment, beat: number): boolean {
   return lastBarStart > beat - 1 + 1e-9;
 }
 
+/** 击打强弱：强（小节头）/ 次强（复拍子的后续大拍）/ 弱 */
+export type AccentLevel = 'strong' | 'medium' | 'weak';
+
+/**
+ * 这个发声位置（tick 精度，可落在拍内细分上）的击打强弱。
+ *
+ * 规则（GB/T 46845—2025 §6.3.13 复拍子次强拍）：
+ *   - 强：小节线落在 (t−1拍, t] 区间 → 这一击扛小节头重音（与 barAccentAt 同口径，
+ *     只是把「整拍」细化到 tick——弱起半拍起的小节头也照样识别）；
+ *   - 次强：复拍子（6/8、9/8、12/8 这类 N/8 且 N 是 3 的倍数）里，
+ *     位置正好落在小节内第 2、3…个大拍（附点四分）边界上（medium=false 关掉）；
+ *   - 其余全弱。3/8 只有一个大拍，没有次强。
+ */
+export function hitStrengthAt(seg: MeterSegment, tick: number, medium = true): AccentLevel {
+  const k = Math.floor((tick - seg.anchorTick) / seg.barTicks + 1e-9);
+  const barStart = seg.anchorTick + k * seg.barTicks;
+  if (barStart > tick - TICKS_PER_BEAT + 1e-9) return 'strong';
+  const m = medium ? /^(\d+)\/8$/.exec(seg.beat ?? '') : null;
+  const num = m ? Number(m[1]) : 0;
+  if (num >= 6 && num % 3 === 0) {
+    const p = tick - barStart;
+    const bigBeat = 1.5 * TICKS_PER_BEAT; // 附点四分 = 1.5 拍
+    if (p >= bigBeat - 1e-6 && Math.abs(p / bigBeat - Math.round(p / bigBeat)) < 1e-6) return 'medium';
+  }
+  return 'weak';
+}
+
 /**
  * 谱面事件 → 拍号段查询，**支持小节线上的中途换拍**（DSL「拍3/4」）。
  *
@@ -168,7 +197,7 @@ export function meterSegmentsOf(
   }[],
   initialBeat: string,
 ): MeterAt {
-  const segs: MeterSegment[] = [{ fromTick: 0, anchorTick: 0, barTicks: barTicksOf(initialBeat) }];
+  const segs: MeterSegment[] = [{ fromTick: 0, anchorTick: 0, barTicks: barTicksOf(initialBeat), beat: initialBeat }];
   let tick = 0;
   let current = initialBeat;
   let anchored = false;
@@ -180,12 +209,12 @@ export function meterSegmentsOf(
     if (ev.kind !== 'barline') continue;
     if (!anchored) {
       // 第一根小节线 = 第一个完整小节的头，弱起时它不在 0
-      segs[0] = { fromTick: 0, anchorTick: tick, barTicks: barTicksOf(current) };
+      segs[0] = { fromTick: 0, anchorTick: tick, barTicks: barTicksOf(current), beat: current };
       anchored = true;
     }
     if (ev.beatAfter && ev.beatAfter !== current) {
       current = ev.beatAfter;
-      segs.push({ fromTick: tick, anchorTick: tick, barTicks: barTicksOf(current) });
+      segs.push({ fromTick: tick, anchorTick: tick, barTicks: barTicksOf(current), beat: current });
     }
   }
   return (tickAt: number): MeterSegment => {
@@ -202,6 +231,7 @@ export function meterSegmentsOf(
  * 节拍器的一击：短促的木鱼声。
  * 高频正弦 + 极短的噪声瞬态（槌击感），指数衰减。
  * 固定种子的伪随机，保证同一参数每次结果一致（可测试）。
+ * accent=true 是强拍；medium 用 clickSampleMedium（次强拍，GB/T 46845—2025 §6.3.13）。
  */
 export function clickSample(sampleRate: number, accent: boolean): Float32Array {
   const dur = accent ? 0.055 : 0.04;
@@ -223,11 +253,34 @@ export function clickSample(sampleRate: number, accent: boolean): Float32Array {
   return out;
 }
 
+/** 次强拍的一击：音高与强拍同族、音量居中（强弱三档的中间档） */
+export function clickSampleMedium(sampleRate: number): Float32Array {
+  const dur = 0.048;
+  const n = Math.max(1, Math.floor(sampleRate * dur));
+  const out = new Float32Array(n);
+  const freq = 1560;
+  const amp = 0.65;
+  const decay = 110;
+  let seed = 20260303;
+  for (let i = 0; i < n; i += 1) {
+    const t = i / sampleRate;
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const noise = (seed / 0xffffffff) * 2 - 1;
+    const env = Math.exp(-t * decay);
+    const body = Math.sin(2 * Math.PI * freq * t) * amp;
+    const transient = noise * Math.exp(-t * 340) * 0.3;
+    out[i] = (body + transient) * env;
+  }
+  return out;
+}
+
 export interface MetronomeHit {
   /** 相对起点的秒数 */
   timeSec: number;
-  /** 是否重音 */
+  /** 是否重音（小节头强拍；次强拍看 level） */
   accent: boolean;
+  /** 三档强弱（GB/T 46845—2025 §6.3.13）：缺省按 accent 推（老调用方兼容） */
+  level?: AccentLevel;
 }
 
 /**
@@ -265,8 +318,11 @@ export function scheduleHits(opts: {
   meterAt: MeterAt;
   pattern: MetronomePattern;
   startBeat?: number;
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13），默认开 */
+  compoundMedium?: boolean;
 }): MetronomeHit[] {
   const { fromSec, toSec, beatToSec, meterAt, pattern } = opts;
+  const compoundMedium = opts.compoundMedium ?? true;
   const hits: MetronomeHit[] = [];
   if (!(toSec > fromSec)) return hits;
   const first = Math.max(0, Math.floor(opts.startBeat ?? 0));
@@ -278,15 +334,19 @@ export function scheduleHits(opts: {
     const seg = meterAt(tick);
     // stride / downbeatOnly：这一拍该不该打（隔拍打、每小节一下）
     if (!patternHitsBeat(pattern, seg, beat)) continue;
-    // 强弱按**谱面位置**算：这一拍是不是它所在小节的第一拍。
-    // 换拍、弱起、非整数拍（3/8）都由 barAccentAt 统一对齐
-    const barAccent = barAccentAt(seg, beat);
+    // 强弱按**谱面位置**算：三档强弱（强 / 次强 / 弱）由 hitStrengthAt 统一对齐，
+    // 换拍、弱起、非整数拍（3/8）、复拍子次强拍都在它里面处理
     for (let k = 0; k < pattern.offsets.length; k += 1) {
       const off = pattern.offsets[k]!;
       const t = beatSec + (off / TICKS_PER_BEAT) * (beatToSec(beat + 1) - beatSec);
       // 区间取左闭右开：正好落在 toSec 的那一击归下一段
       if (t < fromSec || t >= toSec) continue;
-      hits.push({ timeSec: t, accent: barAccent && (pattern.accents[k] ?? false) });
+      // 三档强弱按发声位置的 tick 算（次强拍落在拍内细分上）。
+      // strong 受节奏型自己的 accents 门控（隔拍打之类的收窄设计）；
+      // medium 是复拍子的位置属性（大拍边界），不受节奏型收窄影响
+      const st = hitStrengthAt(seg, beat * TICKS_PER_BEAT + off, compoundMedium);
+      const level: AccentLevel = st === 'strong' && !(pattern.accents[k] ?? false) ? 'weak' : st;
+      hits.push({ timeSec: t, accent: level === 'strong', level });
     }
   }
   hits.sort((a, b) => a.timeSec - b.timeSec);
@@ -304,6 +364,8 @@ export interface MetronomeOptions {
   pattern?: MetronomePattern;
   /** 音量 0~1 */
   volume?: number;
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13）：6/8、9/8、12/8 后续大拍打次强，默认开 */
+  compoundMedium?: boolean;
 }
 
 const TIMER_MS = 40;
@@ -322,7 +384,7 @@ const SCHEDULE_AHEAD = 0.3;
 export class Metronome {
   private ctx: AudioContext | null = null;
   private timer: number | null = null;
-  private click: { accent: AudioBuffer; plain: AudioBuffer } | null = null;
+  private click: { accent: AudioBuffer; medium: AudioBuffer; plain: AudioBuffer } | null = null;
   /** 已排程还没响完的 click：停表时要撤掉，不然停了还会蹦出一两声「鬼拍」 */
   private active: { src: AudioBufferSourceNode; end: number }[] = [];
   private startSec = 0;
@@ -340,6 +402,8 @@ export class Metronome {
   private meterAt: MeterAt = constantMeter(4);
   private pattern: MetronomePattern = METRONOME_PATTERNS[0]!;
   private volume = 0.6;
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13）：6/8、9/8、12/8 的后续大拍打次强，默认开 */
+  private compoundMedium = true;
   private playing = false;
 
   get isPlaying(): boolean {
@@ -348,6 +412,10 @@ export class Metronome {
 
   setPattern(pattern: MetronomePattern): void {
     this.pattern = pattern;
+  }
+
+  setCompoundMedium(v: boolean): void {
+    this.compoundMedium = v;
   }
 
   setVolume(v: number): void {
@@ -377,6 +445,7 @@ export class Metronome {
       };
       this.click = {
         accent: mk(clickSample(sr, true)),
+        medium: mk(clickSampleMedium(sr)),
         plain: mk(clickSample(sr, false)),
       };
     }
@@ -427,6 +496,7 @@ export class Metronome {
     this.meterAt = opts.meterAt;
     this.pattern = opts.pattern ?? this.pattern;
     this.volume = opts.volume ?? this.volume;
+    this.compoundMedium = opts.compoundMedium ?? this.compoundMedium;
 
     const ctx = this.ensureContext();
     if (!ctx) return;
@@ -543,11 +613,9 @@ export class Metronome {
       const at = this.startSec + (beatSec - this.baseSec);
       if (at > until) break;
       const beatLen = this.secOf(beat + 1) - beatSec;
-      // 强弱按**谱面位置**算：这一拍是不是它所在小节的第一拍。
-      // 2/4、3/4、4/4 各按各的小节来，小节线中途换拍、弱起小节也跟着对
+      // 强弱按**谱面位置**算：三档强弱（强 / 次强 / 弱）由 hitStrengthAt 统一对齐
       const tick = beat * TICKS_PER_BEAT;
       const seg = this.meterAt(tick);
-      const barAccent = barAccentAt(seg, beat);
       // stride / downbeatOnly：这一拍该不该打（与 scheduleHits 同一个纯函数）
       if (patternHitsBeat(this.pattern, seg, beat)) {
         for (let k = 0; k < this.pattern.offsets.length; k += 1) {
@@ -557,9 +625,12 @@ export class Metronome {
           // 而 90 BPM 的一拍就有 0.67 秒，拍内第二下永远在窗口外，
           // 一截断就全变成「每拍一下」，节奏型等于没起作用。
           // 所以整拍一起排，最多排到窗口外一拍，Audio 自己会准点响。
-          const accent = barAccent && (this.pattern.accents[k] ?? false);
+          // 与 scheduleHits 同口径：strong 受节奏型 accents 门控，medium 按位置生效
+          const st = hitStrengthAt(seg, tick + off, this.compoundMedium);
+          const level: AccentLevel = st === 'strong' && !(this.pattern.accents[k] ?? false) ? 'weak' : st;
           const src = ctx.createBufferSource();
-          src.buffer = accent ? this.click.accent : this.click.plain;
+          src.buffer =
+            level === 'strong' ? this.click.accent : level === 'medium' ? this.click.medium : this.click.plain;
           const g = ctx.createGain();
           g.gain.value = this.volume;
           src.connect(g);

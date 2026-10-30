@@ -15,6 +15,7 @@ import {
   moveGrace,
   setAccidental,
   setFermata,
+  setFingering,
   setGrace,
   setGraceSlot as setGraceSlotOp,
   setGray,
@@ -22,6 +23,10 @@ import {
   setKeyChange,
   setNoteDynamic,
   setNoteMark,
+  setOctavaRange,
+  setArpeggio,
+  setTremolo,
+  setTrillRange,
   setTongue,
   setTextAnnotation,
   toggleArticulation,
@@ -32,9 +37,15 @@ import type { Accidental, Degree, GraceNote, NoteEvent, Score } from '../types';
 import { ACCIDENTAL_GLYPH, TECHNIQUE_GLYPH, TECHNIQUE_PATHS, TECHNIQUE_PATH_SCALE } from '../paint';
 import { NotationGlyph } from './NotationGlyph';
 
-/** 变音记号按钮：本位（无记号）在前，其余按升降序 */
-export const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'b', '♮'];
-export const ACCIDENTAL_NAME: Record<Accidental, string> = { '#': '升', b: '降', '♮': '还原' };
+/** 变音记号按钮：本位（无记号）在前，升方向 → 降方向 → 还原（GB/T 46845—2025 §6.2.5.1 五种） */
+export const ACCIDENTAL_CHOICES: (Accidental | undefined)[] = [undefined, '#', 'x', 'b', 'bb', '♮'];
+export const ACCIDENTAL_NAME: Record<Accidental, string> = {
+  '#': '升',
+  x: '重升',
+  b: '降',
+  bb: '重降',
+  '♮': '还原',
+};
 
 /** 力度档位，由弱到强 */
 export const DYNAMICS = ['pp', 'p', 'mp', 'mf', 'f', 'ff'];
@@ -126,8 +137,43 @@ export function KeyChangeField({ score, setScore, note }: FieldProps) {
 }
 
 /**
+ * 指法（GB/T 46845—2025 §7.11.5）：音符正下方的小字数字 0-5，
+ * 0 = 空弦 / 不按。电吹管玩家用它标按键指法。
+ */
+export function FingeringField({ score, setScore, note }: FieldProps) {
+  return (
+    <div className="v2-field">
+      <span className="v2-field-label">指法（音符下方小字）</span>
+      <div className="v2-grace-bar">
+        {[0, 1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            className={note.fingering === String(n) ? 'v2-btn is-on' : 'v2-btn'}
+            onClick={() =>
+              setScore(setFingering(score, note.id, note.fingering === String(n) ? undefined : String(n)))
+            }
+            title={n === 0 ? '空弦 / 不按（0）' : `指法 ${n}（再点一次去掉）`}
+          >
+            {n}
+          </button>
+        ))}
+        <button
+          className={note.fingering ? 'v2-btn' : 'v2-btn is-on'}
+          onClick={() => setScore(setFingering(score, note.id))}
+          title="不标指法"
+        >
+          无
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 气息与技法 + 自定义记号。同一类内互斥：一个音同时只有一种技法、
  * 一种吐音（T 与 K 也互斥）；符号在音符上方横向排列。
+ * 琶音 / 震音（GB/T 46845—2025 §7.7 / §7.8）也是音符记号，同区摆放：
+ * 琶音是开关；震音一颗按钮循环 无→1→2→3 条斜线（按一次加一条）。
  */
 export function TechniqueField({ score, setScore, note }: FieldProps) {
   const markInputRef = useRef<HTMLInputElement | null>(null);
@@ -174,6 +220,42 @@ export function TechniqueField({ score, setScore, note }: FieldProps) {
           </span>
           延音
         </button>
+        <button
+          className={note.arpeggio ? 'v2-btn is-on' : 'v2-btn'}
+          onClick={() => setScore(setArpeggio(score, note.id))}
+          title="琶音：音符右侧画波状竖线（GB/T 46845—2025 §7.7；再点一次去掉）"
+        >
+          琶音 ≈
+        </button>
+        <button
+          className={note.tremolo ? 'v2-btn is-on' : 'v2-btn'}
+          onClick={() =>
+            setScore(setTremolo(score, note.id, note.tremolo === 3 ? undefined : (((note.tremolo ?? 0) + 1) as 1 | 2 | 3)))
+          }
+          title={
+            note.tremolo
+              ? `震音 ${note.tremolo} 条斜线：播放时把该音均分成 ${2 ** note.tremolo} 份快速重复；再点一次加一条，3 条后回无（GB/T 46845—2025 §7.8）`
+              : '震音：按一次加一条斜线（1 → 2 → 3 → 无 循环）；播放把该音均分成 2^n 份快速重复（GB/T 46845—2025 §7.8）'
+          }
+        >
+          震音
+          {/* 三条斜线的小图标（震音记号的样子），当前条数点亮、其余变淡 */}
+          <svg width="17" height="13" viewBox="0 0 17 13" aria-hidden style={{ marginLeft: 4, verticalAlign: '-2px' }}>
+            {[0, 1, 2].map((i) => (
+              <line
+                key={i}
+                x1={2.5 + i * 4.5}
+                y1="11.5"
+                x2={6.5 + i * 4.5}
+                y2="1.5"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                opacity={i < (note.tremolo ?? 0) ? 1 : 0.25}
+              />
+            ))}
+          </svg>
+        </button>
         {Object.entries(TECHNIQUE_GLYPH)
           .filter(([value]) => value !== 'breath')
           .map(([value, g]) => (
@@ -214,7 +296,7 @@ export function TechniqueField({ score, setScore, note }: FieldProps) {
         受控值一改（哪怕是 slice 截断）就会中止中文组曲、把未转换的拼音原样提交。
         写谱只在回车 / 失焦 / 按 ✓ 时发生。
       */}
-      <div className="v2-grace-bar" style={{ marginTop: 6 }}>
+      <div className="v2-grace-bar v2-mark-bar" style={{ marginTop: 6 }}>
         <input
           key={note.id}
           ref={markInputRef}
@@ -420,7 +502,7 @@ export function AnnotationField({
   return (
     <div className="v2-field">
       <span className="v2-field-label">标注（段落文字）</span>
-      <div className="v2-grace-bar">
+      <div className="v2-grace-bar v2-mark-bar">
         <input
           className="v2-meta-input"
           value={draft ?? annotationTextOf(score, note.id)}
@@ -470,6 +552,70 @@ export function HairpinField({ score, setScore, ids }: { score: Score; setScore:
         </button>
         <button className="v2-btn" onClick={() => setScore(setHairpinRange(score, ids))}>
           清除范围
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 选区：高低八度演奏段（8va / 8vb，首音至末音整体升降八度，GB/T 46845—2025 §6.2.6）。
+ * 循环三态（与小节反复号同一惯例）：无 → 8va/8vb → con 8（八度重复）→ 取消 */
+export function OctavaField({ score, setScore, ids }: { score: Score; setScore: (s: Score) => void; ids: string[] }) {
+  const set = new Set(ids);
+  const notes = score.events.filter((e) => e.kind === 'note' && set.has(e.id)) as NoteEvent[];
+  const lit = notes[0]?.octava ?? null;
+  return (
+    <div className="v2-field">
+      <span className="v2-field-label">高低八度演奏段（首音至末音）</span>
+      <div className="v2-grid">
+        <button
+          className={`v2-btn${lit === 'va' || lit === 'con-va' ? ' is-on' : ''}`}
+          disabled={notes.length < 2}
+          onClick={() =>
+            setScore(setOctavaRange(score, ids, lit === 'va' ? 'con-va' : lit === 'con-va' ? undefined : 'va'))
+          }
+          title="第 1 次整体升八度（8va + 虚线）；第 2 次高八度重复（斜体 con 8 + 虚线，原声与高八度同响）；第 3 次取消（GB/T 46845—2025 §6.2.6；需要 @format 3，会自动升级）"
+        >
+          {lit === 'con-va' ? 'con 8 ↑' : '8va ↑'}
+        </button>
+        <button
+          className={`v2-btn${lit === 'vb' || lit === 'con-vb' ? ' is-on' : ''}`}
+          disabled={notes.length < 2}
+          onClick={() =>
+            setScore(setOctavaRange(score, ids, lit === 'vb' ? 'con-vb' : lit === 'con-vb' ? undefined : 'vb'))
+          }
+          title="第 1 次整体降八度（8vb + 虚线）；第 2 次低八度重复（斜体 con 8 + 虚线，原声与低八度同响）；第 3 次取消"
+        >
+          {lit === 'con-vb' ? 'con 8 ↓' : '8vb ↓'}
+        </button>
+        <button
+          className="v2-btn"
+          onClick={() => setScore(setOctavaRange(score, ids))}
+          title="去掉选中段落的高 / 低八度演奏段"
+        >
+          清除
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 选区：颤音 tr——tr 标在首音上，波浪线连续拉到末音尾部（GB/T 46845—2025 §7.5.3） */
+export function TrillField({ score, setScore, ids }: { score: Score; setScore: (s: Score) => void; ids: string[] }) {
+  const set = new Set(ids);
+  const notes = score.events.filter((e) => e.kind === 'note' && set.has(e.id)) as NoteEvent[];
+  const applied = (notes[0]?.techniques ?? []).includes('trill') && notes[notes.length - 1]?.trillEnd === true;
+  return (
+    <div className="v2-field">
+      <span className="v2-field-label">颤音 tr（首音至末音）</span>
+      <div className="v2-grid">
+        <button
+          className={`v2-btn${applied ? ' is-on' : ''}`}
+          disabled={notes.length < 2}
+          onClick={() => setScore(setTrillRange(score, ids))}
+          title="tr 标在第一个音上，波浪线从 tr 右侧连续拉到最后一个音的尾部（GB/T 46845—2025 §7.5.3）；再点一次整段取消"
+        >
+          tr ﹏﹏﹏
         </button>
       </div>
     </div>

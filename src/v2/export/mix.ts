@@ -8,7 +8,7 @@
  * （真实 AudioBuffer 满足 PcmSource，测试里用普通对象代替）。
  */
 
-import { clickSample, type MetronomeHit } from '../metronome';
+import { clickSample, clickSampleMedium, type MetronomeHit } from '../metronome';
 import { instrumentSampleFor, renderSampledNote } from '../instrumentSamples';
 import { pianoSpec, renderNote } from '../timbre';
 
@@ -190,9 +190,12 @@ export function mixMetronome(opts: {
   if (!(vol > 0) || opts.hits.length === 0) return opts.mix;
   const sr = opts.mix.sampleRate;
   const accent = clickSample(sr, true);
+  const medium = clickSampleMedium(sr);
   const plain = clickSample(sr, false);
   for (const hit of opts.hits) {
-    const src = hit.accent ? accent : plain;
+    // 三档强弱（GB/T 46845—2025 §6.3.13）：老数据没有 level 时按 accent 推
+    const level = hit.level ?? (hit.accent ? 'strong' : 'weak');
+    const src = level === 'strong' ? accent : level === 'medium' ? medium : plain;
     const start = Math.round(hit.timeSec * sr);
     if (start < 0) continue;
     const len = Math.min(src.length, opts.mix.length - start);

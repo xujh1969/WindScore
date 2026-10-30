@@ -82,6 +82,15 @@ import {
   shiftOctave,
   toggleSlur,
   toggleTongue,
+  setTrillRange,
+  setFingering,
+  toggleRepeatBar,
+  insertMultibarRest,
+  normalizeMultibarRests,
+  removeEvent,
+  setOctavaRange,
+  pressRepeatBar,
+  inRepeatMeasure,
 } from '../src/v2/edit';
 import {
   beamCount,
@@ -151,6 +160,7 @@ import {
   timelineTicks,
   toMidi,
 } from '../src/v2/timeline';
+import { accidentalGlyph } from '../src/v2/pitch';
 import {
   beamOffset,
   DOT_R,
@@ -568,6 +578,358 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const plain = layoutScore(base, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === id)!;
   check('带变音的音符格更宽', withAcc.w > plain.w, `${withAcc.w} vs ${plain.w}`);
   check('宽度回传给 paint（不许两处各写一个常量）', Math.abs(withAcc.accW! - (withAcc.w - plain.w)) < 1e-6, `${withAcc.accW} vs ${withAcc.w - plain.w}`);
+}
+
+console.log('\n[变音记号 · 重升重降（GB/T 46845—2025 §6.2.5.1）]');
+{
+  const p = parseDsl('@beat 4/4\n\n##4 bb3 #5 ||\n');
+  check('##4 / bb3 解析无错', p.errors.length === 0, p.errors.join(' / '));
+  const ns = p.score!.events.filter((e) => e.kind === 'note') as NoteEvent[];
+  check('##4 是重升', ns[0]!.accidental === 'x', String(ns[0]!.accidental));
+  check('bb3 是重降', ns[1]!.accidental === 'bb', String(ns[1]!.accidental));
+  check('重升高两个半音', toMidi(4, 0, '1=C', 'x') === toMidi(4, 0, '1=C') + 2);
+  check('重降低两个半音', toMidi(3, 0, '1=C', 'bb') === toMidi(3, 0, '1=C') - 2);
+  check('五线谱层对 ±2 有字形（𝄪/𝄫）', accidentalGlyph(2) === '𝄪' && accidentalGlyph(-2) === '𝄫');
+  const text = serializeDsl(p.score!);
+  check('序列化写回 ## / bb', text.includes('##4') && text.includes('bb3'), text);
+  const back = parseDsl(text);
+  check('回读变音一致', back.errors.length === 0 && (back.score!.events.filter((e) => e.kind === 'note') as NoteEvent[]).map((e) => e.accidental ?? '-').join(',') === 'x,bb,#');
+  // 排版给宽字形让位：重升的占位比单升大
+  const wide = parseDsl('@beat 4/4\n\n##4 ||\n').score!;
+  const plain = parseDsl('@beat 4/4\n\n#4 ||\n').score!;
+  const wW = layoutScore(wide, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'note')!.accW!;
+  const pW = layoutScore(plain, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'note')!.accW!;
+  check('重升字形占位更宽', wW > pW, `${wW} vs ${pW}`);
+}
+
+console.log('\n[校验报错附国标条款引用]');
+{
+  const p = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n');
+  const bar = p.score!.events.find((e) => e.kind === 'barline') as { beatAfter?: string };
+  bar.beatAfter = '9/9';
+  const v = validateGroups(p.score!);
+  check('拍号不合法的报错带 GB 条款', v.some((x) => x.code === 'E2' && x.message.includes('GB/T 46845—2025')), v.map((x) => x.message).join(' / '));
+}
+
+console.log('\n[GB 高实用度记号 · 小节反复 / 多小节休止 / 8va/8vb / 回音 / 指法]');
+{
+  // ── 小节反复 %（GB/T 46845—2025 §5.8.4）──
+  const rp = parseDsl('@beat 4/4\n\n5 5 6 6 | % | 3 3 2 2 ||\n');
+  check('% 解析无错', rp.errors.length === 0, rp.errors.join(' / '));
+  const rpRest = rp.score!.events.find((e) => e.kind === 'rest') as RestEvent;
+  check('% 是整小节 repeatBar 休止', rpRest?.repeatBar === true && rpRest.ticks === TICKS_PER_BEAT * 4, `ticks=${rpRest?.ticks}`);
+  const rpText = serializeDsl(rp.score!);
+  check('% 序列化写回', rpText.includes('%'), rpText);
+  const rpBack = parseDsl(rpText);
+  check('% 回读一致', rpBack.errors.length === 0 && (rpBack.score!.events.filter((e) => e.kind === 'rest') as RestEvent[])[0]?.repeatBar === true, rpText);
+  // 𝄍 键（pressRepeatBar）：小节线后按一次重复上一小节，再按一次重复前两小节，第三次到顶
+  const pbBase = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 6 7 5 | 3 3 2 2 ||\n').score!;
+  const at1 = pbBase.events.findIndex((e) => e.kind === 'barline') + 1;
+  const p1 = pressRepeatBar(pbBase, at1);
+  check('𝄍 第 1 次：插入 % 休止 + 收尾线', !!p1 && (p1.score.events[at1] as RestEvent).repeatBar === true && p1.score.events[at1 + 1]?.kind === 'barline' && p1.cursor === at1 + 2);
+  check('𝄍 在音符后无效', pressRepeatBar(pbBase, 1) === null);
+  const p2 = p1 ? pressRepeatBar(p1.score, p1.cursor) : null;
+  check(
+    '𝄍 第 2 次：两格 % 相连',
+    !!p2 && (p2.score.events.filter((e) => e.kind === 'rest') as RestEvent[]).every((r) => r.repeatBar === true) && p2!.cursor === at1 + 4,
+  );
+  const p3 = p2 ? pressRepeatBar(p2.score, p2.cursor) : null;
+  check(
+    '𝄍 第 3 次取消：拆掉两组 % 回到原样',
+    !!p3 && !(p3.score.events.some((e) => e.kind === 'rest' && (e as RestEvent).repeatBar)) && p3.score.events.length === pbBase.events.length && p3.cursor === at1,
+  );
+  const pairText = p2 ? serializeDsl(p2.score) : '';
+  check('双小节反复序列化', pairText.includes('% | %'), pairText);
+  const pbBar = p2 ? parseDsl(pairText) : null;
+  check('双小节反复回读一致', !!pbBar && pbBar.errors.length === 0 && (pbBar.score!.events.filter((e) => e.kind === 'rest') as RestEvent[]).length === 2);
+  // 反复小节不能再写其他音符（GB/T 46845—2025 §5.8.4）
+  const mix = validateGroups(parseDsl('@beat 4/4\n\n1 2 3 4 | % 5 6 ||\n').score!);
+  check('反复小节混写报错', mix.some((v) => v.message.includes('小节反复') && v.message.includes('不能再写其他音符')), mix.map((v) => v.message).join(' / '));
+  const clean = validateGroups(parseDsl('@beat 4/4\n\n1 2 3 4 | % | 5 5 5 5 ||\n').score!);
+  check('纯 % 小节不报错', !clean.some((v) => v.message.includes('小节反复')), clean.map((v) => v.message).join(' / '));
+  check('inRepeatMeasure 光标在 % 小节内为真', !!p1 && inRepeatMeasure(p1.score, at1) === true);
+  check('inRepeatMeasure 普通小节为假', inRepeatMeasure(pbBase, 0) === false);
+  // 播放展开：小节反复重复上一小节的发声（midi 条目按 len 平移）
+  const tl = buildTimeline(rp.score!).filter((e) => !e.grace && e.midi !== null);
+  check('% 播放条目数 = 三小节齐', tl.length === 12, String(tl.length));
+  const bar1 = tl.filter((e) => e.startTick < TICKS_PER_BEAT * 4);
+  const bar2 = tl.filter((e) => e.startTick >= TICKS_PER_BEAT * 4 && e.startTick < TICKS_PER_BEAT * 8);
+  check(
+    '% 展开的音与上一小节逐条对应',
+    bar2.length === bar1.length && bar2.every((e, i) => e.midi === bar1[i]!.midi && e.startTick === bar1[i]!.startTick + TICKS_PER_BEAT * 4),
+    `${bar1.length} vs ${bar2.length}`,
+  );
+  // 两小节反复 = 前面**两小节整块**再来一遍（A B % % → A B A B），
+  // 不是把前一小节重复两次（A B A A）
+  const dbl = parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 | % | % ||\n').score!;
+  const tlDbl = buildTimeline(dbl).filter((e) => !e.grace && e.midi !== null);
+  const a1 = tlDbl.filter((e) => e.startTick < TICKS_PER_BEAT * 4);
+  const b2 = tlDbl.filter((e) => e.startTick >= TICKS_PER_BEAT * 4 && e.startTick < TICKS_PER_BEAT * 8);
+  const c3 = tlDbl.filter((e) => e.startTick >= TICKS_PER_BEAT * 8 && e.startTick < TICKS_PER_BEAT * 12);
+  const c4 = tlDbl.filter((e) => e.startTick >= TICKS_PER_BEAT * 12 && e.startTick < TICKS_PER_BEAT * 16);
+  check('两小节反复共 16 条发声', tlDbl.length === 16, String(tlDbl.length));
+  check(
+    '反复段第 1 格 = 前面第 1 小节',
+    c3.length === 4 && c3.every((e, i) => e.midi === a1[i]!.midi && e.startTick === a1[i]!.startTick + TICKS_PER_BEAT * 8),
+  );
+  check(
+    '反复段第 2 格 = 前面第 2 小节（不是第 1 小节重复两遍）',
+    c4.length === 4 && c4.every((e, i) => e.midi === b2[i]!.midi && e.startTick === b2[i]!.startTick + TICKS_PER_BEAT * 8),
+    tlDbl.map((e) => e.midi).join(','),
+  );
+  // UI 开关：toggleRepeatBar 把普通休止补成整小节；音符不动
+  const base = parseDsl('@beat 4/4\n\n5 5 6 6 | 0 | 3 3 2 2 ||\n').score!;
+  const restId = base.events.find((e) => e.kind === 'rest')!.id;
+  const rbOn = toggleRepeatBar(base, restId);
+  check('toggleRepeatBar 打开并补成整小节', (rbOn.events.find((e) => e.id === restId) as RestEvent).repeatBar === true && (rbOn.events.find((e) => e.id === restId) as RestEvent).ticks === TICKS_PER_BEAT * 4);
+  check('toggleRepeatBar 再点一次关掉', (toggleRepeatBar(rbOn, restId).events.find((e) => e.id === restId) as RestEvent).repeatBar === undefined);
+  const noteId = base.events[0].id;
+  check('toggleRepeatBar 对音符不动', toggleRepeatBar(base, noteId) === base);
+  check('toggleRepeatBar 序列化不抛', typeof serializeDsl(rbOn) === 'string');
+
+  // ── 多小节休止 0*N（GB/T 46845—2025 §6.3.7.3）──
+  const mb = parseDsl('@beat 4/4\n\n5 5 6 6 | 0*3 | 3 3 2 2 ||\n');
+  check('0*3 解析无错', mb.errors.length === 0, mb.errors.join(' / '));
+  const mbRests = mb.score!.events.filter((e) => e.kind === 'rest') as RestEvent[];
+  check('拆成 3 个整小节休止', mbRests.length === 3 && mbRests.every((r) => r.ticks === TICKS_PER_BEAT * 4), String(mbRests.length));
+  check('首格带 multibar=3，后续格 cont', mbRests[0]!.multibar === 3 && mbRests[1]!.multibarCont === true && mbRests[2]!.multibarCont === true);
+  const mbHidden = mb.score!.events.filter((e) => e.kind === 'barline' && (e as BarlineEvent).hidden);
+  check('中间是 2 根隐藏小节线', mbHidden.length === 2, String(mbHidden.length));
+  const mbText = serializeDsl(mb.score!);
+  check('序列化合并回 0*3', mbText.includes('0*3'), mbText);
+  const mbBack = parseDsl(mbText);
+  check('0*3 回读一致', mbBack.errors.length === 0 && (mbBack.score!.events.filter((e) => e.kind === 'rest') as RestEvent[]).length === 3);
+  // 校验 / 排版照常工作：不报组错误、小节号照常
+  check('0*3 展开校验无错', expandScore(mb.score!).errors.length === 0, expandScore(mb.score!).errors.join(' / '));
+  const mbItems = layoutScore(mb.score!, { contentWidth: 1400 }).lines.flatMap((l) => l.items);
+  check('layout 带 multibar 标记', (mbItems.filter((i) => i.kind === 'rest').map((i) => i.multibar ?? i.multibarCont ?? null)).join(',') === '3,true,true', mbItems.filter((i) => i.kind === 'rest').map((i) => i.multibar ?? i.multibarCont ?? null).join(','));
+  // 0*1 起合法；删格 / 加格后剩余小节数自动重算
+  const mb1 = parseDsl('@beat 4/4\n\n0*1 | 5 5 5 5 ||\n');
+  check('0*1 解析无错且单格 multibar=1', mb1.errors.length === 0 && (mb1.score!.events[0] as RestEvent).multibar === 1, mb1.errors.join(' / '));
+  check('0*1 序列化写回', serializeDsl(mb1.score!).includes('0*1'), serializeDsl(mb1.score!));
+  {
+    const mbase = parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 | 3 3 3 3 ||\n').score!;
+    const at = 9; // 第二根小节线之后
+    const blk = insertMultibarRest(mbase, at, 3);
+    const cells = blk.events.filter((e) => e.kind === 'rest' && ((e as RestEvent).multibar || (e as RestEvent).multibarCont)) as RestEvent[];
+    check('插入 0×3 后首格 multibar=3', cells.length === 3 && cells[0]!.multibar === 3);
+    // 删掉末格：剩 2 格，首格数字变 2，孤儿结构线清掉
+    const shrunken = removeEvent(blk, cells[2]!.id);
+    const cells2 = shrunken.events.filter((e) => e.kind === 'rest' && ((e as RestEvent).multibar || (e as RestEvent).multibarCont)) as RestEvent[];
+    check('删一格后重算为 2', cells2.length === 2 && cells2[0]!.multibar === 2 && cells2[1]!.multibarCont === true, JSON.stringify(cells2.map((c) => [c.multibar, c.multibarCont])));
+    check('孤儿结构线被清掉', !(shrunken.events.some((e) => e.kind === 'barline' && (e as BarlineEvent).multibarDiv === true && (shrunken.events.indexOf(e) > 0) && !(shrunken.events[shrunken.events.indexOf(e) - 1] as RestEvent).multibar && !(shrunken.events[shrunken.events.indexOf(e) - 1] as RestEvent).multibarCont)));
+    // 删掉首格：下一格晋升为首格，数字重算
+    const headDeleted = removeEvent(blk, cells[0]!.id);
+    const cells3 = headDeleted.events.filter((e) => e.kind === 'rest' && ((e as RestEvent).multibar || (e as RestEvent).multibarCont)) as RestEvent[];
+    check('删首格后后格晋升为 2', cells3.length === 2 && cells3[0]!.multibar === 2 && cells3[0]!.multibarCont === undefined, JSON.stringify(cells3.map((c) => [c.multibar, c.multibarCont])));
+    check('重算后序列化写 0*2', serializeDsl(headDeleted).includes('0*2'), serializeDsl(headDeleted));
+    // 相邻再插一段：自动并成一段重计
+    const merged = insertMultibarRest(shrunken, shrunken.events.findIndex((e) => e.id === cells2[1]!.id) + 1, 2);
+    const cells4 = merged.events.filter((e) => e.kind === 'rest' && ((e as RestEvent).multibar || (e as RestEvent).multibarCont)) as RestEvent[];
+    check('紧邻再插 0×2 并成一段 4', cells4.length === 4 && cells4[0]!.multibar === 4, JSON.stringify(cells4.map((c) => [c.multibar, c.multibarCont])));
+    check('合并后序列化写 0*4', serializeDsl(merged).includes('0*4'), serializeDsl(merged));
+  }
+
+  // ── 高低八度演奏段 8va[ … ]8 / 8vb[ … ]8（GB/T 46845—2025 §6.2.6；需要 @format 3）──
+  const oct = parseDsl('@format 3\n@beat 4/4\n\n8va[ 5 6 ]8 5 ||\n');
+  check('8va[ 解析无错', oct.errors.length === 0, oct.errors.join(' / '));
+  const octNotes = oct.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('首音带 octava=va 且 end 指向末音', octNotes[0]!.octava === 'va' && octNotes[0]!.octavaTo === octNotes[1]!.id);
+  check('段外音不带 octava', octNotes[2]!.octava === undefined);
+  check('8vb[ 解析为 vb', (parseDsl('@format 3\n@beat 4/4\n\n8vb[ 5 ]8 5 ||\n').score!.events[0] as import('../src/v2/types').NoteEvent).octava === 'vb');
+  check('缺 ]8 收尾报错', parseDsl('@format 3\n@beat 4/4\n\n8va[ 5 5 ||\n').errors.length > 0);
+  check('老格式不认 8va', parseDsl('@beat 4/4\n\n8va[ 5 ]8 5 ||\n').errors.length > 0);
+  const octText = serializeDsl(oct.score!);
+  check('序列化写回 8va[ … ]8', octText.includes('8va[') && octText.includes(']8'), octText);
+  const tlOct = buildTimeline(oct.score!).filter((e) => !e.grace);
+  const tlPlain = buildTimeline(parseDsl('@beat 4/4\n\n5 6 5 ||\n').score!).filter((e) => !e.grace);
+  check(
+    '8va 段内音高 +12，段外还原',
+    tlOct[0]!.midi === tlPlain[0]!.midi! + 12 && tlOct[1]!.midi === tlPlain[1]!.midi! + 12 && tlOct[2]!.midi === tlPlain[2]!.midi,
+    tlOct.map((e) => e.midi).join(','),
+  );
+  const octItem = layoutScore(oct.score!, { contentWidth: 800 }).lines[0].items.find((i) => i.kind === 'note')!;
+  check('layout 带 octava 起点', octItem.octava === 'va' && octItem.octavaTo === octNotes[1]!.id);
+
+  // ── 八度段跨行：换行后下一行首个段内音标 octavaCont（paint 画 (8) 续标记）──
+  const ocCross = parseDsl('@format 3\n@beat 4/4\n\n8va[ 5 6 7 1 | 换行 2 3 4 5 ]8 ||\n');
+  check('跨行谱解析无错', ocCross.errors.length === 0, ocCross.errors.join(' / '));
+  const ocLines = layoutScore(ocCross.score!, { contentWidth: 800 }).lines;
+  const ocL0 = ocLines[0]!.items.filter((i) => i.kind === 'note');
+  const ocL1 = ocLines[1]!.items.filter((i) => i.kind === 'note');
+  check('跨行段：首行起点带 octava，续行首音带 octavaCont 指向同一段', ocL0[0]!.octava === 'va' && ocL1[0]!.octavaCont === 'va' && ocL1[0]!.octavaContTo === ocL0[0]!.octavaTo, JSON.stringify([ocL0[0]!.octava, ocL1[0]!.octavaCont, ocL1[0]!.octavaContTo]));
+  check('跨行段：续行其余音不带标记', ocL1.slice(1).every((i) => !i.octavaCont && !i.octava));
+  check('跨行段：起始行第二个音不打 (8) 续标', ocL0.slice(1).every((i) => !i.octavaCont), JSON.stringify(ocL0.map((i) => i.octavaCont ?? null)));
+
+  // ── con 8 八度重复（con8[ … ]8）：原声保留，另叠一份 ±12 同响 ──
+  const conP = parseDsl('@format 3\n@beat 4/4\n\ncon8[ 5 6 ]8 5 ||\n');
+  check('con8[ 解析无错', conP.errors.length === 0, conP.errors.join(' / '));
+  const conNotes = conP.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('con 段首音 octava=con-va 指向末音', conNotes[0]!.octava === 'con-va' && conNotes[0]!.octavaTo === conNotes[1]!.id);
+  check('con8b[ 解析为 con-vb', (parseDsl('@format 3\n@beat 4/4\n\ncon8b[ 5 ]8 5 ||\n').score!.events[0] as import('../src/v2/types').NoteEvent).octava === 'con-vb');
+  check('老格式不认 con8[', parseDsl('@beat 4/4\n\ncon8[ 5 ]8 5 ||\n').errors.length > 0);
+  const conText = serializeDsl(conP.score!);
+  check('序列化写回 con8[ … ]8', conText.includes('con8[') && conText.includes(']8'), conText);
+  check('con8b 序列化写回', serializeDsl(parseDsl('@format 3\n@beat 4/4\n\ncon8b[ 5 ]8 5 ||\n').score!).includes('con8b['));
+  const tlCon = buildTimeline(conP.score!).filter((e) => !e.grace);
+  check(
+    'con 段原声不变 + 每音多一条 ±12 副本',
+    tlCon.length === 5 &&
+      tlCon[0]!.midi === tlPlain[0]!.midi! && tlCon[1]!.midi === tlPlain[0]!.midi! + 12 &&
+      tlCon[2]!.midi === tlPlain[1]!.midi! && tlCon[3]!.midi === tlPlain[1]!.midi! + 12 &&
+      tlCon[4]!.midi === tlPlain[2]!.midi!,
+    tlCon.map((e) => e.midi).join(','),
+  );
+  check('con 副本 eventId 与原条目相同（follow 高亮可用）', tlCon[0]!.eventId === tlCon[1]!.eventId);
+  // con 段里的延音链：副本随链合并延到链尾
+  const conTie = parseDsl('@format 3\n@beat 4/4\n\ncon8[ 5~ 5 ]8 3 ||\n').score!;
+  const tlConTie = buildTimeline(conTie).filter((e) => !e.grace);
+  check(
+    'con 段延音链：副本跟着延到链尾，段外音不复制',
+    tlConTie.length === 3 &&
+      tlConTie[0]!.endTick === tlConTie[0]!.startTick + TICKS_PER_BEAT * 2 &&
+      tlConTie[1]!.endTick === tlConTie[1]!.startTick + TICKS_PER_BEAT * 2 &&
+      tlConTie[1]!.midi === tlConTie[0]!.midi! + 12 &&
+      Math.abs(tlConTie[2]!.midi! - tlConTie[0]!.midi!) < 12, // 段外音无副本
+    JSON.stringify(tlConTie.map((e) => [e.midi, e.startTick, e.endTick])),
+  );
+
+  // ── 回音 u（GB/T 46845—2025 §7.4）──
+  const turn = parseDsl('@beat 4/4\n\n1u 2 ||\n');
+  check('回音解析无错', turn.errors.length === 0, turn.errors.join(' / '));
+  const turnNote = turn.score!.events[0] as import('../src/v2/types').NoteEvent;
+  check('回音进 techniques', turnNote.techniques?.includes('turn') === true, JSON.stringify(turnNote.techniques));
+  check('回音序列化写回 u', serializeDsl(turn.score!).includes('1u'), serializeDsl(turn.score!));
+
+  // ── 颤音波线延展（GB/T 46845—2025 §7.5.3）──
+  const trSel = parseDsl('@beat 4/4\n\n5r 6R 7 5 ||\n');
+  check('选区颤音解析无错', trSel.errors.length === 0, trSel.errors.join(' / '));
+  const trNotes = trSel.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('tr 在首音、R 在末音', (trNotes[0]!.techniques ?? []).includes('trill') && trNotes[1]!.trillEnd === true && !(trNotes[2] as import('../src/v2/types').NoteEvent).trillEnd);
+  const trText = serializeDsl(trSel.score!);
+  check('选区颤音序列化写回 r / R', trText.includes('5r') && trText.includes('6R'), trText);
+  const trItem = layoutScore(trSel.score!, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'note' && i.eventId === trNotes[1]!.id)!;
+  check('layout 带颤音终点', trItem.trillEnd === true);
+  const trBase = parseDsl('@beat 4/4\n\n5 6 7 5 ||\n').score!;
+  const trIds = trBase.events.filter((e) => e.kind === 'note').map((e) => e.id);
+  const trOn = setTrillRange(trBase, trIds);
+  const trOnNotes = trOn.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('setTrillRange 首音 tr、末音 trillEnd', (trOnNotes[0]!.techniques ?? []).includes('trill') && trOnNotes[3]!.trillEnd === true && !trOnNotes[1]!.trillEnd);
+  const trOff = setTrillRange(trOn, trIds);
+  const trOffNotes = trOff.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('setTrillRange 再点取消', !(trOffNotes[0]!.techniques ?? []).includes('trill') && trOffNotes.every((n) => !n.trillEnd));
+  check('setTrillRange 单音不动', setTrillRange(trBase, [trIds[0]]) === trBase);
+  check('单音颤音回读', (() => { const b = parseDsl(serializeDsl(parseDsl('@beat 4/4\n\n5r 6 ||\n').score!)); return b.errors.length === 0 && ((b.score!.events[0] as import('../src/v2/types').NoteEvent).techniques ?? []).includes('trill') && !(b.score!.events[0] as import('../src/v2/types').NoteEvent).trillEnd; })());
+
+  // ── 指法 '0-5（GB/T 46845—2025 §7.11.5）──
+  const fng = parseDsl('@beat 4/4\n\n1\'2 3\'0 5 ||\n');
+  check('指法解析无错', fng.errors.length === 0, fng.errors.join(' / '));
+  const fngNotes = fng.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('指法 2 / 空弦 0', fngNotes[0]!.fingering === '2' && fngNotes[1]!.fingering === '0' && fngNotes[2]!.fingering === undefined);
+  check('指法序列化写回', serializeDsl(fng.score!).includes("1'2") && serializeDsl(fng.score!).includes("3'0"), serializeDsl(fng.score!));
+  const fngBack = parseDsl(serializeDsl(fng.score!));
+  check('指法回读一致', fngBack.errors.length === 0 && (fngBack.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[]).map((e) => e.fingering ?? '-').join(',') === '2,0,-');
+  const fngId = fng.score!.events[0].id;
+  check('setFingering 清除', (setFingering(fng.score!, fngId).events[0] as import('../src/v2/types').NoteEvent).fingering === undefined);
+  check('setFingering 写入', (setFingering(fng.score!, fngId, '5').events[0] as import('../src/v2/types').NoteEvent).fingering === '5');
+  const fngItem = layoutScore(fng.score!, { contentWidth: 800 }).lines[0].items.find((i) => i.kind === 'note')!;
+  check('layout 带指法', fngItem.fingering === '2');
+
+  // ── UI 同口径辅助函数：insertMultibarRest / setOctavaRange ──
+  const uiBase = parseDsl('@beat 4/4\n\n5 6 7 5 ||\n').score!;
+  const uiMb = insertMultibarRest(uiBase, 4, 3);
+  check(
+    'insertMultibarRest 拆解 = 3 休止 + 2 隐藏线',
+    uiMb.events.length === uiBase.events.length + 5 &&
+      (uiMb.events[4] as RestEvent).multibar === 3 &&
+      (uiMb.events[4] as RestEvent).ticks === TICKS_PER_BEAT * 4 &&
+      (uiMb.events[5] as BarlineEvent).hidden === true &&
+      (uiMb.events[6] as RestEvent).multibarCont === true,
+    JSON.stringify(uiMb.events.map((e) => e.kind)),
+  );
+  check('insertMultibarRest 序列化写 0*3', serializeDsl(uiMb).includes('0*3'), serializeDsl(uiMb));
+  const uiOct = setOctavaRange(uiBase, [uiBase.events[0].id, uiBase.events[1].id, uiBase.events[2].id], 'va');
+  const uiOctNotes = uiOct.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('setOctavaRange 首音挂 va 指向末音', uiOctNotes[0]!.octava === 'va' && uiOctNotes[0]!.octavaTo === uiOctNotes[2]!.id);
+  check('setOctavaRange 强制 @format 3', uiOct.format === 3);
+  check('setOctavaRange 序列化可回读', parseDsl(serializeDsl(uiOct)).errors.length === 0, serializeDsl(uiOct));
+  const uiOctClear = setOctavaRange(uiOct, [uiBase.events[1].id]);
+  check('setOctavaRange 清除拆段', (uiOctClear.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[]).every((n) => !n.octava && !n.octavaTo));
+  check('setOctavaRange 单音拒绝建段', setOctavaRange(uiBase, [uiBase.events[0].id], 'vb') === uiBase);
+  // 循环三态：8va → con-va → 取消（OctavaField 按钮第 1/2/3 次点击的语义）
+  const uiIds = [uiBase.events[0].id, uiBase.events[1].id, uiBase.events[2].id];
+  const conUi = setOctavaRange(uiBase, uiIds, 'con-va');
+  check('setOctavaRange con-va 首音挂 con-va', (conUi.events[0] as import('../src/v2/types').NoteEvent).octava === 'con-va');
+  const conUiText = serializeDsl(conUi);
+  check('con-va 序列化写 con8[ 且可回读', conUiText.includes('con8[') && parseDsl(conUiText).errors.length === 0, conUiText);
+  const conUiAgain = setOctavaRange(conUi, uiIds);
+  check('con 段再点（kind 省略）整段取消', (conUiAgain.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[]).every((n) => !n.octava && !n.octavaTo));
+  const conVbUi = setOctavaRange(uiBase, uiIds, 'con-vb');
+  check('setOctavaRange con-vb + 序列化写 con8b[', (conVbUi.events[0] as import('../src/v2/types').NoteEvent).octava === 'con-vb' && serializeDsl(conVbUi).includes('con8b['));
+  // 循环三态实走一遍：已挂 va 的段再按同一选区 → 切到 con-va（此前旧段清理抢先 return，表现成「再按=取消」）
+  const cycleCon = setOctavaRange(uiOct, uiIds, 'con-va');
+  check('已挂 va 再按 → 切到 con-va（不是取消）', (cycleCon.events[0] as import('../src/v2/types').NoteEvent).octava === 'con-va' && (cycleCon.events[0] as import('../src/v2/types').NoteEvent).octavaTo === uiIds[2]);
+  const cycleOff = setOctavaRange(cycleCon, uiIds);
+  check('con-va 再按 → 整段取消', (cycleOff.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[]).every((n) => !n.octava && !n.octavaTo));
+  check('取消后再按 → 重新挂 va', (setOctavaRange(cycleOff, uiIds, 'va').events[0] as import('../src/v2/types').NoteEvent).octava === 'va');
+}
+
+console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板]');
+{
+  // ── 琶音 a（GB/T 46845—2025 §7.7）──
+  const arp = parseDsl('@beat 4/4\n\n1a 2 ||\n');
+  check('琶音解析无错', arp.errors.length === 0, arp.errors.join(' / '));
+  const arpNote = arp.score!.events[0] as import('../src/v2/types').NoteEvent;
+  check('琶音进字段', arpNote.arpeggio === true);
+  check('琶音序列化写回 a', serializeDsl(arp.score!).includes('1a'), serializeDsl(arp.score!));
+  // 排版要给波状竖线让位：带琶音的音符格更宽
+  const arpWide = layoutScore(arp.score!, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
+  const arpPlain = layoutScore(parseDsl('@beat 4/4\n\n1 2 ||\n').score!, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
+  check('带琶音的音符格更宽（arpW 回传）', Math.abs((arpWide.w - arpPlain.w) - arpWide.arpW) < 1e-6 && arpWide.arpW > 0, `${arpWide.w - arpPlain.w} vs ${arpWide.arpW}`);
+
+  // ── 震音 z / zz / zzz（GB/T 46845—2025 §7.8）──
+  const trem = parseDsl('@beat 4/4\n\n1z 2zz 3zzz 4 ||\n');
+  check('震音解析无错', trem.errors.length === 0, trem.errors.join(' / '));
+  const tremNotes = trem.score!.events.filter((e) => e.kind === 'note') as import('../src/v2/types').NoteEvent[];
+  check('斜线数 1 / 2 / 3 / 无', tremNotes[0]!.tremolo === 1 && tremNotes[1]!.tremolo === 2 && tremNotes[2]!.tremolo === 3 && tremNotes[3]!.tremolo === undefined);
+  check('震音序列化写回 z 系', serializeDsl(trem.score!).includes('1z') && serializeDsl(trem.score!).includes('2zz') && serializeDsl(trem.score!).includes('3zzz'), serializeDsl(trem.score!));
+  // 播放细分：2 拍长音 zz → 4 等份十六分重复；普通音不拆
+  //（增时线写在记号后缀之前：5-zz，与 renderTimed 的输出顺序一致）
+  const tremTl = buildTimeline(parseDsl('@beat 4/4\n\n5-zz 5 ||\n').score!).filter((e) => !e.grace);
+  check(
+    'zz 两拍 = 4 等份重复',
+    tremTl.length === 5 && tremTl[0]!.startTick === 0 && tremTl[3]!.startTick === TICKS_PER_BEAT * 1.5 && tremTl[4]!.startTick === TICKS_PER_BEAT * 2,
+    tremTl.map((e) => e.startTick).join(','),
+  );
+  check('zzzzz 非法写法被拒', parseDsl('@beat 4/4\n\n1zzzz ||\n').errors.length > 0 || ((parseDsl('@beat 4/4\n\n1zzzz ||\n').score!.events[0] as import('../src/v2/types').NoteEvent).tremolo ?? 0) <= 3);
+
+  // ── 虚小节线 |~（GB/T 46845—2025 §5.2.2）──
+  const dsh = parseDsl('@beat 4/4\n\n1 2 |~ 3 4 ||\n');
+  check('虚小节线解析无错', dsh.errors.length === 0, dsh.errors.join(' / '));
+  const dshBar = dsh.score!.events.find((e) => e.kind === 'barline' && (e as BarlineEvent).dashed) as BarlineEvent | undefined;
+  check('中间线是虚线', dshBar?.dashed === true);
+  check('虚线序列化写回 |~', serializeDsl(dsh.score!).includes('|~'), serializeDsl(dsh.score!));
+  const dshBack = parseDsl(serializeDsl(dsh.score!));
+  check('虚线回读一致', dshBack.errors.length === 0 && (dshBack.score!.events.filter((e) => e.kind === 'barline') as BarlineEvent[]).some((b) => b.dashed === true));
+  const dshItem = layoutScore(dsh.score!, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'barline' && i.eventId === dshBar!.id)!;
+  check('layout 带虚线标记', dshItem.dashed === true);
+
+  // ── 散板 散（GB/T 46845—2025 §6.3.11.7）──
+  const free = parseDsl('@beat 4/4\n\n1 2 3 4 | 散 | 5 6 ||\n');
+  check('散板解析无错', free.errors.length === 0, free.errors.join(' / '));
+  const freeBar = free.score!.events.find((e) => e.kind === 'barline' && (e as BarlineEvent).free) as BarlineEvent | undefined;
+  check('散挂在小节线上', freeBar?.free === true);
+  check('散序列化写回', serializeDsl(free.score!).includes('散'), serializeDsl(free.score!));
+  // 散板段里拍数不满不报警（对照：无散板时同样内容报 ⚠）
+  const mkLayout = (body: string) => layoutScore(parseDsl(`@beat 4/4\n\n${body}\n`).score!, { contentWidth: 1400 }).lines.flatMap((l) => l.badges);
+  const plainBadges = mkLayout('1 2 3 4 | 5 6 ||');
+  const freeBadges = mkLayout('1 2 3 4 | 散 | 5 6 ||');
+  check('无散板时不满小节报 ⚠', plainBadges.some((b) => b.level === 'warn'), JSON.stringify(plainBadges));
+  check('散板段里不满小节豁免', freeBadges.length === 0, JSON.stringify(freeBadges));
+  // 「拍N/M」声明新拍号 = 退出散板，恢复校验
+  const exitBadges = mkLayout('1 2 3 4 | 散 | 5 6 | 拍4/4 1 2 3 4 ||');
+  check('写拍号退出散板恢复校验', exitBadges.length === 0, JSON.stringify(exitBadges));
+  check('「散」不接小节线报错', parseDsl('@beat 4/4\n\n散 1 2 ||\n').errors.length > 0);
 }
 
 {

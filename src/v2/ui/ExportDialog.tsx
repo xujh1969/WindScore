@@ -51,6 +51,8 @@ export interface ExportDialogProps extends ExportNotation {
     displayTimeline: TimelineEntry[];
     /** 播放指示样式（跟界面设置一致） */
     playStyle: 'head' | 'band' | 'ball';
+    /** 播放指示自定义色（浅色 / 深色两档，按导出所选外观取用）；空 = 主题默认 */
+    playColor?: { light: string | null; dark: string | null };
     activePartId?: string;
     fromTick: number;
     bpm: number;
@@ -124,6 +126,8 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   const [withMetronome, setWithMetronome] = useState(false);
   /** 节拍器的拍内细分 */
   const [metroPattern, setMetroPattern] = useState('quarter');
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13） */
+  const [metroCompoundMedium, setMetroCompoundMedium] = useState(true);
   // 只导一段（0 = 到末尾）
   const [mFrom, setMFrom] = useState(1);
   const [mTo, setMTo] = useState(0);
@@ -306,10 +310,12 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 // 强弱跟谱面拍号段：中途换拍（DSL「拍3/4」）导出的视频里也跟着换
                 meterAt: meterSegmentsOf(score.events, score.meta.beat),
                 volume: 0.45,
+                compoundMedium: metroCompoundMedium,
               },
             }
           : {}),
         playStyle: video.playStyle,
+        playColor: videoDark ? video.playColor?.dark ?? null : video.playColor?.light ?? null,
         activePartId: partId || video.activePartId,
         showMeasureNumbers: showBars,
         showTitle,
@@ -628,9 +634,20 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               ) : null}
             </div>
             {withMetronome ? (
-              <p className="v2-exp-hint">
-                节拍器按谱面的拍号（{score.meta.beat}）打拍：小节第一拍重音，其余轻拍。click 混在音轨里，和视频里的画面严格对齐。
-              </p>
+              <>
+                <label className="v2-grace-check" title="复拍子（6/8、9/8、12/8）的后续大拍打次强拍（GB/T 46845—2025 §6.3.13）；普通拍子没有次强拍，此开关不起作用">
+                  <input
+                    type="checkbox"
+                    checked={metroCompoundMedium}
+                    disabled={busy}
+                    onChange={(e) => setMetroCompoundMedium(e.target.checked)}
+                  />
+                  复拍子次强拍
+                </label>
+                <p className="v2-exp-hint">
+                  节拍器按谱面的拍号（{score.meta.beat}）打拍：小节第一拍重音，复拍子后续大拍次强，其余轻拍。click 混在音轨里，和视频里的画面严格对齐。
+                </p>
+              </>
             ) : null}
             <p className="v2-exp-hint">
               约 {Math.floor(preview.seconds / 60)}:{String(Math.round(preview.seconds % 60)).padStart(2, '0')} · 画面按播放位置滚动。离线渲染：不用守着页面，也不用听一遍。

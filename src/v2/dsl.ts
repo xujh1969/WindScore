@@ -29,7 +29,7 @@ import {
 import { normalizeKey } from './timeline';
 import { isStaffInstrument, type StaffInstrument, type StaffClefSetting } from './pitch';
 import { autoGroupBeats } from './edit';
-import { groupTicks, validMeter } from './meter';
+import { beatsPerMeasure, groupTicks, validMeter } from './meter';
 import { applyLyrics, lyricRows, applyLyricLinks, lyricLinkRows } from './lyrics';
 import { assembleParts, namespacePart, partScore, scoreParts } from './parts';
 import type {
@@ -56,7 +56,7 @@ import type {
  */
 // 音级位支持 X/x：无音高音符（打击 / 拍手），小写 x 只在独立记号位生效，
 // 跟在音符后的 x 仍是下滑音后缀（5x）——正则的音级位在前，无歧义。
-const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrg]*)(\[[^[\]]{1,3}\])?$/;
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrguazR]*)('([0-5]))?(\[[^[\]]{1,3}\])?$/;
 
 /**
  * 技法记号的后缀字母 → 数据值。
@@ -64,7 +64,7 @@ const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(
  */
 const TECHNIQUE_LETTER: Record<string, string> = {
   V: 'breath', // 换气 V（大写，避开低八度点 v）
-  r: 'trill', // 颤音 tr
+  r: 'trill', // 颤音 tr（画 tr + 波浪延展线，GB/T 46845—2025 §7.5.3 形态）
   f: 'flutter', // 花舌 *
   d: 'da', // 打音 扌
   m: 'mordentUp', // 上波音 ≈
@@ -73,6 +73,7 @@ const TECHNIQUE_LETTER: Record<string, string> = {
   x: 'slideDown', // 下滑音 ↓
   q: 'bendUp', // 上弯音（向上折线箭头）
   h: 'bendDown', // 下弯音（向下折线箭头）
+  u: 'turn', // 回音（横置 ∞ 形，GB/T 46845—2025 §7.5.5）
 };
 
 /** 技法数据值 → 后缀字母（序列化用） */
@@ -80,14 +81,26 @@ const TECHNIQUE_OF: Record<string, string> = Object.fromEntries(
   Object.entries(TECHNIQUE_LETTER).map(([letter, value]) => [value, letter]),
 );
 
-/** 变音记号字形 → 数据值 */
-const ACCIDENTALS: Record<string, Accidental> = {
-  '#': '#',
-  '♯': '#',
-  b: 'b',
-  '♭': 'b',
-  '♮': '♮',
-};
+/**
+ * 前导串 → 变音记号（GB/T 46845—2025 §6.2.5.1 五种）。
+ * 连写两个 = 重升 / 重降（`##4` → x、`bb3` → bb）；混写（如 `#b`）不合法，
+ * 沿用旧行为取第一个字符，不在这里抛错——语法层尽量宽容，语义交给校验。
+ */
+function accidentalOf(pre: string): Accidental | undefined {
+  const hashes = (pre.match(/[#♯]/g) ?? []).length;
+  const flats = (pre.match(/[b♭]/g) ?? []).length;
+  if (hashes >= 2) return 'x';
+  if (flats >= 2) return 'bb';
+  if (hashes) return '#';
+  if (flats) return 'b';
+  if (pre.includes('♮')) return '♮';
+  return undefined;
+}
+
+/** 数据值 → DSL 写法：重升 `##`、重降 `bb`，其余原样 */
+function accidentalDsl(acc: Accidental): string {
+  return acc === 'x' ? '##' : acc === 'bb' ? 'bb' : acc;
+}
 
 /** 力度记号：独立 token，渲染在谱行下方 */
 /** 力度 token：常规档位 + 渐强渐弱（写在音符前面，绑到那个音上） */
@@ -121,8 +134,8 @@ export function parseGraceNotes(text: string): GraceNote[] | null {
     let octave = 0;
     for (const c of m[3]) octave += c === '^' ? 1 : -1;
     const g: GraceNote = { degree: Number(m[2]) as Degree, octave };
-    const acc = [...m[1]].find((c) => c in ACCIDENTALS);
-    if (acc) g.accidental = ACCIDENTALS[acc];
+    const acc = accidentalOf(m[1]);
+    if (acc) g.accidental = acc;
     return g;
   });
 }
@@ -130,7 +143,7 @@ export function parseGraceNotes(text: string): GraceNote[] | null {
 /** 倚音的书写形式：`#6`、`6^`；序列化与面板显示共用 */
 export function renderGraceNote(g: GraceNote): string {
   const oct = g.octave > 0 ? '^'.repeat(g.octave) : 'v'.repeat(-g.octave);
-  return `${g.accidental ?? ''}${g.degree}${oct}`;
+  return `${g.accidental ? accidentalDsl(g.accidental) : ''}${g.degree}${oct}`;
 }
 
 export function parseDsl(text: string): ParseResult {
@@ -349,6 +362,8 @@ function parseSingle(text: string, modern = false): ParseResult {
   let pendingKey: string | undefined;
   let currentBeat = meta.beat;
   let hairpinStart: { kind: 'cresc' | 'dim'; from: number } | null = null;
+  /** 高/低八度演奏段的起点（`8va[` / `8vb[` / `con8[` / `con8b[`），结构与 hairpinStart 相同 */
+  let octavaStart: { kind: 'va' | 'vb' | 'con-va' | 'con-vb'; from: number } | null = null;
 
   /**
    * ( ) 连音线与 < > 拍内组是**两条互不相关的记号**：
@@ -387,15 +402,14 @@ function parseSingle(text: string, modern = false): ParseResult {
       errors.push(`无法解析的记号：${core}`);
       return;
     }
-    const [, pre, digit, post, dots, div, dashes, tieMark, artic, custom] = m;
+    const [, pre, digit, post, dots, div, dashes, tieMark, artic, , fngDigit, custom] = m;
 
     let octave = 0;
     for (const c of pre + post) {
       if (c === '^') octave += 1;
       else if (c === 'v') octave -= 1; // 变音字形不参与八度计数
     }
-    const accChar = [...pre].find((c) => c in ACCIDENTALS);
-    const accidental = accChar ? ACCIDENTALS[accChar] : undefined;
+    const accidental = accidentalOf(pre);
 
     const divN = div ? Number(div) : 1;
     const base = DIVISION_TICKS[divN];
@@ -447,6 +461,8 @@ function parseSingle(text: string, modern = false): ParseResult {
       let fermata = false;
       let tongue: 'T' | 'K' | undefined;
       let gray = false;
+      let tremolo = 0;
+      let trillEnd = false;
       const techniques: string[] = [];
       for (const c of artic) {
         if (c === '!') arts.push('staccato');
@@ -456,6 +472,9 @@ function parseSingle(text: string, modern = false): ParseResult {
         else if (c === 't') tongue = 'T';
         else if (c === 'k') tongue = 'K';
         else if (c === 'g') gray = true;
+        else if (c === 'a') note.arpeggio = true; // 琶音（GB/T 46845—2025 §7.7）
+        else if (c === 'z') tremolo += 1; // 震音斜线数（GB/T 46845—2025 §7.8，最多 3）
+        else if (c === 'R') trillEnd = true; // 颤音波线的终点音（选区 tr 的末音）
         else if (c in TECHNIQUE_LETTER) techniques.push(TECHNIQUE_LETTER[c]);
       }
       if (arts.length) note.articulations = arts;
@@ -463,6 +482,10 @@ function parseSingle(text: string, modern = false): ParseResult {
       if (tongue) note.tongue = tongue;
       if (gray) note.gray = true;
       if (techniques.length) note.techniques = techniques;
+      if (tremolo > 0) note.tremolo = Math.min(3, tremolo) as 1 | 2 | 3;
+      if (trillEnd) note.trillEnd = true;
+      // 指法（GB/T 46845—2025 §7.11.5）：`5'3` = 音 5 用指法 3，画在音符下方小字
+      if (fngDigit) note.fingering = fngDigit;
       // 自定义记号 `5[花舌]`：最多 3 个字符，原样画在音符上方
       if (custom) note.mark = custom.slice(1, -1);
       // 倚音（不占时值）：挂在这个主音上
@@ -542,7 +565,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     currentGroup = null;
   };
 
-  const pushBarline = (style: 'single' | 'double' | 'final', partial = false, hidden = false) => {
+  const pushBarline = (style: 'single' | 'double' | 'final', partial = false, hidden = false, dashed = false) => {
     if (currentGroup) {
       errors.push('拍内组不得跨小节，请先用 > 收尾');
       currentGroup = null;
@@ -552,6 +575,7 @@ function parseSingle(text: string, modern = false): ParseResult {
       ? { id, kind: 'barline', style, partial: true }
       : { id, kind: 'barline', style };
     if (hidden) (ev as BarlineEvent).hidden = true;
+    if (dashed) (ev as BarlineEvent).dashed = true;
     events.push(ev);
     byId.set(id, ev);
     if (!pendingTie || style === 'final') lastNoteId = null;
@@ -713,7 +737,13 @@ function parseSingle(text: string, modern = false): ParseResult {
       }
 
       if (raw !== '') {
-        if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === '换行' || raw === '分页') {
+        if (raw === '散') {
+          // 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：拍号位置记「散」，
+          // 从这根线之后不做小节拍数校验，直到某根线写「拍N/M」声明新拍号
+          const bar = events[events.length - 1];
+          if (bar?.kind !== 'barline') errors.push('「散」需要紧接小节线书写');
+          else bar.free = true;
+        } else if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === '换行' || raw === '分页') {
           const bar = events[events.length - 1];
           if (!modern || bar?.kind !== 'barline') errors.push(`${raw} 需要 @format 3，并紧接小节线书写`);
           else if (raw.startsWith('拍')) {
@@ -743,7 +773,62 @@ function parseSingle(text: string, modern = false): ParseResult {
             else { notes[0].hairpin = hairpinStart.kind; notes[0].hairpinTo = notes[notes.length - 1].id; }
             hairpinStart = null;
           }
+        } else if (raw === '8va[' || raw === '8vb[' || raw === 'con8[' || raw === 'con8b[') {
+          // 高/低八度演奏段（GB/T 46845—2025 §6.2.6）：起点标记，与渐强范围同构。
+          // con8[ / con8b[ = 八度重复（con 8）：段内除原声外再叠一份高/低八度同响
+          if (!modern) errors.push('高低八度演奏段需要 @format 3');
+          else if (octavaStart) errors.push('高低八度演奏段不能嵌套');
+          else
+            octavaStart = {
+              kind: raw === '8va[' ? 'va' : raw === '8vb[' ? 'vb' : raw === 'con8[' ? 'con-va' : 'con-vb',
+              from: events.length,
+            };
+        } else if (raw === ']8') {
+          if (!octavaStart) errors.push('高低八度演奏段缺少 8va[ / 8vb[ / con8[');
+          else {
+            const notes = events.slice(octavaStart.from).filter((e): e is NoteEvent => e.kind === 'note');
+            if (notes.length < 1) errors.push('高低八度演奏段至少需要一个音符');
+            else { notes[0].octava = octavaStart.kind; notes[0].octavaTo = notes[notes.length - 1].id; }
+            octavaStart = null;
+          }
+        } else if (/^0\*([1-9]\d{0,2})$/.test(raw)) {
+          // 多小节休止（GB/T 46845—2025 §6.3.7.3）：`0*8` = 休止 8 小节。
+          // 展开成 N 个逐小节休止 + N−1 根隐藏小节线：拍数校验、小节号、断行
+          // 全部走既有机制；序列化时合并回 0*N，谱面画一条粗横线加数字。
+          const n = Number(/^0\*(\d+)$/.exec(raw)![1]);
+          const mt = Math.round(beatsPerMeasure(currentBeat) * TICKS_PER_BEAT);
+          for (let i = 0; i < n; i += 1) {
+            if (i > 0) {
+              pushBarline('single', false, true);
+              // 结构化分隔线：编辑后剩余格数重算时，没有左右格的会被安全清掉
+              (events[events.length - 1] as BarlineEvent).multibarDiv = true;
+            }
+            const rest: RestEvent = {
+              id: nextId(),
+              kind: 'rest',
+              ticks: mt,
+              ...(i === 0 ? { multibar: n } : { multibarCont: true }),
+            };
+            events.push(rest);
+            byId.set(rest.id, rest);
+          }
+        } else if (raw === '%') {
+          // 小节反复号（GB/T 46845—2025 §5.8.4）：本小节重复上一小节。
+          // 时值恒为一整个小节，谱面画 𝄍；播放展开为上一小节的拷贝。
+          if (currentGroup) errors.push('小节反复号不能写在拍内组 < > 里');
+          else {
+            const rest: RestEvent = {
+              id: nextId(),
+              kind: 'rest',
+              ticks: Math.round(beatsPerMeasure(currentBeat) * TICKS_PER_BEAT),
+              repeatBar: true,
+            };
+            events.push(rest);
+            byId.set(rest.id, rest);
+          }
         }         else if (raw === '|*') pushBarline('single', false, true);
+        // 虚小节线（GB/T 46845—2025 §5.2.2）：混合拍子里按节拍分组、不拦拍感的细分线
+        else if (raw === '|~' || raw === '¦') pushBarline('single', false, false, true);
         else if (raw === '|') pushBarline('single');
         else if (raw === '||') pushBarline('final');
         // 双细线（乐段结束）：『双竖线』字符；也接受三连竖线做键盘别名
@@ -833,6 +918,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     closeGroup();
   }
   if (hairpinStart) errors.push('渐强/渐弱范围缺少 ]hairpin 收尾');
+  if (octavaStart) errors.push('高低八度演奏段缺少 ]8 收尾');
   // 房子没有收尾记号：范围由「下一条带房子的线 / 所在反复段的 :|」决定，
   // 展开器会据此判断它是否在反复段内、属于第几遍。
   if (events.length === 0 && hasBody) errors.push('谱面为空');
@@ -937,11 +1023,16 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
   const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
-  if (ev.kind === 'rest') return `${ev.x ? 'X' : ev.hidden ? '8' : '0'}${short}${ev.gray ? 'g' : ''}`;
+  if (ev.kind === 'rest') {
+    if (ev.repeatBar) return '%';
+    // 多小节休止首格（GB/T 46845—2025 §6.3.7.3）：写 0*N，后续格与隐藏线由序列化主循环跳过
+    if (ev.multibar) return `0*${ev.multibar}`;
+    return `${ev.x ? 'X' : ev.hidden ? '8' : '0'}${short}${ev.gray ? 'g' : ''}`;
+  }
   const n = ev;
   const marks = n.octave > 0 ? '^'.repeat(n.octave) : 'v'.repeat(-n.octave);
-  // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致
-  const acc = n.accidental ?? '';
+  // 变音记号写在音级左边，与简谱的 `#5` / `b3` 一致；重升 `##4`、重降 `bb3`
+  const acc = n.accidental ? accidentalDsl(n.accidental) : '';
   const body = `${acc}${n.degree}${marks}${short}`;
   const arts = (n.articulations ?? [])
     .map((a) =>
@@ -952,12 +1043,18 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
   const tong = n.tongue === 'K' ? 'k' : n.tongue === 'T' ? 't' : '';
   const gray = n.gray ? 'g' : '';
   const tech = (n.techniques ?? []).map((v) => TECHNIQUE_OF[v] ?? '').join('');
+  // 琶音 a / 震音 zz（斜线数）/ 颤音波线终点 R：与技法同一段记号后缀（NOTE_RE 的字母类）
+  const arp = n.arpeggio ? 'a' : '';
+  const trem = n.tremolo ? 'z'.repeat(n.tremolo) : '';
+  const trEnd = n.trillEnd ? 'R' : '';
+  // 指法：撇号 + 数字（5'3），写在技法后、自定义记号前（与 NOTE_RE 顺序一致）
+  const fng = n.fingering ? `'${n.fingering}` : '';
   // 自定义记号：方括号包住，最多 3 字符（括号本身不进记号，否则无法 round-trip）
   const cust = n.mark && /^[^[\]]{1,3}$/.test(n.mark) ? `[${n.mark}]` : '';
   // 倚音：前倚音写主音前、后倚音写主音后；复倚音连写 {65}
   const gb = n.graceBefore?.length ? `{${n.graceBefore.map(renderGraceNote).join('')}}` : '';
   const ga = n.graceAfter?.length ? `{${n.graceAfter.map(renderGraceNote).join('')}}` : '';
-  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${cust}${gray}${ga}`;
+  return `${gb}${body}${tieOut ? '~' : ''}${arts}${ferm}${tong}${tech}${arp}${trem}${trEnd}${fng}${cust}${gray}${ga}`;
 }
 
 export function serializeDsl(score: Score): string {
@@ -1061,9 +1158,38 @@ function serializeSingle(score: Score): string {
   for (const e of score.events) if (e.kind === 'note' && e.hairpinTo) hairpinEnds.set(e.hairpinTo, (hairpinEnds.get(e.hairpinTo) ?? 0) + 1);
   const rangeStart = (e: TimedEvent) => e.kind === 'note' && e.hairpin && e.hairpinTo ? `${e.hairpin}[ ` : '';
   const rangeEnd = (e: TimedEvent) => ' ]hairpin'.repeat(hairpinEnds.get(e.id) ?? 0);
+  // 高/低八度演奏段：与渐强范围同一套区间记号（8va[ … ]8 / 8vb[ … ]8 / con8[ / con8b[）
+  const octavaEnds = new Map<string, number>();
+  for (const e of score.events) if (e.kind === 'note' && e.octavaTo) octavaEnds.set(e.octavaTo, (octavaEnds.get(e.octavaTo) ?? 0) + 1);
+  const octavaStartOf = (e: TimedEvent) => {
+    if (!(e.kind === 'note' && e.octava && e.octavaTo)) return '';
+    return e.octava === 'va' ? '8va[ ' : e.octava === 'vb' ? '8vb[ ' : e.octava === 'con-va' ? 'con8[ ' : 'con8b[ ';
+  };
+  const octavaEndOf = (e: TimedEvent) => ' ]8'.repeat(octavaEnds.get(e.id) ?? 0);
+  // 多小节休止（0*N）：中间的隐藏小节线与后续格不写回，由首格的 0*N 一次带出
+  const mbSkip = new Set<string>();
+  {
+    const evs = score.events;
+    for (let i = 0; i < evs.length; i += 1) {
+      const e = evs[i];
+      if (e.kind !== 'rest' || !e.multibar) continue;
+      let consumed = 0;
+      let j = i + 1;
+      while (consumed < e.multibar - 1 && j + 1 < evs.length) {
+        const bar = evs[j];
+        const cont = evs[j + 1];
+        if (bar.kind === 'barline' && bar.hidden && cont.kind === 'rest' && cont.multibarCont) {
+          mbSkip.add(bar.id);
+          mbSkip.add(cont.id);
+          consumed += 1;
+          j += 2;
+        } else break;
+      }
+    }
+  }
 
   for (const ev of score.events) {
-    if (emitted.has(ev.id)) continue;
+    if (emitted.has(ev.id) || mbSkip.has(ev.id)) continue;
 
     if ((ev.kind === 'note' || ev.kind === 'rest') && ev.groupId) {
       const g = score.groups.find((x) => x.id === ev.groupId && !x.auto);
@@ -1084,7 +1210,7 @@ function serializeSingle(score: Score): string {
                 ? [m.dynamic, m.hairpinTo ? undefined : m.hairpin].filter(Boolean).join(' ')
                 : '';
             const kc = m.kind === 'note' && m.keyChange ? `转${m.keyChange} ` : '';
-            return `${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null)}${post}${rangeEnd(m)}`;
+            return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null)}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
           })
           .join(' ');
 
@@ -1107,7 +1233,7 @@ function serializeSingle(score: Score): string {
             ? [ev.dynamic, ev.hairpinTo ? undefined : ev.hairpin].filter(Boolean).join(' ')
             : '';
         const kc = ev.kind === 'note' && ev.keyChange ? `转${ev.keyChange} ` : '';
-        out.push(`${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev), score.format === 3)}${post}${rangeEnd(ev)}`);
+        out.push(`${octavaStartOf(ev)}${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev), score.format === 3)}${post}${rangeEnd(ev)}${octavaEndOf(ev)}`);
         emitted.add(ev.id);
         break;
       }
@@ -1115,6 +1241,7 @@ function serializeSingle(score: Score): string {
         // 反复记号是这条线的属性，不是另一个记号——所以只有**一个** token
         let tok: string;
         if (ev.hidden && ev.style === 'single' && !ev.repeat) tok = '|*';
+        else if (ev.dashed && ev.style === 'single' && !ev.repeat && !ev.partial) tok = '|~';
         else if (ev.repeat === 'start') tok = '|:';
         else if (ev.repeat === 'both') tok = ':||:';
         else if (ev.repeat === 'end') tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ':|';
@@ -1126,6 +1253,8 @@ function serializeSingle(score: Score): string {
         if (ev.beatAfter) out.push(`拍${ev.beatAfter}`);
         if (ev.bpmAfter) out.push(`速${ev.bpmAfter}`);
         if (ev.patchAfter !== undefined) out.push(`音${ev.patchAfter}`);
+        // 散板：写在拍号之后（同线两者并存时「拍N/M」是最新声明，散只在其前）
+        if (ev.free) out.push('散');
         if (ev.breakAfter) out.push(ev.breakAfter === 'page' ? '分页' : '换行');
         // 房子写在这条线后面：`| [1] 3 3 | [2] 4 4 :|`；开放右端写不闭合的 `[1`
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(',')}` : `[${ev.volta.join(',')}]`);

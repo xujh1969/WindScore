@@ -23,6 +23,7 @@ import type {
   GraceNote,
   JumpMark,
   NoteEvent,
+  RestEvent,
   Score,
 } from './types';
 import { DEFAULT_FONT_SIZE, DEFAULT_LETTER_SPACING } from './types';
@@ -71,6 +72,32 @@ export interface PlacedItem {
   fermata?: boolean;
   /** 转调记号（如 "1=G"），画在音符上方更高一行 */
   keyChange?: string;
+  /** 指法（GB/T 46845—2025 §7.11.5）：画在音符下方的小字数字 */
+  fingering?: string;
+  /** 琶音（GB/T 46845—2025 §7.7）：音符左侧的波状竖线 */
+  arpeggio?: boolean;
+  /** 琶音竖线占掉的左侧宽度：数字与变音记号都要右移 */
+  arpW?: number;
+  /** 震音（GB/T 46845—2025 §7.8）：音符右上的斜线数 1–3 */
+  tremolo?: number;
+  /** 颤音波线的终点音（选区 tr 的末音，GB/T 46845—2025 §7.5.3） */
+  trillEnd?: boolean;
+  /** 高 / 低八度演奏段起点（GB/T 46845—2025 §6.2.6）：paint 画斜体 8（con 段标 con 8）+ 虚线到 octavaTo */
+  octava?: 'va' | 'vb' | 'con-va' | 'con-vb';
+  octavaTo?: string;
+  /**
+   * 八度段**跨行续行**标记：段起点在前面行、结束音在后面行时，
+   * 中间每行第一个段内音带此标记——paint 在这里画「(8)」/「(con 8)」续标记，
+   * 虚线从续标记重新起步（GB/T 46845—2025 §6.2.6）。
+   */
+  octavaCont?: 'va' | 'vb' | 'con-va' | 'con-vb';
+  /** 续行所在段的终音 id（paint 用来判断段在本行结束还是继续往后行） */
+  octavaContTo?: string;
+  /** 多小节休止（GB/T 46845—2025 §6.3.7.3）：首格带格数，后续格 multibarCont */
+  multibar?: number;
+  multibarCont?: boolean;
+  /** 小节反复号（GB/T 46845—2025 §5.8.4）：本格画 𝄍，不画休止符字形 */
+  repeatBar?: boolean;
   /** 前倚音 / 后倚音（小音符，不占时值），绘制层按它画 */
   graceBefore?: GraceNote[];
   graceAfter?: GraceNote[];
@@ -107,6 +134,10 @@ export interface PlacedItem {
   breakAfter?: 'line' | 'page';
   /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
   hidden?: boolean;
+  /** 虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线 */
+  dashed?: boolean;
+  /** 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：线后拍号位置记「散」 */
+  freeAfter?: boolean;
   /** X 符号（无音高音符）：画 X 不画 0，发声为打击声 */
   xnote?: boolean;
   /** 灰显（前奏 / 间奏提示）：数字与随附记号画成灰色 */
@@ -568,7 +599,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const lyricBottom = (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 64 : 44) + verses * 24;
   // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 原紧凑行距
   const lineGap = opts.lineGap ?? score.meta.lineGap ?? 0;
-  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
+  // 高八度演奏记号（8+虚线）悬在标记层之上（y−48k），有它时行高加一格
+  const hasOctava = score.events.some((e) => e.kind === 'note' && e.octava);
+  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
   const padTop = 20;
@@ -681,7 +714,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     return ink ? ink.before + ink.after : ((ev.graceBefore?.length ?? 0) + (ev.graceAfter?.length ?? 0)) * glyph.graceW;
   };
   const accWidthOf = (ev: Event): number => ev.kind === 'note'
-    ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW : 0)) + (ev.keyChange ? (opts.fitWidth ? Math.min(opts.staffKeySpace ?? 0, maxX * .35) : opts.staffKeySpace ?? 0) : 0) : 0;
+    ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW * (ev.accidental === 'x' || ev.accidental === 'bb' ? 1.7 : 1) : 0)) + (ev.keyChange ? (opts.fitWidth ? Math.min(opts.staffKeySpace ?? 0, maxX * .35) : opts.staffKeySpace ?? 0) : 0) : 0;
+
+  /** 琶音波状竖线占的左侧宽度（GB/T 46845—2025 §7.7），画在变音记号更左边 */
+  const arpWidthOf = (ev: Event): number => (ev.kind === 'note' && ev.arpeggio ? 9 * k : 0);
 
   const widths: { ev: Event; w: number; min: number }[] = score.events.map((ev) => {
     let w = 0;
@@ -695,10 +731,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const lyric = Math.max(0, ...(note?.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
       const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
       min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + 3 * k, lyric + 3 * k, mark + 3 * k)
-        + accWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
+        + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
       w = Math.max(min,
         Math.max(26 * k, TICKS_PER_BEAT * unit * Math.sqrt(ev.ticks / TICKS_PER_BEAT) + 10 * k) +
         accWidthOf(ev) +
+        arpWidthOf(ev) +
         graceWidthOf(ev) +
         spacing);
     }
@@ -993,6 +1030,19 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           if (n.mark) item.custom = n.mark;
           if (n.dynamic) item.dynamic = n.dynamic;
           if (n.hairpin && !n.hairpinTo) item.hairpin = n.hairpin;
+          if (n.fingering) item.fingering = n.fingering;
+          if (n.arpeggio) {
+            // 琶音（GB/T 46845—2025 §7.7）：波状竖线挂在音符左侧，占位宽度回传 paint
+            item.arpeggio = true;
+            item.arpW = arpWidthOf(n);
+          }
+          if (n.tremolo) item.tremolo = n.tremolo;
+          if (n.trillEnd) item.trillEnd = true;
+          if (n.octava) {
+            // 高/低八度演奏段（GB/T 46845—2025 §6.2.6）：起点挂标记，paint 画 8 + 虚线
+            item.octava = n.octava;
+            item.octavaTo = n.octavaTo;
+          }
           if (n.lyrics?.length) item.lyrics = n.lyrics;
         } else {
           // 休止符与音符一样带时值记号：减时线 / 增时线 / 附点（线数同音符按去点基准算）
@@ -1003,6 +1053,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
             : beamCount(undotTicks(ev.ticks, ev.dot ?? 0));
           item.dot = ev.dot ?? 0;
           item.dashes = dashCountOf(ev.ticks, item.dot);
+          const rest = ev as RestEvent;
+          if (rest.multibar) item.multibar = rest.multibar;
+          if (rest.multibarCont) item.multibarCont = true;
+          if (rest.repeatBar) item.repeatBar = true;
         }
         items.push(item);
         anyTimed = true;
@@ -1023,6 +1077,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           // 小节号会偏一位（|: 开头的谱实测踩到）
           measure: anyTimed ? measureNo : undefined,
           ...(bar.hidden ? { hidden: true } : {}),
+          ...(bar.dashed ? { dashed: true } : {}),
+          ...(bar.free ? { freeAfter: true } : {}),
           ...(bar.partial ? { partial: true } : {}),
           ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
           ...(bar.bpmAfter !== undefined ? { bpmAfter: bar.bpmAfter } : {}),
@@ -1066,12 +1122,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       let firstPartial = false;
       let seenFirst = false;
       let expected = Math.round(beatsPerMeasureOf(meterAt(score, from)) * TICKS_PER_BEAT);
+      // 散板（GB/T 46845—2025 §6.3.11.7）：散板段里的小节不做拍数校验
+      // （自由拍子不满 / 超满是常态），直到某根线写「拍N/M」声明新拍号
+      let freeMode = false;
       for (const it of items) {
         if (it.kind === 'note' || it.kind === 'rest') {
           acc += it.ticks ?? 0;
           open = true;
         } else if (it.kind === 'barline') {
-          if (open && complete && !(measurePartial || it.partial)) {
+          if (open && complete && !(measurePartial || it.partial) && !freeMode) {
             const beats = acc / TICKS_PER_BEAT;
             const exp = expected / TICKS_PER_BEAT;
             if (acc > expected) {
@@ -1097,7 +1156,12 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
             firstPartial = !!it.partial;
           }
           barX = it.x;
-          if (it.beatAfter) expected = Math.round(beatsPerMeasureOf(it.beatAfter) * TICKS_PER_BEAT);
+          if (it.beatAfter) {
+            expected = Math.round(beatsPerMeasureOf(it.beatAfter) * TICKS_PER_BEAT);
+            freeMode = false; // 新拍号声明 = 退出散板
+          } else if (it.freeAfter) {
+            freeMode = true;
+          }
         }
       }
     }
@@ -1468,6 +1532,33 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号
           ...(isEndSeg && open && houseJumps(wall, numbers) ? { jump: true } : {}),
         });
+      }
+    }
+  }
+
+  // 八度段跨行（GB/T 46845—2025 §6.2.6）：段起点在前面行、结束音在后面行时，
+  // 中间每行**第一个段内音**打 octavaCont 续行标记（paint 在那里画「(8)」并让虚线重新起步）；
+  // 结束音本身也在段内（]8 收在它后面），所以先标记再关段。
+  // carried = 进入本行时就有上一行遗留的开放段——**起始行不打续标**：
+  // 起点音后面的同一行段内音只是普通段内音，画 (8) 会落到第二个音头上（用户实测）。
+  // 段不允许嵌套 / 交叉（解析与 setOctavaRange 都保证），open 里至多一段，用数组只是防御。
+  {
+    const open: { endId: string; kind: NonNullable<PlacedItem['octava']> }[] = [];
+    for (const line of lines) {
+      const carried = open.length > 0;
+      let contMarked = false;
+      for (const it of line.items) {
+        if (it.kind !== 'note') continue;
+        if (!it.octava && !contMarked && carried) {
+          const seg = open[0]!;
+          it.octavaCont = seg.kind;
+          it.octavaContTo = seg.endId;
+          contMarked = true;
+        }
+        if (it.octava && it.octavaTo) open.push({ endId: it.octavaTo, kind: it.octava });
+        for (let si = open.length - 1; si >= 0; si -= 1) {
+          if (open[si]!.endId === it.eventId) open.splice(si, 1);
+        }
       }
     }
   }

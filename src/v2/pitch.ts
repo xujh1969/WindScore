@@ -23,7 +23,8 @@ export function instrumentOf(id?: StaffInstrument) {
 }
 
 export function accidentalOffset(acc?: Accidental): number {
-  return acc === '#' ? 1 : acc === 'b' ? -1 : 0;
+  // 重升 +2 / 重降 -2（GB/T 46845—2025 §6.2.5.1 五种变音号）
+  return acc === '#' ? 1 : acc === 'x' ? 2 : acc === 'b' ? -1 : acc === 'bb' ? -2 : 0;
 }
 
 /**

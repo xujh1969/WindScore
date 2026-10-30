@@ -12,7 +12,7 @@ import {
   type LayoutResult,
   type LayoutOptions,
 } from '../layout';
-import { DARK_THEME, LIGHT_THEME, drawPlayBall, paintLayout, type PlayStyle } from '../paint';
+import { DARK_THEME, LIGHT_THEME, drawPlayBall, paintLayout, withPlayColor, type PlayStyle } from '../paint';
 import { buildStaffLayout, type StaffLayout } from '../staff';
 import { paintStaffLayout } from '../staffPaint';
 import { withStaffRows } from '../staffSpacing';
@@ -32,6 +32,8 @@ interface Props {
   score: Score;
   activePartId?: string;
   dark: boolean;
+  /** 播放指示自定义色（浅色 / 深色主题各自的档位，编辑器按当前主题取好传入）；空 = 主题默认 */
+  playColor?: string | null;
   /** 每 tick 像素宽，即字间距倍率 */
   unit?: number;
   /** 字号覆盖（px）：播放页的观看偏好，不给 = 跟随谱面 */
@@ -93,6 +95,7 @@ export function ScoreCanvas({
   score,
   activePartId,
   dark,
+  playColor,
   unit,
   fontSize,
   letterSpacing,
@@ -232,7 +235,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     if (!wrap || !canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const theme = dark ? DARK_THEME : LIGHT_THEME;
+    // 播放指示自定义色只注入光标 / 光条 / 光球，谱面其他强调色不动（withPlayColor）
+    const theme = withPlayColor(dark ? DARK_THEME : LIGHT_THEME, playColor);
 
     // .v2-scroll 用 scrollbar-gutter: stable 预留滚动条槽，clientWidth 不再随
     // 纵向滚动条显隐改变。排版与绘制共用实际可见宽度，保留完整的右侧页边距。
@@ -395,7 +399,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     };
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+  }, [score, dark, playColor, unit, fontSize, letterSpacing, lineGap, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
   // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
   useEffect(() => {

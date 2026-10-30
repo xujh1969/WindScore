@@ -27,6 +27,7 @@ import {
   setBarNotation,
   extendPrev,
   insertBarline,
+  insertMultibarRest,
   insertNote,
   insertRest,
   setBarlineRepeat,
@@ -43,6 +44,8 @@ import {
   prevTimed,
   removeEvent,
   pressBarline,
+  pressRepeatBar,
+  inRepeatMeasure,
   setAccidental,
   setDegree,
   setMeta,
@@ -404,6 +407,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 节拍器节奏型（拍内细分） */
   const [metronomePatternId, setMetronomePatternId] = useState('quarter');
   const [metronomeVolume, setMetronomeVolume] = useState(0.6);
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13）：6/8、9/8、12/8 后续大拍打次强 */
+  const [metronomeCompoundMedium, setMetronomeCompoundMedium] = useState(true);
   const metronomeRef = useRef<Metronome | null>(null);
   const [draft, setDraft] = useState('');
   const [sourceRecovery, setSourceRecovery] = useState(false);
@@ -520,6 +525,27 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       /* 隐私模式等存不了就算了 */
     }
   }, [playStyle]);
+  /**
+   * 播放指示自定义色：**浅色 / 深色背景各一档**（同一颜色在白底和黑底观感差很多：
+   * 浅底要偏深才压得住，深底要偏亮才显眼），界面跟当前主题自动取对应档；
+   * null = 沿用主题默认（浅色琥珀 / 深色金）。视频导出按导出所选的深浅取同一档。
+   * 存 localStorage 全局——跟播放指示方式一样是观众偏好，不分曲目、不分端。
+   */
+  const [playColor, setPlayColor] = useState<{ light: string | null; dark: string | null }>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('ws-playcolor') ?? 'null') as { light?: string | null; dark?: string | null } | null;
+      return { light: typeof v?.light === 'string' ? v.light : null, dark: typeof v?.dark === 'string' ? v.dark : null };
+    } catch {
+      return { light: null, dark: null };
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('ws-playcolor', JSON.stringify(playColor));
+    } catch {
+      /* 隐私模式等存不了就算了 */
+    }
+  }, [playColor]);
   /** 保留已有的记谱法偏好存储，顶部按钮切换简谱／五线谱。 */
   const [storedStaffViewOn, setStoredStaffViewOn] = useExp('staffView');
   const [androidStaffViewOn, setAndroidStaffViewOn] = useState(() => androidPlayer && anView.notation === 'staff');
@@ -1510,6 +1536,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const effFont = playFont ?? (score.meta.fontSize ?? DEFAULT_FONT_SIZE);
   const effGap = playGap ?? (score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING);
   const effLineGap = playLineGap ?? (score.meta.lineGap ?? 0);
+  /** 播放指示生效色：按当前主题取对应档；没设过 = null（withPlayColor 里回落主题默认） */
+  const effPlayColor = dark ? playColor.dark : playColor.light;
   /** 有未保存的改动 */
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
   const dirty = snap.rev !== savedRev || (view === 'source' && draft !== (savedSource ?? serialized));
@@ -1847,12 +1875,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           meterAt: metronomeMeter,
           pattern,
           volume: metronomeVolume,
+          compoundMedium: metronomeCompoundMedium,
         },
         fromBeat,
         delaySec,
       );
     },
-    [metronomeFollow, metronomeMeter, metronomePatternId, metronomeVolume, score.meta.bpm, speed, synthTempo, playSource],
+    [metronomeFollow, metronomeMeter, metronomePatternId, metronomeVolume, metronomeCompoundMedium, score.meta.bpm, speed, synthTempo, playSource],
   );
 
   /** 与音乐起播对齐用的 lead（秒）：startPlayNow 存进来，effect 起播时用掉 */
@@ -2206,7 +2235,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const lead = metronomeLeadRef.current;
     metronomeLeadRef.current = 0;
     startMetronomeFollow(getPlayTick() ?? 0, lead);
-  }, [playing, metronomeFollow, metronomePatternId, metronomeVolume]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [playing, metronomeFollow, metronomePatternId, metronomeVolume, metronomeCompoundMedium]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 调试钩子：端到端测试从外面读播放状态（currentSec / currentTick / tempo）
   useEffect(() => {
@@ -2694,6 +2723,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const padActions = useMemo<PadActions>(
     () => ({
       note: (d, oct) => {
+        // 反复小节（𝄍）替代整小节记谱，里面不能再写音符（GB/T 46845—2025 §5.8.4）
+        if (inRepeatMeasure(score, snap.cursor)) {
+          toastInfo('这一小节是小节反复（𝄍），不能再写音符——先删掉 𝄍 再输入');
+          return;
+        }
         if (d === 0) {
           if (overId) setScore(setDegree(score, overId, 0));
           else commit({ score: insertRest(score, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
@@ -2710,13 +2744,41 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         previewInput(d, oct);
       },
       rest: () => {
+        if (inRepeatMeasure(score, snap.cursor)) {
+          toastInfo('这一小节是小节反复（𝄍），不能再写休止符');
+          return;
+        }
         if (overId) setScore(setDegree(score, overId, 0));
         else commit({ score: insertRest(score, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
       },
       x: () => {
+        if (inRepeatMeasure(score, snap.cursor)) {
+          toastInfo('这一小节是小节反复（𝄍），不能再写 X 音符');
+          return;
+        }
         commit({ score: insertRest(score, snap.cursor, true), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
       },
+      repeatBar: () => {
+        // 小节反复 %（𝄍）：只在光标紧跟小节线时有效——按一次重复上一小节
+        // （插入 % 休止 + 收尾小节线），再按一次重复前两小节（中间线画双小节记号）。
+        // 光标前面是音符时没有可重复的锚点，按键无效
+        const r = pressRepeatBar(score, snap.cursor);
+        if (!r) {
+          toastInfo('小节反复要在小节线之后按：先按 | 再按 𝄍（前面是音符没有可重复的小节）');
+          return;
+        }
+        commit({ score: r.score, cursor: r.cursor, anchor: null, mode: 'insert' });
+      },
+      multibarRest: (n) => {
+        // 0×N 多小节休止：N 个整小节休止 + N−1 根隐藏小节线，光标落到段尾
+        const next = insertMultibarRest(score, snap.cursor, n);
+        commit({ score: next, cursor: snap.cursor + 2 * n - 1, anchor: null, mode: 'insert' });
+      },
       barline: () => {
+        if (inRepeatMeasure(score, snap.cursor)) {
+          toastInfo('这一小节是小节反复（𝄍），不能在小节中间加线');
+          return;
+        }
         const r = pressBarline(score, snap.cursor);
         commit({ score: r.score, cursor: r.cursor, anchor: null, mode: 'insert' });
       },
@@ -2835,7 +2897,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         }
       },
     }),
-    [overId, score, snap, commit, setScore, setMsg, padLeftId, focus, selectedTimedIds, useTier, pending, range, deleteSelection],
+    [overId, score, snap, commit, setScore, setMsg, padLeftId, focus, selectedTimedIds, useTier, pending, range, deleteSelection, toastInfo],
   );
 
   /**
@@ -3066,6 +3128,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         if (!barlineFocus) return;
         setScore(setBarlineVoltaOpen(score, barlineFocus.id, !barlineFocus.voltaOpen));
       },
+      toggleDashed: () => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { dashed: !barlineFocus.dashed }));
+      },
+      toggleFree: () => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { free: !barlineFocus.free }));
+      },
       toggleJump: (mark: JumpMark | null) => {
         if (!barlineFocus) return;
         setScore(toggleJumpAfterBarline(score, barlineFocus.id, mark));
@@ -3162,6 +3232,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       if (e.key >= '1' && e.key <= '7') {
         e.preventDefault();
         const d = Number(e.key) as Degree;
+        // 反复小节（𝄍）替代整小节记谱，里面不能再写音符（GB/T 46845—2025 §5.8.4）
+        if (!overId && inRepeatMeasure(score, cur)) {
+          toastInfo('这一小节是小节反复（𝄍），不能再写音符——先删掉 𝄍 再输入');
+          return;
+        }
         if (overId) {
           // 替换：只改音级，保留时值与附点。
           // 替换完立刻转成插入点，让后续输入继续往后写。
@@ -3179,6 +3254,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       switch (e.key) {
         case '0':
           e.preventDefault();
+          if (!overId && inRepeatMeasure(score, cur)) {
+            toastInfo('这一小节是小节反复（𝄍），不能再写休止符');
+            return;
+          }
           if (overId) {
             // 与 1-7 同理：转成休止符后回到插入点
             commit({ score: setDegree(score, overId, 0), mode: 'insert', anchor: null });
@@ -3189,12 +3268,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         case 'x':
         case 'X':
           e.preventDefault();
+          if (inRepeatMeasure(score, cur)) {
+            toastInfo('这一小节是小节反复（𝄍），不能再写 X 音符');
+            return;
+          }
           // X 无音高音符：总是插入新的（没有音级可替换）
           commit({ score: insertRest(score, cur, true), cursor: cur + 1, anchor: null, mode: 'insert' });
           return;
         case '|':
         case '\\': {
           e.preventDefault();
+          if (inRepeatMeasure(score, cur)) {
+            toastInfo('这一小节是小节反复（𝄍），不能在小节中间加线');
+            return;
+          }
           // 连按两次 = 终止线（规则见 pressBarline）：
           // 第一次插单小节线，第二次就地把左边那条升级成 final。
           const r = pressBarline(score, cur);
@@ -3342,7 +3429,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
@@ -3477,7 +3564,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       timbreLabel={playTimbre ? `已设 ${Object.keys(playTimbre.parts ?? {}).length} 个声部` : '跟随谱面'}
       onOpenTimbre={() => setAnTimbreOpen(true)}
       message={msg.includes('失败') ? msg : undefined}
-      renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
+      renderScore={() => <ScoreCanvas score={viewScore} dark={dark} playColor={effPlayColor} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
         unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} responsive
         selectedIds={EMPTY_SELECTED} cursor={0} timeline={displayTimeline} playStyle={playStyle}
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
@@ -4025,6 +4112,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               onClefClick={toggleStaffClef}
               activePartId={activePartId}
               dark={dark}
+              playColor={effPlayColor}
               unit={EDITOR_UNIT}
               fontSize={effFont}
               letterSpacing={effGap}
@@ -4103,6 +4191,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           video={{
             displayTimeline: mode === 'play' ? displayTimeline : notationTimeline,
             playStyle,
+            playColor,
             activePartId,
             timeline,
             fromTick: 0,
@@ -4131,6 +4220,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           onPattern={setMetronomePatternId}
           volume={metronomeVolume}
           onVolume={setMetronomeVolume}
+          compoundMedium={metronomeCompoundMedium}
+          onCompoundMedium={setMetronomeCompoundMedium}
           playing={playing}
           onClose={() => setMetronomeOpen(false)}
         />
@@ -4288,6 +4379,48 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 >
                   光球
                 </button>
+              </div>
+            </div>
+
+            {/* 播放指示颜色：浅色 / 深色背景各一档（同一颜色白底黑底观感差很多），
+                界面跟当前主题自动取用；⟲ 恢复主题默认。视频导出按导出的深浅取同一档 */}
+            <div className="v2-spacing">
+              <span className="v2-playstyle-label">指示颜色</span>
+              <div className="v2-play-colors">
+                <label className="v2-play-color" title="浅色背景下的光标 / 光条 / 光球颜色">
+                  <span>浅色</span>
+                  <input
+                    type="color"
+                    value={playColor.light ?? '#a8811a'}
+                    onChange={(e) => setPlayColor((c) => ({ ...c, light: e.target.value }))}
+                  />
+                  {playColor.light ? (
+                    <button
+                      className="v2-play-reset"
+                      onClick={() => setPlayColor((c) => ({ ...c, light: null }))}
+                      title="恢复默认颜色"
+                    >
+                      ⟲
+                    </button>
+                  ) : null}
+                </label>
+                <label className="v2-play-color" title="深色背景下的光标 / 光条 / 光球颜色">
+                  <span>深色</span>
+                  <input
+                    type="color"
+                    value={playColor.dark ?? '#d9b23c'}
+                    onChange={(e) => setPlayColor((c) => ({ ...c, dark: e.target.value }))}
+                  />
+                  {playColor.dark ? (
+                    <button
+                      className="v2-play-reset"
+                      onClick={() => setPlayColor((c) => ({ ...c, dark: null }))}
+                      title="恢复默认颜色"
+                    >
+                      ⟲
+                    </button>
+                  ) : null}
+                </label>
               </div>
             </div>
 

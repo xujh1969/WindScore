@@ -3,16 +3,20 @@ import { useEffect, useState } from 'react';
 import { candidateGlyph } from '../edit';
 import type { TierCandidate } from '../edit';
 import { TICKS_PER_BEAT } from '../ticks';
+import { ACCIDENTAL_GLYPH } from '../paint';
 import { GroupGlyph } from './GroupGlyph';
 import { DurationGlyph, NotationGlyph, SlurGlyph } from './NotationGlyph';
 import {
   AnnotationField,
   DynamicsField,
+  FingeringField,
   GraceField,
   GrayField,
   HairpinField,
   KeyChangeField,
+  OctavaField,
   TechniqueField,
+  TrillField,
 } from './NoteFields';
 import type { BarlineEvent, JumpMark, NoteEvent, RestEvent, Score } from '../types';
 import { instrumentPatches, instrumentLabel } from '../instrumentSamples';
@@ -92,6 +96,10 @@ export interface PadActions {
   rest: () => void;
   /** X：无音高音符（打击 / 拍手 / 念节奏），发声、无固定音高 */
   x: () => void;
+  /** %：小节反复号（GB/T 46845—2025 §5.8.4）——目标休止符就地开 / 关，没有目标就在光标处插 */
+  repeatBar: () => void;
+  /** 0×N：多小节休止（GB/T 46845—2025 §6.3.7.3）——在光标处插入 N 个整小节休止（含隐藏小节线） */
+  multibarRest: (n: number) => void;
   barline: () => void;
   /**
    * 带属性的小节线：反复开始 `|:` / 反复结束 `:|` / 双细线 `‖`（乐段结束）/ 终止 `||`。
@@ -134,6 +142,10 @@ export interface PadBarlineActions {
   toggleFinal: () => void;
   toggleDouble: () => void;
   toggleVoltaOpen: () => void;
+  /** 虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线，校验与小节计数照常 */
+  toggleDashed: () => void;
+  /** 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：此线之后拍号位置记「散」，不做拍数校验 */
+  toggleFree: () => void;
   toggleJump: (mark: JumpMark | null) => void;
 }
 
@@ -318,6 +330,8 @@ export function PadBody({
   // 音值组合档位的可用性（ok）由编辑器按选中音数算好随 props 传入；
   // selectedCount 只用于禁用态的提示文案
   const groups = groupTargets;
+  // 多小节休止的小节数（输入排的 0×N 按钮用）
+  const [mbCount, setMbCount] = useState(4);
 
   // ── 按钮点亮：目标音当前的属性直接映到对应按钮上（选了什么亮什么）──
   const note = target && target.kind === 'note' ? target : null;
@@ -385,7 +399,7 @@ export function PadBody({
         <BpmAfterField value={barline.bpmAfter} prevBpm={prevBpm} onCommit={(v) => barlineActions.setBpmAfter(v)} />
         {patchAfterField}
         <div className="v2-field">
-          <span className="v2-field-label">此线之后的排版</span>
+          <span className="v2-field-label">此线之后的排版（虚线 / 散板按钮在下面一排）</span>
           <div className="v2-grid">
             <button className={`v2-btn ${!barline.breakAfter ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter(undefined)}>自动</button>
             <button className={`v2-btn ${barline.breakAfter === 'line' ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter('line')}>换行</button>
@@ -408,6 +422,8 @@ export function PadBody({
           ))}
           <button className={`v2-btn ${barline.style === 'double' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDouble()} title="双细线 ‖：乐段结束（再点一次变回普通小节线）">‖</button>
           <button className={`v2-btn ${barline.style === 'final' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFinal()} title="终止线 ||：细线+粗线，全曲结束（再点一次变回普通小节线）">||</button>
+          <button className={`v2-btn ${barline.dashed ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDashed()} title="虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线——混合拍子里按节拍分组、不拦拍感的细分线；校验与小节计数照常（再点一次变回实线）">虚线</button>
+          <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「散」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">散板</button>
           {barline.volta ? (
             <button className={`v2-btn ${barline.voltaOpen ? 'is-on' : ''}`} title="手动强制右端开放（通常自动判断，点一下可覆盖）" onClick={() => barlineActions.toggleVoltaOpen()}>右端开放</button>
           ) : null}
@@ -546,6 +562,35 @@ export function PadBody({
           <button className={`v2-btn${isX ? ' is-on' : ''}`} onClick={() => actions.x()} title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符">
             X
           </button>
+          <button
+            className={`v2-btn${target?.kind === 'rest' && target.repeatBar ? ' is-on' : ''}`}
+            onClick={() => actions.repeatBar()}
+            title="小节反复 %（GB/T 46845—2025 §5.8.4）：光标紧跟小节线时按一次 = 重复上一小节（谱面画斜线记号 + 收尾小节线）；再按一次 = 重复前两小节（中间小节线画双斜线记号）；按三次 = 取消小节重复。前面是音符时无效（先按 |）"
+          >
+            <svg width="18" height="13" viewBox="0 0 18 13" aria-hidden style={{ verticalAlign: '-2px' }}>
+              <line x1="7.5" y1="11.5" x2="10.5" y2="1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="2.6" cy="6.5" r="1.5" fill="currentColor" />
+              <circle cx="15.4" cy="6.5" r="1.5" fill="currentColor" />
+            </svg>
+          </button>
+          <input
+            className="v2-meta-input"
+            type="number"
+            min={1}
+            max={999}
+            value={mbCount}
+            onChange={(e) => setMbCount(Math.max(1, Math.min(999, Math.round(Number(e.target.value) || 1))))}
+            title="多小节休止的小节数（1–999）"
+            aria-label="多小节休止的小节数"
+            style={{ width: 58, padding: '0 4px', marginLeft: 16 }}
+          />
+          <button
+            className={`v2-btn${target?.kind === 'rest' && target.multibar ? ' is-on' : ''}`}
+            onClick={() => actions.multibarRest(mbCount)}
+            title="多小节休止 0×N（GB/T 46845—2025 §6.3.7.3）：在光标处插入连续 N 个整小节休止，谱面画一条粗横线、上方标小节数。小节数在左边的框里改"
+          >
+            0×N
+          </button>
           <button className={`v2-btn${(target?.dot ?? 0) > 0 ? ' is-on' : ''}`} onClick={() => actions.dot()} title="附点 .（目标音带附点时点亮）">
             {/* 文本「·」太细小，画成加粗的实心圆点 */}
             <svg width="15" height="18" viewBox="0 0 16 18" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
@@ -566,14 +611,15 @@ export function PadBody({
 
         {!isRange && (
         <div className="v2-pad-tools">
-          {/* 变音记号：按一次换一档，升 → 降 → 还原 → 无；目标音带变音时点亮并显示当前档 */}
+          {/* 变音记号：按一次换一档，升 → 重升 → 降 → 重降 → 还原 → 无（GB 五种）；
+              目标音带变音时点亮并显示当前档 */}
           <button
             className={`v2-btn${note?.accidental ? ' is-on' : ''}`}
             onClick={() => actions.accidental()}
-            title="变音记号循环：升 # → 降 b → 还原 ♮ → 无（跟随调号），对光标左侧的音"
+            title="变音记号循环：升 # → 重升 × → 降 b → 重降 ♭♭ → 还原 ♮ → 无（跟随调号），对光标左侧的音"
             aria-label="变音记号循环"
           >
-            {note?.accidental ?? <span style={{ fontSize: '0.85em' }}>#/b</span>}
+            {note?.accidental ? ACCIDENTAL_GLYPH[note.accidental] : <span style={{ fontSize: '0.85em' }}>#/b</span>}
           </button>
           <button className={`v2-btn${parenOpen ? ' is-on' : ''}`} onClick={() => actions.paren('open')} title="左括号（">
             （
@@ -673,6 +719,7 @@ export function PadBody({
             {/* 变音记号不在这里：前面工具排的 # 按钮就是它（循环切换），避免重复 */}
             <GraceField key={`p-${note.id}`} score={score} setScore={onSetScore} note={note} />
             <KeyChangeField score={score} setScore={onSetScore} note={note} />
+            <FingeringField key={`f-${note.id}`} score={score} setScore={onSetScore} note={note} />
             <TechniqueField key={`t-${note.id}`} score={score} setScore={onSetScore} note={note} />
             <DynamicsField score={score} setScore={onSetScore} note={note} />
             <AnnotationField score={score} note={note} onApply={(next, shift) => onAnnotate(next, shift)} />
@@ -695,6 +742,8 @@ export function PadBody({
             </div>
             <GrayField score={score} setScore={onSetScore} ids={batchIds} />
             <HairpinField score={score} setScore={onSetScore} ids={batchIds} />
+            <OctavaField score={score} setScore={onSetScore} ids={batchIds} />
+            <TrillField score={score} setScore={onSetScore} ids={batchIds} />
           </details>
         ) : null}
       </>

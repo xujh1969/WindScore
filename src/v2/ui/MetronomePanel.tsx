@@ -13,6 +13,9 @@ export interface MetronomePanelProps {
   onPattern: (v: string) => void;
   volume: number;
   onVolume: (v: number) => void;
+  /** 复拍子次强拍（GB/T 46845—2025 §6.3.13）：6/8、9/8、12/8 后续大拍打次强 */
+  compoundMedium: boolean;
+  onCompoundMedium: (v: boolean) => void;
   /** 音乐是否正在放（跟随模式只有放歌时才有拍） */
   playing: boolean;
   onClose: () => void;
@@ -26,7 +29,7 @@ export interface MetronomePanelProps {
  * 面板里只留真正能调的：拍内节奏型（每拍怎么分）与音量。
  */
 export function MetronomePanel(props: MetronomePanelProps) {
-  const { follow, bpm, scoreMeter, patternId, onPattern, volume, onVolume, playing, onClose } = props;
+  const { follow, bpm, scoreMeter, patternId, onPattern, volume, onVolume, compoundMedium, onCompoundMedium, playing, onClose } = props;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -84,6 +87,17 @@ export function MetronomePanel(props: MetronomePanelProps) {
             value={volume}
             onChange={(e) => onVolume(Number(e.target.value))}
           />
+        </div>
+
+        <div className="v2-field">
+          <label className="v2-grace-check" title="复拍子（6/8、9/8、12/8）的后续大拍打次强拍——比强拍轻、比弱拍重（GB/T 46845—2025 §6.3.13）。普通拍子（2/4、3/4、4/4）没有次强拍，此开关不起作用">
+            <input
+              type="checkbox"
+              checked={compoundMedium}
+              onChange={(e) => onCompoundMedium(e.target.checked)}
+            />
+            复拍子次强拍
+          </label>
         </div>
 
         {/* 运行状态：开没开、打没打，一眼可见（改节奏型/音量时不用猜） */}

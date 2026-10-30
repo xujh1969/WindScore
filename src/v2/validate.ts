@@ -10,8 +10,9 @@
  */
 
 import { isLegalTick, LEGAL_TICKS, TICKS_PER_BEAT } from './ticks';
-import { isTimed, type Event, type Score } from './types';
+import { isTimed, type Event, type RestEvent, type Score } from './types';
 import { groupTicks, meterAt, validMeter } from './meter';
+import { gbNote } from './gb';
 
 export type InvariantCode = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'E1' | 'E2';
 
@@ -31,12 +32,31 @@ export function validateGroups(score: Score): Violation[] {
   const index = new Map<string, number>();
   score.events.forEach((e, i) => index.set(e.id, i));
   for (const [i, e] of score.events.entries()) {
-    if (e.kind === 'barline' && e.beatAfter && !validMeter(e.beatAfter)) out.push({ code: 'E2', message: `拍号不合法：${e.beatAfter}` });
+    if (e.kind === 'barline' && e.beatAfter && !validMeter(e.beatAfter)) out.push({ code: 'E2', message: `拍号不合法：${e.beatAfter}${gbNote('meter')}` });
     if (e.kind === 'barline' && e.bpmAfter !== undefined && (!Number.isInteger(e.bpmAfter) || e.bpmAfter < 20 || e.bpmAfter > 300)) out.push({ code: 'E2', message: `速度不合法（应为 20-300 的整数）：${e.bpmAfter}` });
     if (e.kind === 'barline' && e.patchAfter !== undefined && (!Number.isInteger(e.patchAfter) || e.patchAfter < 0 || e.patchAfter > 255)) out.push({ code: 'E2', message: `音色号不合法（应为 0-255 的整数）：${e.patchAfter}` });
     if (e.kind === 'note' && e.hairpinTo) {
       const target = index.get(e.hairpinTo) ?? -1;
-      if (!e.hairpin || target <= i || score.events[target]?.kind !== 'note') out.push({ code: 'I5', message: '渐强/渐弱终点必须是同声部的后续音符' });
+      if (!e.hairpin || target <= i || score.events[target]?.kind !== 'note') out.push({ code: 'I5', message: `渐强/渐弱终点必须是同声部的后续音符${gbNote('hairpin')}` });
+    }
+  }
+
+  // 小节反复小节不能再有其他发声内容（GB/T 46845—2025 §5.8.4：
+  // 反复号替代整小节记谱）——同一小节里 𝄍 与音符 / 其他休止混写即报错
+  {
+    let start = 0;
+    let no = 1;
+    for (let i = 0; i <= score.events.length; i += 1) {
+      const e = score.events[i];
+      if (i === score.events.length || e.kind === 'barline') {
+        const timed = score.events.slice(start, i).filter((q) => isTimed(q));
+        const rb = timed.filter((q) => q.kind === 'rest' && (q as RestEvent).repeatBar);
+        if (rb.length && timed.length > rb.length) {
+          out.push({ code: 'E2', message: `第 ${no} 小节是小节反复（𝄍），不能再写其他音符${gbNote('repeatBar')}` });
+        }
+        start = i + 1;
+        no += 1;
+      }
     }
   }
 
@@ -70,7 +90,7 @@ export function validateGroups(score: Score): Violation[] {
       out.push({
         code: 'I2',
         groupId: g.id,
-        message: `组总时值 ${g.totalTicks} 超过拍组上限（${maxGroup} tick）`,
+        message: `组总时值 ${g.totalTicks} 超过拍组上限（${maxGroup} tick）${gbNote('beatGroups')}`,
       });
     }
 
@@ -97,7 +117,7 @@ export function validateGroups(score: Score): Violation[] {
       out.push({
         code: 'I4',
         groupId: g.id,
-        message: `组总时值 ${g.totalTicks} 不是合法 tick（候选 ${LEGAL_TICKS.join('/')}）`,
+        message: `组总时值 ${g.totalTicks} 不是合法 tick（候选 ${LEGAL_TICKS.join('/')}）${gbNote('duration')}`,
       });
     }
     for (const m of members as { id: string; ticks: number }[]) {
@@ -105,7 +125,7 @@ export function validateGroups(score: Score): Violation[] {
         out.push({
           code: 'I4',
           groupId: g.id,
-          message: `成员 ${m.id} 时值 ${m.ticks} 不是合法 tick`,
+          message: `成员 ${m.id} 时值 ${m.ticks} 不是合法 tick${gbNote('duration')}`,
         });
       }
     }

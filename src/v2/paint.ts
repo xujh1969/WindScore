@@ -20,19 +20,30 @@ import {
 } from './layout';
 import type { Accidental, GraceNote } from './types';
 
-/** 数据值 → 谱面字形（属性面板的按钮也用这一份，避免两处各写一套） */
-export const ACCIDENTAL_GLYPH: Record<Accidental, string> = { '#': '♯', b: '♭', '♮': '♮' };
+/** 数据值 → 谱面字形（属性面板的按钮也用这一份，避免两处各写一套）。
+ *  重升用 ×（GB/T 46845—2025 §6.2.5.1 形态；canvas 上由 drawDoubleSharp 手绘粗 ×），
+ *  重降 ♭♭（canvas 上两个 ♭ 贴近排手绘，避免字体 𝄫 的宽间距压到数字） */
+export const ACCIDENTAL_GLYPH: Record<Accidental, string> = {
+  '#': '♯',
+  x: '×',
+  b: '♭',
+  bb: '♭♭',
+  '♮': '♮',
+};
 
 /** 用户提供的波音 SVG：等比缩至 14px 宽并居中，保留填充曲线的粗细变化。 */
 // 加宽两段粗笔画，再用同色描边增强细线和末端的小字号可见性。
 const mordentPath = 'M -6.7348 1.3655 C -6.0189 0.2254 -5.0114 -2.108 -4.0038 -2.4792 C -3.2083 -2.9564 -2.572 -2.6383 -2.2008 -1.7898 C -1.7235 -0.6761 -1.75 1.1799 -0.6894 1.7898 C -0.053 2.161 0.4242 1.286 0.9545 0.0928 C 1.75 -1.7102 2.0947 -2.6383 2.9697 -2.5852 C 4.0833 -2.6383 4.1364 -0.8087 4.5076 0.1723 C 4.9318 1.4716 5.4886 2.108 6.2045 1.233 C 6.4697 0.8617 6.6023 0.2254 6.7348 -0.7292 C 6.5227 0.7557 6.0455 2.2405 5.3295 2.3996 C 4.0038 2.6648 3.6061 0.9413 3.2614 -0.1989 C 2.8636 -1.4451 2.9962 -2.0814 2.3864 -1.7898 C 1.7235 -1.392 1.1402 0.411 0.3712 1.4981 C -0.3712 2.7178 -1.7765 2.7443 -2.3598 1.3125 C -2.9697 0.0133 -3.0758 -1.8693 -3.3144 -2.0284 C -4.4015 -2.4792 -5.5152 0.3049 -6.7348 1.3655 Z';
 const bendDownPath = 'M -7 0 L -2 -5 L 7 6 M 2 4 L 7 6 L 6 1';
+/** 回音（GB/T 46845—2025 §7.4）：横置的 S 形曲线，描边绘制（字形字体覆盖不稳） */
+const turnPath = 'M -6.5 1.8 C -6.5 -3.6 -2 -4 0 0 C 2 4 6.5 3.6 6.5 -1.8';
 /** Canvas 与属性按钮共用路径；上下版本只做垂直镜像。 */
-export const TECHNIQUE_PATHS: Record<'mordentUp' | 'mordentDown' | 'bendUp' | 'bendDown', { d: string; fill: boolean; flip: boolean; strokeWidth: number }> = {
+export const TECHNIQUE_PATHS: Record<'mordentUp' | 'mordentDown' | 'bendUp' | 'bendDown' | 'turn', { d: string; fill: boolean; flip: boolean; strokeWidth: number }> = {
   mordentUp: { d: mordentPath, fill: true, flip: false, strokeWidth: 0.85 },
   mordentDown: { d: mordentPath, fill: true, flip: true, strokeWidth: 0.85 },
   bendUp: { d: bendDownPath, fill: false, flip: true, strokeWidth: 1.5 },
   bendDown: { d: bendDownPath, fill: false, flip: false, strokeWidth: 1.5 },
+  turn: { d: turnPath, fill: false, flip: false, strokeWidth: 1.5 },
 };
 type TechniquePath = keyof typeof TECHNIQUE_PATHS;
 export const TECHNIQUE_PATH_SCALE: Record<TechniquePath, number> = {
@@ -40,6 +51,7 @@ export const TECHNIQUE_PATH_SCALE: Record<TechniquePath, number> = {
   mordentDown: 0.99,
   bendUp: 0.64,
   bendDown: 0.64,
+  turn: 1,
 };
 const techniquePathCache = new Map<TechniquePath, Path2D>();
 
@@ -80,6 +92,8 @@ export const TECHNIQUE_GLYPH: Record<
   slideDown: { mark: '↓', label: '下滑音' },
   bendUp: { mark: '↗', label: '上弯音', path: 'bendUp' },
   bendDown: { mark: '↘', label: '下弯音', path: 'bendDown' },
+  // 回音：横置 S 曲线（turnPath），不用字体字形——回音码位覆盖不稳
+  turn: { mark: '∞', label: '回音', path: 'turn' },
 };
 
 /** 颜色随调用方，尺寸随谱面字号，避免导出大字时记号仍停留在 13px。 */
@@ -120,6 +134,8 @@ export interface PaintTheme {
   selected: string;
   playhead: string;
   playheadBg: string;
+  /** 播放指示自定义色（withPlayColor 塞入）：光标块 / 光条 / 竖线 / 光球统一用它 */
+  playColor?: string;
 }
 
 export const LIGHT_THEME: PaintTheme = {
@@ -159,6 +175,26 @@ export const DARK_THEME: PaintTheme = {
   playhead: '#d9b23c',
   playheadBg: '#5a4715',
 };
+
+/**
+ * 播放指示自定义色：把用户挑的颜色**只**注入光标块 / 高亮条 / 竖线 / 光球的用色，
+ * 谱面其他强调色（弧线 / 括号 / 焦点框 / 小节线高亮）仍用主题 accent——
+ * 改的是「跟唱笔」的颜色，不是整张谱的配色。
+ *
+ * **深浅背景各存一档**（0.4.27 用户定）：同一颜色在白底和黑底上的观感差很多
+ * （浅色上要偏深才压得住，深色上要偏亮才显眼），所以颜色按主题分开挑、
+ * 随当前主题自动取用。color 传空 = 沿用主题默认。
+ */
+export function withPlayColor(theme: PaintTheme, color?: string | null): PaintTheme {
+  if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) return theme;
+  return {
+    ...theme,
+    playColor: color,
+    playhead: color,
+    // 光标块 / 高亮条的底色 = 自定义色的半透明版：浅底上浅淡不盖字，深底上透出亮度
+    playheadBg: hexA(color, theme.dark ? 0.42 : 0.3),
+  };
+}
 
 /**
  * 版式度量：由 `applyMetrics(layout.glyph)` 按谱面字号刷新。
@@ -360,8 +396,9 @@ function noteBox(
   ctx: CanvasRenderingContext2D,
   it: PlacedItem,
 ): { x: number; w: number } {
-  // X 符号（无音高音符）：画 X 不画 0（noteBox 量宽与 drawGlyph 画字两处同口径）
-  const glyph = it.kind === 'rest' ? (it.xnote ? 'X' : '0') : String(it.degree ?? 0);
+  // 噪音符（无音高音符）：国标 §6.3.6 的字形是 ×（乘号形），不是字母 X；
+  // DSL 输入仍写 X/x，谱面画 ×（noteBox 量宽与 drawGlyph 画字两处同口径）
+  const glyph = it.kind === 'rest' ? (it.xnote ? '×' : '0') : String(it.degree ?? 0);
   // 口径统一走 layout.clusterSpan（含变音 / 倚音位移），左右各留 3px 不切附点
   const span = clusterSpan(it, ctx.measureText(glyph).width);
   return { x: span.x - 3, w: span.w + 6 };
@@ -550,7 +587,8 @@ export function drawPlayBall(
   b: { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] },
   theme: PaintTheme,
 ): void {
-  const accent = theme.accent;
+  // 自定义播放色优先（withPlayColor 塞进 theme.playColor），没设沿用主题默认
+  const accent = theme.playColor ?? theme.accent;
   const alpha = b.alpha ?? 1; // 曲末余跳渐隐：整球（含拖尾）按 alpha 淡出
   // 拖尾：整条轨迹 polyline **分三遍**描（尾淡头浓）。不能逐段描——
   // 相邻线段的圆头在接缝处叠加，深色的 'lighter' 加法混色会把接缝
@@ -560,7 +598,7 @@ export function drawPlayBall(
   const n = b.trail.length;
   if (n >= 2) {
     if (theme.dark) ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = theme.dark ? accent : '#3f3f46';
+    ctx.strokeStyle = theme.dark ? accent : theme.playColor ?? '#3f3f46';
     const dy = theme.dark ? 0 : b.r * 0.7; // 浅色拖尾画在球的下前方，像落地影子
     const pass = (from: number, width: number, a: number): void => {
       if (n - from < 2) return;
@@ -600,7 +638,7 @@ export function drawPlayBall(
     // 浅色：不发光，只画一个带柔和阴影的蓝色实心点（白底下发光只会一片白）
     ctx.shadowColor = 'rgba(0,0,0,0.45)';
     ctx.shadowBlur = 10;
-    ctx.fillStyle = '#2563eb';
+    ctx.fillStyle = theme.playColor ?? '#2563eb';
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.r * 0.6, 0, Math.PI * 2);
     ctx.fill();
@@ -926,7 +964,8 @@ function paintLine(
 
   // ── 记号层 ──
   // 小节线
-  for (const it of line.items) {
+  for (let bi = 0; bi < line.items.length; bi += 1) {
+    const it = line.items[bi];
     // 隐藏小节线（|*）：占位宽度照算、小节号计数照常，线与小节号都不画
     if (it.kind !== 'barline' || it.hidden) continue;
     const bx = it.x + it.w / 2;
@@ -950,10 +989,32 @@ function paintLine(
     }
     ctx.strokeStyle = picked ? theme.accent : it.final ? theme.barFinal : theme.bar;
     ctx.lineWidth = picked ? 3 : it.final ? 2.5 : 1.5;
+    // 虚小节线（GB/T 46845—2025 §5.2.2）：混合拍子里不拦拍感的细分线画成虚线
+    ctx.setLineDash(it.dashed ? [4 * M.k, 3 * M.k] : []);
     ctx.beginPath();
     ctx.moveTo(bx, y - M.barHalf);
     ctx.lineTo(bx, y + M.barHalf);
     ctx.stroke();
+    ctx.setLineDash([]);
+    // 双小节反复记号（GB/T 46845—2025 §5.8.4）：左右两小节都是 % 时，
+    // 记号画在这根**中间小节线**上——两条左下→右上的斜线，左右各一点；
+    // 两格 % 的字形由 repeatPairAt 压掉，只画这一份
+    if (repeatPairAt(line.items, bi) === 'mid') {
+      ctx.strokeStyle = ctx.fillStyle = theme.ink;
+      ctx.lineWidth = 1.3;
+      for (const dx of [-3.5, 3.5]) {
+        ctx.beginPath();
+        ctx.moveTo(bx + dx - 4, y + 10);
+        ctx.lineTo(bx + dx + 4, y - 10);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(bx - 11, y, 1.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(bx + 11, y, 1.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
     if (it.final) {
       // 终止线：细线在左、粗线在右（简谱/五线谱惯例）
       ctx.lineWidth = 1;
@@ -994,13 +1055,24 @@ function paintLine(
 
     // 小节号：小字画在小节线下方。口径与报错「第 N 小节」一致——
     // 这条线结束的是第几小节。纵向落在小节线底端与力度层之间，
-    // 横向贴着线走，不会压到音符的力度记号
+    // 横向贴着线走，不会压到音符的力度记号。
+    // 每 5 的倍数小节按 GB/T 46845—2025 §5.9.1 画**方框**强调（印刷谱的
+    // 翻谱定位点），其余小节保持朴素小字——每颗都画框会太吵
     if (it.measure && o.showMeasureNumbers) {
       ctx.save();
       ctx.font = M.badgeFont;
-      ctx.fillStyle = theme.muted;
       ctx.textAlign = 'center';
-      ctx.fillText(String(it.measure), bx, y + M.barHalf + 9);
+      const label = String(it.measure);
+      const ny = y + M.barHalf + 9;
+      if (it.measure % 5 === 0) {
+        ctx.fillStyle = theme.muted;
+        const tw = ctx.measureText(label).width;
+        ctx.strokeStyle = theme.muted;
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(bx - tw / 2 - 4, ny - 10, tw + 8, 13);
+      }
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(label, bx, ny);
       ctx.restore();
     }
 
@@ -1082,9 +1154,12 @@ function paintLine(
       ctx.stroke();
       ctx.fillStyle = theme.ink;
       // 号码标在**第一小节靠近小节线**的地方（印刷谱惯例），
-      // 居中会飘到房子中段找不到归属——单小节短房也一样靠左
+      // 居中会飘到房子中段找不到归属——单小节短房也一样靠左。
+      // 斜体数字加下角点是 GB/T 46845—2025 §5.8.3.2 规定的段次序号形态
       ctx.textAlign = 'left';
-      ctx.fillText(v.numbers.join(','), v.x0 + 6 * M.k, vy + 11);
+      // 印刷谱的段次序号是斜体——等宽字体没有真斜体面，canvas 会合成倾斜
+      ctx.font = 'italic 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(`${v.numbers.join(', ')}.`, v.x0 + 6 * M.k, vy + 11);
       ctx.textAlign = 'center';
       // 非末遍房子的段尾：明确提示「唱完这里跳回反复起点」——
       // 印刷谱靠 [1] 房末尾的 :| 传达这个信息，本应用的反复段里没有它
@@ -1094,6 +1169,110 @@ function paintLine(
         ctx.fillStyle = theme.muted;
         ctx.fillText('↩跳回', v.x1 + 3, vy + 11);
         ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 多小节休止（GB/T 46845—2025 §6.3.7.3）：粗横线贯穿整段小节格，
+  // 两端有向下的短竖钩，段上方居中写小节数。字形在 drawGlyph 里被跳过，
+  // 段里各格（multibar / 隐藏小节线 / multibarCont）在这里串成一条线
+  {
+    let run: { x0: number; x1: number; n: number } | null = null;
+    const flush = () => {
+      if (!run) return;
+      ctx.save();
+      ctx.strokeStyle = theme.ink;
+      ctx.fillStyle = theme.ink;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(run.x0, y);
+      ctx.lineTo(run.x1, y);
+      // 两端下钩
+      ctx.moveTo(run.x0, y);
+      ctx.lineTo(run.x0, y + 5 * M.k);
+      ctx.moveTo(run.x1, y);
+      ctx.lineTo(run.x1, y + 5 * M.k);
+      ctx.stroke();
+      ctx.font = M.badgeFont;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(run.n), (run.x0 + run.x1) / 2, y - 7 * M.k);
+      ctx.restore();
+      run = null;
+    };
+    for (const it of line.items) {
+      if (it.kind === 'rest' && it.multibar) {
+        flush();
+        run = { x0: it.x + 3, x1: it.x + it.w - 3, n: it.multibar };
+        continue;
+      }
+      if (!run) continue;
+      // 隐藏小节线与延续小节的休止格都属于同一段；遇到别的内容收口
+      if ((it.kind === 'barline' && it.hidden) || (it.kind === 'rest' && it.multibarCont)) {
+        run.x1 = it.x + it.w - 3;
+        continue;
+      }
+      flush();
+    }
+    flush();
+  }
+
+  // 高 / 低八度演奏记号（GB/T 46845—2025 §6.2.6）：斜体小字「8」（或 con 8）+ 虚线，
+  // 高八度记号在音符上方、末端短钩朝下；低八度在下方、短钩朝上。
+  // con 8（八度重复）标斜体「con 8」，虚线从文字右侧接过去；字高与普通段一致。
+  // **跨行段**：结束音不在本行时虚线拉到本行末但**不画短钩**（不折角）；
+  // 续行（octavaCont 标记，layout 打在每行第一个段内音上）在虚线前再记一次
+  // 括号括住的「(8)」/「(con 8)」，虚线从续标记重新起步
+  if (line.items.some((it) => it.octava || it.octavaCont)) {
+    ctx.save();
+    ctx.strokeStyle = theme.ink;
+    ctx.fillStyle = theme.ink;
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 1;
+    for (const it of line.items) {
+      if (it.kind !== 'note') continue;
+      const kind = it.octava ?? it.octavaCont;
+      if (!kind) continue;
+      const con = kind === 'con-va' || kind === 'con-vb';
+      const up = kind === 'va' || kind === 'con-va';
+      const ly = up ? y - 48 * M.k : y + 40 * M.k;
+      // 终点：作用域结束音（octavaTo / 续行的 octavaContTo）；结束音在下一行 /
+      // 没写收尾时虚线拉到本行末——且不画末端短钩（段还没走完，不许折角）
+      const endId = it.octava ? it.octavaTo : it.octavaContTo;
+      const end = endId
+        ? line.items.find((q) => q.kind === 'note' && q.eventId === endId)
+        : undefined;
+      const last = line.items[line.items.length - 1];
+      const x0 = it.x + it.w / 2;
+      const x1 = end ? end.x + end.w / 2 : last.x + last.w;
+      ctx.font = `italic ${M.badgeFont}`;
+      const label = it.octava ? (con ? 'con 8' : '8') : con ? '(con 8)' : '(8)';
+      let dashX0 = x0;
+      if (con || it.octavaCont) {
+        // 文字占位比单个 8 宽（con 8 / 括号续标记）：左对齐起笔，
+        // 虚线从文字右侧再起步，避免压住文字
+        ctx.textAlign = 'left';
+        const lx = x0 - 10 * M.k;
+        ctx.fillText(label, lx, ly + 3 * M.k);
+        dashX0 = lx + ctx.measureText(label).width + 4 * M.k;
+        ctx.textAlign = 'center';
+      } else {
+        ctx.fillText(label, x0 - 9 * M.k, ly + 3 * M.k);
+      }
+      if (x1 > dashX0 + 2) {
+        ctx.setLineDash([4 * M.k, 3 * M.k]);
+        ctx.beginPath();
+        ctx.moveTo(dashX0, ly);
+        ctx.lineTo(x1, ly);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // 短钩只画在段的真正结束音上：结束音在下一行时本行末端不折角
+      if (end) {
+        ctx.beginPath();
+        ctx.moveTo(x1, ly);
+        ctx.lineTo(x1, ly + (up ? 6 : -6) * M.k);
+        ctx.stroke();
       }
     }
     ctx.restore();
@@ -1127,8 +1306,11 @@ function paintLine(
   }
 
   // 音符
-  for (const it of line.items) {
+  for (let mi = 0; mi < line.items.length; mi += 1) {
+    const it = line.items[mi];
     if (it.kind !== 'note' && it.kind !== 'rest') continue;
+    // 双小节反复的两格 %：记号已画在中间小节线上，格子本身不再画
+    if (repeatPairAt(line.items, mi) !== null) continue;
     drawGlyph(ctx, it, y, theme);
   }
 
@@ -1237,6 +1419,21 @@ function paintLine(
     );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
     let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
+    // 颤音波线（GB/T 46845—2025 §7.5.3）的终点：
+    //   选区套用的颤音（后面有 trillEnd 音）→ 波浪拉到那个音的尾部；
+    //   单音带增时线 → 波浪与延音线等长（数字右侧到格尾的增时线区段长）；
+    //   单音无增时线 → 只标 tr，不画波浪
+    let trWaveTo: number | null = null;
+    let trWaveLen = 0;
+    if (run.some((r) => r.mark === 'tr')) {
+      const endItem = line.items.slice(mi + 1).find((q) => q.kind === 'note' && q.trillEnd);
+      if (endItem) {
+        trWaveTo = endItem.x + endItem.w - 6 * M.k;
+      } else if ((it.techniques ?? []).includes('trill') && (it.dashes ?? 0) > 0) {
+        // 延音线区段长：数字右缘（半宽 ≈7px + 5px 间距）到格尾留白 6px
+        trWaveLen = Math.max(0, it.x + it.w - 6 * M.k - (it.x + 11 + (it.graceInk ?? 0) + 12 * M.k));
+      }
+    }
     if (breath) {
       // 换气 V：**完全在音符数字的左侧**（先换气，后吹奏）——V 的右缘贴着数字墨迹左缘外
       // 2px，同一行高不另抬高。右不压居中记号串；左边：前一个内容是音 / 休止符时要躲开，
@@ -1273,6 +1470,30 @@ function paintLine(
         ctx.arc(tx, baseY + 2, 2, 0, Math.PI * 2);
         ctx.fill();
       }
+      // 颤音波线（GB/T 46845—2025 §7.5.3）：tr 是记号串最后一员时，
+      // 右侧接波浪延展线——选区颤音拉到 trillEnd 音的尾部，
+      // 单音颤音与延音线等长；没有延音线 / 终点就不画（只标 tr）
+      if (r.mark === 'tr' && i === run.length - 1) {
+        const wx0 = tx + widths[i] / 2 + 2 * M.k;
+        const wy = my + 1.5 * M.k;
+        const waveEnd = trWaveTo ?? (trWaveLen > 0 ? wx0 + trWaveLen : null);
+        if (waveEnd !== null && waveEnd > wx0 + 4) {
+          const periods = Math.max(1, Math.round((waveEnd - wx0) / (7 * M.k)));
+          ctx.save();
+          ctx.strokeStyle = r.color;
+          ctx.lineWidth = 1;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(wx0, wy);
+          for (let p = 0; p < periods; p += 1) {
+            const px = wx0 + p * 7 * M.k;
+            ctx.quadraticCurveTo(px + 1.8 * M.k, wy - 4.5 * M.k, px + 3.5 * M.k, wy);
+            ctx.quadraticCurveTo(px + 5.2 * M.k, wy + 4.5 * M.k, px + 7 * M.k, wy);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
     });
   }
   ctx.textAlign = 'left';
@@ -1285,6 +1506,15 @@ function paintLine(
     if (it.kind !== 'barline' || !it.beatAfter) continue;
     if (line.meterMoved && it === line.items[line.items.length - 1]) continue;
     drawMeterMark(ctx, it.beatAfter, it.x + it.w / 2 + 14 * M.k, y, theme);
+  }
+  // 散板（GB/T 46845—2025 §6.3.11.7）：拍号位置记「散」（与拍号同一槽位）。
+  // 同一根线既写「散」又写「拍N/M」时以新拍号为准（拍号已占槽位），不重复画
+  ctx.font = M.markFont;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = theme.ink;
+  for (const it of line.items) {
+    if (it.kind !== 'barline' || !it.freeAfter || it.beatAfter) continue;
+    ctx.fillText('散', it.x + it.w / 2 + 14 * M.k, y + 1 * M.k);
   }
   if (line.leadingMeter) {
     drawMeterMark(ctx, line.leadingMeter.meter, line.leadingMeter.x, y, theme);
@@ -1480,6 +1710,52 @@ function glyphBox(
   return { x, w, top, bottom };
 }
 
+/**
+ * 双小节反复配对判定（GB/T 46845—2025 §5.8.4）。
+ * items 里小节格与小节线交替排布：[B0][格1][B中][格2][B1]。
+ *   'mid'  —— bi 是配对的**中间小节线**（左右两格都是 %、且各自外侧都不是 %），
+ *             在这根线上画双小节反复记号（两条斜线）；
+ *   'cell' —— mi 是配对里的 % 格，格子本身不再画单小节记号；
+ *   null   —— 不在配对里（孤立 % 照常画单斜线记号）。
+ * 三个以上连续 % 不配对（各格照常画单小节记号；国标双小节反复号只管两小节）。
+ */
+function repeatPairAt(items: PlacedItem[], i: number): 'mid' | 'cell' | null {
+  const isR = (q?: PlacedItem) => !!q && q.kind === 'rest' && !!q.repeatBar;
+  const isB = (q?: PlacedItem) => !!q && q.kind === 'barline';
+  const it = items[i];
+  if (isB(it)) {
+    return isR(items[i - 1]) && isR(items[i + 1]) && !isR(items[i - 3]) && !isR(items[i + 3])
+      ? 'mid'
+      : null;
+  }
+  if (!isR(it)) return null;
+  // 右配对：[本格][线][%格]，再往外（隔一根线）不是 %
+  if (isB(items[i + 1]) && isR(items[i + 2]) && !isR(items[i + 4])) return 'cell';
+  if (isB(items[i - 1]) && isR(items[i - 2]) && !isR(items[i - 4])) return 'cell';
+  return null;
+}
+
+/**
+ * 重升记号（GB/T 46845—2025 §6.2.5.1）：粗壮的 × 形交叉线。
+ * 字体的 𝄪 码位在小字号下细得看不清（用户实测），这里手绘：
+ * ax 是记号格左缘，y 是数字基线；大小与 13px 变音字形对齐。
+ */
+function drawDoubleSharp(ctx: CanvasRenderingContext2D, ax: number, y: number, k: number): void {
+  const cx = ax + 4.6 * k;
+  const cy = y - 8.5 * k;
+  const r = 4.6 * k;
+  ctx.save();
+  ctx.lineWidth = 2 * k;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - r, cy - r);
+  ctx.lineTo(cx + r, cy + r);
+  ctx.moveTo(cx + r, cy - r);
+  ctx.lineTo(cx - r, cy + r);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawGlyph(
   ctx: CanvasRenderingContext2D,
   it: PlacedItem,
@@ -1494,31 +1770,111 @@ function drawGlyph(
 
   // 隐藏休止（8）：占位宽度照算，一切字形（数字 / 附点 / 八度点 / 减时线）都不画
   if (it.hidden) return;
+  // 多小节休止（GB/T 46845—2025 §6.3.7.3）：不画休止符字形——
+  // 粗横线与数字由行级绘制（把 N 个小节的格串成一条线）
+  if (it.multibar || it.multibarCont) return;
+  // 小节反复号（GB/T 46845—2025 §5.8.4）：**一条**左下→右上的斜线，
+  // 左右各一点，占整个小节格居中画（双小节反复记号画在中间小节线上，
+  // 相邻两格 % 不再重复画——见 repeatPairAt 的行级配对）
+  if (it.repeatBar) {
+    const sx = it.x + it.w / 2;
+    ctx.strokeStyle = ctx.fillStyle = theme.ink;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(sx - 4.5, y + 9);
+    ctx.lineTo(sx + 4.5, y - 9);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(sx - 9, y, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(sx + 9, y, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
   // 变音记号占住数字左边那一格。宽度由 layout 给（it.accW）——
   // 这里不自带常量，两处各写一个数字迟早漂移，数字就压到记号上了。
   const accW = it.accW ?? 0;
+  // 琶音波状竖线占住数字**右边**那一格（宽度由 layout 给，it.arpW）——
+  // 数字与附点 / 增时线之间夹一条竖向波线（用户 0.4.30 定的摆放）
+  const arpW = it.arpW ?? 0;
   // 前倚音占掉的横向宽度：整个字形簇（数字 / 附点 / 增时线）都要右移
   const ink = it.graceInk ?? 0;
   if (it.accidental && accW > 0) {
-    ctx.font = M.accFont;
+    const ax = it.x + M.glyphPad + ink;
     // 变音记号画在数字**左上角**：基线比数字抬高 5px（13px 的小字
     // 正好落在数字上半格），与数字同基线会画成平行的两个主体
-    ctx.fillText(ACCIDENTAL_GLYPH[it.accidental], it.x + M.glyphPad + ink, y - 5 * M.k);
+    if (it.accidental === 'x') {
+      // 重升（GB/T 46845—2025 §6.2.5.1）：粗壮的 × 形——字体 𝄪 码位在
+      // 小字号下细得看不清，手绘两条交叉粗线（端点圆头加粗）
+      drawDoubleSharp(ctx, ax, y, M.k);
+    } else if (it.accidental === 'bb') {
+      // 重降：两个 ♭ **贴近**排——字体 𝄫 的两个 b 间距太宽，右侧那个压到数字
+      ctx.font = M.accFont;
+      ctx.fillText('♭', ax, y - 5 * M.k);
+      ctx.fillText('♭', ax + 5 * M.k, y - 5 * M.k);
+    } else {
+      ctx.font = M.accFont;
+      ctx.fillText(ACCIDENTAL_GLYPH[it.accidental], ax, y - 5 * M.k);
+    }
     ctx.font = M.font;
   }
 
   const gx = it.x + M.glyphPad + accW + ink;
-  // X 符号（无音高音符）：画 X 不画 0（noteBox 量宽与 drawGlyph 画字两处同口径）
-  const glyph = it.kind === 'rest' ? (it.xnote ? 'X' : '0') : String(it.degree ?? 0);
+  // 噪音符：同 noteBox 用 ×（国标 §6.3.6 字形，DSL 仍写 X/x）
+  const glyph = it.kind === 'rest' ? (it.xnote ? '×' : '0') : String(it.degree ?? 0);
   ctx.fillText(glyph, gx, y);
   const gw = ctx.measureText(glyph).width;
   const cx = gx + gw / 2;
+  // 琶音（GB/T 46845—2025 §7.7）：竖向波浪线画在音符右侧、贯穿音符上下，
+  // 附点 / 震音 / 增时线全部再往右让一格（arpW）
+  if (it.arpeggio && arpW > 0) {
+    const ax = gx + gw + arpW / 2;
+    ctx.save();
+    ctx.strokeStyle = it.gray ? theme.muted : theme.ink;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(ax, y - 15 * M.k);
+    const periods = 3;
+    const seg = (30 * M.k) / (periods * 2);
+    let py = y - 15 * M.k;
+    for (let i = 0; i < periods * 2; i += 1) {
+      const dir = i % 2 === 0 ? 1 : -1;
+      py += seg;
+      ctx.quadraticCurveTo(ax + dir * 2.4 * M.k, py - seg / 2, ax, py);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  // 震音（GB/T 46845—2025 §7.8）：数字右上角的 1–3 条斜线（左低右高），
+  // 占的是数字上方右侧的空档，与附点（数字右侧中部）上下错开
+  if (it.tremolo) {
+    ctx.save();
+    ctx.strokeStyle = it.gray ? theme.muted : theme.ink;
+    ctx.lineWidth = 1.3;
+    for (let i = 0; i < it.tremolo; i += 1) {
+      const ty = y - 7 * M.k - i * 3.4 * M.k;
+      ctx.beginPath();
+      ctx.moveTo(gx + gw + arpW + 1, ty + 2.6 * M.k);
+      ctx.lineTo(gx + gw + arpW + 7.5 * M.k, ty - 2.6 * M.k);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  // 指法（GB/T 46845—2025 §7.11.5）：音符正下方的小字数字（'0'=空弦）
+  if (it.fingering) {
+    ctx.save();
+    ctx.fillStyle = theme.muted;
+    ctx.font = M.badgeFont;
+    ctx.fillText(it.fingering, cx, y + 24 * M.k);
+    ctx.restore();
+  }
 
-  // 附点（挂在数字右侧，含变音记号与前倚音的实际位置）
+  // 附点（挂在数字右侧，含变音记号与前倚音的实际位置；有琶音时让过波线）
   if (it.dot) {
     for (let i = 0; i < it.dot; i += 1) {
       ctx.beginPath();
-      ctx.arc(gx + gw + 5 + i * M.dotGap, y + 1.5, M.dotR, 0, Math.PI * 2);
+      ctx.arc(gx + gw + arpW + 5 + i * M.dotGap, y + 1.5, M.dotR, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -1543,7 +1899,8 @@ function drawGlyph(
   if (it.dashes) {
     ctx.strokeStyle = it.gray ? theme.muted : theme.ink;
     ctx.lineWidth = M.beamLine;
-    const extStart = gx + gw + 5;
+    // 有琶音时增时线从波线右侧起步（波线占掉数字后的一格）
+    const extStart = gx + gw + arpW + 5;
     const extEnd = it.x + it.w - 6 * M.k;
     // 格子太窄放不下一根线时回落到固定间距（极端密集的谱面）
     const cell = Math.max((extEnd - extStart) / it.dashes, M.dashW + 2);

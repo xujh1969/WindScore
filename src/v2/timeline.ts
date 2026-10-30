@@ -213,6 +213,50 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
    */
   let chainTailId: string | null = null;
   let chainMainIdx: number | null = null;
+  /** 延音链主音的 con 8 副本在 out 里的下标：链上后续音并进来时副本跟着延到链尾 */
+  let chainDblIdx: number | null = null;
+
+  // 高/低八度演奏段（GB/T 46845—2025 §6.2.6，8va[ … ]8）：段内音符整体 ±12 半音。
+  // con 8（con8[ … ]8）八度重复：段内音高**不变**（shift=0），另记一份 ±12 的
+  // 「音符 → 重复偏移」表——主扫描时每个发声条目都要再叠一份 ±12 半音的副本。
+  // 预扫一遍建两张表：倚音、主音、延音合并比较三处共用同一口径。
+  const octavaShift = new Map<string, number>();
+  /** con 8 八度重复段：音符 id → ±12（段外 / 普通段不在表里） */
+  const octavaDouble = new Map<string, number>();
+  /** 小节反复号的 [start, len) 区间，主扫描时登记、扫描后统一展开 */
+  // 小节反复段：**连续**的 % 小节合并成一段（start = 段起点，len = 段总长）。
+  // 播放语义（GB/T 46845—2025 §5.8.4）：反复段重复的是**前面等长的小节块**——
+  // 两小节反复 = 前面两小节整体再来一遍（A B % % → A B A B），
+  // 不是把前一小节重复两次（那要靠逐个接力复制，是错的）
+  const repeatRuns: { start: number; len: number }[] = [];
+  {
+    let shift = 0;
+    let dbl = 0;
+    // octavaTo 挂在**起点音**上、指向结束音——复位要拿它比对本音 id，
+    // 不能比 octavaTo === 自己（那样只有单音作用域能复位，段尾音永远错高）
+    let endId: string | null = null;
+    let dblEndId: string | null = null;
+    for (const ev of score.events) {
+      if (ev.kind !== 'note') continue;
+      if (ev.octava) {
+        shift = ev.octava === 'va' ? 12 : ev.octava === 'vb' ? -12 : 0;
+        dbl = ev.octava === 'con-va' ? 12 : ev.octava === 'con-vb' ? -12 : 0;
+        endId = ev.octavaTo ?? ev.id;
+        dblEndId = endId;
+      }
+      // 结束音本身也在段内（]8 收在它后面）：先记上偏移，再对本音复位
+      octavaShift.set(ev.id, shift);
+      if (dbl) octavaDouble.set(ev.id, dbl);
+      if (!ev.octava && endId && ev.id === endId) {
+        shift = 0;
+        endId = null;
+      }
+      if (!ev.octava && dblEndId && ev.id === dblEndId) {
+        dbl = 0;
+        dblEndId = null;
+      }
+    }
+  }
 
   for (const ev of score.events) {
     if (ev.kind !== 'note' && ev.kind !== 'rest') continue; // 小节线 / 换气不占时值
@@ -220,9 +264,15 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     if (ev.kind === 'rest') {
       // X 符号（x 变体）：起音时刻打一记打击声；普通休止完全静默
       out.push({ eventId: eid(ev), startTick: tick, endTick: tick + ev.ticks, degree: 0, octave: 0, midi: null, ...(ev.x ? { perc: true } : {}) });
+      if (ev.repeatBar) {
+        const last = repeatRuns[repeatRuns.length - 1];
+        if (last && last.start + last.len === tick) last.len += ev.ticks;
+        else repeatRuns.push({ start: tick, len: ev.ticks });
+      }
       tick += ev.ticks;
       chainTailId = null; // 休止切断延音链
       chainMainIdx = null;
+      chainDblIdx = null;
       continue;
     }
 
@@ -243,34 +293,44 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     const each = graceCount > 0 ? Math.min(GRACE_TICKS, Math.floor(ev.ticks / 2 / graceCount)) : 0;
     const beforeTicks = each * gBefore.length;
     const afterTicks = each * gAfter.length;
+    // con 8（八度重复）：段内每个发声条目（倚音 / 震音细分 / 主音）都要再叠一份
+    // ±12 半音的副本。eventId 与原条目相同——副本指向同一个音，follow 高亮照常工作
+    const dblAmt = octavaDouble.get(ev.id) ?? 0;
+    const dblCopy = (e: TimelineEntry) => {
+      if (dblAmt && e.midi !== null) out.push({ ...e, midi: e.midi + dblAmt });
+    };
     if (graceCount > 0) {
       let gs = tick;
       for (const g of gBefore) {
-        out.push({
+        const ge: TimelineEntry = {
           eventId: eid(ev),
           startTick: gs,
           endTick: gs + each,
           degree: g.degree,
           octave: g.octave,
-          midi: toMidi(g.degree, g.octave, curKey, g.accidental),
+          midi: toMidi(g.degree, g.octave, curKey, g.accidental) + (octavaShift.get(ev.id) ?? 0),
           grace: true,
           // 倚音短到不需要内部推进，取主音起音时刻的力度即可
           dyn: level * hairpinFactor(gs),
-        });
+        };
+        out.push(ge);
+        dblCopy(ge);
         gs += each;
       }
       gs = tick + ev.ticks - afterTicks;
       for (const g of gAfter) {
-        out.push({
+        const ge: TimelineEntry = {
           eventId: eid(ev),
           startTick: gs,
           endTick: gs + each,
           degree: g.degree,
           octave: g.octave,
-          midi: toMidi(g.degree, g.octave, curKey, g.accidental),
+          midi: toMidi(g.degree, g.octave, curKey, g.accidental) + (octavaShift.get(ev.id) ?? 0),
           grace: true,
           dyn: level * hairpinFactor(gs),
-        });
+        };
+        out.push(ge);
+        dblCopy(ge);
         gs += each;
       }
     }
@@ -281,6 +341,9 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     // 所以要查「延音链尾」的 outgoing ties：链式 5~5~5 时第二颗已并进
     // 第一颗的条目，第三颗必须查第二颗的 ties（旧代码查第一颗，链上
     // 第三颗起全部重新起声——用户实测「跨小节三个 5，第三个又多响一次」）。
+    // 震音的细分份数提前算好（合并条件与主音切分都要用）
+    const trem = ev.tremolo ?? 0;
+    const tremParts = trem > 0 ? 2 ** trem : 1;
     const tailNote = chainTailId ? (byId.get(chainTailId) as NoteEvent | undefined) : undefined;
     const mainEntry = chainMainIdx !== null ? out[chainMainIdx] : undefined;
     const linkedFromPrev = tailNote
@@ -291,6 +354,7 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
     if (
       opts.mergeTies !== false && // 显示时间线保留每个音的拍位，声音时间线仍合并延音
       graceCount === 0 && // 带倚音的音要重新起声，不能并进前一个长音
+      tremParts === 1 && // 震音要按细分反复起声，也不并入前一个长音
       linkedFromPrev &&
       mainEntry &&
       mainEntry.midi !== null &&
@@ -302,31 +366,91 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       // 音高必须真的相同：中间夹了转调（含这个音自己的转调）时，
       // 同样的音级已经落到另一个音高上，再合并就会把转调吞掉——
       // 听感上「这个音开始的转调」变成从下一个音才生效，甚至完全不生效。
-      mainEntry.midi === toMidi(ev.degree, ev.octave, curKey, ev.accidental)
+      mainEntry.midi === toMidi(ev.degree, ev.octave, curKey, ev.accidental) + (octavaShift.get(ev.id) ?? 0)
     ) {
       mainEntry.endTick = tick + ev.ticks;
       // 合并进长音后，包络终点跟着延到这一颗的末尾——跨小节的渐强
       // 不会被延音线切成两段
       mainEntry.dynTo = dynTo;
+      // con 8 副本跟着延：延音链整体复制一份高/低八度，不是只复制第一颗
+      if (chainDblIdx !== null) {
+        out[chainDblIdx].endTick = tick + ev.ticks;
+        out[chainDblIdx].dynTo = dynTo;
+      }
       tick += ev.ticks;
       chainTailId = ev.id; // 链尾前移：下一颗音要查这一颗的 ties
       continue;
     }
 
     // 主音：前倚音占掉开头、后倚音占掉结尾，中间才是主音本身
-    out.push({
-      eventId: eid(ev),
-      startTick: tick + beforeTicks,
-      endTick: tick + ev.ticks - afterTicks,
-      degree: ev.degree,
-      octave: ev.octave,
-      midi: toMidi(ev.degree, ev.octave, curKey, ev.accidental),
-      dyn,
-      dynTo,
-    });
+    const mainStart = tick + beforeTicks;
+    const mainTicks = ev.ticks - beforeTicks - afterTicks;
+    // 震音（GB/T 46845—2025 §7.8）：斜线数 n → 把主音均分成 2^n 份快速重复
+    //（1 条 = 八分的重复、2 条 = 十六分…）。均分不净（余 tick）或太短就不细分，
+    // 宁可整音奏也不出破音；细分条目各自取当时的渐变力度
+    if (tremParts > 1 && mainTicks >= tremParts && mainTicks % tremParts === 0) {
+      const seg = mainTicks / tremParts;
+      let st = mainStart;
+      chainDblIdx = null; // 震音逐细分起声，不参与延音链合并
+      for (let p = 0; p < tremParts; p += 1) {
+        const te: TimelineEntry = {
+          eventId: eid(ev),
+          startTick: st,
+          endTick: st + seg,
+          degree: ev.degree,
+          octave: ev.octave,
+          midi: toMidi(ev.degree, ev.octave, curKey, ev.accidental) + (octavaShift.get(ev.id) ?? 0),
+          dyn: level * hairpinFactor(st),
+          dynTo: level * hairpinFactor(st + seg),
+        };
+        out.push(te);
+        dblCopy(te);
+        st += seg;
+      }
+      chainMainIdx = out.length - 1;
+    } else {
+      const me: TimelineEntry = {
+        eventId: eid(ev),
+        startTick: mainStart,
+        endTick: tick + ev.ticks - afterTicks,
+        degree: ev.degree,
+        octave: ev.octave,
+        midi: toMidi(ev.degree, ev.octave, curKey, ev.accidental) + (octavaShift.get(ev.id) ?? 0),
+        dyn,
+        dynTo,
+      };
+      out.push(me);
+      // chainMainIdx 必须指向**主音条目**——con 8 副本在它后面推入，
+      // 若拿 out.length-1 会指到副本上，延音链比较拿 ±12 的副本比音高，永远合不上
+      chainMainIdx = out.length - 1;
+      if (dblAmt && me.midi !== null) {
+        out.push({ ...me, midi: me.midi + dblAmt });
+        chainDblIdx = out.length - 1;
+      } else {
+        chainDblIdx = null;
+      }
+    }
     tick += ev.ticks;
     chainTailId = ev.id;
-    chainMainIdx = out.length - 1;
+  }
+
+  // 小节反复号（GB/T 46845—2025 §5.8.4，%）：整小节重复上一小节。
+  // 展开反复段：把反复段**前面等长的小节块**整体拷贝、平移进段内
+  //（倚音 / 打击声一并带上）。两小节反复 = A B A B，不是 A B A A。
+  {
+    // 主扫描里把连续 % 并成了段（[start, len)），这里统一展开
+    for (const rb of repeatRuns) {
+      const prev = out.filter((e) => e.startTick >= rb.start - rb.len && e.startTick < rb.start);
+      for (const e of prev) {
+        if (e.midi === null && !e.perc) continue; // 普通休止的静默条目不复制
+        out.push({
+          ...e,
+          startTick: e.startTick + rb.len,
+          endTick: e.endTick + rb.len,
+          eventId: `${e.eventId}+rb${rb.start}`,
+        });
+      }
+    }
   }
 
   // 单声部：音色跟曲目设置走（小节线「音5」从那根线之后覆盖；多声部已在上面按声部附好各自的 patch）

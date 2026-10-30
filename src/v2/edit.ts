@@ -9,7 +9,7 @@
 import { assembleParts, partScore, scoreParts } from './parts';
 import { distribute } from './reseat';
 import { normalizeKey } from './timeline';
-import { groupTicks, groupTierBeats, meterAt } from './meter';
+import { beatsPerMeasure, groupTicks, groupTierBeats, meterAt } from './meter';
 import {
   isLegalTick,
   TICKS_PER_BEAT,
@@ -192,7 +192,7 @@ export function pasteEvents(
 export function insertNote(score: Score, at: number, degree: Degree, octave = 0): Score {
   const id = newIds(score).ev;
   const note: NoteEvent = { id, kind: 'note', degree, octave, ticks: QUARTER, dot: 0 };
-  return insert(score, at, note);
+  return normalizeMultibarRests(insert(score, at, note));
 }
 
 export function insertRest(score: Score, at: number, x = false): Score {
@@ -200,12 +200,12 @@ export function insertRest(score: Score, at: number, x = false): Score {
   const rest: RestEvent = { id, kind: 'rest', ticks: QUARTER };
   // X 符号（无音高音符）：外形与发声都不同，时值机制与休止符一致
   if (x) rest.x = true;
-  return insert(score, at, rest);
+  return normalizeMultibarRests(insert(score, at, rest));
 }
 
 export function insertBarline(score: Score, at: number, style: 'single' | 'double' | 'final' = 'single'): Score {
   const id = newIds(score).ev;
-  return insert(score, at, { id, kind: 'barline', style });
+  return normalizeMultibarRests(insert(score, at, { id, kind: 'barline', style }));
 }
 
 /**
@@ -300,6 +300,59 @@ export function pressBarline(score: Score, at: number): { score: Score; cursor: 
     return { score: setBarlineStyle(score, left.id, 'final'), cursor: at };
   }
   return { score: insertBarline(score, at), cursor: at + 1 };
+}
+
+/**
+ * 光标所在小节（左右最近的小节线之间）是不是小节反复（𝄍）小节。
+ * 反复号替代整小节记谱（GB/T 46845—2025 §5.8.4）——里面不能再写音符，
+ * 输入路径（键盘数字 / 0 / X / | 和浮动板同款按钮）用它拦截。
+ */
+export function inRepeatMeasure(score: Score, cursor: number): boolean {
+  let lo = Math.max(0, Math.min(cursor, score.events.length));
+  while (lo > 0 && score.events[lo - 1]?.kind !== 'barline') lo -= 1;
+  let hi = lo;
+  while (hi < score.events.length && score.events[hi]?.kind !== 'barline') hi += 1;
+  for (let i = lo; i < hi; i += 1) {
+    const e = score.events[i];
+    if (e.kind === 'rest' && (e as RestEvent).repeatBar) return true;
+  }
+  return false;
+}
+
+/**
+ * 小节反复 % 键（𝄍 按钮 / 未来的快捷键）。光标必须**紧跟小节线**——
+ * % 重复的是「这根线之前的那个小节」，前面是音符就没有可重复的锚点。
+ *
+ *   第 1 次按：插入 [整小节 % 休止, 小节线]——谱面画出单小节反复记号和收尾线；
+ *   第 2 次按（左边那格已是 %）：再插一组——两格 % 中间的小节线画双小节反复记号
+ *     （两条斜线，左右各一点，国标 §5.8.4）；
+ *   第 3 次按：取消小节重复——把两组 [%, 线] 拆掉，回到重复之前的样子。
+ *
+ * 返回 null = 这次按键无效（光标前面不是小节线）。
+ */
+export function pressRepeatBar(score: Score, at: number): { score: Score; cursor: number } | null {
+  const prev = at > 0 ? score.events[at - 1] : undefined;
+  if (!prev || prev.kind !== 'barline') return null;
+  // 数光标左边已连着的 % 小节个数（…B % B % [光标]）
+  let count = 0;
+  for (let i = at; i >= 2; i -= 2) {
+    const bar = score.events[i - 1];
+    const cell = score.events[i - 2];
+    if (bar?.kind === 'barline' && cell?.kind === 'rest' && (cell as RestEvent).repeatBar) count += 1;
+    else break;
+  }
+  if (count >= 2) {
+    // 取消：光标左边依次是 [%2][B][%1][B0]（at−1…at−4），把两组 [%, 线] 拆掉
+    const events = score.events.slice();
+    events.splice(at - 4, 4);
+    return { score: { ...score, events }, cursor: at - 4 };
+  }
+  const s1 = insertRest(score, at);
+  const fresh = s1.events[at];
+  if (!fresh || fresh.kind !== 'rest') return null;
+  const s2 = toggleRepeatBar(s1, fresh.id);
+  const s3 = insertBarline(s2, at + 1);
+  return { score: s3, cursor: at + 2 };
 }
 
 // ───────────────────────── 小节线的反复属性 ─────────────────────────
@@ -589,6 +642,234 @@ export function setNoteMark(score: Score, id: string, v: string | undefined): Sc
   };
 }
 
+/** 指法（GB/T 46845—2025 §7.11.5）：音符正下方的小字数字 0-5（'0'=空弦）；省略 = 去掉 */
+export function setFingering(score: Score, id: string, v?: string): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'note') return e;
+      const copy = { ...e };
+      if (v) copy.fingering = v;
+      else delete copy.fingering;
+      return copy;
+    }),
+  };
+}
+
+/**
+ * 多小节休止（GB/T 46845—2025 §6.3.7.3）：在光标处插入 0*N（N ≥ 1）。
+ * 与 DSL 解析同一套拆解：N 个整小节休止 + N−1 根结构化隐藏小节线——
+ * 拍数校验、小节号、断行全走既有机制，序列化合并回 0*N。
+ * 时值按光标处生效的拍号算整小节。
+ */
+export function insertMultibarRest(score: Score, at: number, measures: number): Score {
+  const n = Math.max(1, Math.min(999, Math.round(measures)));
+  const mt = Math.round(beatsPerMeasure(meterAt(score, at)) * TICKS_PER_BEAT);
+  const ns = score.part ? `p${score.part.id}:` : '';
+  let seq = maxSeq(score.events.map((e) => e.id), 'e');
+  const fresh = (): string => `${ns}e${++seq}`;
+  const added: Event[] = [];
+  for (let i = 0; i < n; i += 1) {
+    if (i > 0) added.push({ id: fresh(), kind: 'barline', style: 'single', hidden: true, multibarDiv: true });
+    added.push(
+      i === 0
+        ? { id: fresh(), kind: 'rest', ticks: mt, multibar: n }
+        : { id: fresh(), kind: 'rest', ticks: mt, multibarCont: true },
+    );
+  }
+  const events = score.events.slice();
+  const at2 = Math.max(0, Math.min(at, events.length));
+  events.splice(at2, 0, ...added);
+  return normalizeMultibarRests({ ...score, events });
+}
+
+/**
+ * 多小节休止的剩余小节数重算：编辑（删格 / 加格）后按**实际连续的休止格**
+ * 重新计数——首格写 multibar = 段内格数，其余格统一 multibarCont，
+ * 没了左右休止格的结构化分隔线（multibarDiv）安全清掉。
+ * 用户手写的隐藏小节线 `|*` 没有这个标记，永远不动。
+ */
+export function normalizeMultibarRests(score: Score): Score {
+  let evs = score.events;
+  const isMbCell = (e: Event | undefined): e is RestEvent =>
+    !!e && e.kind === 'rest' && !!(e.multibar || e.multibarCont);
+  const isDiv = (e: Event | undefined): boolean =>
+    !!e && e.kind === 'barline' && e.hidden === true && e.multibarDiv === true;
+
+  // ⓪ 两格直接相邻（中间什么都没有，如 0×2 后紧接再插 0×3）→ 补一根结构线并成一段
+  {
+    const patched = evs.slice();
+    let inserted = 0;
+    for (let k = 0; k + 1 < patched.length; k += 1) {
+      if (isMbCell(patched[k]) && isMbCell(patched[k + 1])) {
+        const ns = score.part ? `p${score.part.id}:` : '';
+        const id = `${ns}e-norm${k}-${patched.length}`;
+        patched.splice(k + 1, 0, { id, kind: 'barline', style: 'single', hidden: true, multibarDiv: true });
+        inserted += 1;
+        k += 2;
+      }
+    }
+    if (inserted) evs = patched;
+  }
+
+  // ① 收集段：格、(结构线 格)*，至少一格
+  const runs: { cells: number[] }[] = [];
+  let i = 0;
+  while (i < evs.length) {
+    if (!isMbCell(evs[i])) {
+      i += 1;
+      continue;
+    }
+    const cells: number[] = [i];
+    let j = i;
+    while (isDiv(evs[j + 1]) && isMbCell(evs[j + 2])) {
+      cells.push(j + 2);
+      j += 2;
+    }
+    runs.push({ cells });
+    i = j + 1;
+  }
+  if (!runs.length) return score;
+
+  // ② 清掉没有左右格的结构线（段收拢后剩下的孤儿）
+  const inRun = new Set<number>();
+  for (const r of runs) for (const c of r.cells) inRun.add(c);
+  const divIdx = new Set<number>();
+  for (let k = 0; k < evs.length; k += 1) {
+    if (!isDiv(evs[k])) continue;
+    if (inRun.has(k - 1) && inRun.has(k + 1)) continue; // 段内分隔，保留
+    divIdx.add(k);
+  }
+
+  let changed = divIdx.size > 0;
+  const events = evs.filter((_, k) => !divIdx.has(k));
+  // ③ 重计数：每段首格 multibar = 格数、清 cont；其余格 cont、清 multibar
+  const idRuns: { head: string; tails: string[]; n: number }[] = [];
+  {
+    let k = 0;
+    while (k < events.length) {
+      if (!isMbCell(events[k])) {
+        k += 1;
+        continue;
+      }
+      const cells: string[] = [events[k].id];
+      let j = k;
+      while (isDiv(events[j + 1]) && isMbCell(events[j + 2])) {
+        cells.push(events[j + 2].id);
+        j += 2;
+      }
+      idRuns.push({ head: cells[0], tails: cells.slice(1), n: cells.length });
+      k = j + 1;
+    }
+  }
+  const headIds = new Set(idRuns.map((r) => r.head));
+  const tailIds = new Set(idRuns.flatMap((r) => r.tails));
+  const out = events.map((e) => {
+    if (e.kind !== 'rest') return e;
+    if (headIds.has(e.id)) {
+      const n = idRuns.find((r) => r.head === e.id)!.n;
+      if (e.multibar !== n || e.multibarCont) {
+        changed = true;
+        return { ...e, multibar: n, multibarCont: undefined } as RestEvent;
+      }
+      return e;
+    }
+    if (tailIds.has(e.id)) {
+      if (!e.multibarCont || e.multibar !== undefined) {
+        changed = true;
+        return { ...e, multibarCont: true, multibar: undefined } as RestEvent;
+      }
+      return e;
+    }
+    return e;
+  });
+  return changed ? { ...score, events: out } : score;
+}
+
+/**
+ * 高 / 低八度演奏段（GB/T 46845—2025 §6.2.6）：选区首音至末音整体升 / 降八度。
+ * kind 传 con-va / con-vb = 八度重复（con 8）：原声保留，另叠一份高 / 低八度同响。
+ * 与渐强范围（setHairpinRange）同一套区间操作：段起点挂 octava + octavaTo 指向末音；
+ * 与选区交叉的旧段先清掉（不许嵌套）。kind 省略 = 清除选区相关段。
+ * 区间记号 8va[ … ]8 需要 @format 3，这里与 setHairpinRange 一样强制升到 format 3。
+ */
+export function setOctavaRange(score: Score, ids: string[], kind?: 'va' | 'vb' | 'con-va' | 'con-vb'): Score {
+  const set = new Set(ids);
+  const positions = score.events.flatMap((e, i) => (e.kind === 'note' && set.has(e.id) ? [i] : []));
+  const lo = positions[0];
+  const hi = positions[positions.length - 1];
+  if (kind && (positions.length < 2 || lo === undefined || hi === undefined)) return score;
+  if (!kind) {
+    // 清除：选中段里的任意一个音（选区与段区间相交）就拆掉整段
+    if (!positions.length) return score;
+    const selLo = lo;
+    const selHi = hi;
+    const events = score.events.map((e, i) => {
+      if (e.kind !== 'note' || !(e.octava || e.octavaTo)) return e;
+      const endIdx = e.octavaTo ? score.events.findIndex((q) => q.id === e.octavaTo) : i;
+      const startIdx = e.octava ? i : endIdx;
+      const segLo = Math.min(i, startIdx < 0 ? i : startIdx);
+      const segHi = Math.max(i, endIdx < 0 ? i : endIdx);
+      if (segHi < selLo || segLo > selHi) return e;
+      const copy = { ...e };
+      delete copy.octava;
+      delete copy.octavaTo;
+      return copy;
+    });
+    return { ...score, events };
+  }
+  const events = score.events.map((e, i) => {
+    if (e.kind !== 'note') return e;
+    // 起点音**先于**交叉清理应用新段：循环三态（8va → con 8 → 取消）再次套用时，
+    // 选区自己的旧段起点就在 lo 上，若先走交叉清理会直接 return 清空版——
+    // 新 kind 没机会写上，表现成「再按 = 取消」而不是切换（用户实测）
+    if (i === lo) return { ...e, octava: kind, octavaTo: score.events[hi].id };
+    const endIdx = e.octavaTo ? score.events.findIndex((q) => q.id === e.octavaTo) : -1;
+    // 与选区交叉的旧段（起点在选区内 / 终点在选区内）先拆
+    if (e.octava || e.octavaTo) {
+      const crosses =
+        (i >= lo && i <= hi) ||
+        (endIdx >= lo && endIdx <= hi) ||
+        (e.octavaTo ? set.has(e.octavaTo) : false);
+      if (crosses) {
+        const copy = { ...e };
+        delete copy.octava;
+        delete copy.octavaTo;
+        return copy;
+      }
+    }
+    return e;
+  });
+  return { ...score, format: 3, events };
+}
+
+/**
+ * 小节反复号 %（GB/T 46845—2025 §5.8.4）：本小节内容与上一小节完全相同，
+ * 谱面画 𝄍，播放时重复上一小节的发声。只对普通休止符开（X 音符不行）；
+ * 打开时把时值补成整小节（DSL 的 '%' 反解析就是整小节，必须同口径才能无损往返），
+ * 关掉保留整小节时值，用户可再用时值排改回去。
+ */
+export function toggleRepeatBar(score: Score, id: string): Score {
+  const idx = score.events.findIndex((e) => e.id === id);
+  if (idx < 0) return score;
+  const ev = score.events[idx];
+  if (ev.kind !== 'rest' || ev.x) return score;
+  const measureTicks = Math.round(beatsPerMeasure(meterAt(score, idx)) * TICKS_PER_BEAT);
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'rest') return e;
+      const r = e as RestEvent;
+      if (r.repeatBar) {
+        const copy = { ...r };
+        delete copy.repeatBar;
+        return copy;
+      }
+      return { ...r, repeatBar: true, ticks: measureTicks, dot: 0 };
+    }),
+  };
+}
+
 /**
  * 批量灰显 / 复原（前奏 / 间奏提示）：选中的音符与休止符画成灰色。
  * 纯视觉标记，播放与时值校验不受影响。ids 里不是音 / 休止的（小节线等）自动跳过。
@@ -829,8 +1110,74 @@ export function setHairpinRange(score: Score, ids: string[], kind?: 'cresc' | 'd
   return { ...score, format: 3, events };
 }
 
-export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter'>): Score {
+export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter' | 'dashed' | 'free'>): Score {
   return { ...score, format: 3, events: score.events.map((e) => e.id === id && e.kind === 'barline' ? { ...e, ...change } : e) };
+}
+
+/**
+ * 选区颤音（GB/T 46845—2025 §7.5.3）：tr 标在首音上，波浪线从 tr 右侧
+ * 连续拉到末音的尾部（末音带 trillEnd 标记）。再点一次整段取消。
+ */
+export function setTrillRange(score: Score, ids: string[]): Score {
+  const set = new Set(ids);
+  const positions = score.events.flatMap((e, i) => (e.kind === 'note' && set.has(e.id) ? [i] : []));
+  if (positions.length < 2) return score;
+  const lo = positions[0];
+  const hi = positions[positions.length - 1];
+  const first = score.events[lo] as NoteEvent;
+  const last = score.events[hi] as NoteEvent;
+  // 已套用（首音有 trill 且末音有 trillEnd）→ 这次是整段取消
+  const applied = (first.techniques ?? []).includes('trill') && last.trillEnd === true;
+  return {
+    ...score,
+    events: score.events.map((e, i) => {
+      if (e.kind !== 'note' || !set.has(e.id)) return e;
+      const copy = { ...e };
+      if (applied) {
+        if (i === lo) {
+          const tech = (copy.techniques ?? []).filter((t) => t !== 'trill');
+          if (tech.length) copy.techniques = tech;
+          else delete copy.techniques;
+        }
+        if (copy.trillEnd) delete copy.trillEnd;
+      } else {
+        if (i === lo && !(copy.techniques ?? []).includes('trill')) {
+          copy.techniques = [...(copy.techniques ?? []), 'trill'];
+        }
+        if (i === hi) copy.trillEnd = true;
+        else if (copy.trillEnd) delete copy.trillEnd;
+      }
+      return copy;
+    }),
+  };
+}
+
+/** 琶音（GB/T 46845—2025 §7.7）：音符左侧波状竖线，开关 */
+export function setArpeggio(score: Score, id: string): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'note') return e;
+      const copy = { ...e };
+      if (copy.arpeggio) delete copy.arpeggio;
+      else copy.arpeggio = true;
+      return copy;
+    }),
+  };
+}
+
+/** 震音（GB/T 46845—2025 §7.8）：斜线数 1–3；省略 = 去掉。n 与当前相同也 = 去掉 */
+export function setTremolo(score: Score, id: string, n?: 1 | 2 | 3): Score {
+  return {
+    ...score,
+    events: score.events.map((e) => {
+      if (e.id !== id || e.kind !== 'note') return e;
+      const copy = { ...e };
+      if (n && n !== e.tremolo) copy.tremolo = n;
+      else delete copy.tremolo;
+      return copy;
+    }),
+  };
 }
 
 export function setHairpin(score: Score, id: string, v?: 'cresc' | 'dim'): Score {
@@ -1067,7 +1414,8 @@ export function removeEvent(score: Score, id: string): Score {
     }
   }
 
-  return { ...score, events, groups };
+  // 删掉多小节休止的格子后，剩余格数重算（multibar 数字跟着变）
+  return normalizeMultibarRests({ ...score, events, groups });
 }
 
 // ───────────────────────── 拍内组与档位 ─────────────────────────

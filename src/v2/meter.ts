@@ -6,6 +6,13 @@ export function validMeter(value: string): boolean {
   return !!m && Number(m[1]) <= 32;
 }
 
+/** 一小节的拍数（四分 = 1 拍口径）：多小节休止 / 小节反复号的整小节时值用 */
+export function beatsPerMeasure(beat: string): number {
+  const [n, d] = beat.split('/').map(Number);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
+  return n * (4 / d);
+}
+
 export function meterAt(score: Score, index: number): string {
   let beat = score.meta.beat;
   for (let i = 0; i < index; i++) {

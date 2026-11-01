@@ -44,6 +44,7 @@ import type {
   RestEvent,
   Score,
   ScoreMeta,
+  Tie,
   TimedEvent,
 } from './types';
 
@@ -153,7 +154,7 @@ export function parseDsl(text: string): ParseResult {
   if (!modern && /^@part\b/mi.test(text)) return { score: null, errors: ['多声部文件需要在谱头写 @format 3'] };
   if (!modern) return parseSingle(text);
   const header: string[] = [];
-  const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; patch?: number; patchOctave?: number; lyricNames?: string[]; staffInstrument?: StaffInstrument; staffClef?: StaffClefSetting; lines: string[] }[] = [];
+  const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; hidden?: boolean; patch?: number; patchOctave?: number; lyricNames?: string[]; staffInstrument?: StaffInstrument; staffClef?: StaffClefSetting; lines: string[] }[] = [];
   const errors: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -192,6 +193,13 @@ export function parseDsl(text: string): ParseResult {
       const block = blocks[blocks.length - 1];
       if (!m || Number(m[1]) < -2 || Number(m[1]) > 2) errors.push('声部音色八度应为 @patchOct 1（-2 到 2 的整数），放在声部声明之后');
       else block.patchOctave = Number(m[1]);
+    } else if (/^@hidden\b/i.test(line) && blocks.length) {
+      // 声部级隐藏（2026-11-01）：总谱不显示该声部行，播放 / 展开照常发声；
+      // 只是显示层开关，写在 @part 声明之后
+      const m = /^@hidden\s+(on|off)\s*$/i.exec(line);
+      const block = blocks[blocks.length - 1];
+      if (!m) errors.push('声部隐藏应为 @hidden on（或 off），放在声部声明之后');
+      else block.hidden = m[1].toLowerCase() === 'on';
     } else if (line.startsWith('@')) header.push(raw);
     else if (blocks.length) blocks[blocks.length - 1].lines.push(raw);
     else if (line && !line.startsWith('//') && line !== '---') header.push(raw);
@@ -213,6 +221,7 @@ export function parseDsl(text: string): ParseResult {
       ...info,
       muted: info.muted ?? false,
       solo: info.solo ?? false,
+      hidden: info.hidden ?? false,
     });
   })), errors };
 }
@@ -220,7 +229,7 @@ export function parseDsl(text: string): ParseResult {
 function normalizeModern(text: string): string {
   return text.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词(?:线)?[1-6]:[^\n]*$)/m).map((segment) => {
     if (segment.trim().startsWith('@') || segment.trim().startsWith('//') || /^歌词(?:线)?[1-6]:/.test(segment.trim())) return segment;
-    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before: string, note: string, slashes: string) => `${before}${note}/${2 ** slashes.length}`)
+    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7Xx][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before: string, note: string, slashes: string) => `${before}${note}/${2 ** slashes.length}`)
       .replace(/<(\d+):\s*([^<>]+)>/g, (full, numStr: string, body: string) => {
         const n = Number(numStr);
         const tokens = body.trim().split(/\s+/);
@@ -384,16 +393,19 @@ function parseSingle(text: string, modern = false): ParseResult {
   interface SlurScope {
     last: string | null;
     notes: number;
+    /** 连线组 id：一对括号 = 一条连线 = 一个组（Tie.g） */
+    id: string;
   }
   const slurStack: SlurScope[] = [];
+  let slurSeq = 0;
   let currentGroup: BeatGroup | null = null;
   /** 经函数取值，避免 TS 把 currentGroup 收窄成 null（赋值发生在闭包里） */
   const topGroup = (): BeatGroup | null => currentGroup;
 
-  const addTie = (fromId: string, toId: string, kind: 'tie' | 'slur') => {
+  const addTie = (fromId: string, toId: string, kind: 'tie' | 'slur', g?: string) => {
     const from = byId.get(fromId);
     if (!from || from.kind !== 'note') return;
-    from.ties = [...(from.ties ?? []), { to: toId, kind }];
+    from.ties = [...(from.ties ?? []), { to: toId, kind, ...(g ? { g } : {}) }];
   };
 
   const pushTimed = (core: string, gBefore?: GraceNote[], gAfter?: GraceNote[], hiddenRest = false) => {
@@ -512,7 +524,7 @@ function parseSingle(text: string, modern = false): ParseResult {
       // 只喂给最内层未闭合的连线：嵌套时内层的音不该串到外层链上
       const s = slurStack[slurStack.length - 1];
       if (s) {
-        if (s.last && s.last !== id) addTie(s.last, id, 'slur');
+        if (s.last && s.last !== id) addTie(s.last, id, 'slur', s.id);
         s.last = id;
         s.notes += 1;
       }
@@ -523,7 +535,7 @@ function parseSingle(text: string, modern = false): ParseResult {
   };
 
   const openSlur = (): void => {
-    slurStack.push({ last: null, notes: 0 });
+    slurStack.push({ last: null, notes: 0, id: `s${++slurSeq}` });
   };
 
   const closeSlur = (): void => {
@@ -699,6 +711,20 @@ function parseSingle(text: string, modern = false): ParseResult {
         raw = raw.slice(0, -1);
       }
       closes.reverse();
+
+      // 记号**中段**的括号（如 `4)(`：这个音既结束上一条连线又开始下一条——
+      // 相邻两条连线共享边界音）。先摘下来，等音符喂完再按文本顺序处理：
+      // ) 收上一条；( 开下一条，并以上面这个音作链首（边界音同属两条连线）。
+      // 旧写法里 token 中段出现括号只会掉进「无法识别」报错，这里顺带收编。
+      const mids: ('(' | ')')[] = [];
+      {
+        let rest = '';
+        for (const ch of raw) {
+          if (ch === '(' || ch === ')') mids.push(ch);
+          else rest += ch;
+        }
+        raw = rest;
+      }
 
       // 三连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>
       if (raw !== '' && /^\d+:$/.test(raw)) {
@@ -901,6 +927,21 @@ function parseSingle(text: string, modern = false): ParseResult {
         }
       }
 
+      // 中段括号（在音符喂完之后处理）：) 收上一条连线；( 开下一条，
+      // 以上面刚喂的这个音作链首——边界音同时属于两条连线
+      for (const m of mids) {
+        if (m === ')') {
+          closeSlur();
+        } else {
+          openSlur();
+          const s = slurStack[slurStack.length - 1];
+          if (s && lastNoteId) {
+            s.last = lastNoteId;
+            s.notes = 1;
+          }
+        }
+      }
+
       for (const t of closes) {
         if (t === 'slur') closeSlur();
         else closeGroup();
@@ -1069,7 +1110,9 @@ export function serializeDsl(score: Score): string {
       const patchLine = part.patch !== undefined && part.patch !== score.meta.patch ? `\n@patch ${part.patch}` : '';
       // 音色八度同理：只在和曲目不同时落盘
       const octLine = part.patchOctave !== undefined && part.patchOctave !== score.meta.patchOctave ? `\n@patchOct ${part.patchOctave}` : '';
-      return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${patchLine}${octLine}${staff}${names}\n${body}`;
+      // 隐藏声部：只在真的隐藏时落盘（显示层开关，播放不受影响）
+      const hideLine = part.hidden ? '\n@hidden on' : '';
+      return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${patchLine}${octLine}${hideLine}${staff}${names}\n${body}`;
     }).join('\n\n')}`;
   }
   return serializeSingle(score);
@@ -1120,37 +1163,34 @@ function serializeSingle(score: Score): string {
     return (from.ties ?? []).some((t) => t.to === next.id && t.kind === 'tie');
   };
 
-  // 连音线是链式存储的，先还原成每条链的起止音序，才能决定括号放内还是放外
-  const idxOf = new Map<string, number>(score.events.map((e, i) => [e.id, i]));
-  const slurNext = new Map<string, string>();
+  // 连音线按组（Tie.g）切弧：同一次建立的一串边同组，组内链式相连。
+  // 一个音至多一条出边 + 一条入边：两不同组的边相接（先连 3-4 再连 4-5）=
+  // 共享边界音，写成 `4)(`——读完这个音先收上一条，再开下一条并以它为链首。
+  // 旧数据没有 g，全部落进同一个隐式组（''），行为与旧版一致。
+  const outSlurOf = new Map<string, Tie>();
+  const inSlurOf = new Map<string, Tie>();
   for (const e of score.events) {
     if (e.kind !== 'note') continue;
-    for (const t of e.ties ?? []) if (t.kind === 'slur') slurNext.set(e.id, t.to);
-  }
-  /** 链首音序 → 链尾音序 */
-  const slurSpan = new Map<number, number>();
-  {
-    const isTarget = new Set(slurNext.values());
-    for (const e of score.events) {
-      if (e.kind !== 'note' || !slurNext.has(e.id) || isTarget.has(e.id)) continue;
-      const seen = new Set<string>();
-      let cur: string | undefined = e.id;
-      let hi = idxOf.get(e.id)!;
-      while (cur !== undefined && !seen.has(cur)) {
-        seen.add(cur);
-        hi = Math.max(hi, idxOf.get(cur) ?? hi);
-        cur = slurNext.get(cur);
-      }
-      slurSpan.set(idxOf.get(e.id)!, hi);
+    for (const t of e.ties ?? []) {
+      if (t.kind !== 'slur') continue;
+      outSlurOf.set(e.id, t);
+      inSlurOf.set(t.to, t);
     }
   }
-  /** 链尾音序 → 链首音序集合 */
-  const slurEndsAt = new Map<number, number[]>();
-  for (const [lo, hi] of slurSpan) {
-    const arr = slurEndsAt.get(hi);
-    if (arr) arr.push(lo);
-    else slurEndsAt.set(hi, [lo]);
+  const gOf = (t: Tie): string => t.g ?? '';
+  /** 链首 / 链尾（首尾同组 = 链中间，两不挂括号；首尾异组 = 共享边界音，写 `)(`） */
+  const slurHeads = new Set<string>();
+  const slurTails = new Set<string>();
+  for (const e of score.events) {
+    if (e.kind !== 'note') continue;
+    const out = outSlurOf.get(e.id);
+    const inn = inSlurOf.get(e.id);
+    if (out && (!inn || gOf(out) !== gOf(inn))) slurHeads.add(e.id);
+    if (inn && (!out || gOf(out) !== gOf(inn))) slurTails.add(e.id);
   }
+  const slurPreOf = (e: Event): string => (e.kind === 'note' && slurHeads.has(e.id) && !slurTails.has(e.id) ? '(' : '');
+  const slurMidOf = (e: Event): string => (e.kind === 'note' && slurHeads.has(e.id) && slurTails.has(e.id) ? ')(' : '');
+  const slurPostOf = (e: Event): string => (e.kind === 'note' && slurTails.has(e.id) && !slurHeads.has(e.id) ? ')' : '');
 
   const out: string[] = [];
   const emitted = new Set<string>();
@@ -1201,16 +1241,16 @@ function serializeSingle(score: Score): string {
         // 连线在组内起止就写进 < > 里面，如 (3 <4/2) 2/2>
         const inner = members
           .map((m) => {
-            const mi = idxOf.get(m.id)!;
-            const pre = slurSpan.has(mi) ? '(' : '';
-            const post = (slurEndsAt.get(mi) ?? []).length > 0 ? ')' : '';
+            const pre = slurPreOf(m);
+            const midSlur = slurMidOf(m);
+            const post = slurPostOf(m);
             // 组内成员的力度 / 渐变 / 转调写在成员前面，解析时会绑回那个音
             const dyn =
               m.kind === 'note'
                 ? [m.dynamic, m.hairpinTo ? undefined : m.hairpin].filter(Boolean).join(' ')
                 : '';
             const kc = m.kind === 'note' && m.keyChange ? `转${m.keyChange} ` : '';
-            return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null)}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
+            return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null)}${midSlur}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
           })
           .join(' ');
 
@@ -1224,16 +1264,16 @@ function serializeSingle(score: Score): string {
     switch (ev.kind) {
       case 'note':
       case 'rest': {
-        const i = idxOf.get(ev.id)!;
-        const pre = slurSpan.get(i) !== undefined ? '(' : '';
-        const post = (slurEndsAt.get(i) ?? []).length > 0 ? ')' : '';
+        const pre = slurPreOf(ev);
+        const midSlur = slurMidOf(ev);
+        const post = slurPostOf(ev);
         // 跟音符绑定的力度 / 渐变 / 转调写在音符前面，解析时绑回那个音
         const dyn =
           ev.kind === 'note'
             ? [ev.dynamic, ev.hairpinTo ? undefined : ev.hairpin].filter(Boolean).join(' ')
             : '';
         const kc = ev.kind === 'note' && ev.keyChange ? `转${ev.keyChange} ` : '';
-        out.push(`${octavaStartOf(ev)}${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev), score.format === 3)}${post}${rangeEnd(ev)}${octavaEndOf(ev)}`);
+        out.push(`${octavaStartOf(ev)}${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(ev, tieOut(ev), score.format === 3)}${midSlur}${post}${rangeEnd(ev)}${octavaEndOf(ev)}`);
         emitted.add(ev.id);
         break;
       }

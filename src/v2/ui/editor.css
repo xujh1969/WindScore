@@ -1602,36 +1602,6 @@ details.v2-side-block[open] > summary::before {
   color: var(--muted);
 }
 
-/* 播放指示颜色（浅色 / 深色背景各一档）：色块拾取器 + 恢复默认 */
-.v2-play-colors {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
-.v2-play-color {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-ui);
-  color: var(--text);
-}
-.v2-play-color input[type='color'] {
-  width: 34px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: none;
-  cursor: pointer;
-}
-.v2-play-color input[type='color']::-webkit-color-swatch-wrapper {
-  padding: 2px;
-}
-.v2-play-color input[type='color']::-webkit-color-swatch {
-  border: none;
-  border-radius: 3px;
-}
-
 /* 曲目信息：名称 / 调号 / 拍号 / 速度 / 音色 */
 .v2-meta {
   display: flex;
@@ -3224,6 +3194,8 @@ details.v2-side-block[open] > summary::before {
 .v2-part-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .v2-part-number { font-family: var(--mono); font-size: 10px; opacity: 0.7; }
 .v2-part-tag { font-size: 10px; font-weight: 400; }
+/* 隐藏声部的声部条按钮：半透明示意「总谱里看不见它」，仍可点选编辑、可重新显示 */
+.v2-part-tab.is-hidden { opacity: 0.55; }
 /* 输入试听静音开关（声部条右侧）：开着是金色喇叭「试听」，关掉是灰色叉喇叭「静音」 */
 .v2-preview-mute { display: inline-flex; align-items: center; gap: 4px; }
 .v2-preview-mute:not(.is-off) { border-color: var(--accent); color: var(--accent); }
@@ -3284,4 +3256,254 @@ details.v2-side-block[open] > summary::before {
 }
 .v2-pad-sec .v2-field {
   margin-bottom: 8px;
+}
+
+/* ─── 乐谱导入页（musicxml.html，测试功能） ───
+   设计锁：颜色全部走 v2 令牌（surface / border / accent），浅深主题自动成立，
+   不再引入孤立的蓝色；卡片统一 var(--radius) 圆角。
+   主流程三张卡（选择文件 → 选择声部 → 转换结果）前置，
+   转录引导与记号支持说明作为参考资料后置。 */
+.ws-xml {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 16px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ws-xml-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ws-xml-step {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 700;
+  color: var(--text);
+}
+/* 转换主按钮：满宽实心强调色——页面唯一的主行动点，不能长得像普通描边按钮 */
+.ws-xml-convert {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ws-xml-convert:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, #000);
+}
+[data-theme='dark'] .ws-xml-convert {
+  /* 深色强调是亮金，配深字才够对比 */
+  color: var(--surface-2);
+}
+/* 拖放选文件区：虚线框表示「可投放」，悬停 / 拖入点亮强调色 */
+.ws-xml-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 30px 16px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--muted);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease;
+}
+.ws-xml-drop:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ws-xml-drop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ws-xml-drop.is-drag {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+  color: var(--text);
+}
+.ws-xml-drop svg {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.ws-xml-drop-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.ws-xml-drop-sub {
+  margin: 0;
+  font-size: var(--fs-ui);
+  color: var(--muted);
+  font-family: var(--mono);
+}
+/* 已选文件：文件名一行截断 + 更换按钮 */
+.ws-xml-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.ws-xml-file svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.ws-xml-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v2-xml-err {
+  color: #b44036;
+  background: rgba(180, 64, 54, 0.08);
+  border: 1px solid rgba(180, 64, 54, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 0;
+}
+[data-theme='dark'] .v2-xml-err {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+/* Muscriptor 转录引导：参考资料，用强调色系而不是孤立的蓝 */
+.ws-xml-tip {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 26%, transparent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text);
+}
+.ws-xml-tip strong {
+  font-weight: 600;
+}
+.ws-xml-tip em {
+  font-style: normal;
+  font-weight: 600;
+}
+.ws-xml-tip code {
+  font: 12px/1 var(--mono);
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.ws-xml-tip a {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ws-xml-tip .ws-xml-tip-btn {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.18s ease;
+}
+.ws-xml-tip .ws-xml-tip-btn:hover {
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
+}
+/* 记号支持与限制：默认收起，不抢主流程 */
+.ws-xml-more {
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+/* 转换完毕弹窗：不展示源码，只给「直接编辑 / 保存 .jps」两个去处 */
+.ws-xml-done {
+  width: min(460px, 92%);
+}
+.ws-xml-done-msg {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.7;
+}
+.ws-xml-done-warn {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+}
+.ws-xml-more summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
+}
+.ws-xml-more[open] summary {
+  color: var(--text);
+}
+.ws-xml-more p {
+  margin: 8px 0 0;
+  line-height: 1.8;
+}
+/* 入场：卡片挂载时淡入上移一次（含转换结果出现时），尊重 reduced-motion */
+@media (prefers-reduced-motion: no-preference) {
+  .ws-xml-card {
+    animation: ws-xml-rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes ws-xml-rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+.v2-xml-warn {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.v2-xml-out {
+  width: 100%;
+  box-sizing: border-box;
+  font: 12.5px/1.7 var(--mono);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  resize: vertical;
+  white-space: pre;
+}
+.v2-xml-out:focus {
+  outline: none;
+  border-color: var(--accent);
 }

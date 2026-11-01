@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { EditorApp, type Entry } from './v2/ui/EditorApp';
 import { HelpPage } from './v2/ui/HelpCenter';
 import { AndroidApp } from './v2/ui/AndroidApp';
+import { MusicXmlImport } from './v2/ui/MusicXmlImport';
 import './v2/ui/editor.css';
 
 // 白屏救援：任何未捕获的错误直接画在页面上。手机上没有开发者工具，
@@ -26,7 +27,7 @@ window.addEventListener('error', (e) => {
 });
 window.addEventListener('unhandledrejection', (e) => showFatal(`异步错误：${String(e.reason)}`));
 
-// 入口识别：HTML 上用 body 的 data-entry 声明（editor / align / library / play / help）。
+// 入口识别：HTML 上用 body 的 data-entry 声明（editor / align / library / play / help / musicxml）。
 // 同一个 SPA 服务多个单一功能页：共用内核与状态，只是进来落在哪一屏不同。
 const entry = document.body.dataset.entry ?? 'app';
 
@@ -34,6 +35,14 @@ const el = document.getElementById('root');
 if (!el) throw new Error('#root not found');
 createRoot(el).render(
   <StrictMode>
-    {entry === 'android' ? <AndroidApp /> : entry === 'help' ? <HelpPage /> : <EditorApp entry={entry as Entry} />}
+    {entry === 'android' ? (
+      <AndroidApp />
+    ) : entry === 'help' ? (
+      <HelpPage />
+    ) : entry === 'musicxml' ? (
+      <MusicXmlImport />
+    ) : (
+      <EditorApp entry={entry as Entry} />
+    )}
   </StrictMode>,
 );

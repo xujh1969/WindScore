@@ -280,9 +280,13 @@ export function setAccidental(score: Score, id: string, acc?: Accidental): Score
 
 /** 改小节线样式。键盘上连按两次 `|` 就是终止线（对应 DSL 的 `||`） */
 export function setBarlineStyle(score: Score, id: string, style: 'single' | 'double' | 'final'): Score {
+  // 双细线 / 终止线与虚小节线互斥（虚线是按节拍分组的细分线，不该再挂段落
+  // 终止样式）：设成 double / final 时顺带关掉 dashed。退回 single 不动 dashed。
   return {
     ...score,
-    events: score.events.map((e) => (e.id === id && e.kind === 'barline' ? { ...e, style } : e)),
+    events: score.events.map((e) =>
+      e.id === id && e.kind === 'barline' ? { ...e, style, ...(style !== 'single' ? { dashed: false } : {}) } : e,
+    ),
   };
 }
 
@@ -2147,8 +2151,13 @@ export function insertDynamic(score: Score, at: number, value: string): Score {
  * 一旦分叉，多出来的边会被静默丢掉，数据里有连线而画面上看不见；
  * 用户去取消时清掉的是看不见那条，看得见那条纹丝不动。
  * 所以建立新边时就把同源 / 同目标的旧边一并清掉。
+ *
+ * 连线组（Tie.g）：**一次调用建立的边共享一个新组 id**，渲染 / 序列化按组建弧。
+ * 相邻两条连线共享边界音（先连 3-4 再连 4-5）时组不同——各画各的弧，
+ * 不会自动串成 3-4-5 一条；「连成一条」必须是**一次性选中整段**（同一次调用 = 同组）。
+ * extendSlurRight 传 opts.group 沿用旧链的组（延连 = 把这条弧拉长）。
  */
-export function toggleSlur(score: Score, ids: string[]): Score {
+export function toggleSlur(score: Score, ids: string[], opts?: { group?: string }): Score {
   const notes = ids
     .map((id) => score.events.find((e) => e.id === id))
     .filter((e): e is NoteEvent => !!e && e.kind === 'note');
@@ -2169,6 +2178,8 @@ export function toggleSlur(score: Score, ids: string[]): Score {
       addIn.add(notes[i + 1].id);
     }
   }
+  /** 新边的组：延连沿用旧链的组（弧拉长），否则开新组（与旧连线互不串联） */
+  const group = opts?.group ?? newSlurGroupId(score);
 
   return {
     ...score,
@@ -2188,7 +2199,7 @@ export function toggleSlur(score: Score, ids: string[]): Score {
       });
 
       const next = addOut.has(e.id)
-        ? [...kept, { to: addOut.get(e.id)!, kind: 'slur' as const }]
+        ? [...kept, { to: addOut.get(e.id)!, kind: 'slur' as const, g: group }]
         : kept;
 
       if (next.length === 0) {
@@ -2201,23 +2212,38 @@ export function toggleSlur(score: Score, ids: string[]): Score {
   };
 }
 
+/** 新连线组 id：扫描现有 g 取未用的最小号（g 是内存态，不落盘） */
+function newSlurGroupId(score: Score): string {
+  const used = new Set<string>();
+  for (const e of score.events) {
+    if (e.kind !== 'note') continue;
+    for (const t of e.ties ?? []) if (t.g) used.add(t.g);
+  }
+  let i = 1;
+  while (used.has(`s${i}`)) i += 1;
+  return `s${i}`;
+}
+
 /**
  * 连音线**向右续连一个音**（浮动输入板的「连音线」按钮）：
  * 从 startId 沿已有 slur 链走到末端，再向右连下一个音（末端按定义没有出边，
  * 所以每次调用都是「多连一个」）。不跨小节线 / 跳转记号。
  *
  * 与 toggleSlur 的「选区建链 / 整段取消」互补——用户按一次多连一个音，
- * 再按一次再多连一个音（浮动输入板要求）。
+ * 再按一次再多连一个音（浮动输入板要求）。新边沿用走到的那条链的组：
+ * 延连是把这条弧拉长，不是开一条新弧。
  */
 export function extendSlurRight(score: Score, startId: string): Score {
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
   const first = byId.get(startId);
   if (!first || first.kind !== 'note') return score;
   let last: NoteEvent = first;
-  // 沿出边走到链末端（guard 防环）
+  let chainG: string | undefined;
+  // 沿出边走到链末端（guard 防环），顺手记下这条链的组
   for (let guard = 0; guard <= score.events.length; guard += 1) {
     const out = last.ties?.find((t) => t.kind === 'slur');
     if (!out) break;
+    chainG ??= out.g;
     const next = byId.get(out.to);
     if (!next || next.kind !== 'note') break;
     last = next;
@@ -2235,5 +2261,5 @@ export function extendSlurRight(score: Score, startId: string): Score {
     if (e.kind === 'barline' || e.kind === 'jump') break;
   }
   if (!target) return score;
-  return toggleSlur(score, [last.id, target]);
+  return toggleSlur(score, [last.id, target], chainG ? { group: chainG } : undefined);
 }

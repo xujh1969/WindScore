@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => ({
         library: 'library.html',
         play: 'play.html',
         help: 'help.html',
+        musicxml: 'musicxml.html',
         android: 'android.html',
       },
     },

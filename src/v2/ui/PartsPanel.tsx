@@ -40,7 +40,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
         <span className="v2-parts-label">{parts.length > 1 ? `${parts.length} 声部重奏` : '声部'}</span>
         <div className="v2-parts-tabs" role="tablist" aria-label="编辑声部">
           {parts.map((p, i) => <Fragment key={p.id}><div data-part-id={p.id} className={`v2-part-item ${p.id === part.id && lyricVerse == null ? 'is-on' : ''} ${overId === p.id ? 'is-drop' : ''}`}>
-            <button role="tab" aria-selected={p.id === part.id && lyricVerse == null} className={`v2-part-tab ${!readOnly && parts.length > 1 ? 'is-draggable' : ''}`} onClick={() => { if (!suppressClick.current) onSelect(p.id); }}
+            <button role="tab" aria-selected={p.id === part.id && lyricVerse == null} className={`v2-part-tab ${!readOnly && parts.length > 1 ? 'is-draggable' : ''} ${p.hidden ? 'is-hidden' : ''}`} onClick={() => { if (!suppressClick.current) onSelect(p.id); }}
               title={readOnly ? p.name : '拖拽到其他声部上可互换位置'}
               onPointerDown={(e) => {
                 if (readOnly || parts.length < 2 || e.button !== 0) return;
@@ -73,7 +73,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
                 setOverId(null);
               }}
               onPointerCancel={() => { dragged.current = null; setOverId(null); }}>
-              <span className="v2-part-number">{i + 1}</span>{p.name}{p.muted ? <span className="v2-part-tag">静音</span> : p.solo ? <span className="v2-part-tag">独奏</span> : null}
+              <span className="v2-part-number">{i + 1}</span>{p.name}{p.hidden ? <span className="v2-part-tag">隐藏</span> : null}{p.muted ? <span className="v2-part-tag">静音</span> : p.solo ? <span className="v2-part-tag">独奏</span> : null}
             </button>
             {p.id === part.id && lyricVerse == null ? <div className="v2-part-actions">
               <button className="v2-part-icon" aria-label={`配置声部：${p.name}`} title="配置声部" onClick={(e) => { dialogTrigger.current = e.currentTarget; setConfig({ ...p }); }}>
@@ -127,7 +127,12 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
             const name = config.name.trim();
             if (!name) return;
             const original = parts.find((p) => p.id === config.id);
-            onChange(assembleParts(score, parts.map((p) => p.id === config.id ? { ...p, ...config, name } : p)), undefined, name === original?.name && config.staffInstrument === original?.staffInstrument && config.staffClef === original?.staffClef && config.patch === original?.patch && config.patchOctave === original?.patchOctave);
+            // 独奏互斥（用户要求）：本声部勾了独奏，其他声部的独奏全部取消——
+            // 多个声部同时「独奏」没有意义，timeline 的混音规则也按唯一独奏处理
+            const nextParts = parts.map((p) => p.id === config.id
+              ? { ...p, ...config, name }
+              : config.solo ? { ...p, solo: false } : p);
+            onChange(assembleParts(score, nextParts), undefined, name === original?.name && config.staffInstrument === original?.staffInstrument && config.staffClef === original?.staffClef && config.patch === original?.patch && config.patchOctave === original?.patchOctave && config.hidden === original?.hidden);
             closeDialog();
           }}>
             <div className="v2-exp-body v2-part-settings">
@@ -148,6 +153,7 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
               <label>音量<span className="v2-part-volume"><input autoFocus={readOnly} type="range" min="0" max="1" step="0.05" value={config.gain} onChange={(e) => setConfig({ ...config, gain: Number(e.target.value) })} /><span>{Math.round(config.gain * 100)}%</span></span></label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.solo} onChange={(e) => setConfig({ ...config, solo: e.target.checked })} />独奏此声部</label>
               <label className="v2-part-check"><input type="checkbox" checked={!!config.muted} onChange={(e) => setConfig({ ...config, muted: e.target.checked })} />静音此声部</label>
+              <label className="v2-part-check"><input type="checkbox" checked={!!config.hidden} disabled={readOnly} onChange={(e) => setConfig({ ...config, hidden: e.target.checked })} />在总谱中隐藏此声部（仍照常播放，可随时重新显示）</label>
             </div>
             <div className="v2-part-dialog-footer"><button type="button" className="v2-btn" onClick={closeDialog}>取消</button><button className="v2-btn" type="submit" disabled={!config.name.trim()}>保存设置</button></div>
           </form> : removing ? <>

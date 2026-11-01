@@ -28,6 +28,7 @@ import {
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
 import { assembleParts, namespacePart, partScore, scoreParts, withConductor } from '../src/v2/parts';
+import { buildTimeline } from '../src/v2/timeline';
 import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
 import { groupTicks, groupTierBeats } from '../src/v2/meter';
 import {
@@ -91,6 +92,8 @@ import {
   setOctavaRange,
   pressRepeatBar,
   inRepeatMeasure,
+  setBarlineStyle,
+  setBarNotation,
 } from '../src/v2/edit';
 import {
   beamCount,
@@ -913,6 +916,17 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   check('虚线回读一致', dshBack.errors.length === 0 && (dshBack.score!.events.filter((e) => e.kind === 'barline') as BarlineEvent[]).some((b) => b.dashed === true));
   const dshItem = layoutScore(dsh.score!, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'barline' && i.eventId === dshBar!.id)!;
   check('layout 带虚线标记', dshItem.dashed === true);
+
+  // 虚线与双细线 / 终止线互斥：设样式清虚线，开虚线清样式
+  const mutex = parseDsl('@beat 4/4\n\n1 2 |~ 3 4 ||\n').score!;
+  const dLine = (mutex.events.filter((e) => e.kind === 'barline') as BarlineEvent[]).find((b) => b.dashed)!;
+  const asFinal = setBarlineStyle(mutex, dLine.id, 'final');
+  check('终止线清掉虚线', (asFinal.events.find((e) => e.id === dLine.id) as BarlineEvent).dashed === false);
+  const asDouble = setBarlineStyle(mutex, dLine.id, 'double');
+  check('双细线清掉虚线', (asDouble.events.find((e) => e.id === dLine.id) as BarlineEvent).dashed === false);
+  const finLine = (mutex.events.filter((e) => e.kind === 'barline') as BarlineEvent[]).find((b) => b.style === 'final')!;
+  const asDashed = setBarNotation(mutex, finLine.id, { dashed: true });
+  check('开虚线（UI 路径先退单线）样本可用', (asDashed.events.find((e) => e.id === finLine.id) as BarlineEvent).dashed === true);
 
   // ── 散板 散（GB/T 46845—2025 §6.3.11.7）──
   const free = parseDsl('@beat 4/4\n\n1 2 3 4 | 散 | 5 6 ||\n');
@@ -2833,6 +2847,55 @@ const blank = (): Score => ({
     const l3 = extendSlurRight(l2, ids[0]!);
     check('第三次连到第四音', outOf(l3, ids[2]!) === ids[3]!);
     check('续连不跨终止线（第四次无变化）', extendSlurRight(l3, ids[0]!) === l3);
+  }
+  // 连线按组建弧（用户 2026-10-31 定）：相邻两条连线共享边界音（先连 3-4
+  // 再连 4-5）各画各的弧，不自动串成一条；一次性选中整段才连成一条
+  {
+    const s = parseDsl('@beat 4/4\n\n1 2 3 4 5 6 ||\n').score!;
+    const ids = s.events.filter((e) => e.kind === 'note').map((e) => e.id);
+    const edges = (sc: typeof s): string[] =>
+      sc.events.flatMap((e) =>
+        e.kind === 'note'
+          ? (e.ties ?? []).filter((t) => t.kind === 'slur').map((t) => `${e.id}>${t.to}`)
+          : [],
+      );
+    const arcCount = (sc: typeof s) =>
+      layoutScore(sc, { contentWidth: 1400 }).lines.flatMap((l) => l.arcs).filter((a) => a.kind === 'slur').length;
+    // 先连 3-4，再连 4-5：两条边共存、组不同、两条弧
+    let m = toggleSlur(s, [ids[2]!, ids[3]!]);
+    m = toggleSlur(m, [ids[3]!, ids[4]!]);
+    check(
+      '34 与 45 两条边共存（共享边界音 4）',
+      JSON.stringify(edges(m)) === JSON.stringify([`${ids[2]}>${ids[3]}`, `${ids[3]}>${ids[4]}`]),
+      JSON.stringify(edges(m)),
+    );
+    const g34 = (m.events.find((e) => e.id === ids[2]) as NoteEvent).ties![0].g;
+    const g45 = (m.events.find((e) => e.id === ids[3]) as NoteEvent).ties![0].g;
+    check('两条边组不同（不自动串联）', !!g34 && !!g45 && g34 !== g45, `${g34} vs ${g45}`);
+    check('画面上两条弧', arcCount(m) === 2, String(arcCount(m)));
+    // 序列化：边界音写成 )( 形态（token 间有空格：(3 4)( 5)）；读回仍是两条、文本稳定
+    const text = serializeDsl(m);
+    check('边界音序列化成 )( 形态', text.includes('(3 4)( 5)'), text.replace(/\n/g, ' '));
+    const back = parseDsl(text).score!;
+    check('读回仍是两条连线（两条弧）', edges(back).length === 2 && arcCount(back) === 2, JSON.stringify(edges(back)));
+    check('round-trip 文本稳定', serializeDsl(back) === text);
+    // 一次性选中 3-4-5 → 同组 → 一条弧（用户想要的「连成一个」）
+    const once = toggleSlur(s, [ids[2]!, ids[3]!, ids[4]!]);
+    check(
+      '一次性选中 3-4-5 = 一条弧',
+      edges(once).length === 2 && arcCount(once) === 1,
+      `edges=${edges(once).length} arcs=${arcCount(once)}`,
+    );
+    // 延连（单光标向右）沿用旧链的组：3-4 延到 5 仍是同一条弧
+    const ext = extendSlurRight(toggleSlur(s, [ids[2]!, ids[3]!]), ids[2]!);
+    check('延连把弧拉长（仍一条）', edges(ext).length === 2 && arcCount(ext) === 1, `arcs=${arcCount(ext)}`);
+    // 取消 3-4 只删自己的边，4-5 保留
+    const off = toggleSlur(m, [ids[2]!, ids[3]!]);
+    check(
+      '取消 3-4 保留 4-5',
+      JSON.stringify(edges(off)) === JSON.stringify([`${ids[3]}>${ids[4]}`]),
+      JSON.stringify(edges(off)),
+    );
   }
   // 真写了内容却一个事件都解析不出来 → 仍然报错（不能把真错误也吞掉）
   check('写了内容解析不出事件仍报错', parseDsl('@beat 4/4\n\n哈哈哈\n').errors.length > 0);
@@ -4821,6 +4884,29 @@ console.log('[编辑 · 八度循环（JP-Word 同款 ` / ~ 键）]');
   const threeUp = [0, 1, 2].reduce((acc) => cycleOctave(acc, note.id, 1), s);
   const rt = parseDsl(serializeDsl(threeUp));
   check('3 个高音点 round-trip 无错', rt.errors.length === 0 && serializeDsl(rt.score!) === serializeDsl(threeUp));
+}
+
+console.log('\n[多声部 · 隐藏声部（总谱不显示、仍播放）]');
+{
+  const dsl = '@format 3\n@title t\n@part 1 "A"\n1 2 3 |\n\n@part 2 "B"\n5 6 7 |\n';
+  const score = parseDsl(dsl).score!;
+  check('默认不隐藏', scoreParts(score).every((p) => !p.hidden));
+  const hidden2 = assembleParts(score, scoreParts(score).map((p) => (p.id === '2' ? { ...p, hidden: true } : p)));
+  const text = serializeDsl(hidden2);
+  check('序列化只在隐藏的声部落 @hidden on', /@part 2 "B"\n@mix 1 on all\n@hidden on/.test(text) && !/@part 1 "A"[\s\S]*@hidden/.test(text.slice(0, text.indexOf('@part 2'))), text);
+  const reparsed = parseDsl(text).score!;
+  check('重新解析保持隐藏标记', reparsed ? scoreParts(reparsed).find((p) => p.id === '2')?.hidden === true : false, text);
+  // 总谱布局：隐藏声部不出行
+  const shown = [...new Set(layoutScore(hidden2, { contentWidth: 1400 }).lines.flatMap((l) => (l.partId ? [l.partId] : [])))];
+  check('总谱布局不含隐藏声部（1 在、2 不在）', shown.includes('1') && !shown.includes('2'), JSON.stringify(shown));
+  // 播放：时间轴仍含隐藏声部的音（hidden 只管显示，不折 gain 不过滤事件）
+  const entries = buildTimeline(hidden2);
+  check('播放时间轴仍含隐藏声部的音', entries.some((e) => e.partId === '2'), JSON.stringify([...new Set(entries.map((e) => e.partId))]));
+  check('隐藏声部播放增益不受影响', entries.filter((e) => e.partId === '2').every((e) => (e.gain ?? 1) > 0));
+  // 全部隐藏的防御：按未隐藏显示，避免总谱空板
+  const allHidden = assembleParts(score, scoreParts(score).map((p) => ({ ...p, hidden: true })));
+  const shownAll = [...new Set(layoutScore(allHidden, { contentWidth: 1400 }).lines.flatMap((l) => (l.partId ? [l.partId] : [])))];
+  check('全部隐藏时按未隐藏显示（防空板）', shownAll.includes('1') && shownAll.includes('2'), JSON.stringify(shownAll));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

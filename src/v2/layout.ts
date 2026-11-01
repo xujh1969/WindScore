@@ -666,9 +666,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   }
 
   // ── 连线的全局视图：与断行无关，断行之后才能知道每段落在哪一行 ──
-  // slur 在数据里是链式存储（A→B→C），必须先合成整条链，
+  // slur 在数据里是链式存储（A→B→C），必须先按组（Tie.g）合成整条链，
   // 否则 3 个音的连音会画出 2 条互相重叠的弧。
-  const slurNext = new Map<string, string>();
+  // 组 = 一次建立的一串边：相邻两条连线共享边界音（先连 3-4 再连 4-5）时
+  // 组不同，各画各的弧——旧数据没有 g，全部归入同一个隐式组（行为不变）。
+  const slurNextByG = new Map<string, Map<string, string>>();
   /** 被连线跨越的小节线：断在这些位置会把连线切断 */
   const slurCrossedBars = new Set<number>();
   {
@@ -677,7 +679,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       if (ev.kind !== 'note') continue;
       for (const t of ev.ties ?? []) {
         if (t.kind !== 'slur') continue;
-        slurNext.set(ev.id, t.to);
+        const g = t.g ?? '';
+        let next = slurNextByG.get(g);
+        if (!next) {
+          next = new Map();
+          slurNextByG.set(g, next);
+        }
+        next.set(ev.id, t.to);
         const a = idxOf.get(ev.id);
         const b = idxOf.get(t.to);
         if (a === undefined || b === undefined) continue;
@@ -689,9 +697,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   }
 
   const slurChains: string[][] = [];
-  {
-    const isTarget = new Set(slurNext.values());
-    for (const head of slurNext.keys()) {
+  for (const next of slurNextByG.values()) {
+    const isTarget = new Set(next.values());
+    for (const head of next.keys()) {
       if (isTarget.has(head)) continue; // 只从链首开始
       const chain: string[] = [];
       const seen = new Set<string>();
@@ -699,7 +707,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       while (cur !== undefined && !seen.has(cur)) {
         chain.push(cur);
         seen.add(cur);
-        cur = slurNext.get(cur);
+        cur = next.get(cur);
       }
       if (chain.length >= 2) slurChains.push(chain);
     }

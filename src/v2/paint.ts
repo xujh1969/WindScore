@@ -134,8 +134,6 @@ export interface PaintTheme {
   selected: string;
   playhead: string;
   playheadBg: string;
-  /** 播放指示自定义色（withPlayColor 塞入）：光标块 / 光条 / 竖线 / 光球统一用它 */
-  playColor?: string;
 }
 
 export const LIGHT_THEME: PaintTheme = {
@@ -175,26 +173,6 @@ export const DARK_THEME: PaintTheme = {
   playhead: '#d9b23c',
   playheadBg: '#5a4715',
 };
-
-/**
- * 播放指示自定义色：把用户挑的颜色**只**注入光标块 / 高亮条 / 竖线 / 光球的用色，
- * 谱面其他强调色（弧线 / 括号 / 焦点框 / 小节线高亮）仍用主题 accent——
- * 改的是「跟唱笔」的颜色，不是整张谱的配色。
- *
- * **深浅背景各存一档**（0.4.27 用户定）：同一颜色在白底和黑底上的观感差很多
- * （浅色上要偏深才压得住，深色上要偏亮才显眼），所以颜色按主题分开挑、
- * 随当前主题自动取用。color 传空 = 沿用主题默认。
- */
-export function withPlayColor(theme: PaintTheme, color?: string | null): PaintTheme {
-  if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) return theme;
-  return {
-    ...theme,
-    playColor: color,
-    playhead: color,
-    // 光标块 / 高亮条的底色 = 自定义色的半透明版：浅底上浅淡不盖字，深底上透出亮度
-    playheadBg: hexA(color, theme.dark ? 0.42 : 0.3),
-  };
-}
 
 /**
  * 版式度量：由 `applyMetrics(layout.glyph)` 按谱面字号刷新。
@@ -587,8 +565,8 @@ export function drawPlayBall(
   b: { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] },
   theme: PaintTheme,
 ): void {
-  // 自定义播放色优先（withPlayColor 塞进 theme.playColor），没设沿用主题默认
-  const accent = theme.playColor ?? theme.accent;
+  // 光球用主题强调色（浅色琥珀 / 深色金）
+  const accent = theme.accent;
   const alpha = b.alpha ?? 1; // 曲末余跳渐隐：整球（含拖尾）按 alpha 淡出
   // 拖尾：整条轨迹 polyline **分三遍**描（尾淡头浓）。不能逐段描——
   // 相邻线段的圆头在接缝处叠加，深色的 'lighter' 加法混色会把接缝
@@ -598,7 +576,7 @@ export function drawPlayBall(
   const n = b.trail.length;
   if (n >= 2) {
     if (theme.dark) ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = theme.dark ? accent : theme.playColor ?? '#3f3f46';
+    ctx.strokeStyle = theme.dark ? accent : '#3f3f46';
     const dy = theme.dark ? 0 : b.r * 0.7; // 浅色拖尾画在球的下前方，像落地影子
     const pass = (from: number, width: number, a: number): void => {
       if (n - from < 2) return;
@@ -638,7 +616,7 @@ export function drawPlayBall(
     // 浅色：不发光，只画一个带柔和阴影的蓝色实心点（白底下发光只会一片白）
     ctx.shadowColor = 'rgba(0,0,0,0.45)';
     ctx.shadowBlur = 10;
-    ctx.fillStyle = theme.playColor ?? '#2563eb';
+    ctx.fillStyle = '#2563eb';
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.r * 0.6, 0, Math.PI * 2);
     ctx.fill();
@@ -867,7 +845,48 @@ function paintLine(
 ): void {
   const { selectedIds, caret, playhead, focusId } = o;
   const y = line.y;
-  const headItem = playhead ? line.items.find((it) => it.eventId === playhead.eventId) : undefined;
+  let headItem = playhead ? line.items.find((it) => it.eventId === playhead.eventId) : undefined;
+  // 反复展开出来的条目 eventId 带 +rb 后缀（+dbl 同理），精确匹配不中时剥掉后缀兜底，
+  // 否则反复段里小节底色会消失
+  if (!headItem && playhead) {
+    const base = playhead.eventId.split('+')[0]!;
+    headItem = line.items.find((it) => it.eventId === base);
+  }
+
+  // ── 播放中的**当前小节底色** ──
+  // 发声小节整块铺一层高透明底色：眼睛扫色块比追播放头省力，推进到
+  // 下一小节时色块整体跟着挪（用户要求）。画在一切字形之前（底色层）。
+  // 左右边界 = 离发声位置最近的**可见实小节线**——隐藏线 |* / 0*N 结构线
+  // 不算边界（多小节休止整段一块底色），虚小节线 |~ 是拍内分组线也不算；
+  // 行首没有左侧小节线时从行首画起，行尾没有则画到行末。
+  if (headItem) {
+    const hi = line.items.indexOf(headItem);
+    let left: number | null = null;
+    let right: number | null = null;
+    for (let i = hi - 1; i >= 0; i -= 1) {
+      const it = line.items[i]!;
+      if (it.kind === 'barline' && !it.hidden && !it.dashed) {
+        left = it.x + it.w;
+        break;
+      }
+    }
+    for (let i = hi + 1; i < line.items.length; i += 1) {
+      const it = line.items[i]!;
+      if (it.kind === 'barline' && !it.hidden && !it.dashed) {
+        right = it.x;
+        break;
+      }
+    }
+    const first = line.items[0]!;
+    const last = line.items[line.items.length - 1]!;
+    const lx = left ?? first.x - 4 * M.k;
+    const rx = right ?? last.x + last.w + 4 * M.k;
+    if (rx > lx) {
+      ctx.fillStyle = hexA(theme.accent, 0.09);
+      roundRect(ctx, lx, y - M.selHalfH - 8 * M.k, rx - lx, M.selHalfH * 2 + 16 * M.k, 6);
+      ctx.fill();
+    }
+  }
 
   // ── 底色层 ──
   // 选中 / 焦点 / 播放头都是「底色」，必须画在减时线与字形之前。
@@ -988,7 +1007,9 @@ function paintLine(
       ctx.restore();
     }
     ctx.strokeStyle = picked ? theme.accent : it.final ? theme.barFinal : theme.bar;
-    ctx.lineWidth = picked ? 3 : it.final ? 2.5 : 1.5;
+    // 选中加粗只给普通线与终止线主线；双细线点亮时保持两根等粗细线的形态，
+    // 否则主线加粗成 3px + 左边细线 = 终止线「一细一粗」的样子（0.4.36 实测）
+    ctx.lineWidth = picked ? (it.double ? 2 : 3) : it.final ? 2.5 : 1.5;
     // 虚小节线（GB/T 46845—2025 §5.2.2）：混合拍子里不拦拍感的细分线画成虚线
     ctx.setLineDash(it.dashed ? [4 * M.k, 3 * M.k] : []);
     ctx.beginPath();
@@ -1023,8 +1044,9 @@ function paintLine(
       ctx.lineTo(bx - 4, y + M.barHalf);
       ctx.stroke();
     } else if (it.double) {
-      // 双细线（乐段结束）：主线已是细线，左边再补一根等粗的
-      ctx.lineWidth = 1;
+      // 双细线（乐段结束）：主线已是细线，左边再补一根**等宽等亮**的
+      // （不选中 1.5 / 选中 2——两根必须同宽，窄的那根会因抗锯齿看着发暗）
+      ctx.lineWidth = picked ? 2 : 1.5;
       ctx.beginPath();
       ctx.moveTo(bx - 4, y - M.barHalf);
       ctx.lineTo(bx - 4, y + M.barHalf);
@@ -1065,14 +1087,22 @@ function paintLine(
       const label = String(it.measure);
       const ny = y + M.barHalf + 9;
       if (it.measure % 5 === 0) {
-        ctx.fillStyle = theme.muted;
+        // 方框强调（GB/T 46845—2025 §5.9.1）：数字必须落在框里——默认字母
+        // 基线让数字偏下探出框外（用户实测），改用 middle 基线在框内垂直居中。
+        // 不能用 continue 跳出去：这条小节线可能还带反复记号，后面的绘制不能省
+        const boxTop = ny - 10;
+        const boxH = 13;
         const tw = ctx.measureText(label).width;
+        ctx.fillStyle = theme.muted;
         ctx.strokeStyle = theme.muted;
         ctx.lineWidth = 0.8;
-        ctx.strokeRect(bx - tw / 2 - 4, ny - 10, tw + 8, 13);
+        ctx.strokeRect(bx - tw / 2 - 4, boxTop, tw + 8, boxH);
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, bx, boxTop + boxH / 2 + 0.5);
+      } else {
+        ctx.fillStyle = theme.muted;
+        ctx.fillText(label, bx, ny);
       }
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(label, bx, ny);
       ctx.restore();
     }
 
@@ -1507,14 +1537,15 @@ function paintLine(
     if (line.meterMoved && it === line.items[line.items.length - 1]) continue;
     drawMeterMark(ctx, it.beatAfter, it.x + it.w / 2 + 14 * M.k, y, theme);
   }
-  // 散板（GB/T 46845—2025 §6.3.11.7）：拍号位置记「散」（与拍号同一槽位）。
-  // 同一根线既写「散」又写「拍N/M」时以新拍号为准（拍号已占槽位），不重复画
+  // 散板（GB/T 46845—2025 §6.3.11.7）：拍号位置记「サ」（与拍号同一槽位，
+  // 写在小节线右侧）。
+  // 同一根线既写「サ」又写「拍N/M」时以新拍号为准（拍号已占槽位），不重复画
   ctx.font = M.markFont;
   ctx.textAlign = 'center';
   ctx.fillStyle = theme.ink;
   for (const it of line.items) {
     if (it.kind !== 'barline' || !it.freeAfter || it.beatAfter) continue;
-    ctx.fillText('散', it.x + it.w / 2 + 14 * M.k, y + 1 * M.k);
+    ctx.fillText('サ', it.x + it.w / 2 + 14 * M.k, y + 1 * M.k);
   }
   if (line.leadingMeter) {
     drawMeterMark(ctx, line.leadingMeter.meter, line.leadingMeter.x, y, theme);

@@ -525,27 +525,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       /* 隐私模式等存不了就算了 */
     }
   }, [playStyle]);
-  /**
-   * 播放指示自定义色：**浅色 / 深色背景各一档**（同一颜色在白底和黑底观感差很多：
-   * 浅底要偏深才压得住，深底要偏亮才显眼），界面跟当前主题自动取对应档；
-   * null = 沿用主题默认（浅色琥珀 / 深色金）。视频导出按导出所选的深浅取同一档。
-   * 存 localStorage 全局——跟播放指示方式一样是观众偏好，不分曲目、不分端。
-   */
-  const [playColor, setPlayColor] = useState<{ light: string | null; dark: string | null }>(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem('ws-playcolor') ?? 'null') as { light?: string | null; dark?: string | null } | null;
-      return { light: typeof v?.light === 'string' ? v.light : null, dark: typeof v?.dark === 'string' ? v.dark : null };
-    } catch {
-      return { light: null, dark: null };
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem('ws-playcolor', JSON.stringify(playColor));
-    } catch {
-      /* 隐私模式等存不了就算了 */
-    }
-  }, [playColor]);
   /** 保留已有的记谱法偏好存储，顶部按钮切换简谱／五线谱。 */
   const [storedStaffViewOn, setStoredStaffViewOn] = useExp('staffView');
   const [androidStaffViewOn, setAndroidStaffViewOn] = useState(() => androidPlayer && anView.notation === 'staff');
@@ -1536,8 +1515,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const effFont = playFont ?? (score.meta.fontSize ?? DEFAULT_FONT_SIZE);
   const effGap = playGap ?? (score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING);
   const effLineGap = playLineGap ?? (score.meta.lineGap ?? 0);
-  /** 播放指示生效色：按当前主题取对应档；没设过 = null（withPlayColor 里回落主题默认） */
-  const effPlayColor = dark ? playColor.dark : playColor.light;
   /** 有未保存的改动 */
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
   const dirty = snap.rev !== savedRev || (view === 'source' && draft !== (savedSource ?? serialized));
@@ -2734,8 +2711,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           return;
         }
         if (overId) {
-          const s1 = setDegree(score, overId, d);
-          setScore(oct !== 0 ? setOctave(s1, overId, oct) : s1);
+          // 替换时按**按钮所在八度排**落八度——中音排（oct=0）同样生效：
+          // 高音 2 按中音排的 2 = 就地转回中音 2（0.4.36 实测「转不回去」）
+          setScore(setOctave(setDegree(score, overId, d), overId, oct));
           previewReplace(overId, d, oct !== 0 ? oct : undefined);
           return;
         }
@@ -2806,6 +2784,22 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         const fresh = s.events[snap.cursor];
         if (!fresh || fresh.kind !== 'barline') return;
         commit({ score: apply(s, fresh.id), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
+      },
+      toggleDashedCursor: () => {
+        // 虚小节线：与 barlineAs 同一套定位——被选中的线优先，否则光标左边那根；
+        // 就地开 / 关 dashed（不动 style / repeat），没有线就在光标处插一根带虚线的
+        const focused = focus && focus.kind === 'barline' ? (focus as BarlineEvent) : null;
+        const left = snap.cursor > 0 ? score.events[snap.cursor - 1] : undefined;
+        const target = focused ?? (left && left.kind === 'barline' ? (left as BarlineEvent) : null);
+        if (target) {
+          // 与双细线 / 终止线互斥：开虚线先把样式退回单线
+          setScore(setBarlineStyle(setBarNotation(score, target.id, { dashed: !target.dashed }), target.id, target.dashed ? (target.style ?? 'single') : 'single'));
+          return;
+        }
+        const s = insertBarline(score, snap.cursor);
+        const fresh = s.events[snap.cursor];
+        if (!fresh || fresh.kind !== 'barline') return;
+        commit({ score: setBarNotation(s, fresh.id, { dashed: true }), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
       },
       accidental: () => {
         // 与属性面板那排按钮同一顺序：升 → 降 → 还原 → 无（跟随调号）
@@ -3130,7 +3124,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       },
       toggleDashed: () => {
         if (!barlineFocus) return;
-        setScore(setBarNotation(score, barlineFocus.id, { dashed: !barlineFocus.dashed }));
+        const next = !barlineFocus.dashed;
+        // 与双细线 / 终止线互斥：开虚线先把样式退回单线
+        setScore(
+          next
+            ? setBarlineStyle(setBarNotation(score, barlineFocus.id, { dashed: true }), barlineFocus.id, 'single')
+            : setBarNotation(score, barlineFocus.id, { dashed: false }),
+        );
       },
       toggleFree: () => {
         if (!barlineFocus) return;
@@ -3564,7 +3564,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       timbreLabel={playTimbre ? `已设 ${Object.keys(playTimbre.parts ?? {}).length} 个声部` : '跟随谱面'}
       onOpenTimbre={() => setAnTimbreOpen(true)}
       message={msg.includes('失败') ? msg : undefined}
-      renderScore={() => <ScoreCanvas score={viewScore} dark={dark} playColor={effPlayColor} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
+      renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
         unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} responsive
         selectedIds={EMPTY_SELECTED} cursor={0} timeline={displayTimeline} playStyle={playStyle}
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
@@ -4112,7 +4112,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               onClefClick={toggleStaffClef}
               activePartId={activePartId}
               dark={dark}
-              playColor={effPlayColor}
               unit={EDITOR_UNIT}
               fontSize={effFont}
               letterSpacing={effGap}
@@ -4191,7 +4190,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           video={{
             displayTimeline: mode === 'play' ? displayTimeline : notationTimeline,
             playStyle,
-            playColor,
             activePartId,
             timeline,
             fromTick: 0,
@@ -4379,48 +4377,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 >
                   光球
                 </button>
-              </div>
-            </div>
-
-            {/* 播放指示颜色：浅色 / 深色背景各一档（同一颜色白底黑底观感差很多），
-                界面跟当前主题自动取用；⟲ 恢复主题默认。视频导出按导出的深浅取同一档 */}
-            <div className="v2-spacing">
-              <span className="v2-playstyle-label">指示颜色</span>
-              <div className="v2-play-colors">
-                <label className="v2-play-color" title="浅色背景下的光标 / 光条 / 光球颜色">
-                  <span>浅色</span>
-                  <input
-                    type="color"
-                    value={playColor.light ?? '#a8811a'}
-                    onChange={(e) => setPlayColor((c) => ({ ...c, light: e.target.value }))}
-                  />
-                  {playColor.light ? (
-                    <button
-                      className="v2-play-reset"
-                      onClick={() => setPlayColor((c) => ({ ...c, light: null }))}
-                      title="恢复默认颜色"
-                    >
-                      ⟲
-                    </button>
-                  ) : null}
-                </label>
-                <label className="v2-play-color" title="深色背景下的光标 / 光条 / 光球颜色">
-                  <span>深色</span>
-                  <input
-                    type="color"
-                    value={playColor.dark ?? '#d9b23c'}
-                    onChange={(e) => setPlayColor((c) => ({ ...c, dark: e.target.value }))}
-                  />
-                  {playColor.dark ? (
-                    <button
-                      className="v2-play-reset"
-                      onClick={() => setPlayColor((c) => ({ ...c, dark: null }))}
-                      title="恢复默认颜色"
-                    >
-                      ⟲
-                    </button>
-                  ) : null}
-                </label>
               </div>
             </div>
 

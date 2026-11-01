@@ -10,7 +10,12 @@ type Entry = { item: PlacedItem; tick: number; measure: number; lead: number };
 
 /** 每个小节建立共享时间格，再由现有单声部算法绘制各自的记号。 */
 export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: (score: Score, opts: LayoutOptions) => LayoutResult): LayoutResult {
-  const parts = scoreParts(score);
+  // 隐藏声部不在总谱显示（仍会播放）——display 层唯一的过滤点：
+  // timeline/expand 的 scoreParts 保持全量，不要动。全部被隐藏时按未隐藏处理，
+  // 避免总谱区出现空板。
+  const all = scoreParts(score);
+  const visible = all.filter((p) => !p.hidden);
+  const parts = visible.length ? visible : all;
   const singles = parts.map((p) => partScore(score, p.id));
   const measured = singles.map((s) => layoutSingle(s, { ...opts, contentWidth: 1e9, showTitle: false }));
   const k = measured[0].glyph.fontSize / 21;

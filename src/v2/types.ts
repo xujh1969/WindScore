@@ -31,6 +31,13 @@ export interface BaseEvent {
 export interface Tie {
   to: string;
   kind: 'tie' | 'slur';
+  /**
+   * 连线组 id（仅 slur）：同一次建立的一串边共享，渲染 / 序列化按组建弧——
+   * 相邻两条连线共享边界音（先连 3-4 再连 4-5）时组不同，各画各的弧。
+   * 内存态字段，不写进 DSL 文本：落盘用括号结构表达分组（边界音写 `4)(`），
+   * 读回时按括号重新编组。
+   */
+  g?: string;
 }
 
 export interface Ornament {
@@ -357,6 +364,12 @@ export interface PartInfo {
   gain: number;
   muted?: boolean;
   solo?: boolean;
+  /**
+   * 隐藏声部（2026-11-01）：总谱视图不显示此声部的行，但播放 / 展开照常发声。
+   * 只是显示层开关——声部条上仍保留该声部的按钮，可随时重新显示；
+   * 分谱视图里用户主动选中隐藏声部时仍显示（否则无法再编辑它）。
+   */
+  hidden?: boolean;
   /** 此声部的合成音色（GM patch 号）；缺省跟随曲目音色 meta.patch。 */
   patch?: number;
   /**

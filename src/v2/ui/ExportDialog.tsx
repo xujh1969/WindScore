@@ -51,8 +51,6 @@ export interface ExportDialogProps extends ExportNotation {
     displayTimeline: TimelineEntry[];
     /** 播放指示样式（跟界面设置一致） */
     playStyle: 'head' | 'band' | 'ball';
-    /** 播放指示自定义色（浅色 / 深色两档，按导出所选外观取用）；空 = 主题默认 */
-    playColor?: { light: string | null; dark: string | null };
     activePartId?: string;
     fromTick: number;
     bpm: number;
@@ -315,7 +313,6 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             }
           : {}),
         playStyle: video.playStyle,
-        playColor: videoDark ? video.playColor?.dark ?? null : video.playColor?.light ?? null,
         activePartId: partId || video.activePartId,
         showMeasureNumbers: showBars,
         showTitle,

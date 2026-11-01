@@ -12,7 +12,9 @@
 body.ws-home {
   margin: 0;
   min-height: 100%;
-  font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  /* 英文字体在前：拉丁字母（如 MusicXML）用西文字体渲染、间距正常，
+     中文字符按逐字回退仍落到雅黑/苹方 */
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
   color: #253b2e;
   background: #f6f4e9;
 }
@@ -264,4 +266,10 @@ body.ws-home * {
     width: 100%;
     justify-content: center;
   }
+}
+
+/* MusicXML 导入：测试功能入口，虚线边框以示区别 */
+.ws-btn-test {
+  border-style: dashed;
+  opacity: 0.85;
 }

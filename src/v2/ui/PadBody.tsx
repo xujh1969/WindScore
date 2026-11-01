@@ -106,6 +106,8 @@ export interface PadActions {
    * 光标左边（或被选中）那根线就地改，没有就先插一根再设——不会多出一条线。
    */
   barlineAs: (kind: 'repeat-start' | 'repeat-end' | 'repeat-both' | 'double' | 'final') => void;
+  /** 虚小节线（GB/T 46845—2025 §5.2.2）：光标左边（或被选中）那根线就地开 / 关虚线，没有就先插一根再设 */
+  toggleDashedCursor: () => void;
   /** 变音记号循环：升 # → 降 b → 还原 ♮ → 无（跟随调号） */
   accidental: () => void;
   dot: () => void;
@@ -422,8 +424,13 @@ export function PadBody({
           ))}
           <button className={`v2-btn ${barline.style === 'double' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDouble()} title="双细线 ‖：乐段结束（再点一次变回普通小节线）">‖</button>
           <button className={`v2-btn ${barline.style === 'final' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFinal()} title="终止线 ||：细线+粗线，全曲结束（再点一次变回普通小节线）">||</button>
-          <button className={`v2-btn ${barline.dashed ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDashed()} title="虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线——混合拍子里按节拍分组、不拦拍感的细分线；校验与小节计数照常（再点一次变回实线）">虚线</button>
-          <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「散」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">散板</button>
+          <button className={`v2-btn ${barline.dashed ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDashed()} title="虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线——混合拍子里按节拍分组、不拦拍感的细分线；校验与小节计数照常（再点一次变回实线）">
+            {/* 画成一条虚线竖线 */}
+            <svg width="8" height="16" viewBox="0 0 8 16" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
+              <line x1="4" y1="1.5" x2="4" y2="14.5" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.4 2.2" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「サ」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">サ</button>
           {barline.volta ? (
             <button className={`v2-btn ${barline.voltaOpen ? 'is-on' : ''}`} title="手动强制右端开放（通常自动判断，点一下可覆盖）" onClick={() => barlineActions.toggleVoltaOpen()}>右端开放</button>
           ) : null}
@@ -556,6 +563,16 @@ export function PadBody({
           >
             <BarlineGlyph kind="final" />
           </button>
+          <button
+            className="v2-btn"
+            onClick={() => actions.toggleDashedCursor()}
+            title="虚小节线（GB/T 46845—2025 §5.2.2）：光标左边那根线就地开 / 关虚线，左边没有线就先插一根；校验与小节计数照常"
+          >
+            {/* 画成一条虚线竖线 */}
+            <svg width="8" height="16" viewBox="0 0 8 16" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
+              <line x1="4" y1="1.5" x2="4" y2="14.5" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.4 2.2" strokeLinecap="round" />
+            </svg>
+          </button>
           <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
             0
           </button>
@@ -582,7 +599,7 @@ export function PadBody({
             onChange={(e) => setMbCount(Math.max(1, Math.min(999, Math.round(Number(e.target.value) || 1))))}
             title="多小节休止的小节数（1–999）"
             aria-label="多小节休止的小节数"
-            style={{ width: 58, padding: '0 4px', marginLeft: 16 }}
+            style={{ width: 15, padding: 0, textAlign: 'center', marginLeft: 16 }}
           />
           <button
             className={`v2-btn${target?.kind === 'rest' && target.multibar ? ' is-on' : ''}`}

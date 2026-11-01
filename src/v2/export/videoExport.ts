@@ -18,7 +18,7 @@ import { exportVideoFast } from "./encode";
 import { mixStems, synthNotes, mixMetronome, type Mix } from "./mix";
 import { scheduleHits, type MetronomeHit, type MetronomePattern, type MeterAt } from "../metronome";
 import { exportTheme, paintVideoFrame, prepareExportLayout, type ExportLayoutResult, type ExportNotation } from "./render";
-import { withPlayColor } from "../paint";
+
 import {
   lineTickRanges,
   recordSeconds,
@@ -40,8 +40,6 @@ export interface VideoExportOptions extends ExportNotation {
   /** 显示用时间线（画原谱时传映射回原谱 id 的那份） */
   displayTimeline?: TimelineEntry[];
   playStyle?: "head" | "band" | "ball";
-  /** 播放指示自定义色（调用方按导出深浅取好对应档）；空 = 主题默认 */
-  playColor?: string | null;
   activePartId?: string;
   fromTick: number;
   /** 只录一段时的结束 tick（含）；不给 = 到谱面末尾 */
@@ -211,8 +209,7 @@ export async function exportScoreVideoToFile(
     ...(sourceLayout.staff ? { staff: { ...sourceLayout.staff, title } } : {}),
   };
   const showTl = opts.displayTimeline ?? opts.timeline;
-  // 自定义播放色只注入光标 / 光条 / 光球（withPlayColor），谱面其他强调色不动
-  const theme = withPlayColor(exportTheme(opts.dark), opts.playColor);
+  const theme = exportTheme(opts.dark);
 
   // 滚动横幅模式：把整份排版拉平成一条横带（忽略换行 / 分页），
   // 宽度 = 界面设定的数值，高度 = 一行谱（多声部一组）× 缩放。

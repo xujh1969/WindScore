@@ -64,29 +64,34 @@ export function buildStaffCurves(score: Score, staff: StaffLayout): StaffCurve[]
       key = e.keyChange ?? key;
       pitches.set(e.id, pitchMidi(legacyPitch(e.degree, e.octave, key, e.accidental)));
     }
-    const slurNext = new Map<string, string[]>();
-    const incoming = new Map<string, number>();
+    // 连线按组（Tie.g）切弧：同一次建立的边同组合并成一条曲线；
+    // 共享边界音的相邻连线（3-4 与 4-5）组不同，各画各的。旧数据无 g 归入 ''。
+    const slurGroups = new Map<string, { next: Map<string, string>; incoming: Map<string, number> }>();
     const ranges: { from: string; to: string; kind: 'tie' | 'slur' }[] = [];
     for (const e of part.events) if (e.kind === 'note') for (const t of e.ties ?? []) {
       if (!locations.has(t.to) || (order.get(t.to) ?? -1) <= order.get(e.id)!) continue;
       if (t.kind === 'slur') {
-        const next = slurNext.get(e.id) ?? [];
-        if (!next.includes(t.to)) {
-          next.push(t.to);
-          incoming.set(t.to, (incoming.get(t.to) ?? 0) + 1);
+        const g = t.g ?? '';
+        let grp = slurGroups.get(g);
+        if (!grp) {
+          grp = { next: new Map(), incoming: new Map() };
+          slurGroups.set(g, grp);
         }
-        slurNext.set(e.id, next);
+        if (!grp.next.has(e.id)) {
+          grp.next.set(e.id, t.to);
+          grp.incoming.set(t.to, (grp.incoming.get(t.to) ?? 0) + 1);
+        }
       }
       else if (pitches.get(e.id) === pitches.get(t.to)) ranges.push({ from: e.id, to: t.to, kind: 'tie' });
     }
     const consumed = new Set<string>();
-    for (const [from, next] of slurNext) for (const target of next) {
+    for (const grp of slurGroups.values()) for (const [from, target] of grp.next) {
       if (consumed.has(`${from}:${target}`)) continue;
       let to = target;
-      while (next.length === 1 && incoming.get(to) === 1 && slurNext.get(to)?.length === 1) {
-        const end = slurNext.get(to)![0];
+      while (grp.next.has(to) && grp.incoming.get(to) === 1) {
+        const end = grp.next.get(to)!;
         consumed.add(`${to}:${end}`);
-        to = end; // 仅合并无分叉／汇合的向后连接，不丢弃嵌套分支。
+        to = end; // 仅合并无分叉／汇合的向后连接（同组内），不丢弃嵌套分支。
       }
       ranges.push({ from, to, kind: 'slur' });
     }

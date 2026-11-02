@@ -803,7 +803,8 @@ interface LinePaint {
  * 两处共用：小节线右侧（常规）、小节第一颗音左侧（该小节线在行末时）。
  */
 /**
- * 拍号叠写（支持混合拍 "6/8+9/8"：各段并排，段间画 "+"）。
+ * 拍号叠写（支持备选拍号 "6/8|9/8"：各段并排，段间不画符号——
+ * 备选拍号是「小节取其一」的并排印法，不是相加）。
  * x 为左缘，y 为分数线高度；theme 为 null 时沿用当前画笔色（谱头用）。
  * 返回占用宽度。
  */
@@ -816,7 +817,7 @@ function paintMeterFractions(
   numDy: number,
   denDy: number,
 ): number {
-  const segs = meter.split('+').map((s) => s.trim().split('/'));
+  const segs = meter.split(/[|+]/).map((s) => s.trim().split('/'));
   ctx.textAlign = 'center';
   if (theme) {
     ctx.fillStyle = theme.ink;
@@ -829,8 +830,7 @@ function paintMeterFractions(
   segs.forEach((seg, si) => {
     const [num, den] = seg;
     if (si > 0) {
-      ctx.fillText('+', cx + gap, y);
-      cx += gap * 2 + ctx.measureText('+').width;
+      cx += gap * 2; // 段间只留空隙，不画连接符号
     }
     if (num && den) {
       const nw = ctx.measureText(num).width;

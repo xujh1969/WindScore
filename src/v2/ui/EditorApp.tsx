@@ -11,7 +11,7 @@ import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
 import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
 import lyricConnectionsDemo from '../../scores/lyric-connections-demo.jps?raw';
 import quartetDemo from '../../scores/quartet-demo.jps?raw';
-import { meterAt } from '../meter';
+import { meterAt, meterBeatOptions } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, setLyricLink } from '../lyrics';
 import type { LyricLink } from '../types';
@@ -303,9 +303,8 @@ function octaveName(o: number): string {
 }
 
 function beatsPerMeasure(beat: string): number {
-  const [n, d] = beat.split('/').map(Number);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-  return n * (4 / d);
+  // 备选拍号（6/8|9/8，小节取其一）取首段（统一走 meter.ts）
+  return meterBeatOptions(beat)[0] ?? 4;
 }
 
 /**
@@ -4750,12 +4749,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               />
               <MetaSelect
                 label="第二节拍"
-                value={score.meta.beat.includes('+') ? score.meta.beat.split('+')[1]! : ''}
+                value={score.meta.beat.includes('|') || score.meta.beat.includes('+') ? score.meta.beat.split(/[|+]/)[1]! : ''}
                 options={['无', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
                 values={['', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
                 onCommit={(v) => {
-                  const base = score.meta.beat.split('+')[0] || '4/4';
-                  setScore(resplitOversizedGroups(setMeta(score, { beat: v ? `${base}+${v}` : base })));
+                  // 备选拍号（交替拍子）：小节可以是第一节拍或第二节拍的拍数，DSL 用 | 分隔
+                  const base = score.meta.beat.split(/[|+]/)[0] || '4/4';
+                  setScore(resplitOversizedGroups(setMeta(score, { beat: v ? `${base}|${v}` : base })));
                 }}
               />
               <MetaInput

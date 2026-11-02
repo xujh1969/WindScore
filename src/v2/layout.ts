@@ -13,7 +13,7 @@ import { measureStaffInk } from './staffInk';
 import type { StaffPitchMode } from './pitch';
 import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
 import { layoutEnsemble } from './ensembleLayout';
-import { beatsPerMeasure, meterAt } from './meter';
+import { meterBeatOptions, meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, type LyricLine } from './lyricLines';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, positionDashes, type SpacingUnit } from './spacing';
 import type {
@@ -544,8 +544,9 @@ export function isBarrier(ev: Event): boolean {
   return ev.kind === 'barline';
 }
 
-function beatsPerMeasureOf(beat: string): number {
-  return beatsPerMeasure(beat); // 统一走 meter.ts（支持混合拍 6/8+9/8 = 各段之和）
+/** 各备选拍号的一小节 tick 数（交替拍子：小节拍数满足任一即正确） */
+function beatOptionsOf(beat: string): number[] {
+  return meterBeatOptions(beat).map((b) => Math.round(b * TICKS_PER_BEAT));
 }
 
 /**
@@ -1127,7 +1128,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       /** 全曲第一小节是否弱起：弱起曲的结尾小节允许不满 */
       let firstPartial = false;
       let seenFirst = false;
-      let expected = Math.round(beatsPerMeasureOf(meterAt(score, from)) * TICKS_PER_BEAT);
+      let expectedOpts = beatOptionsOf(meterAt(score, from));
       // 散板（GB/T 46845—2025 §6.3.11.7）：散板段里的小节不做拍数校验
       // （自由拍子不满 / 超满是常态），直到某根线写「拍N/M」声明新拍号
       let freeMode = false;
@@ -1138,19 +1139,19 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         } else if (it.kind === 'barline') {
           if (open && complete && !(measurePartial || it.partial) && !freeMode) {
             const beats = acc / TICKS_PER_BEAT;
-            const exp = expected / TICKS_PER_BEAT;
-            if (acc > expected) {
-              badges.push({
-                x: barX,
-                text: `${trimNum(beats)}/${trimNum(exp)} ✗`,
-                level: 'error',
-              });
-            } else if (acc < expected && !(it.final && firstPartial)) {
-              badges.push({
-                x: barX,
-                text: `${trimNum(beats)}/${trimNum(exp)} ⚠`,
-                level: 'warn',
-              });
+            // 交替拍子（6/8|9/8）：小节拍数满足任一段即正确；否则按「超所有段 ✗ /
+            // 少所有段 ⚠（弱起豁免）/ 夹在两段之间 ✗」报
+            const expList = expectedOpts.map((t) => t / TICKS_PER_BEAT);
+            const label = expList.map(trimNum).join('或');
+            if (!expList.some((o) => Math.abs(o - beats) < 1e-6)) {
+              const underAll = expList.every((o) => beats < o);
+              if (!underAll) {
+                // 超过所有备选拍号，或夹在两段之间（哪段都不对）→ ✗
+                badges.push({ x: barX, text: `${trimNum(beats)}/${label} ✗`, level: 'error' });
+              } else if (!(it.final && firstPartial)) {
+                // 比所有备选都少 → ⚠（弱起曲与弱起互补的结尾小节豁免）
+                badges.push({ x: barX, text: `${trimNum(beats)}/${label} ⚠`, level: 'warn' });
+              }
             }
           }
           acc = 0;
@@ -1163,7 +1164,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           }
           barX = it.x;
           if (it.beatAfter) {
-            expected = Math.round(beatsPerMeasureOf(it.beatAfter) * TICKS_PER_BEAT);
+            expectedOpts = beatOptionsOf(it.beatAfter);
             freeMode = false; // 新拍号声明 = 退出散板
           } else if (it.freeAfter) {
             freeMode = true;

@@ -111,7 +111,7 @@ export function meterBeats(beat: string): { beatsPerBar: number; strongEvery: nu
 }
 
 /** 拍号 → 一小节多少 tick。6720 tick 一拍时所有合法拍号都是整数（3/8 = 10080）。
- *  混合拍 6/8+9/8 = 各段之和（统一走 meter.ts 的解析）。 */
+ *  备选拍号（6/8|9/8，小节取其一）取首段——强弱锚按主拍号走。 */
 export function barTicksOf(beat: string): number {
   return Math.max(1, Math.round(beatsPerMeasure(beat) * TICKS_PER_BEAT));
 }

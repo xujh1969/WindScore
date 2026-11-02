@@ -12,13 +12,15 @@ const SEG_RE = /^([1-9]\d*)\/(1|2|4|8|16|32)$/;
 /**
  * 解析拍号串为段列表：
  *   - "4/4"          → [{4,4}]
- *   - "6/8+9/8"      → [{6,8},{9,8}]（混合拍/第二节拍，GB/T 46845 §5.3 拍号并排写法）
+ *   - "6/8|9/8"      → [{6,8},{9,8}]（备选拍号/交替拍子：一小节可以是其中**任一段**的拍数，
+ *     GB/T 46845 拍号并排印法——不是相加！）
+ *   - 兼容旧写法 "+"（曾误作各段相加）：读入仍接受，语义同样按备选
  *   - 非法/旧遗留值   → null
  */
 export function parseMeter(value: string): MeterSegment[] | null {
   if (!value) return null;
   const segs: MeterSegment[] = [];
-  for (const part of value.split('+')) {
+  for (const part of value.split(/[|+]/)) {
     const m = SEG_RE.exec(part.trim());
     if (!m || Number(m[1]) > 32) return null;
     segs.push({ num: Number(m[1]), den: Number(m[2]) });
@@ -30,16 +32,28 @@ export function validMeter(value: string): boolean {
   return parseMeter(value) !== null;
 }
 
-/** 一小节的拍数（四分 = 1 拍口径）：混合拍 = 各段之和（6/8+9/8 = 3 + 4½ = 7½ 拍） */
-export function beatsPerMeasure(beat: string): number {
+/**
+ * 各备选拍号的一小节拍数（四分 = 1 拍口径）：交替拍子的小节可以是其中**任何一个**。
+ * 小节拍数校验（layout 徽标）用它；拍数满足任一项即正确。
+ */
+export function meterBeatOptions(beat: string): number[] {
   const segs = parseMeter(beat);
   if (!segs) {
     // 旧遗留值兜底（不该出现，但不炸）
     const [n, d] = beat.split('/').map(Number);
-    if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-    return n * (4 / d);
+    if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return [4];
+    return [n * (4 / d)];
   }
-  return segs.reduce((a, s) => a + s.num * (4 / s.den), 0);
+  return segs.map((s) => s.num * (4 / s.den));
+}
+
+/**
+ * 一小节的拍数（四分 = 1 拍口径）：取**首段**（主拍号）。
+ * 供必须给单值的场合用——多小节休止 / 小节反复整小节休止的长度、节拍器小节长、
+ * 编辑面板的拍档位。拍数校验不走这里（走 meterBeatOptions 的备选判定）。
+ */
+export function beatsPerMeasure(beat: string): number {
+  return meterBeatOptions(beat)[0] ?? 4;
 }
 
 export function meterAt(score: Score, index: number): string {

@@ -9,7 +9,7 @@
 import { assembleParts, partScore, scoreParts } from './parts';
 import { distribute } from './reseat';
 import { normalizeKey } from './timeline';
-import { beatsPerMeasure, groupTicks, groupTierBeats, meterAt } from './meter';
+import { beatsPerMeasure, groupTicks, groupTierBeats, meterAt, validMeter } from './meter';
 import {
   isLegalTick,
   TICKS_PER_BEAT,
@@ -228,7 +228,8 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   ) {
     return score;
   }
-  if ('beat' in patch && !/^\d+\/\d+$/.test(next.beat)) return score;
+  // 拍号校验走 validMeter（支持 6/8+9/8 混合拍；纯 N/M 是其子集）
+  if ('beat' in patch && !validMeter(next.beat)) return score;
   // 版式参数：越界直接拒绝（脏字号会让排版度量整体算出 NaN 或把谱面撑爆）
   if (
     'fontSize' in patch &&

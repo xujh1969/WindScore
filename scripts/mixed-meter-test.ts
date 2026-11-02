@@ -4,6 +4,7 @@
 import { parseDsl, serializeDsl } from '../src/v2/dsl';
 import { validMeter, beatsPerMeasure, groupTicks } from '../src/v2/meter';
 import { layoutScore } from '../src/v2/layout';
+import { setMeta } from '../src/v2/edit';
 
 function allBadges(l: ReturnType<typeof layoutScore>): { text: string }[] {
   return (l as unknown as { lines: { badges: { text: string } }[] }).lines.flatMap((ln) => ln.badges);
@@ -23,6 +24,17 @@ check('混合拍 9/8+6/8+6/8 合法', validMeter('9/8+6/8+6/8'));
 check('混合拍段非法 6/8+9/7 拒绝', !validMeter('6/8+9/7'));
 check('混合拍空段 6/8+ 拒绝', !validMeter('6/8+'));
 check('遗留垃圾仍拒绝', !validMeter('哈哈哈'));
+
+console.log('── setMeta（曲目信息「第二节拍」下拉的写入链路）──');
+{
+  const s = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  const mixed = setMeta(s, { beat: '4/4+3/4' });
+  check('setMeta 接受混合拍（下拉选第二节拍生效）', mixed.meta.beat === '4/4+3/4', mixed.meta.beat);
+  const back = parseDsl(serializeDsl(mixed)).score!;
+  check('混合拍写回 DSL 并读回保持', back.meta.beat === '4/4+3/4', back.meta.beat);
+  check('setMeta 拒绝脏拍号', setMeta(s, { beat: '哈哈哈' }).meta.beat === '4/4');
+  check('setMeta 拒绝残缺混合拍', setMeta(s, { beat: '4/4+' }).meta.beat === '4/4');
+}
 
 console.log('── beatsPerMeasure（各段之和）──');
 check('4/4 = 4 拍', beatsPerMeasure('4/4') === 4);

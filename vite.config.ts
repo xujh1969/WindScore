@@ -16,6 +16,8 @@ function versionInject(): Plugin {
 export default defineConfig(({ mode }) => ({
   base: mode === 'android' ? './' : '/',
   plugins: [react(), versionInject()],
+  // onnxruntime-web 的 wasm 装配依赖不被预打包改写（ScoreOCR 同款配置）
+  optimizeDeps: mode === 'android' ? undefined : { exclude: ['onnxruntime-web'] },
   define: {
     // 采样资源的缓存版本号：piano-samples / instrument-samples 这类**文件名固定**的
     // public 资源随包更新时，浏览器启发式缓存可能留下新旧错配（json 新 mp3 旧之类），
@@ -41,6 +43,8 @@ export default defineConfig(({ mode }) => ({
         play: 'play.html',
         help: 'help.html',
         musicxml: 'musicxml.html',
+        // 安卓包不含 OCR 页：OMR 模型约 26MB 且计算重，手机上不提供（首页按钮同步隐藏）
+        ...(mode === 'android' ? {} : { ocr: 'ocr.html' }),
         android: 'android.html',
       },
     },

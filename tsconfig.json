@@ -14,5 +14,10 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  "exclude": [
+    "src/ocr/dolce/omrkit/decode.node.ts",
+    "src/ocr/dolce/omrkit/runtime.node.ts",
+    "src/ocr/dolce/omrkit/pdf.node.ts"
+  ]
 }

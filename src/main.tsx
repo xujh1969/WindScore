@@ -1,10 +1,14 @@
-import { StrictMode } from 'react';
+import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EditorApp, type Entry } from './v2/ui/EditorApp';
 import { HelpPage } from './v2/ui/HelpCenter';
 import { AndroidApp } from './v2/ui/AndroidApp';
 import { MusicXmlImport } from './v2/ui/MusicXmlImport';
 import './v2/ui/editor.css';
+
+// OCR 页懒加载：onnxruntime-web / pdfjs-dist 只被这条动态分支引用，
+// 独立成异步 chunk，其他页面的主包完全不碰它们
+const OcrPage = lazy(() => import('./ocr/ui/OcrPage').then((m) => ({ default: m.OcrPage })));
 
 // 白屏救援：任何未捕获的错误直接画在页面上。手机上没有开发者工具，
 // 白屏 = 用户只能看到一片空白无从反馈；把错误原文显示出来才能定位问题。
@@ -41,6 +45,10 @@ createRoot(el).render(
       <HelpPage />
     ) : entry === 'musicxml' ? (
       <MusicXmlImport />
+    ) : entry === 'ocr' ? (
+      <Suspense fallback={null}>
+        <OcrPage />
+      </Suspense>
     ) : (
       <EditorApp entry={entry as Entry} />
     )}

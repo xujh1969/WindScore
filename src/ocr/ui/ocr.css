@@ -1,0 +1,307 @@
+/* ScoreOCR 工作台样式（.ocr- 前缀）。
+ *
+ * 设计刻度与 WindScore 对齐（DESIGN_VARIANCE 3 / MOTION_INTENSITY 2 / VISUAL_DENSITY 6）：
+ * 锌灰中性色 + 品牌金强调、双档字号（12 正文 / 14 标题）、面板 10px / 控件 6px 圆角。
+ * 变量用 WindScore 同名变量：.ocr-app 独立运行时这里给的值生效；
+ * 迁移后 .ocr-app 放进 .v2-app 内部即自动继承 WindScore 主题，样式零改动即融合。
+ */
+
+.ocr-app {
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --border: #e4e4e7;
+  --text: #27272a;
+  --muted: #71717a;
+  --accent: #8a6a12;
+  --accent-soft: rgba(138, 106, 18, 0.12);
+  --ok: #15803d;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --fs-ui: 12px;
+  --fs-title: 14px;
+
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+}
+
+.ocr-app[data-theme='dark'] {
+  --surface: #18181b;
+  --surface-2: #09090b;
+  --border: #3f3f46;
+  --text: #e4e4e7;
+  --muted: #a1a1aa;
+  --accent: #d9b23c;
+  --accent-soft: rgba(217, 178, 60, 0.15);
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --error: #f87171;
+}
+
+/* ── 顶栏：与 .v2-head 同构 ── */
+.ocr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.ocr-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+.ocr-status {
+  color: var(--muted);
+  margin-right: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocr-status[data-busy] {
+  color: var(--accent);
+}
+
+/* ── 按钮：透明底 + 1px 边框，hover 浮出 accent-soft ── */
+.ocr-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.ocr-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.ocr-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ocr-btn[data-primary] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── 三栏工作台 ── */
+.ocr-workbench {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(200px, 30fr) minmax(260px, 42fr) minmax(220px, 28fr);
+  min-height: 0;
+}
+.ocr-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.ocr-pane:last-child {
+  border-right: none;
+}
+.ocr-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  flex: none;
+}
+.ocr-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+/* ── 左栏：jps 文本 ── */
+.ocr-jps-text {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 10px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+.ocr-jps-text:focus {
+  background: var(--surface-2);
+}
+.ocr-comments {
+  flex: none;
+  max-height: 120px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.ocr-comments > div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 中栏：原图 + 叠加层（图片最长边适配栏内容区，等比 contain）── */
+.ocr-pane[data-pane='image'] .ocr-pane-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ocr-img-wrap {
+  position: relative;
+  padding: 8px;
+  max-width: 100%;
+  max-height: 100%;
+}
+.ocr-img-wrap img,
+.ocr-img-wrap canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.ocr-overlay {
+  position: absolute;
+  inset: 8px;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
+  pointer-events: none;
+}
+.ocr-overlay rect {
+  fill: transparent;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.55;
+}
+.ocr-overlay rect[data-suspect] {
+  stroke: var(--warn);
+  opacity: 0.9;
+}
+.ocr-overlay rect[data-beat] {
+  stroke: var(--error);
+  opacity: 0.9;
+}
+
+/* ── 右栏：渲染预览 ── */
+.ocr-render-canvas {
+  display: block;
+  background: var(--surface);
+}
+.ocr-render-error {
+  padding: 10px;
+  color: var(--error);
+  font-family: var(--mono);
+  white-space: pre-wrap;
+}
+
+/* ── 空状态 ── */
+.ocr-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+/* ── 识别进度条 ── */
+.ocr-progress {
+  width: 140px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  flex: none;
+}
+.ocr-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+
+/* ── 三栏拖拽手柄 ── */
+.ocr-divider {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+.ocr-divider:hover,
+.ocr-app[data-dragging] .ocr-divider {
+  background: var(--accent);
+}
+.ocr-app[data-dragging] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ═══ 双栏页（WindScore 集成版 OcrPage）：左=打开/识别/原图，右=完整编辑器 ═══
+ * .ocr-page 挂在 .v2-app 的第二行网格里（auto minmax(0,1fr)），高度天然占满。 */
+.ocr-page {
+  display: grid;
+  grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
+  min-height: 0;
+}
+.ocr-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.ocr-left .ocr-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  flex: none;
+}
+.ocr-left .ocr-head .ocr-status {
+  flex-basis: 100%;
+  margin-right: 0;
+}
+.ocr-head-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.ocr-right {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ocr-right > * {
+  flex: 1;
+  min-height: 0;
+}

@@ -321,11 +321,13 @@ function beatsPerMeasure(beat: string): number {
  *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
  * 编辑、生成与曲库单功能页显示左上角「返回首页」。
  */
-export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'android-player';
+export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'android-player' | 'ocr';
 
-export function EditorApp({ entry = 'app', androidItem, androidDark, androidPreview = false, androidPack, onAndroidBack }: {
+export function EditorApp({ entry = 'app', androidItem, androidDark, androidPreview = false, androidPack, onAndroidBack, ocrItem }: {
   entry?: Entry; androidItem?: LibraryItem; androidDark?: boolean; androidPreview?: boolean;
   androidPack?: PackBundle; onAndroidBack?: () => void;
+  /** OCR 页（entry='ocr'）识别完成后由父组件传入的谱面：直接载入（同 androidItem 模式）。 */
+  ocrItem?: { name: string; text: string };
 }) {
   const androidPlayer = entry === 'android-player';
   const androidResumeTick = useRef<number | null>(null);
@@ -1124,6 +1126,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   // 启动：优先接着上次改；没有草稿才载入内置曲
   useEffect(() => {
     if (androidItem) { load(androidItem.name, androidItem.text, null, androidItem.id); return; }
+    // OCR 页不恢复编辑页的会话（那是另一条工作流的内容），先给内置示例让编辑器可用，
+    // 识别完成后 ocrItem effect 会整体替换
+    if (entry === 'ocr') { load(BUILTIN[0].name, BUILTIN[0].text); return; }
     const s = loadSession();
     if (s) {
       load(s.name, s.text, s.path, s.libraryId ?? null);
@@ -1133,7 +1138,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       return;
     }
     load(BUILTIN[0].name, BUILTIN[0].text);
-  }, [load, androidItem]);
+  }, [load, androidItem, entry]);
+
+  // OCR 页：识别完成后由父组件把谱面塞进来（对象每次新建，识别一次载入一次）
+  useEffect(() => {
+    if (ocrItem) load(ocrItem.name, ocrItem.text, null, null);
+  }, [load, ocrItem]);
 
   // 曲库存储的启动探测放在**恢复流程内部**（见 restore effect 里的 await initStore()），
   // 不再在这里「水合完再补一拍恢复」——那一拍会落在用户操作之后：
@@ -3664,12 +3674,16 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         <div className="v2-head-actions">
           {mode === 'score' ? (
             <>
-              <button className="v2-btn" onClick={onNew}>
-                新建
-              </button>
-              <button className="v2-btn" onClick={onOpen}>
-                打开
-              </button>
+              {entry === 'ocr' ? null : (
+                <>
+                  <button className="v2-btn" onClick={onNew}>
+                    新建
+                  </button>
+                  <button className="v2-btn" onClick={onOpen}>
+                    打开
+                  </button>
+                </>
+              )}
               <button className="v2-btn" onClick={onSave} disabled={view !== 'source' && score.events.length === 0}>
                 保存
               </button>

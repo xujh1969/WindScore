@@ -599,7 +599,9 @@ function parseSingle(text: string, modern = false): ParseResult {
       errors.push('拍内组不得跨反复记号，请先用 > 收尾');
       currentGroup = null;
     }
-    lastNoteId = null;
+    // 与 pushBarline 同口径：延音线挂起时保留连接（延音线可以跨反复线），
+    // 否则反复段首音的 addTie 会报「延音线必须连接两个音符」
+    if (!pendingTie) lastNoteId = null;
   };
 
   const pushSimple = (ev: Event): void => {
@@ -653,7 +655,9 @@ function parseSingle(text: string, modern = false): ParseResult {
 
   for (const line of body) {
     // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
-    const tokens = line.replace(/~/g, '~ ').split(/\s+/).filter(Boolean);
+    // 只在 ~ 后面（可隔空白）跟着音符时才切分：5~@（延音+延长号）这类「~ 后带技法
+    // 后缀」的合法写法（NOTE_RE 允许）必须保持整 token，否则 @ 会被孤成独立记号报错。
+    const tokens = line.replace(/~(?=\s*[0-7Xx])/g, '~ ').split(/\s+/).filter(Boolean);
     for (let raw of tokens) {
       /*
        * 左右括号记号：**全角** （ ）

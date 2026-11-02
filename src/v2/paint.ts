@@ -677,23 +677,11 @@ function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintT
   ctx.textAlign = 'left';
   ctx.font = M.titleKeyFont;
   const keyW = paintTitleKey(ctx, t.key, t.leftX, t.colY + 6);
-  const [num, den] = t.beat.split('/');
-  if (num && den) {
-    // 拍号叠写：分子在上、分母在下（简谱惯例，如图示 4/4）。
-    // 分数线显式画并与数字同色（靠两数字自然贴近会出字体伪影）；
-    // 位置按实测字形边界取正中——不同字体的数字上伸/下延不一样，
-    // 拿基线硬算会贴住其中一个数字
+  {
+    // 拍号叠写：分子在上、分母在下（简谱惯例）；混合拍 6/8+9/8 各段并排
     const bx = t.leftX + keyW + 10;
     ctx.font = M.titleBeatFont;
-    const nm = ctx.measureText(num);
-    const dm = ctx.measureText(den);
-    const numY = t.colY - 4;
-    const denY = t.colY + 16;
-    ctx.fillText(num, bx, numY);
-    // 分子字形底边（= 其基线）到分母字形顶边的中点
-    const barY = (numY + denY - dm.actualBoundingBoxAscent) / 2;
-    ctx.fillRect(bx, barY - 0.75, Math.max(nm.width, dm.width), 1.5);
-    ctx.fillText(den, bx, denY);
+    paintMeterFractions(ctx, t.beat, bx, t.colY + 6, null, -10, 10);
   }
   ctx.font = M.titleInfoFont;
   ctx.fillText(t.tempo, t.leftX, t.tempoY);
@@ -814,6 +802,54 @@ interface LinePaint {
  * 拍号记号（叠写的分子 / 分母 + 中间横线），居中画在 x 上。
  * 两处共用：小节线右侧（常规）、小节第一颗音左侧（该小节线在行末时）。
  */
+/**
+ * 拍号叠写（支持混合拍 "6/8+9/8"：各段并排，段间画 "+"）。
+ * x 为左缘，y 为分数线高度；theme 为 null 时沿用当前画笔色（谱头用）。
+ * 返回占用宽度。
+ */
+function paintMeterFractions(
+  ctx: CanvasRenderingContext2D,
+  meter: string,
+  x: number,
+  y: number,
+  theme: PaintTheme | null,
+  numDy: number,
+  denDy: number,
+): number {
+  const segs = meter.split('+').map((s) => s.trim().split('/'));
+  ctx.textAlign = 'center';
+  if (theme) {
+    ctx.fillStyle = theme.ink;
+    ctx.strokeStyle = theme.ink;
+  } else {
+    ctx.strokeStyle = ctx.fillStyle as string;
+  }
+  let cx = x;
+  const gap = 4 * M.k;
+  segs.forEach((seg, si) => {
+    const [num, den] = seg;
+    if (si > 0) {
+      ctx.fillText('+', cx + gap, y);
+      cx += gap * 2 + ctx.measureText('+').width;
+    }
+    if (num && den) {
+      const nw = ctx.measureText(num).width;
+      const dw = ctx.measureText(den).width;
+      const cxSeg = cx + Math.max(nw, dw) / 2;
+      ctx.fillText(num, cxSeg, y + numDy);
+      ctx.fillText(den, cxSeg, y + denDy);
+      ctx.lineWidth = Math.max(1, M.k);
+      ctx.beginPath();
+      ctx.moveTo(cxSeg - Math.max(nw, dw) / 2, y);
+      ctx.lineTo(cxSeg + Math.max(nw, dw) / 2, y);
+      ctx.stroke();
+      cx += Math.max(nw, dw);
+    }
+  });
+  ctx.textAlign = 'left';
+  return cx - x;
+}
+
 function drawMeterMark(
   ctx: CanvasRenderingContext2D,
   meter: string,
@@ -821,20 +857,11 @@ function drawMeterMark(
   y: number,
   theme: PaintTheme,
 ): void {
-  const [num, den] = meter.split('/');
   ctx.font = M.markFont;
-  ctx.textAlign = 'center';
-  ctx.fillStyle = theme.ink;
-  ctx.fillText(num, x, y - 8 * M.k);
-  ctx.fillText(den, x, y + 8 * M.k);
-  ctx.strokeStyle = theme.ink;
-  ctx.lineWidth = Math.max(1, M.k);
-  const half = Math.max(ctx.measureText(num).width, ctx.measureText(den).width) / 2 + 2 * M.k;
-  ctx.beginPath();
-  ctx.moveTo(x - half, y);
-  ctx.lineTo(x + half, y);
-  ctx.stroke();
   ctx.textAlign = 'left';
+  // 先干量总宽，居中起笔
+  const w = paintMeterFractions(ctx, meter, 0, -9999, null, -8 * M.k, 8 * M.k);
+  paintMeterFractions(ctx, meter, x - w / 2, y, theme, -8 * M.k, 8 * M.k);
 }
 
 function paintLine(

@@ -4748,6 +4748,16 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 placeholder="4/4"
                 onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: v })))}
               />
+              <MetaSelect
+                label="第二节拍"
+                value={score.meta.beat.includes('+') ? score.meta.beat.split('+')[1]! : ''}
+                options={['无', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
+                values={['', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
+                onCommit={(v) => {
+                  const base = score.meta.beat.split('+')[0] || '4/4';
+                  setScore(resplitOversizedGroups(setMeta(score, { beat: v ? `${base}+${v}` : base })));
+                }}
+              />
               <MetaInput
                 label="速度"
                 type="number"

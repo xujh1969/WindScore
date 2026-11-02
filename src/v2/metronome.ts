@@ -9,6 +9,7 @@
 
 import { TICKS_PER_BEAT } from './ticks';
 
+import { beatsPerMeasure } from './meter';
 export interface MetronomePattern {
   id: string;
   label: string;
@@ -109,14 +110,10 @@ export function meterBeats(beat: string): { beatsPerBar: number; strongEvery: nu
   return { beatsPerBar, strongEvery: beatsPerBar };
 }
 
-/** 拍号 → 一小节多少 tick。6720 tick 一拍时所有合法拍号都是整数（3/8 = 10080） */
+/** 拍号 → 一小节多少 tick。6720 tick 一拍时所有合法拍号都是整数（3/8 = 10080）。
+ *  混合拍 6/8+9/8 = 各段之和（统一走 meter.ts 的解析）。 */
 export function barTicksOf(beat: string): number {
-  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(beat.trim());
-  if (!m) return 4 * TICKS_PER_BEAT;
-  const num = Number(m[1]);
-  const den = Number(m[2]);
-  if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return 4 * TICKS_PER_BEAT;
-  return Math.max(1, Math.round(((num * 4) / den) * TICKS_PER_BEAT));
+  return Math.max(1, Math.round(beatsPerMeasure(beat) * TICKS_PER_BEAT));
 }
 
 /** 拍号段：从 fromTick（含）起用这套拍号；小节线落在 anchorTick + k×barTicks 上 */

@@ -13,7 +13,7 @@ import { measureStaffInk } from './staffInk';
 import type { StaffPitchMode } from './pitch';
 import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
 import { layoutEnsemble } from './ensembleLayout';
-import { meterAt } from './meter';
+import { beatsPerMeasure, meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, type LyricLine } from './lyricLines';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, positionDashes, type SpacingUnit } from './spacing';
 import type {
@@ -545,9 +545,7 @@ export function isBarrier(ev: Event): boolean {
 }
 
 function beatsPerMeasureOf(beat: string): number {
-  const [n, d] = beat.split('/').map(Number);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-  return n * (4 / d);
+  return beatsPerMeasure(beat); // 统一走 meter.ts（支持混合拍 6/8+9/8 = 各段之和）
 }
 
 /**

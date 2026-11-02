@@ -1,16 +1,45 @@
 import type { Score } from './types';
 import { TICKS_PER_BEAT } from './ticks';
 
-export function validMeter(value: string): boolean {
-  const m = /^([1-9]\d*)\/(1|2|4|8|16|32)$/.exec(value);
-  return !!m && Number(m[1]) <= 32;
+/** 单段拍号："6/8" 这种分子/分母形式 */
+export interface MeterSegment {
+  num: number;
+  den: number;
 }
 
-/** 一小节的拍数（四分 = 1 拍口径）：多小节休止 / 小节反复号的整小节时值用 */
+const SEG_RE = /^([1-9]\d*)\/(1|2|4|8|16|32)$/;
+
+/**
+ * 解析拍号串为段列表：
+ *   - "4/4"          → [{4,4}]
+ *   - "6/8+9/8"      → [{6,8},{9,8}]（混合拍/第二节拍，GB/T 46845 §5.3 拍号并排写法）
+ *   - 非法/旧遗留值   → null
+ */
+export function parseMeter(value: string): MeterSegment[] | null {
+  if (!value) return null;
+  const segs: MeterSegment[] = [];
+  for (const part of value.split('+')) {
+    const m = SEG_RE.exec(part.trim());
+    if (!m || Number(m[1]) > 32) return null;
+    segs.push({ num: Number(m[1]), den: Number(m[2]) });
+  }
+  return segs.length ? segs : null;
+}
+
+export function validMeter(value: string): boolean {
+  return parseMeter(value) !== null;
+}
+
+/** 一小节的拍数（四分 = 1 拍口径）：混合拍 = 各段之和（6/8+9/8 = 3 + 4½ = 7½ 拍） */
 export function beatsPerMeasure(beat: string): number {
-  const [n, d] = beat.split('/').map(Number);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-  return n * (4 / d);
+  const segs = parseMeter(beat);
+  if (!segs) {
+    // 旧遗留值兜底（不该出现，但不炸）
+    const [n, d] = beat.split('/').map(Number);
+    if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
+    return n * (4 / d);
+  }
+  return segs.reduce((a, s) => a + s.num * (4 / s.den), 0);
 }
 
 export function meterAt(score: Score, index: number): string {
@@ -30,8 +59,8 @@ export function meterAt(score: Score, index: number): string {
  *   - 6/8、9/8、12/8：复拍子，边界 = 1 大拍 = 3 个八分 = 1½ 拍
  *   - 3/8：连通边界就是小节本身 = 3 个八分 = 1½ 拍
  *   - 6/4：复拍子，边界 = 1 大拍 = 3 个四分 = 3 拍
- *   - 混合拍子（5/4、7/4、5/8、7/8）按小节线上的分组方案（3+2 / 2+3…）定，
- *     待小节线注记落地后接入，暂按 1 拍
+ *   - 混合拍（6/8+9/8 这类 N/M+N/M）：各段全是复拍子（分母 8、分子 6/9/12）时
+ *     大拍仍是 1½ 拍，边界统一；否则暂按 1 拍（混合单拍子的分组方案待小节线注记落地）
  */
 export function groupTicks(beat: string): number {
   if (beat === '3/8') return Math.round(TICKS_PER_BEAT * 1.5);
@@ -40,6 +69,11 @@ export function groupTicks(beat: string): number {
     // 大拍 = 3 个基础音符；基础音符按时值分母换算成口径A拍数（四分 = 1 拍）
     const base = { 2: 2, 4: 1, 8: 0.5, 16: 0.25 }[Number(m[2]) as 2 | 4 | 8 | 16];
     return Math.round(TICKS_PER_BEAT * base * 3);
+  }
+  // 混合拍：全段复拍子 → 大拍 1½ 拍
+  const segs = parseMeter(beat);
+  if (segs && segs.length > 1 && segs.every((s) => s.den === 8 && [6, 9, 12].includes(s.num))) {
+    return Math.round(TICKS_PER_BEAT * 1.5);
   }
   return TICKS_PER_BEAT;
 }

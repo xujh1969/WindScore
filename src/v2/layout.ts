@@ -320,6 +320,12 @@ export interface LayoutResult {
   title: LayoutTitle | null;
   width: number;
   height: number;
+  /**
+   * 全部源码行按「自然宽度」（不拉伸对齐）排时的最大行宽（含行首让位与行边距）。
+   * 调用方拿它做贴紧内容的二次排版（如 OCR 预览：估宽 → 探测 → 按自然宽重排），
+   * 让版面宽逼近最宽一行的真实占位，显示缩放后字号最大。
+   */
+  naturalWidth: number;
   systems?: { from: number; to: number; top: number; bottom: number; bracketX: number }[];
 }
 
@@ -921,6 +927,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
 
   /** 已经放过音符 / 休止符了吗——谱面开头的小节线不编号（与 measureAt 同口径） */
   let anyTimed = false;
+  // 各行自然宽度的最大值（含行首让位、左右内边距与行末小节线外扩），见 LayoutResult.naturalWidth
+  let naturalMax = 0;
 
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
@@ -969,6 +977,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 行末小节线的墨迹（竖线居中）要落在右锚线上，格子按占位公式探出半格；
     // 基准必须与 barlineWidthOf 同源，否则负字间距下右缘会多探出 5px
     const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - barlineWidthOf(lastBar.ev as BarlineEvent, k, spacing)) / 2 : 0;
+    // 行内容消耗的是 maxX 口径（contentWidth − 2×padding），换算回 contentWidth 要补双倍 padding，
+    // 少补会让临界行在贴紧宽度下被折行（chorus_02 实测 16 行变 20 行）
+    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
     const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
     const advances = new Map<number, number>();
     if (!opts.positions) units.forEach((u, ui) => {
@@ -1590,6 +1601,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     title,
     width: opts.contentWidth,
     height: padTop + titleHeight + lines.length * lineHeight + padBottom,
+    naturalWidth: naturalMax,
   };
 }
 

@@ -107,6 +107,23 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       lead: previous?.kind === 'barline' && previous.beatAfter ? METER_LEAD * k : 0,
       forced: tail?.kind === 'barline' && !!tail.breakAfter };
   });
+  // 各「源码行」（forced 组）按自然宽排时的最大内容宽：左栏（含左 padding）+
+  // 行首让位 + 组内小节自然宽 + 右 padding。多声部排版自己断系统/缩放，
+  // 这个值供调用方（OCR 预览二次排版）把 contentWidth 收到刚好不缩放
+  let naturalMax = 0;
+  {
+    let acc = 0;
+    let leadAcc = 0;
+    for (let mi = 0; mi < units.length; mi++) {
+      acc += widths[mi];
+      leadAcc += units[mi].lead ?? 0;
+      if (units[mi].forced || mi === units.length - 1) {
+        naturalMax = Math.max(naturalMax, left + leadAcc + acc + (opts.padding ?? 40));
+        acc = 0;
+        leadAcc = 0;
+      }
+    }
+  }
   const starts = balancedBreaks(units, available);
   const scales: number[] = [];
   for (let si = 0; si < starts.length; si++) {
@@ -168,5 +185,5 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
   }
   addPlaybackAnchors(lines, measured[0].glyph);
-  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24 };
+  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24, naturalWidth: naturalMax };
 }

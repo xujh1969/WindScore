@@ -2897,6 +2897,29 @@ const blank = (): Score => ({
       JSON.stringify(edges(off)),
     );
   }
+  // 嵌套连线（双重弧线，兼容 dolce slurStart=2）：`((3 4 5))` 音只喂内层，
+  // 直接包住内层的外层闭合时镜像内层边链 → 两条同跨度弧，渲染外层包住内层
+  {
+    const r = parseDsl('@beat 4/4\n\n((3 4 5)) ||\n');
+    check('嵌套连线解析无错', r.errors.length === 0, r.errors.join(';'));
+    const s2 = r.score!;
+    const ids2 = s2.events.filter((e) => e.kind === 'note').map((e) => e.id);
+    const outsOf = (id: string) =>
+      (s2.events.find((e) => e.id === id) as NoteEvent).ties?.filter((t) => t.kind === 'slur') ?? [];
+    check('链首有两条出边', outsOf(ids2[0]!).length === 2, JSON.stringify(outsOf(ids2[0]!)));
+    check('两条弧组不同', new Set(outsOf(ids2[0]!).map((t) => t.g)).size === 2);
+    const arcs2 = layoutScore(s2, { contentWidth: 1400 }).lines.flatMap((l) => l.arcs).filter((a) => a.kind === 'slur');
+    check('画面上两条弧', arcs2.length === 2, String(arcs2.length));
+    // 序列化按「一音一条出边」重建括号，双重弧退化为单条（已记录在兼容性妥协清单）——读回必须无错
+    const text2 = serializeDsl(s2);
+    const back2 = parseDsl(text2);
+    check('嵌套序列化读回无错（退化为单弧）', back2.errors.length === 0, back2.errors.join(';'));
+    // 部分重叠的嵌套不是双重弧线：外层有自己的音，各按各的成员数校验
+    const pr = parseDsl('@beat 4/4\n\n((3 4) 5 6) ||\n');
+    check('部分重叠嵌套解析无错', pr.errors.length === 0, pr.errors.join(';'));
+    const bad = parseDsl('@beat 4/4\n\n(3 (4 5)) ||\n');
+    check('非包裹型嵌套外层成员不足仍报错', bad.errors.some((e) => e.includes('至少要括住两个音')), bad.errors.join(';'));
+  }
   // 真写了内容却一个事件都解析不出来 → 仍然报错（不能把真错误也吞掉）
   check('写了内容解析不出事件仍报错', parseDsl('@beat 4/4\n\n哈哈哈\n').errors.length > 0);
 

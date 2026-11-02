@@ -395,6 +395,8 @@ function parseSingle(text: string, modern = false): ParseResult {
     notes: number;
     /** 连线组 id：一对括号 = 一条连线 = 一个组（Tie.g） */
     id: string;
+    /** 本层喂到的边（from,to）：嵌套闭合时镜像给空的外层（双重弧线） */
+    chain: Array<[string, string]>;
   }
   const slurStack: SlurScope[] = [];
   let slurSeq = 0;
@@ -524,7 +526,10 @@ function parseSingle(text: string, modern = false): ParseResult {
       // 只喂给最内层未闭合的连线：嵌套时内层的音不该串到外层链上
       const s = slurStack[slurStack.length - 1];
       if (s) {
-        if (s.last && s.last !== id) addTie(s.last, id, 'slur', s.id);
+        if (s.last && s.last !== id) {
+          addTie(s.last, id, 'slur', s.id);
+          s.chain.push([s.last, id]);
+        }
         s.last = id;
         s.notes += 1;
       }
@@ -535,7 +540,7 @@ function parseSingle(text: string, modern = false): ParseResult {
   };
 
   const openSlur = (): void => {
-    slurStack.push({ last: null, notes: 0, id: `s${++slurSeq}` });
+    slurStack.push({ last: null, notes: 0, id: `s${++slurSeq}`, chain: [] });
   };
 
   const closeSlur = (): void => {
@@ -545,6 +550,18 @@ function parseSingle(text: string, modern = false): ParseResult {
       return;
     }
     if (s.notes < 2) errors.push('连音线至少要括住两个音');
+    // 嵌套连线（如 `((3 4 5))` 双重弧线）：音只喂最内层，直接包住它的外层一条音都没
+    // 吃到——把内层的边链镜像成外层自己的第二条弧（新组，渲染端外层弧包住内层）。
+    // 部分重叠的嵌套（外层有自己的音）不算这种情形，仍按各自成员数校验。
+    const outer = slurStack[slurStack.length - 1];
+    if (outer && outer.notes === 0 && !outer.last && s.chain.length) {
+      outer.id = `s${++slurSeq}`;
+      outer.notes = s.notes; // 镜像后成员数与内层一致，闭合校验不再误报
+      for (const [a, b] of s.chain) {
+        addTie(a, b, 'slur', outer.id);
+        outer.chain.push([a, b]);
+      }
+    }
   };
 
   const openGroup = (): void => {

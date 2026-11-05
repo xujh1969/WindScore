@@ -106,8 +106,15 @@ function voltaToken(text: string): string | null {
 
 interface Segment {
   notes: JpNum[]
+  leadX: number // 本段左边界 x（小字谱按 x 锚定主谱小节时用）
   tailX: number // 本段右边界 x（下一根小节线）；末段 tailX = 行末线
   isLast: boolean
+}
+
+/** 中位数（无样本返回 0）。 */
+function medOf(xs: number[]): number {
+  const s = xs.filter(Number.isFinite).sort((a, b) => a - b)
+  return s.length ? s[Math.floor(s.length / 2)]! : 0
 }
 
 /**
@@ -149,7 +156,7 @@ function segmentsOf(row: StaffRow, comments: string[], rowLabel: string): Segmen
       if (out.length) out[out.length - 1]!.tailX = tail
       continue
     }
-    out.push({ notes: notesIn, tailX: tail, isLast: false })
+    out.push({ notes: notesIn, leadX: lead, tailX: tail, isLast: false })
   }
   if (out.length) out[out.length - 1]!.isLast = true
   return out
@@ -160,11 +167,15 @@ interface RowWithIdx {
   idx: number // rec.rows 的原始下标（locator 与注释里的「谱行 N」都用它）
 }
 
-/** 谱行集合 → 正文行数组（不含歌词与注释）。同时产出 locator 与注释。 */
+/** 谱行集合 → 正文行数组（不含歌词与注释）。同时产出 locator 与注释。
+ *  marks：缺席谱行的补齐——restBefore 按行序号在本行**之前**插入补齐行（每行一根
+ *  `0*N` 多小节休止，独占一行、不跨行：总谱排版里多小节休止横线跨系统会画成
+ *  贯穿长条）；restTail 在全部行之后追加（曲尾缺席段）。 */
 function renderRows(
   rows: RowWithIdx[],
   beats: number,
   emit: { text: string[]; comments: string[]; locator: LocatorEntry[]; offset: () => number },
+  marks?: { restBefore?: Map<number, string[]>; restTail?: string[] },
 ): void {
   const lastRowIdx = rows.length - 1
   for (let ri = 0; ri < rows.length; ri++) {
@@ -173,6 +184,8 @@ function renderRows(
     if (row.lyricLabels?.length) {
       emit.comments.push(`[识别] 歌词段号 ${row.lyricLabels.join('/')}（${rowLabel}，jps 未承载）`)
     }
+    // 本行之前的缺席补齐行（该声部在这几条谱行缺席）
+    for (const t of marks?.restBefore?.get(ri) ?? []) emit.text.push(t)
     const segs = segmentsOf(row, emit.comments, rowLabel)
     const lineParts: string[] = []
     let lineOffset = 0 // 相对 jps 全文的偏移基（由 emit.offset() 提供）
@@ -230,6 +243,9 @@ function renderRows(
       let openTuplet = false
       for (let ni = 0; ni < seg.notes.length; ni++) {
         const n = seg.notes[ni]!
+        // 前奏/过门括号（parenSlurs 校正标记）：独立的全角括号 token——
+        // WindScore 里（ ）是字面括号记号（paren 指令），与半角 ( ) 连线意义不同
+        if (n.parenBefore) push('（')
         if (!openTuplet && n.timeChange && ni > 0) {
           emit.comments.push(`[识别] 曲中转拍 ${n.timeChange.beats}/${n.timeChange.beatType}（${rowLabel}，锚在小节中间，未承载）`)
         }
@@ -262,6 +278,8 @@ function renderRows(
           }
           push(noteToken(n, false), { n, ni })
         }
+        // 前奏括号收口：贴在本音 token 之后（「7v-- ）」形态）
+        if (n.parenAfter) push('）')
         // 跳转记号（独立 token，跟在音符后）
         if (n.segno) push('$s')
         for (const jm of n.jumpMarks ?? []) {
@@ -386,6 +404,7 @@ function renderRows(
     }
     emit.text.push(lineParts.join(' '))
   }
+  for (const t of marks?.restTail ?? []) emit.text.push(t)
   if (beats <= 0) emit.comments.push('[识别] 拍号缺失，按 4/4 处理') // 保守兜底提示
 }
 
@@ -468,27 +487,213 @@ export function recognizedToJps(rec: RecognizedScore, opts: ConvertOptions = {})
     return true
   })
 
-  // ── 正文：单声部 vs 多声部（声部行在 rec.rows 里按视觉交错，按 voice 归组）──
-  const hasVoice = rows.some((r) => r.voice !== undefined)
-  if (!hasVoice) {
-    renderRows(rows.map((row, idx) => ({ row, idx })), meter.beats, emit)
-    for (const l of lyricLines(rows)) textLines.push(l)
-  } else {
-    const voiceOf = (r: StaffRow): number => r.voice ?? 0
-    const voices = [...new Set(rows.map(voiceOf))].sort((a, b) => a - b)
-    rows.forEach((r, i) => {
-      if (r.voice === undefined) comments.push(`[识别] 谱行 ${i + 1} 无声部标记，按声部 1 处理`)
-    })
-    voices.forEach((v, vi) => {
-      const vRows = rows
-        .map((row, idx) => ({ row, idx }))
-        .filter(({ row }) => voiceOf(row) === v)
-      textLines.push(`@part ${vi + 1} "声部${vi + 1}"`)
-      textLines.push('@mix 1 on all')
-      renderRows(vRows, meter.beats, emit)
-      for (const l of lyricLines(vRows.map(({ row }) => row))) textLines.push(l)
+  // ── 小字谱行拆分 ──
+  // 印在主谱行上方/下方的伴唱/伴奏小号谱行（jianpu.ts 按核高 0.5~0.82×主谱行认出、打 cue 标）。
+  // 不拆会把它们当主声部的一行混进简谱。拆出来转成 jps 的 `@小谱 起止小节 "名称"` 块。
+  // 小字谱是印在两行之间的「下一行上方」ossia，语义上属于它**下面**那行主谱
+  // （用户实测：锚到上一行时小字谱整体跑到上一行上方，黄色三角也指到上面的音符）。
+  // 锚定小节按下方主谱行按 x 对齐推算。
+  const cueRows = rows.filter((r) => r.cue)
+  const mainRows = rows.filter((r) => !r.cue)
+  if (cueRows.length) {
+    comments.push(`[识别] 检出 ${cueRows.length} 行小字谱，按行内空当分段后各自转成 @小谱 块（锚定小节按 x 对齐下方主谱行推算，请核对）`)
+  }
+  // 每条主谱行覆盖的小节号区间。多声部并行行（同一 system）覆盖相同小节段：按系统块累计，
+  // 与下方 blocks 口径一致；单声部每行自成一块。
+  const mainAnchors: { row: StaffRow; start: number; end: number }[] = []
+  {
+    let mi = 0
+    let blockMeasures = 0
+    let prev: StaffRow | undefined
+    for (const r of mainRows) {
+      const n = segmentsOf(r, [], '').length
+      const sameBlock = prev !== undefined && r.system !== undefined && prev.system === r.system
+      if (!sameBlock && prev !== undefined) { mi += blockMeasures; blockMeasures = 0 }
+      blockMeasures = Math.max(blockMeasures, n)
+      mainAnchors.push({ row: r, start: mi + 1, end: mi + n })
+      prev = r
+    }
+  }
+  /** 一条小字谱行按 x 上的**大空当**切成几段：原谱的小字谱常是主谱行上方零散的
+   *  几小段（前奏括号续句、伴唱提示…），不是一整行。整行合成一个 @小谱 会把它们
+   *  全拉到同一组小节上，位置全错（用户实测《下雨的时候》红框三段）。
+   *  阈值=行内相邻间距中位数的 4 倍且不小于 2.5 个字高：段内音符挨着，段间常隔一个大空当。 */
+  const splitCueRow = (cr: StaffRow): { row: StaffRow; x0: number; x1: number }[] => {
+    const sorted = [...cr.nums].sort((a, b) => a.bbox.x - b.bbox.x)
+    if (!sorted.length) return []
+    const numH = medOf(sorted.map((n) => n.bbox.h)) || 1
+    const gaps = sorted.slice(1).map((n, i) => n.bbox.x - (sorted[i]!.bbox.x + sorted[i]!.bbox.w))
+    const medGap = medOf(gaps.filter((g) => g > 0))
+    const breakGap = Math.max(numH * 2.5, medGap * 4, 24)
+    const clusters: JpNum[][] = []
+    let cur: JpNum[] = [sorted[0]!]
+    for (let i = 1; i < sorted.length; i++) {
+      const n = sorted[i]!, prev = sorted[i - 1]!
+      if (n.bbox.x - (prev.bbox.x + prev.bbox.w) > breakGap) { clusters.push(cur); cur = [n] }
+      else cur.push(n)
+    }
+    clusters.push(cur)
+    return clusters.map((cl) => {
+      const x0 = cl[0]!.bbox.x
+      const x1 = Math.max(...cl.map((n) => n.bbox.x + n.bbox.w))
+      // 段内真实小节线保留（如 `(5 6 7 1 |3---)` 中间那根）；两端补虚拟边界，
+      // 保证每个 @小谱 块体至少有一个完整小节段（segmentsOf 不会输出空行）。
+      // 虚拟边界要离末音一个字高以上：segmentsOf 的复纵线合并门是 max(10, 行高/2)，
+      // 贴 0.5px 会把段内最后一根真线与虚拟边界合并、小节线凭空消失。
+      const inner = cr.barlineXs.filter((x) => x > x0 + numH * 0.3 && x < x1 - numH * 0.3)
+      return {
+        x0, x1,
+        row: {
+          ...cr,
+          nums: cl,
+          barlineXs: [x0 - numH, ...inner, x1 + numH],
+          // 段尾样式（终止线 / 复纵线）是整行的属性，不该带到每一段上
+          finalBarline: undefined, finalBarlineThin: undefined,
+          doubleBarXs: undefined, endBarXs: undefined, lyricLabels: undefined,
+        },
+      }
     })
   }
+  /** 小字谱段的 x 范围 → 主谱行的小节号：用主谱行的段边界（leadX/tailX）按 x 对齐，
+   *  不再整行笼统地套 [start,end]。同一页的主谱行与小字谱行共用一套 x 栅格。 */
+  const anchorByX = (a: (typeof mainAnchors)[number], x0: number, x1: number): { start: number; end: number } => {
+    const segs = segmentsOf(a.row, [], '')
+    if (!segs.length) return { start: a.start, end: a.end }
+    const segAt = (x: number): number => {
+      let best = 0, bestD = Infinity
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i]!
+        const d = x < s.leadX ? s.leadX - x : x > s.tailX ? x - s.tailX : 0
+        if (d < bestD) { bestD = d; best = i }
+      }
+      return best
+    }
+    const s = segAt(x0), e = Math.max(s, segAt(x1))
+    return { start: a.start + s, end: a.start + e }
+  }
+  // 全谱所有小字谱段统一编号：同名的一堆「小字谱」在编辑界面里根本分不清哪条是哪条
+  const totalCueParts = cueRows.reduce((n, r) => n + splitCueRow(r).length, 0)
+  let cuePartNo = 0
+  const emitCueRows = (): void => {
+    for (const cr of cueRows) {
+      const rowIdx = rows.indexOf(cr)
+      const parts = splitCueRow(cr)
+      if (!parts.length) { comments.push(`[识别] 谱行 ${rowIdx + 1}：小字谱行未解析出音符，已丢弃`); continue }
+      // 只认小字谱**下方**的主谱行：小字谱在版面里是下一行上方的 ossia。
+      // 旧版取 |topY - cueTopY| 最近的行，而小字谱常紧贴上一行下沿（《下雨的时候》
+      // 上一行差 28px、下一行差 44px），于是三段全锚到上一行——小字谱被画到
+      // 上一行上方、三角也指到小字谱上面的主谱音符。以小字谱行中线为界判定下方行，
+      // 可容忍小字谱与下一行轻微重叠（实测《姑苏行》重叠 3px）。
+      const cueMid = (cr.topY + cr.bottomY) / 2
+      const below = mainAnchors.filter((a) => a.end >= a.start && a.row.topY > cueMid)
+      // 页尾小字谱下方没有主谱行时才退回纵向最近行，别整行丢弃
+      const pool = below.length ? below : mainAnchors.filter((a) => a.end >= a.start)
+      let best: (typeof mainAnchors)[number] | undefined
+      let bestDist = Infinity
+      for (const a of pool) {
+        const d = below.length ? a.row.topY - cueMid : Math.abs(a.row.topY - cr.topY)
+        if (d < bestDist) { bestDist = d; best = a }
+      }
+      if (!best) { comments.push(`[识别] 谱行 ${rowIdx + 1}：小字谱未找到可锚定的主谱行，已丢弃`); continue }
+      comments.push(`[识别] 谱行 ${rowIdx + 1}：小字谱按空当分成 ${parts.length} 段，绑定到下方主谱行 y≈${best.row.topY.toFixed(0)}，各自按 x 对齐锚定小节，请核对`)
+      parts.forEach((part, pi) => {
+        const { start, end } = anchorByX(best!, part.x0, part.x1)
+        cuePartNo += 1
+        const name = totalCueParts > 1 ? `小字谱${cuePartNo}` : '小字谱'
+        comments.push(`[识别] 谱行 ${rowIdx + 1} 第 ${pi + 1} 段：x=${part.x0.toFixed(0)}~${part.x1.toFixed(0)} → 锚定第 ${start}-${end} 小节`)
+        textLines.push('')
+        textLines.push(`@小谱 ${start}-${end} "${name}"`)
+        renderRows([{ row: part.row, idx: rowIdx }], meter.beats, emit)
+      })
+    }
+  }
+
+  // ── 正文：单声部 vs 多声部（声部行在 rec.rows 里按视觉交错，按 voice 归组）──
+  const isUnison = (r: StaffRow): boolean => r.voice === undefined
+  const voicedIds = [...new Set(mainRows.filter((r) => !isUnison(r)).map((r) => r.voice!))].sort((a, b) => a - b)
+  if (!voicedIds.length) {
+    renderRows(mainRows.map((row, idx) => ({ row, idx })), meter.beats, emit)
+    for (const l of lyricLines(mainRows)) textLines.push(l)
+  } else {
+    // 齐唱谱的落盘形态：无 voice 标记的行 = 齐唱段（原谱单行记写、全体都唱）——
+    // **把齐唱段旋律原样写进每一个声部**（不用「同N-M/分」标记 + 休止补齐）：
+    // ①显示层与原谱一致（每个声部都在唱，而不是画一片休止）；②各声部小节表
+    // 完全一致，多声部总谱排版（ensembleLayout 按小节号对齐断行）不会错位；
+    // ③播放各声部照常发声。此前试过「同/分标记 + 0*N 多小节休止补齐」：
+    // 多小节休止横线在总谱里跨系统画成一根贯穿长条，且显示一片休止与原谱相悖。
+    // 声部在某谱行（系统）缺席（其他声部独唱段）才用 `0*N` 逐行补齐——每行一根、
+    // 不跨行。歌词随齐唱行一并写进各声部（各声部歌词 token 数与自身音符数对齐）。
+    // **例外：不带歌词的 unison 行是器乐段（前奏/间奏，没有人唱）**，只写进声部 1，
+    // 其余声部按块 `0*N` 休止补齐。此前一律复制进每个声部：合唱谱的钢琴前奏会让
+    // 四个声部齐奏同一段旋律（播放音量×4），jps 里同一段谱重复 N 遍、每份歌词前面
+    // 还多出一串 `_` 占位——肉眼简单的谱，文本翻倍还难读（用户反馈）。
+    const unisonSings = (r: StaffRow): boolean =>
+      isUnison(r) && r.nums.some((n) => (n.lyrics ?? []).some((t) => !!t))
+    const isInstrumental = (r: StaffRow): boolean => isUnison(r) && !unisonSings(r)
+    const partCount = voicedIds.length
+    const rowMeasures = (r: StaffRow): number => segmentsOf(r, [], '').length
+    const unisonRows = mainRows.filter(isUnison)
+    if (unisonRows.length) {
+      const label = (rs: StaffRow[]): string => {
+        const a = mainRows.indexOf(rs[0]!) + 1
+        const b = mainRows.indexOf(rs[rs.length - 1]!) + 1
+        return a === b ? String(a) : `${a}–${b}`
+      }
+      const sung = unisonRows.filter((r) => !isInstrumental(r))
+      const inst = unisonRows.filter(isInstrumental)
+      if (sung.length) comments.push(`[识别] 谱行 ${label(sung)} 无声部标记 → 齐唱段，该段旋律已原样写进全部 ${partCount} 个声部`)
+      if (inst.length) comments.push(`[识别] 谱行 ${label(inst)} 无声部标记且无歌词 → 前奏/间奏段，仅写入声部 1，其余声部休止补齐`)
+    }
+    /** 系统块：同一 system 的行（多声部并行、覆盖相同小节段）归一块，齐唱行各自成块；
+     *  块的小节数取块内各行检测结果的最大值。缺席补齐按块计（每块一次 0*N），
+     *  不能按行——并行行的小节段是同一份，按行补会把小节数翻几倍。 */
+    const blocks: { rows: number[]; measures: number }[] = []
+    mainRows.forEach((r, gi) => {
+      const last = blocks[blocks.length - 1]
+      const lastRow = last ? mainRows[last.rows[last.rows.length - 1]!] : undefined
+      if (last && r.system !== undefined && lastRow?.system === r.system) {
+        last.rows.push(gi)
+        last.measures = Math.max(last.measures, rowMeasures(r))
+      } else {
+        blocks.push({ rows: [gi], measures: rowMeasures(r) })
+      }
+    })
+    /** 本声部缺席的系统块 → 每块一根 0*N 补齐行（键 = 渲染数组中下一行的位置；曲尾缺席段走 restTail） */
+    const gapRestsFor = (isOwn: (r: StaffRow) => boolean): { restBefore: Map<number, string[]>; restTail: string[] } => {
+      const restBefore = new Map<number, string[]>()
+      const restTail: string[] = []
+      let pending: string[] = []
+      let ownIdx = 0
+      blocks.forEach((b) => {
+        const ownInBlock = b.rows.filter((gi) => isOwn(mainRows[gi]!))
+        if (ownInBlock.length) {
+          if (pending.length) restBefore.set(ownIdx, pending)
+          pending = []
+          ownIdx += ownInBlock.length
+        } else if (b.measures > 0) {
+          pending.push(`0*${b.measures}`)
+        }
+      })
+      restTail.push(...pending)
+      return { restBefore, restTail }
+    }
+    for (let vi = 0; vi < partCount; vi += 1) {
+      // 本声部自己的行：有声部号的行 + 有词齐唱行；器乐段（无词 unison）只归声部 1。
+      const own = (r: StaffRow): boolean =>
+        r.voice === voicedIds[vi] || (vi === 0 ? isUnison(r) : unisonSings(r))
+      const bodyRows = mainRows
+        .map((row, idx) => ({ row, idx }))
+        .filter(({ row }) => own(row))
+      const gaps = gapRestsFor(own)
+      textLines.push(`@part ${vi + 1} "声部${vi + 1}"`)
+      textLines.push('@mix 1 on all')
+      renderRows(bodyRows, meter.beats, emit, gaps)
+      for (const l of lyricLines(bodyRows.map(({ row }) => row))) textLines.push(l)
+    }
+  }
+
+  // ── 小字谱块：主谱行写完后统一追加（@小谱 块体独立解析，位置在文末不影响主谱）──
+  emitCueRows()
 
   const text = textLines.join('\n') + '\n'
   return {

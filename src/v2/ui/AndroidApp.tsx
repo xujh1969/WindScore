@@ -27,7 +27,7 @@ function samples(): LibraryItem[] {
 }
 const preview = new URLSearchParams(location.search).get('preview') === '1';
 function initialTheme(): boolean {
-  try { const t = localStorage.getItem('ws-android-theme'); if (t) return t === 'dark'; } catch { /* 系统偏好兜底 */ }
+  try { const t = localStorage.getItem('ws-theme'); if (t) return t === 'dark'; } catch { /* 系统偏好兜底 */ }
   return matchMedia('(prefers-color-scheme: dark)').matches;
 }
 function username(): string {
@@ -87,7 +87,7 @@ export function AndroidApp() {
     return off;
   }, []);
   useEffect(() => {
-    try { localStorage.setItem('ws-android-theme', dark ? 'dark' : 'light'); } catch { /* 不影响切换 */ }
+    try { localStorage.setItem('ws-theme', dark ? 'dark' : 'light'); } catch { /* 不影响切换 */ }
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#151d19' : '#f6f7f2');
   }, [dark]);
   useEffect(() => {
@@ -138,7 +138,7 @@ export function AndroidApp() {
       try {
         // 音色包：与乐谱包共用同一个上传入口，按扩展名分流（用户要求的安卓扩充音色入口）
         if (isBankFile(picked.name)) {
-          const info = await saveBank(picked);
+          const info = await saveBank(picked, (stage) => setNotice(`导入音色包「${picked.name}」· 正在${stage}…`));
           setNotice(`已装入音色包「${info.name}」：${info.patches.length} 件音色`);
           continue;
         }

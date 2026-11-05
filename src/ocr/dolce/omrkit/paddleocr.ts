@@ -27,20 +27,21 @@ const _prof = { infer: 0, ctc: 0, calls: 0 };
 export function omrProfile(): { infer: number; ctc: number; calls: number } { return { ..._prof }; }
 export function omrProfileReset(): void { _prof.infer = 0; _prof.ctc = 0; _prof.calls = 0; }
 
-// ── 原生 OCR（Tauri 桌面）：把张量交给 Rust ort 跑 session.run，比浏览器 wasm 多线程快 ~3×，
-//    且完全绕开 WebKit(WKWebView) 多线程 wasm worker 冷启动挂死的问题（桌面不再依赖浏览器推理）。──
-function isTauri(): boolean {
-  return typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
-}
-/** 桌面默认走原生；globalThis.__omrNative=false 可强制回退浏览器 wasm（调试/对比用）。 */
+// ── 原生 OCR 后门（Rust ort）：设计上把张量经 IPC 交给 Rust session.run（比 wasm 快 ~3×，
+//    并绕开 WKWebView 的 wasm worker 冷启动挂死）。**WindScore 尚未实装**：main.rs 没注册
+//    omr_onnx / omr_onnx_batch，且 withGlobalTauri=false 时 window.__TAURI__ 不存在——
+//    Tauri 桌面走这条路的结局就是「Tauri invoke 不可用」（0.4.54 exe 用户实测识别失败）。
+//    所以默认一律回退 onnxruntime-web wasm（Windows WebView2 是 Chromium，单线程 wasm 正常）；
+//    globalThis.__omrNative=true 可强开原生路径，留给将来实装 Rust 端时调试对比。──
 function nativeOcr(): boolean {
   const ov = (globalThis as { __omrNative?: boolean }).__omrNative;
-  return typeof ov === "boolean" ? ov : isTauri();
+  return ov === true;
 }
 
 type ArgmaxOut = { idx: Int32Array; N: number; T: number };
 
-/** 底层：Tauri 原始字节 IPC。withGlobalTauri=true → window.__TAURI__.core.invoke 全局可用。 */
+/** 底层：Tauri 原始字节 IPC。前提是 withGlobalTauri=true（window.__TAURI__.core.invoke 全局可用）；
+ *  WindScore 的 conf 是 false，这也是原生路径默认关闭的原因之一（另一处是 Rust 端命令未注册）。 */
 async function tauriInvokeRaw(cmd: string, req: ArrayBuffer): Promise<ArrayBuffer> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const invoke = (window as any).__TAURI__?.core?.invoke as

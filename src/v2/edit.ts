@@ -248,7 +248,7 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   if (
     'lineGap' in patch &&
     next.lineGap !== undefined &&
-    (!Number.isFinite(next.lineGap) || next.lineGap < 0 || next.lineGap > 48)
+    (!Number.isFinite(next.lineGap) || next.lineGap < -24 || next.lineGap > 48)
   ) {
     return score;
   }
@@ -277,6 +277,29 @@ export function setAccidental(score: Score, id: string, acc?: Accidental): Score
       return copy;
     }),
   };
+}
+
+/** 输入板三颗变音按钮：升 / 降 / 复原，各自独立循环 */
+export type AccidentalKind = 'sharp' | 'flat' | 'natural';
+
+/**
+ * 变音按钮循环：主谱输入板与小字谱输入板共用这一份，别在两处各写一套。
+ * 升：无 → # → x → 无；降：无 → b → bb → 无；复原：无 → ♮ → 无。
+ * 「复原」= 删掉记号跟随调号；♮ 是显式写出来的还原号（复原按钮第一次按下）。
+ * 从别的方向切过来（如当前 b 时按 #）第一次点击直接落到本方向最轻的一档。
+ */
+const ACCIDENTAL_CYCLES: Record<AccidentalKind, (Accidental | undefined)[]> = {
+  sharp: [undefined, '#', 'x'],
+  flat: [undefined, 'b', 'bb'],
+  natural: [undefined, '♮'],
+};
+
+export function cycleAccidentalAt(score: Score, id: string, kind: AccidentalKind): Score {
+  const ev = score.events.find((e) => e.id === id);
+  if (!ev || ev.kind !== 'note') return score;
+  const seq = ACCIDENTAL_CYCLES[kind];
+  const i = seq.indexOf(ev.accidental);
+  return setAccidental(score, id, i < 0 ? seq[1] : seq[(i + 1) % seq.length]);
 }
 
 /** 改小节线样式。键盘上连按两次 `|` 就是终止线（对应 DSL 的 `||`） */
@@ -1117,6 +1140,17 @@ export function setHairpinRange(score: Score, ids: string[], kind?: 'cresc' | 'd
 
 export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter' | 'dashed' | 'free'>): Score {
   return { ...score, format: 3, events: score.events.map((e) => e.id === id && e.kind === 'barline' ? { ...e, ...change } : e) };
+}
+
+/** 去除全谱所有「换行」强制标记（breakAfter:'line'；「分页」保留）。
+ *  OCR 识别结果按原谱行写死了换行，断行常不符合想要的排版——属性区一键清掉恢复自动折行。 */
+export function clearLineBreaks(score: Score): Score {
+  const strip = (events: Event[]): Event[] =>
+    events.map((e) => (e.kind === 'barline' && e.breakAfter === 'line' ? { ...e, breakAfter: undefined } : e));
+  if (score.parts?.length) {
+    return { ...score, events: strip(score.events), parts: score.parts.map((p) => ({ ...p, events: strip(p.events) })) };
+  }
+  return { ...score, events: strip(score.events) };
 }
 
 /**

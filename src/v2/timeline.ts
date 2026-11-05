@@ -8,6 +8,7 @@
 import { TICKS_PER_BEAT } from './ticks';
 import { measureAt } from './expand';
 import { partScore, scoreParts } from './parts';
+import { expandUnisons } from './unison';
 import type { Accidental, Event as ScoreEvent, NoteEvent, Score } from './types';
 import { accidentalOffset as pitchAccidentalOffset, keyOffset as pitchKeyOffset, toMidi as pitchToMidi } from './pitch';
 
@@ -143,6 +144,83 @@ function patchAt(changes: { fromTick: number; patch: number }[], tick: number): 
 }
 
 export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; mergeTies?: boolean } = {}): TimelineEntry[] {
+  // 齐唱段展开（同/分 → 各声部事件拷贝）+ 小字谱条目（附加声部，音量略低）
+  const core = buildTimelineCore(expandUnisons(score), opts);
+  const cueEntries = buildCueTimeline(score, opts);
+  return cueEntries.length
+    ? [...core, ...cueEntries].sort((a, b) => a.startTick - b.startTick || a.endTick - b.endTick)
+    : core;
+}
+
+/** 锚定音符的起始 tick（从这颗音起同时奏响小字谱）；找不到返回 null */
+function anchorTickOf(events: ScoreEvent[], anchorId: string): number | null {
+  let tick = 0;
+  for (const e of events) {
+    if (e.kind === 'note' || e.kind === 'rest') {
+      if (e.id === anchorId) return tick;
+      tick += e.ticks;
+    }
+  }
+  return null;
+}
+
+/** 第一声部第 measure 小节的起始 tick（口径与 measureAt 一致：开头的小节线不算小节） */
+export function measureStartTick(events: ScoreEvent[], measure: number): number | null {
+  let n = 1;
+  let seenTimed = false;
+  let tick = 0;
+  for (const e of events) {
+    if (n >= measure && (e.kind === 'note' || e.kind === 'rest')) return tick;
+    if (e.kind === 'note' || e.kind === 'rest') {
+      seenTimed = true;
+      tick += e.ticks;
+      continue;
+    }
+    if (e.kind === 'barline' && seenTimed) {
+      n += 1;
+      if (n === measure) return tick;
+    }
+  }
+  return null;
+}
+
+/** 小字谱播放音量（相对声部的附加声部，略低于主声部） */
+const CUE_GAIN = 0.6;
+
+function buildCueTimeline(score: Score, opts: { ids?: TimelineIdFlavor; mergeTies?: boolean }): TimelineEntry[] {
+  const cues = score.cues ?? [];
+  if (!cues.length) return [];
+  const nAll = (score.parts?.length ?? 0) + 1 + cues.length;
+  const out: TimelineEntry[] = [];
+  for (const cue of cues) {
+    if (!cue.events?.length) continue; // 解析失败的小字谱不发声
+    const anchorTick = cue.anchorId
+      ? anchorTickOf(score.events, cue.anchorId)
+      : measureStartTick(score.events, cue.anchorStart ?? 1);
+    if (anchorTick === null) continue;
+    // 拍号 / 速度跟主谱走（锚定语义）：小字谱里写 @beat/@bpm 会被覆盖
+    const single: Score = {
+      version: 2,
+      meta: { ...score.meta, title: '', sub: '', notes: [] },
+      events: cue.events,
+      groups: cue.groups ?? [],
+    };
+    for (const e of buildTimelineCore(single, opts)) {
+      out.push({
+        ...e,
+        startTick: e.startTick + anchorTick,
+        endTick: e.endTick + anchorTick,
+        partId: 'cue',
+        gain: CUE_GAIN / Math.sqrt(nAll),
+        patch: score.meta.patch,
+        patchOctave: score.meta.patchOctave,
+      });
+    }
+  }
+  return out;
+}
+
+function buildTimelineCore(score: Score, opts: { ids?: TimelineIdFlavor; mergeTies?: boolean } = {}): TimelineEntry[] {
   if (score.part || score.parts?.length) {
     const parts = scoreParts(score);
     const solo = parts.some((p) => p.solo);
@@ -151,7 +229,7 @@ export function buildTimeline(score: Score, opts: { ids?: TimelineIdFlavor; merg
       const { part: _part, ...plain } = single;
       const gain = part.muted || (solo && !part.solo) ? 0 : part.gain / Math.max(1, Math.sqrt(parts.length));
       const changes = patchChangesOf(plain.events ?? []);
-      return buildTimeline(plain, opts).map((e) => ({
+      return buildTimelineCore(plain, opts).map((e) => ({
         ...e,
         partId: part.id,
         gain,

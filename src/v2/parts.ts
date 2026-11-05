@@ -27,7 +27,11 @@ export function assembleParts(score: Score, parts: ScorePart[]): Score {
 export function replacePart(score: Score, next: Score): Score {
   if (!score.part) return next;
   const id = next.part?.id ?? score.part.id;
-  return assembleParts({ ...score, meta: next.meta }, scoreParts(score).map((p) =>
+  // cues（@小谱）是全谱级可选字段，锚在第一声部但不属于任何单个声部。
+  // 必须显式用 next 覆盖：靠 {...score} 继承会让「新增小字谱」被旧值吞掉、
+  // 「删除小字谱」又留下旧值。OCR 产物固定带 @part 1，必然走这条分支；
+  // 普通单声部谱在 !score.part 时直接返回 next，所以以前没暴露。
+  return assembleParts({ ...score, meta: next.meta, cues: next.cues }, scoreParts(score).map((p) =>
     p.id === id ? { ...p, events: next.events, groups: next.groups, ...next.part } : p));
 }
 

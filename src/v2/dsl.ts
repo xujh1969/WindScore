@@ -37,6 +37,7 @@ import type {
   Articulation,
   BarlineEvent,
   BeatGroup,
+  CueStaff,
   Degree,
   GraceNote,
   Event,
@@ -147,7 +148,69 @@ export function renderGraceNote(g: GraceNote): string {
   return `${g.accidental ? accidentalDsl(g.accidental) : ''}${g.degree}${oct}`;
 }
 
+/**
+ * 齐唱目标声部解析（DSL 写在小节线后，如 `同2-3`）：
+ * `2-3` = 声部 2 到 3、`2,3`（全角逗号亦可）= 逐个列举、`2` = 单声部；
+ * 支持混写 `2-4,6`。返回升序去重的声部号；写法不合法返回 null。
+ */
+export function parseUnisonTargets(text: string): number[] | null {
+  const t = text.trim();
+  if (!t) return null;
+  const out: number[] = [];
+  for (const seg of t.split(/[,，]/)) {
+    const m = /^(\d+)(?:\s*[-—~至]\s*(\d+))?$/.exec(seg.trim());
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    if (a < 1 || b < 1 || a > 32 || b > 32) return null;
+    for (let n = Math.min(a, b); n <= Math.max(a, b); n += 1) out.push(n);
+  }
+  return [...new Set(out)].sort((x, y) => x - y);
+}
+
 export function parseDsl(text: string): ParseResult {
+  // 先摘 @小谱 块（锚定小字谱）：块体是独立小谱的 jps 文本，
+  // 不能混进主谱 / 声部的行流——摘出来，主谱解析完后再挂 score.cues
+  const cueBlocks: { name?: string; anchorStart: number; anchorEnd: number; nth?: number; lines: string[] }[] = [];
+  const cueErrors: string[] = [];
+  let curCue: (typeof cueBlocks)[number] | null = null;
+  const kept: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    // 注意不能用 \b：小谱/cue 都是非 ASCII / 前后皆非词字符，\b 永远不成立
+    if (/^@(?:小谱|cue)(?=\s|$)/i.test(line)) {
+      // 两种锚定写法：
+      //   @小谱 2-3 "名"   锚定小节起－止（文本锚定，手写方便）
+      //   @小谱 3/2 "名"   锚定第 3 小节的第 2 个音符（界面录入的落盘形式，
+      //                     解析时定位回音符 id——从这颗音起同时奏响小字谱）
+      const m = /^@(?:小谱|cue)\s+(\d+)(?:\s*[-—~至]\s*(\d+))?(?:\s*\/\s*(\d+))?(?:\s+("(?:[^"\\]|\\.)*"))?\s*$/i.exec(line);
+      if (!m) {
+        cueErrors.push('小字谱声明应为 @小谱 2-3 "名称"（锚小节起止）或 @小谱 3/2 "名称"（锚第 3 小节第 2 个音符）');
+        curCue = null;
+        continue;
+      }
+      const anchor = m[3] !== undefined
+        ? { start: Number(m[1]), end: Number(m[1]), nth: Number(m[3]) } // 音符锚：3/2（小节起止若同写则忽略）
+        : { start: Number(m[1]), end: m[2] ? Number(m[2]) : Number(m[1]), nth: undefined };
+      curCue = {
+        ...(anchor.nth !== undefined ? { nth: anchor.nth } : {}),
+        anchorStart: anchor.start,
+        anchorEnd: anchor.end,
+        name: m[4] ? (JSON.parse(m[4]) as string) : undefined,
+        lines: [],
+      };
+      if (curCue.anchorEnd < curCue.anchorStart) cueErrors.push(`小字谱锚定范围不合法（止小节不能小于起小节）：${line}`);
+      cueBlocks.push(curCue);
+      continue;
+    }
+    if (curCue) {
+      // 块体到下一个 @ 指令 / 分隔线为止；这行还给主文继续处理
+      if (line.startsWith('@') || line === '---') curCue = null;
+      else { curCue.lines.push(raw); continue; }
+    }
+    kept.push(raw);
+  }
+  text = kept.join('\n');
   const version = /^@format\s+(\S+)\s*$/mi.exec(text)?.[1];
   if (version && version !== '3') return { score: null, errors: [`不支持的 JPS 语法版本：${version}`] };
   const modern = version === '3';
@@ -204,16 +267,56 @@ export function parseDsl(text: string): ParseResult {
     else if (blocks.length) blocks[blocks.length - 1].lines.push(raw);
     else if (line && !line.startsWith('//') && line !== '---') header.push(raw);
   }
-  if (errors.length) return { score: null, errors };
+  // @小谱 块统一收口：声明/锚定错误随解析错误一起阻断；
+  // 块体文本顺带解析成事件挂 cues（布局 / 播放直接用，text 留作回写真源）
+  const withCues = (r: ParseResult): ParseResult => {
+    if (cueErrors.length) return { score: null, errors: [...r.errors, ...cueErrors] };
+    if (!cueBlocks.length || !r.score) return r;
+    const cues: CueStaff[] = cueBlocks.map((cb, i) => {
+      const anchor = cb.nth !== undefined ? `${cb.anchorStart}/${cb.nth}`
+        : cb.anchorStart === cb.anchorEnd ? `${cb.anchorStart}` : `${cb.anchorStart}-${cb.anchorEnd}`;
+      // 块体是独立小谱的 jps 文本：与主谱同一条解析路径（normalizeModern + 宽松 parseSingle）。
+      // 此前直接递归 parseDsl，块体没有 @format 头就落进非 modern 分支——modern 记号
+      // （// 减时线、v^ 八度点、技法字母、谱中「拍2/4」）全部报「无法解析的记号」。
+      // OCR 产物的小字谱块体与 UI 生成的小字谱文本都是 modern 记号，round-trip 必须走 modern。
+      const body = cb.lines.join('\n');
+      const parsed = modern
+        ? (() => {
+            const pr = parseSingle(normalizeModern(body), true);
+            return pr.score && !pr.errors.length ? { ...pr, score: autoGroupBeats(pr.score) } : pr;
+          })()
+        : parseDsl(body);
+      const base: CueStaff = {
+        id: `cue${i + 1}`,
+        ...(cb.name ? { name: cb.name } : {}),
+        ...(cb.nth !== undefined
+          ? (() => {
+              const anchorId = locateAnchorId(r.score!.events, cb.anchorStart, cb.nth);
+              if (!anchorId) cueErrors.push(`小字谱（锚${anchor}）：锚定音符不存在（第 ${cb.anchorStart} 小节没有第 ${cb.nth} 个音）`);
+              return { anchorId: anchorId ?? '' };
+            })()
+          : { anchorStart: cb.anchorStart, anchorEnd: cb.anchorEnd }),
+        text: cb.lines.join('\n'),
+      };
+      if (parsed.errors.length || !parsed.score) {
+        cueErrors.push(...parsed.errors.map((e) => `小字谱（锚${anchor}）：${e}`));
+        return base;
+      }
+      return { ...base, events: parsed.score.events, groups: parsed.score.groups };
+    });
+    if (cueErrors.length) return { score: null, errors: [...r.errors, ...cueErrors] };
+    return { ...r, score: { ...r.score, cues } };
+  };
+  if (errors.length) return withCues({ score: null, errors });
   if (!blocks.length) {
     const result = parseSingle(normalizeModern(text), true);
-    return { ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null };
+    return withCues({ ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null });
   }
   if (header.some((l) => l.trim() && !l.trim().startsWith('@') && !l.trim().startsWith('//'))) return { score: null, errors: ['多声部文件的音符必须写在 @part 声部声明之后'] };
   const parsed = blocks.map((b) => ({ block: b, result: parseSingle(normalizeModern([...header, ...b.lines].join('\n')), true) }));
   for (const { block, result } of parsed) errors.push(...result.errors.map((e) => `${block.name}：${e}`));
   if (errors.length || parsed.some((p) => !p.result.score)) return { score: null, errors };
-  return { score: assembleParts(parsed[0].result.score!, parsed.map(({ block, result }) => {
+  return withCues({ score: assembleParts(parsed[0].result.score!, parsed.map(({ block, result }) => {
     const { lines: _lines, ...info } = block;
     // 序列化器对每个声部都写 @mix（on/solo 等），手写文件却常省略这一行——
     // 在解析端补齐默认值，保证「解析产物结构完整」，round-trip 才能稳定
@@ -223,7 +326,7 @@ export function parseDsl(text: string): ParseResult {
       solo: info.solo ?? false,
       hidden: info.hidden ?? false,
     });
-  })), errors };
+  })), errors });
 }
 
 function normalizeModern(text: string): string {
@@ -337,10 +440,10 @@ function parseSingle(text: string, modern = false): ParseResult {
           break;
         }
         case 'linegap': {
-          // 行间距增量（px，按字号比例缩放）。0–48，负数没有意义（行高只加不减）
+          // 行间距增量（px，按字号比例缩放）。-24–48：负数收紧行距（带歌词的行有歌词层保底，不会被压爆）
           const n = Number(v);
-          if (Number.isFinite(n) && n >= 0 && n <= 48) meta.lineGap = n;
-          else errors.push(`行间距解析失败（应为 0–48 的数字）：${v}`);
+          if (Number.isFinite(n) && n >= -24 && n <= 48) meta.lineGap = n;
+          else errors.push(`行间距解析失败（应为 -24–48 的数字）：${v}`);
           break;
         }
         case 'measureno': {
@@ -631,9 +734,9 @@ function parseSingle(text: string, modern = false): ParseResult {
    * `|:` = 这条线开始反复，`:|` = 这条线结束反复。
    * 所以这里**建的是小节线事件**，不会在谱面上多出一条线。
    */
-  const pushRepeatBarline = (repeat: 'start' | 'end' | 'both', times?: number) => {
+  const pushRepeatBarline = (repeat: 'start' | 'end' | 'both', times?: number, style: 'single' | 'double' | 'final' = 'single') => {
     barrier();
-    const ev: BarlineEvent = { id: nextId(), kind: 'barline', style: 'single', repeat };
+    const ev: BarlineEvent = { id: nextId(), kind: 'barline', style, repeat };
     if (repeat === 'end') ev.times = times ?? 2;
     pushSimple(ev);
   };
@@ -674,7 +777,10 @@ function parseSingle(text: string, modern = false): ParseResult {
     // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
     // 只在 ~ 后面（可隔空白）跟着音符时才切分：5~@（延音+延长号）这类「~ 后带技法
     // 后缀」的合法写法（NOTE_RE 允许）必须保持整 token，否则 @ 会被孤成独立记号报错。
-    const tokens = line.replace(/~(?=\s*[0-7Xx])/g, '~ ').split(/\s+/).filter(Boolean);
+    const tokens = line.replace(/~(?=\s*[0-7Xx])/g, '~ ').split(/\s+/).filter(Boolean)
+      // 小节线后缀记号允许紧贴书写（|速96 / |同2-3 / |分）：
+      // 序列化产物是分开的 token（`| 速96`），但用户手写紧贴很自然——拆开再走各自的分支
+      .flatMap((t) => (/^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页)/.test(t) ? ['|', t.slice(1)] : [t]));
     for (let raw of tokens) {
       /*
        * 左右括号记号：**全角** （ ）
@@ -790,6 +896,20 @@ function parseSingle(text: string, modern = false): ParseResult {
           const bar = events[events.length - 1];
           if (bar?.kind !== 'barline') errors.push('「散」需要紧接小节线书写');
           else bar.free = true;
+        } else if (/^同/.test(raw)) {
+          // 齐唱段起点：从这根线之后起，目标声部改唱第一声部（展开在 unison.ts）
+          const bar = events[events.length - 1];
+          if (bar?.kind !== 'barline') errors.push('「同」需要紧接小节线书写');
+          else {
+            const targets = parseUnisonTargets(raw.slice(1));
+            if (!targets) errors.push(`齐唱声部写法不合法（应为 同2-3 / 同2,3 / 同2）：${raw}`);
+            else bar.unisonAfter = targets;
+          }
+        } else if (raw === '分') {
+          // 齐唱段终点：目标声部恢复唱自己的内容
+          const bar = events[events.length - 1];
+          if (bar?.kind !== 'barline') errors.push('「分」需要紧接小节线书写');
+          else bar.splitAfter = true;
         } else if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === '换行' || raw === '分页') {
           const bar = events[events.length - 1];
           if (!modern || bar?.kind !== 'barline') errors.push(`${raw} 需要 @format 3，并紧接小节线书写`);
@@ -901,9 +1021,12 @@ function parseSingle(text: string, modern = false): ParseResult {
         // 双向反复 `:||:`：既是上一段的结束又是下一段的开始
         else if (raw === ':||:') {
           pushRepeatBarline('both');
-        } else if (/^:\|\d*$/.test(raw)) {
-          // `:|` 两遍，`:|3` 三遍
-          pushRepeatBarline('end', raw.length > 2 ? Number(raw.slice(2)) : 2);
+        } else if (/^:\|\|?(\d*)$/.test(raw)) {
+          // `:|` 两遍、`:|3` 三遍；`:||` = 反复结束 + 终止线（GB 允许的规范写法——
+          // 单独 :|| 没写 ||: 时默认**从头反复**，由 expand.ts 兜底配对，不算记号错误）
+          const final = raw.includes('||');
+          const times = raw.match(/\d+$/)?.[0];
+          pushRepeatBarline('end', times ? Number(times) : 2, final ? 'final' : 'single');
         } else if (/^\[\d+(,\d+)*\]$/.test(raw)) {
           // 跳房子 `[1]` `[2]` `[1,2]`：挂在前面的那根小节线上
           markVolta(raw.slice(1, -1).split(',').map(Number), false);
@@ -1120,6 +1243,8 @@ function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDu
 }
 
 export function serializeDsl(score: Score): string {
+  // cue 锚定反查用第一声部的事件（score.events 本来就是第一声部内容）
+  const cues = serializeCues(score.cues, score.events);
   if (score.part || score.parts?.length) {
     const parts = scoreParts(score);
     const header = serializeSingle(partScore(score, parts[0].id)).split('\n\n')[0];
@@ -1134,9 +1259,65 @@ export function serializeDsl(score: Score): string {
       // 隐藏声部：只在真的隐藏时落盘（显示层开关，播放不受影响）
       const hideLine = part.hidden ? '\n@hidden on' : '';
       return `@part ${part.id} ${JSON.stringify(part.name)}\n@mix ${part.gain} ${part.muted ? 'off' : 'on'} ${part.solo ? 'solo' : 'all'}${patchLine}${octLine}${hideLine}${staff}${names}\n${body}`;
-    }).join('\n\n')}`;
+    }).join('\n\n')}${cues}`;
   }
-  return serializeSingle(score);
+  return serializeSingle(score) + cues;
+}
+
+/** @小谱 块回写：锚定小节号 + 可选名称 + 内容原文；无 cues 不产生任何输出 */
+/** 第一声部第 measure 小节内第 nth（1-based）个音符 / 休止的 id；找不到返回 null */
+export function locateAnchorId(events: Event[], measure: number, nth: number): string | null {
+  let measureNo = 1;
+  let seenTimed = false;
+  let count = 0;
+  for (const e of events) {
+    if (e.kind === 'note' || e.kind === 'rest') {
+      seenTimed = true;
+      if (measureNo === measure) {
+        count += 1;
+        if (count === nth) return e.id;
+      }
+      continue;
+    }
+    if (e.kind === 'barline' && seenTimed) measureNo += 1;
+  }
+  return null;
+}
+
+/**
+ * 锚定音符 id → 落盘形式「小节/序号」（@小谱 3/2）。
+ * 每次保存时都从当前谱面重算，用户插音 / 删音后锚自动跟着内容走，不漂移。
+ */
+export function anchorIdToText(events: Event[], anchorId: string): string | null {
+  let measureNo = 1;
+  let seenTimed = false;
+  let count = 0;
+  for (const e of events) {
+    if (e.kind === 'note' || e.kind === 'rest') {
+      seenTimed = true;
+      count += 1;
+      if (e.id === anchorId) return `${measureNo}/${count}`;
+      continue;
+    }
+    if (e.kind === 'barline' && seenTimed) { measureNo += 1; count = 0; }
+  }
+  return null;
+}
+
+function serializeCues(cues: CueStaff[] | undefined, events: Event[]): string {
+  if (!cues?.length) return '';
+  const anchor = (c: CueStaff): string | null => {
+    if (c.anchorId) return anchorIdToText(events, c.anchorId);
+    if (c.anchorStart !== undefined) return c.anchorStart === (c.anchorEnd ?? c.anchorStart) ? `${c.anchorStart}` : `${c.anchorStart}-${c.anchorEnd ?? c.anchorStart}`;
+    return null;
+  };
+  const parts: string[] = [];
+  for (const c of cues) {
+    const a = anchor(c);
+    if (!a) continue; // 锚音符已被删除的小字谱：连同块一起静默丢弃
+    parts.push(`@小谱 ${a}${c.name ? ` ${JSON.stringify(c.name)}` : ''}\n${c.text}`);
+  }
+  return parts.length ? `\n\n${parts.join('\n\n')}` : '';
 }
 
 function serializeSingle(score: Score): string {
@@ -1305,7 +1486,7 @@ function serializeSingle(score: Score): string {
         else if (ev.dashed && ev.style === 'single' && !ev.repeat && !ev.partial) tok = '|~';
         else if (ev.repeat === 'start') tok = '|:';
         else if (ev.repeat === 'both') tok = ':||:';
-        else if (ev.repeat === 'end') tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ':|';
+        else if (ev.repeat === 'end') tok = `${ev.style === 'final' ? ':||' : ':|'}${ev.times && ev.times > 2 ? ev.times : ''}`;
         else if (ev.style === 'double') tok = '‖';
         else if (ev.style === 'final') tok = '||';
         else if (ev.partial) tok = '|{partial}';
@@ -1316,6 +1497,9 @@ function serializeSingle(score: Score): string {
         if (ev.patchAfter !== undefined) out.push(`音${ev.patchAfter}`);
         // 散板：写在拍号之后（同线两者并存时「拍N/M」是最新声明，散只在其前）
         if (ev.free) out.push('散');
+        // 齐唱段标记：同N-M 开段、分 收段（多处可交替出现）
+        if (ev.unisonAfter?.length) out.push(`同${ev.unisonAfter.join('-')}`);
+        if (ev.splitAfter) out.push('分');
         if (ev.breakAfter) out.push(ev.breakAfter === 'page' ? '分页' : '换行');
         // 房子写在这条线后面：`| [1] 3 3 | [2] 4 4 :|`；开放右端写不闭合的 `[1`
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(',')}` : `[${ev.volta.join(',')}]`);

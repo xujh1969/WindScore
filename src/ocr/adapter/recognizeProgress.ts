@@ -37,15 +37,18 @@ export async function recognizeWithProgress(
   bytes: Uint8Array,
   mime: string | undefined,
   onStage: (stage: JianpuStage | 'decode' | 'convert') => void,
+  preparedBin?: Binary,
 ): Promise<ProgressDetail> {
   installBrowserOmr() // 懒装配浏览器运行时（ort wasm + 解码器），幂等
   onStage('decode')
-  const bin = await decodeToBinary(bytes, mime)
+  const bin = preparedBin ?? await decodeToBinary(bytes, mime)
+  if (!bin.data.some(v => v !== 0)) throw new Error('图片中没有可识别的内容，请检查 PDF 预览或上传清晰的简谱图片')
   // 让浏览器有机会把「解码中」画出来再进入重计算
   await new Promise((r) => setTimeout(r, 30))
   const score = await recognizeJianpu(bin, paddleOcrBackend(), {
     trace: (stage) => onStage(stage),
   })
+  if (!score.rows.some(row => row.nums.length > 0)) throw new Error('未识别到简谱音符，请确认原图为清晰的数字简谱')
   onStage('convert')
   return { bin, score }
 }

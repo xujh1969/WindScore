@@ -8,6 +8,7 @@ import {
   hitTitleEdit,
   layoutScore,
   pickAt,
+  pickCueAt,
   type LayoutPick,
   type LayoutResult,
   type LayoutOptions,
@@ -42,6 +43,11 @@ interface Props {
   lineGap?: number;
   /** 安卓阅读按屏宽重排，窄屏简化谱头并保留谱号空间。 */
   responsive?: boolean;
+  /** 行宽撑满（justify）：尊重「换行」标记为行界，行内两端对齐铺满画布宽（OCR 对照页用）。
+   *  默认 false = 自动折行模式（fitWidth:true，忽略换行标记）。 */
+  fitRows?: boolean;
+  /** 不画谱头（小字谱录入预览）：调号 / 拍号跟随主谱，不重复显示 */
+  headerless?: boolean;
   selectedIds: ReadonlySet<string>;
   /** 光标：插入位置（0 .. events.length） */
   cursor: number;
@@ -79,6 +85,8 @@ interface Props {
   onClefClick?: (partId: string, current: StaffClef) => void;
   /**点在谱面空白处（没命中任何音符 / 小节线）：用来退出曲目信息编辑 */
   onBlankClick?: () => void;
+  /** 双击小字谱：把该条小字谱的 id 交给上层打开编辑弹窗（OCR 产物是文本锚，也能编辑） */
+  onCueDoubleClick?: (cueId: string) => void;
   lyricEdit?: { partId: string; verse: number; startId?: string | null; session: number; onActivate: (id: string) => void; onLink: (id: string, link: LyricLink | null, word?: string) => boolean; onCommit: (id: string, word: string) => boolean; onInsertGap: (id: string) => boolean; onDelete: (id: string, offset: number) => boolean; onExit: () => void };
 }
 
@@ -98,6 +106,8 @@ export function ScoreCanvas({
   letterSpacing,
   lineGap,
   responsive = false,
+  fitRows = false,
+  headerless = false,
   selectedIds,
   cursor,
   timeline,
@@ -118,6 +128,7 @@ export function ScoreCanvas({
   onEditTitle,
   onClefClick,
   onBlankClick,
+  onCueDoubleClick,
   lyricEdit,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -311,6 +322,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       }
       paintLayout(ctx, layout, theme, {
         showTitleEdit: !!onEditTitle,
+        // 交互页常驻画小字谱锚点三角；导出（export/render.ts）不传这个开关，不带辅助记号
+        showCueAnchors: true,
         selectedIds,
         caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
         playhead: displayHead,
@@ -336,7 +349,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     const relayout = () => {
       staticBallReady = false;
       const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing, lineGap,
-        ...(responsive ? { fitWidth: true, rightPadding: 20 } : {}),
+        // headerless（小字谱录入预览）：不画谱头——调号/拍号跟随主谱，重复写没意义
+        ...(headerless ? { showTitle: false } : {}),
+        // fitRows（OCR 对照页）独立于 responsive 生效：尊重「换行」为行界 + 行内两端对齐铺满。
+        ...(fitRows ? { fitWidth: false, rightPadding: 20, justify: true }
+          : responsive ? { fitWidth: true, rightPadding: 20 } : {}),
         ...(notation === 'staff' ? {
           staffPitchMode,
           padding: 96 * (fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21,
@@ -395,7 +412,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     };
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+  }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, fitRows, headerless, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
   // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
   useEffect(() => {
@@ -703,12 +720,26 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
             }
             return;
           }
-          // 小铅笔只有 18px，得给个手型才看得出能点
+          // 小铅笔只有 18px，得给个手型才看得出能点；小字谱也给手型 + 双击提示
           const clef = clefAtPointer(e.clientX, e.clientY);
+          const loc = toLocal(e.clientX, e.clientY);
+          const overCue = !!(onCueDoubleClick && loc && layoutRef.current && pickCueAt(layoutRef.current, loc.x, loc.y));
           if (canvas) {
-            canvas.style.cursor = clef || overPencil(e.clientX, e.clientY) ? 'pointer' : 'default';
-            canvas.title = clef ? `点击切换为${clef.clef === 'bass' ? '高音' : '低音'}谱号（整个声部）` : '';
+            canvas.style.cursor = clef || overCue || overPencil(e.clientX, e.clientY) ? 'pointer' : 'default';
+            canvas.title = clef ? `点击切换为${clef.clef === 'bass' ? '高音' : '低音'}谱号（整个声部）`
+              : overCue ? '双击编辑这条小字谱（黄色三角标出它关联的音符）' : '';
           }
+        }}
+        onDoubleClick={(e) => {
+          if (!onCueDoubleClick) return;
+          const layout = layoutRef.current;
+          const p = toLocal(e.clientX, e.clientY);
+          if (!layout || !p) return;
+          const cue = pickCueAt(layout, p.x, p.y);
+          if (!cue?.cueId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onCueDoubleClick(cue.cueId);
         }}
         onMouseDown={(e) => {
           const clef = e.button === 0 ? clefAtPointer(e.clientX, e.clientY) : null;
@@ -734,6 +765,17 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
             if (loc && layout && hitScoreStart(layout, loc.x, loc.y)) {
               e.preventDefault();
               onPickStart();
+              return;
+            }
+          }
+          // 小字谱优先：它画在主谱行带上半部，走 pickAt 会按最近邻命中主谱音符、
+          // 把选区挪走。单击小字谱不改动选区，双击由 onDoubleClick 打开编辑弹窗。
+          if (onCueDoubleClick) {
+            const loc = toLocal(e.clientX, e.clientY);
+            const layout = layoutRef.current;
+            if (loc && layout && pickCueAt(layout, loc.x, loc.y)) {
+              e.preventDefault();
+              e.currentTarget.focus({ preventScroll: true });
               return;
             }
           }

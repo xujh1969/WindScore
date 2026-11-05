@@ -779,7 +779,32 @@ export async function recognizeLyrics(
     // 英文歌词行字母比汉字矮（青年诗歌 22《将一生奉献》首末行英文 h28~29、汉字 51）：格多（≥8，并过的英文词块）且横贯谱行的
     // 矮行放宽到 0.5 字高。弧线伪行一行只有几道弧，凑不够格数
     const lowOk = (L: (typeof lineInfo)[number]) => L.h >= charH * 0.5 && L.cells.length >= 8 && L.cov >= 0.9;
-    const kept = lineInfo.filter((L) => L.cells.length && (L.h >= charH * 0.6 || lowOk(L)) && (L.cov >= maxCov - 1e-9 || L.cov >= 0.35));
+    // 短词豁免：重唱谱每个声部行下各印一条词，词行常只对齐行首几个音符（其余音符是延长音/休止
+    // ——chorus_03 末系统声部 1 行下只有「高粱，」「欢笑，」），cov 天生低，会被当「局部注记」滤掉。
+    // 字格逐个对准音符中心（≤0.6 字号，与下面「lineNotUnderNotes」同口径）的行是真词——散文注记
+    // （谱后正文/页脚/边注）的字不会一一对准音符。矮行门仍独立生效（和弦字母/弧线碎段进不来）。
+    // 豁免只对**多声部谱**启用（重唱谱每个声部行下各印一条词是版面常态，chorus_03 末系统
+    // 声部 1 行下只有「高粱，」「欢笑，」两个字）。单声部谱的音符下方的短汉字行几乎全是演奏
+    // 记号/页脚——赛马全行的「抛弓」「拨弦」「fp」字对得上音、甜蜜蜜的页脚版权行也字对得上音，
+    // 几何上分不开，一律不豁免（旧门照滤；那几首的整首词被 cov 门滤掉是旧管线另一个问题，
+    // 不在这里顺带放开——放开了伪词跟着进来）。曾试「带内须有 cov≥0.35 的主词行」做前提，
+    // 但同带的另一行词常被符干碎块拉低中位格高、过不了矮行门，前提随即失效，弃用。
+    const exemptOn = row.system !== undefined;
+    const onNote = (L: (typeof lineInfo)[number]): boolean => {
+      if (!L.cells.length) return false;
+      // 字格形态过滤：延音线/增时线被 OCR 读成「一」「J」的碎块是极扁或极窄的（宽高比 ≥2.5），
+      // 真汉字字格近方。二重奏（无词谱）的声部行下满是这种线，不滤会整行当成伪词。
+      const chars = L.cells.filter((c) => c.w < c.h * 2.5 && c.h < c.w * 2.5);
+      if (chars.length < 2) return false;
+      let hit = 0;
+      for (const c of chars) {
+        const cx = c.x + c.w / 2;
+        if (row.nums.some((n) => Math.abs(rcx(n.bbox) - cx) <= numH * 0.6)) hit += 1;
+      }
+      return hit * 5 >= chars.length * 4; // ≥80% 的字格对准音符
+    };
+    const kept = lineInfo.filter((L) => L.cells.length && (L.h >= charH * 0.6 || lowOk(L)) &&
+      (L.cov >= maxCov - 1e-9 || L.cov >= 0.35 || (exemptOn && onNote(L))));
 
     const rowT = TR ? { rowIdx: i, yTop, yBot, charH, bandBoxes: band.map((c) => c.bbox),
       noteBoxes: row.nums.map((n) => n.bbox), verses: [] as Array<{ verse: number; cells: Rect[]; cov: number; longGapBefore?: boolean[] }> } : null;

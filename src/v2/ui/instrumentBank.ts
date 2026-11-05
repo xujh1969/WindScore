@@ -156,12 +156,21 @@ export async function listBanks(): Promise<BankInfo[]> {
   return await readIndex();
 }
 
-/** 存包：包文件本身存下来（文件后端写盘 / local 进 IndexedDB），索引记一份 */
-export async function saveBank(file: File): Promise<BankInfo> {
+/**
+ * 存包：包文件本身存下来（文件后端写盘 / local 进 IndexedDB），索引记一份。
+ * onStage 上报导入进行到哪一步（UI 显示进度文案）：大包（上百 MB）读文件 /
+ * 写存储 / 登记都可能有秒级耗时，不给提示用户会以为卡死了。
+ */
+export type BankImportStage = '读取文件' | '校验音色包' | '写入存储' | '登记音色';
+
+export async function saveBank(file: File, onStage?: (stage: BankImportStage) => Promise<void> | void): Promise<BankInfo> {
+  onStage?.('读取文件');
   const bytes = new Uint8Array(await file.arrayBuffer());
   const { manifest } = parseBank(bytes); // 先校验，坏了就不入库
+  onStage?.('校验音色包');
   const name = safeName(manifest.name || file.name.replace(/\.wsbank$/i, ''));
   const key = `bank:${name}:${bytes.byteLength}`;
+  onStage?.('写入存储');
   await putAudio(key, new File([bytes], `${name}.wsbank`), true);
   const info: BankInfo = {
     name,
@@ -173,6 +182,7 @@ export async function saveBank(file: File): Promise<BankInfo> {
   index.push(info);
   await writeIndex(index);
   // 存完立刻生效，不用等下次启动
+  onStage?.('登记音色');
   applyBank(bytes, name);
   return info;
 }

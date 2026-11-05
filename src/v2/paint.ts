@@ -16,6 +16,7 @@ import {
   type LayoutLine,
   type LayoutResult,
   type LayoutTitle,
+  type PlacedCue,
   type PlacedItem,
 } from './layout';
 import type { Accidental, GraceNote } from './types';
@@ -240,7 +241,7 @@ function applyMetrics(g: GlyphMetrics): void {
   const fam = '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
   M.k = g.fontSize / 21;
   M.font = `600 ${g.fontSize}px ${fam}`;
-  M.graceFont = `600 ${13 * M.k}px ${fam}`;
+  M.graceFont = `600 ${12 * M.k}px ${fam}`;
   M.accFont = `600 ${13 * M.k}px ${fam}`;
   M.graceW = g.graceW;
   M.glyphPad = g.pad;
@@ -443,6 +444,11 @@ export interface PaintOptions {
   pairingStart?: boolean;
   /** 画布实际高度，用于底色填充 */
   height?: number;
+  /**
+   * 画小字谱锚点指示（每条小字谱下方主谱锚音符处一枚黄色向上小三角）。
+   * 只在交互页传 true：PDF / PNG / SVG / 视频导出不带这种编辑辅助记号。
+   */
+  showCueAnchors?: boolean;
 }
 
 export function paintLayout(
@@ -525,6 +531,7 @@ export function paintLayout(
     const head = opts.playheads?.find((h) => line.items.some((it) => it.eventId === h.eventId));
     ctx.font = M.font;
     paintLine(ctx, line, theme, {
+      lineHeight: layout.lineHeight,
       selectedIds: opts.selectedIds,
       caret: opts.caret ?? null,
       playhead: head ?? opts.playhead ?? null,
@@ -541,8 +548,81 @@ export function paintLayout(
     });
   }
 
+  // 小字谱（ossia）：临时切到小行谱自己的字形度量（字号约主谱 0.62 倍），
+  // 画完必须切回主谱度量——后续绘制（光球等）仍按主谱比例
+  for (const cue of layout.cues ?? []) {
+    applyMetrics(cue.glyph);
+    paintCueRow(ctx, cue, theme);
+    applyMetrics(layout.glyph);
+    // 锚点指示：主谱锚音符正下方一枚**向上的黄色等边小三角**。
+    // 每条小字谱常驻显示，回答「这条小字谱到底挂在哪颗音上」；导出不画（opts 开关）。
+    if (opts.showCueAnchors && cue.anchorX !== undefined && cue.anchorY !== undefined) {
+      const side = 8 * M.k;
+      const triH = side * Math.sqrt(3) / 2;
+      const baseY = cue.anchorY + M.barHalf + 3 * M.k + triH;
+      // 三角必须落在**数字字形**正下方，与 drawGlyph 的 gx + gw/2 同口径：
+      // paintCueRow 把 ctx.font 切成了小字号，这里先切回主谱字号再量真实字宽，
+      // 并把变音记号 / 前倚音造成的数字右移算进去。anchorX 只是排版层的名义值，
+      // 用它会在非等宽字体下差 1px 左右，也会随谱面字号漂移。
+      const ai = cue.anchorItem;
+      let cx = cue.anchorX;
+      if (ai && (ai.kind === 'note' || ai.kind === 'rest')) {
+        ctx.font = M.font;
+        const glyph = ai.kind === 'rest' ? (ai.xnote ? '×' : '0') : String(ai.degree ?? 0);
+        const gx = ai.x + M.glyphPad + (ai.accW ?? 0) + (ai.graceInk ?? 0);
+        cx = gx + ctx.measureText(glyph).width / 2;
+      }
+      ctx.beginPath();
+      ctx.moveTo(cx, baseY - triH);
+      ctx.lineTo(cx - side / 2, baseY);
+      ctx.lineTo(cx + side / 2, baseY);
+      ctx.closePath();
+      ctx.fillStyle = '#fbbf24';
+      ctx.fill();
+      ctx.strokeStyle = theme.warn;
+      ctx.lineWidth = Math.max(1, M.k * 0.8);
+      ctx.stroke();
+    }
+  }
+
   // 播放光球：最高层。深色 = 发光 + 照亮附近；浅色 = 彩色点 + 阴影拖尾
   if (opts.ball) drawPlayBall(ctx, opts.ball, theme);
+}
+
+/**
+ * 小字谱行绘制：小节线竖线 + 音符 / 休止字形（调用方已切换字形度量）。
+ * **不画名称**（用户 2026-11-05 定）：CueStaff.name 只是数据标识（旧谱兼容、
+ * OCR 分段的编号），印在谱面上是多余的字；录入界面 0.4.46 起也已取消名称输入。
+ * 名称仍留在数据里，编辑弹窗 / DSL 往返不受影响。
+ */
+function paintCueRow(ctx: CanvasRenderingContext2D, cue: PlacedCue, theme: PaintTheme): void {
+  ctx.font = M.font;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (const it of cue.items) {
+    if (it.kind === 'barline') {
+      if (it.hidden) continue;
+      const bx = it.x + it.w / 2;
+      ctx.strokeStyle = it.final ? theme.barFinal : theme.bar;
+      ctx.lineWidth = it.final ? 2.5 : 1.5;
+      ctx.beginPath();
+      ctx.moveTo(bx, cue.y - M.barHalf);
+      ctx.lineTo(bx, cue.y + M.barHalf);
+      ctx.stroke();
+    } else if (it.kind === 'note' || it.kind === 'rest') {
+      drawGlyph(ctx, it, cue.y, theme);
+    }
+  }
+  // 减时线（下方连线）：与主谱 paintLine 同画法，坐标已按锚定范围缩放平移
+  ctx.lineWidth = M.beamLine;
+  for (const b of cue.beams) {
+    ctx.strokeStyle = b.gray ? theme.muted : theme.ink;
+    const by = cue.y + M.beamTop + (b.level - 1) * M.beamStep;
+    ctx.beginPath();
+    ctx.moveTo(b.x0, by);
+    ctx.lineTo(b.x1, by);
+    ctx.stroke();
+  }
 }
 
 /** #rrggbb → rgba(r,g,b,a) */
@@ -773,6 +853,8 @@ function paintBindTarget(
 }
 
 interface LinePaint {
+  /** 整行行高（播放小节底色按整行铺，不用音符盒高度） */
+  lineHeight: number;
   selectedIds: ReadonlySet<string> | undefined;
   caret: { x: number; y: number } | null;
   playhead: { eventId: string; frac: number } | null;
@@ -910,7 +992,11 @@ function paintLine(
     const rx = right ?? last.x + last.w + 4 * M.k;
     if (rx > lx) {
       ctx.fillStyle = hexA(theme.accent, 0.09);
-      roundRect(ctx, lx, y - M.selHalfH - 8 * M.k, rx - lx, M.selHalfH * 2 + 16 * M.k, 6);
+      // 高度 = 整行行高（用户要求）：旧版只按音符选中盒半高 +8k 上下各一点，
+      // 两行歌词 / 大字号时底色缩在行带中间一小条，扫一眼看不出整小节。
+      // 行带范围是 [y - lineHeight/2, y + lineHeight/2]（与 hitIndex 同口径）。
+      const half = Math.max(o.lineHeight / 2, M.selHalfH + 8 * M.k);
+      roundRect(ctx, lx, y - half, rx - lx, half * 2, 6);
       ctx.fill();
     }
   }
@@ -1404,6 +1490,8 @@ function paintLine(
     const parts: string[] = [];
     if (it.bpmAfter !== undefined) parts.push(`♩=${it.bpmAfter}`);
     if (it.patchAfter !== undefined) parts.push(shortInstrumentLabel(it.patchAfter) ?? `音色 ${it.patchAfter}`);
+    if (it.unisonAfter?.length) parts.push(`同${it.unisonAfter.join('-')}`);
+    if (it.splitAfter) parts.push('分');
     if (!parts.length) continue;
     ctx.fillStyle = theme.muted;
     ctx.fillText(parts.join(' · '), it.x + it.w / 2, y - M.markTop);
@@ -1648,7 +1736,7 @@ function paintLine(
   // 歌词在每个主音正下方，休止符和倚音不占歌词位置。
   ctx.font = M.markFont.replace('12px', `${16 * M.k}px`);
   ctx.fillStyle = theme.ink;
-  const lyricY = y + (line.hairpins?.length ? 64 : 44) * M.k;
+  const lyricY = y + (line.lyricYOff ?? (line.hairpins?.length ? 64 : 44) * M.k);
   for (const it of line.items) if (it.kind === 'note' && it.lyrics) {
     const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
     // 单字中心对齐数字；词组从同一字位展开，在本音的格宽内压缩，避免覆盖下一音。
@@ -1979,10 +2067,13 @@ function drawGlyph(
   if (it.graceBefore?.length) drawGraces(ctx, it.graceBefore, it.x + 5, y, theme, false, gx - 1, it.gray);
   if (it.graceAfter?.length) {
     const n = it.graceAfter.length;
+    // 后倚音贴着主音数字右缘：格宽随音值 / 字间距伸缩，原来挂在格尾，
+    // 长音（尤其带增时线）时被甩出去很远，弧线拉得老长（用户实测）。
+    // 格太窄容不下时才退回格尾，避免压到下一个音。
     drawGraces(
       ctx,
       it.graceAfter,
-      it.x + it.w - 5 * M.k - n * M.graceW,
+      Math.min(gx + gw + 3 * M.k, it.x + it.w - n * M.graceW - 2),
       y,
       theme,
       true,
@@ -2018,7 +2109,7 @@ function drawGraces(
    * 高度卡在两个约束之间：**向下避开连音线弧**（弧端从音符边缘 y−29 起向上拱
    * ——arcBase 24 又整体抬了 5px，数字墨顶必须低于它）又**向上不压主音字形**
    * （主音墨顶 ≈ y−7.4）。
-   * 13 号字（墨半高 ≈ 4.55k）：普通倚音 y−15（用户实测整体下移 3px），
+   * 12 号字（约主音 0.57，墨半高 ≈ 4.6k）：普通倚音 y−15（用户实测整体下移 3px），
    * 墨顶 y−19.6，与弧线净空 ≈9.4px，墨底距主音字形顶 ≈3.1px；
    * **低音倚音**（带 v 点）下方还要容纳低音点 + 弧线两层，
    * 整体比普通倚音再抬高 4px（y−19）给它们让位。
@@ -2027,7 +2118,7 @@ function drawGraces(
    */
   const hasLow = list.some((g) => g.octave < 0);
   const gy = y - (hasLow ? 19 : 15);
-  const beamDy = 13 * M.k * 0.38 + 1;
+  const beamDy = 12 * M.k * 0.38 + 1;
   list.forEach((g, i) => {
     const cx = x0 + i * w + w / 2;
     const acc = g.accidental ? ACCIDENTAL_GLYPH[g.accidental] : '';
@@ -2052,11 +2143,12 @@ function drawGraces(
     }
   });
 
-  // 两条减时线：第一条在数字墨底下 1px，第二条再往下 3px（线宽与主谱减时线一致）
+  // 两条减时线：贴着数字墨迹（首尾数字中心各收进 4k，不再横跨整个倚音槽），
+  // 线宽比主谱减时线细一档——小字配细线才成比例（用户实测又粗又长像主音的线）
   ctx.strokeStyle = ink;
-  ctx.lineWidth = M.beamLine;
-  const span = list.length * w - 3;
-  const bx = x0 + 1.5;
+  ctx.lineWidth = Math.max(0.8, M.beamLine * 0.7);
+  const span = (list.length - 1) * w + 8 * M.k;
+  const bx = x0 + w / 2 - 4 * M.k;
   const by = gy + beamDy;
   for (let k = 0; k < 2; k += 1) {
     ctx.beginPath();

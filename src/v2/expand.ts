@@ -18,6 +18,7 @@
  */
 import type { BarlineEvent, BeatGroup, Event, JumpMark, Score, TimedEvent } from './types';
 import { assembleParts, ensembleIssues, scoreParts, withConductor } from './parts';
+import { expandUnisons } from './unison';
 import { meterAt } from './meter';
 
 export interface ExpandResult {
@@ -60,6 +61,8 @@ interface Ctx {
 }
 
 export function expandScore(score: Score): ExpandResult {
+  // 齐唱段先展开（同/分 → 各声部事件拷贝），后续反复展开与组装照旧
+  score = expandUnisons(score);
   if (score.parts?.length) {
     const parts = scoreParts(score);
     const results = parts.map((part) => expandScore(withConductor(score, part.id)));
@@ -105,7 +108,9 @@ export function expandScore(score: Score): ExpandResult {
     } else if (bar.repeat === 'end') {
       const start = stack.pop();
       if (start === undefined) {
-        errors.push(`第 ${measureAt(events, i)} 小节的 :| 没有配对的 |:`);
+        // 单独的 `:||` / `:|`（GB/T 46845—2025 允许的规范写法）：
+        // 没有显式 `|:` 时默认**从头反复**，不算记号错误
+        repeatPair.set(0, i);
       } else {
         repeatPair.set(start, i);
       }
@@ -369,8 +374,14 @@ export function expandScore(score: Score): ExpandResult {
       }
 
       if (bar?.repeat === 'end') {
-        // 正常情况下由 `|:` 分支在每遍收尾时发出；这里兜底（结构错误时）
         pushBar(ev);
+        // 从头反复（单独的 :| / :||，repeatPair 配对到虚拟起点 0）：
+        // 第一遍已经自然走过 [0, i)，在这里补放第 2..times 遍
+        if (repeatPair.get(0) === i) {
+          repeatedSections += 1;
+          const times = Math.max(2, timesOfPair(i));
+          for (let p = 2; p <= times; p += 1) emitPass(-1, i, p);
+        }
         i += 1;
         continue;
       }

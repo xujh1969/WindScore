@@ -93,12 +93,12 @@ export function PartsPanel({ score, activeId, total, readOnly, lyricVerse, onSel
         </div>
         {!readOnly ? <button className="v2-btn" onClick={(e) => { dialogTrigger.current = e.currentTarget; setTrackDialog({ partId: activeId }); }}>＋ 新增声部</button> : null}
         {!readOnly ? <button className={`v2-btn v2-preview-mute ${muted ? 'is-off' : ''}`} aria-pressed={muted}
-          title={muted ? '输入试听已静音：输入音符和点击音符都不发声，点一下恢复' : '输入音符、点击音符时会响一声；点一下静音'}
+          title={muted ? '键音已静音：输入音符和点击音符都不发声，点一下恢复' : '键音：输入音符、点击音符时会响一声；点一下静音'}
           onClick={() => { const next = !muted; setPreviewMuted(next); setMuted(next); }}>
           {muted
             ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z" /><path d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
             : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z" /><path d="M16 9a4 4 0 0 1 0 6" /><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11" /></svg>}
-          <span>{muted ? '静音' : '试听'}</span>
+          <span>{muted ? '静音' : '键音'}</span>
         </button> : null}
         {parts.length > 1 ? <div className="v2-view-switch">
           <button className={`v2-seg ${total ? 'is-on' : ''}`} onClick={() => onTotal(true)}>总谱</button>

@@ -171,6 +171,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 缩放平移交给 transform（ImagePane），溢出不出滚动条——拖拽负责看被放大的部分 */
+  overflow: hidden;
 }
 .ocr-img-wrap {
   position: relative;
@@ -269,7 +271,7 @@
  * .ocr-page 挂在 .v2-app 的第二行网格里（auto minmax(0,1fr)），高度天然占满。 */
 .ocr-page {
   display: grid;
-  grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 25%) minmax(0, 1fr);
   min-height: 0;
 }
 .ocr-left {
@@ -280,6 +282,11 @@
   background: var(--surface);
   border-right: 1px solid var(--border);
 }
+/* 对比页左栏只剩原图面板一块：占满整列 */
+.ocr-left > .ocr-pane {
+  flex: 1;
+  min-height: 0;
+}
 .ocr-left .ocr-head {
   flex-wrap: wrap;
   row-gap: 6px;
@@ -288,11 +295,237 @@
 .ocr-left .ocr-head .ocr-status {
   flex-basis: 100%;
   margin-right: 0;
+  /* 左栏窄，状态文字（长文件名）字号压小一档，尽量显全 */
+  font-size: 11px;
 }
 .ocr-head-actions {
   display: flex;
   gap: 8px;
   margin-left: auto;
+}
+/* 来源声明：右下角小字，半透明尽量不惹眼 */
+.ocr-credit,
+.ocr-start-foot {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 10px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+.ocr-credit a,
+.ocr-start-foot a {
+  color: inherit;
+  text-decoration: none;
+  pointer-events: auto;
+}
+.ocr-start-foot a:hover {
+  text-decoration: underline;
+}
+
+/* ═══ 识别启动页（两段式第一段）：主题底图 + 两个按钮 + 居中确认图 ═══ */
+.ocr-start-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: linear-gradient(rgba(250, 248, 240, 0.22), rgba(250, 248, 240, 0.22)),
+    url('/bg-ocr-light.png');
+  background-size: cover;
+  background-position: center;
+}
+.v2-app[data-theme='dark'] .ocr-start-bg {
+  background-image: linear-gradient(rgba(9, 9, 11, 0.4), rgba(9, 9, 11, 0.55)), url('/bg-ocr-dark.png');
+}
+/* 顶栏透明融入底图 */
+.ocr-start-head {
+  position: relative;
+  z-index: 2;
+  background: transparent;
+  border-bottom: none;
+}
+/* 对比页顶栏（含谱面校验/识别备注弹层）：右栏内嵌的编辑器自带一个 .v2-head（同为
+   z-index:30 且 DOM 序在后会盖住本栏伸出去的弹层），必须整体抬到它之上——40 盖过
+   编辑器头部（30），仍低于编辑器自身的弹窗遮罩（80/90） */
+.v2-head.ocr-cmp-head {
+  z-index: 40;
+}
+.ocr-start {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 24px;
+  overflow: auto;
+}
+/* 操作面板（按钮 + 状态/进度）：锚在画面左上——约 13vw / 24vh，即用户框选的位置 */
+.ocr-start-panel {
+  position: absolute;
+  left: 13vw;
+  top: 24vh;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+.ocr-start-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: min(1040px, 88vw);
+  /* 预览右移 100px（align-items:center 把 margin 计入对齐，左 margin 200px = 视觉右移 100px） */
+  margin-left: 200px;
+  /* 透视灭点放 wrap 上：图与画布共用同一个灭点 */
+  perspective: 1500px;
+}
+@media (max-width: 1100px) {
+  .ocr-start-preview-wrap { margin-left: 0; }
+}
+/* 「近大远小略有倾斜」的平铺效果：默认轻微后仰+侧倾，悬停恢复平面方便核对细节 */
+.ocr-start-preview,
+.ocr-start-preview-wrap canvas {
+  transform: rotateX(9deg) rotateY(-1.5deg);
+  transform-origin: 50% 85%;
+  transition: transform 0.35s ease;
+}
+.ocr-start-preview-wrap:hover .ocr-start-preview,
+.ocr-start-preview-wrap:hover canvas {
+  transform: none;
+}
+.ocr-start-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 66vh;
+  width: auto;
+  height: auto;
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+/* BinPreview 的内联 width:100% 让位给 contain 缩放 */
+.ocr-start-preview-wrap canvas {
+  width: auto !important;
+  max-width: 100%;
+  max-height: 66vh;
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.ocr-start-actions {
+  display: flex;
+  gap: 14px;
+}
+.ocr-start-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 200px;
+  padding: 12px 30px;
+  border: 1px solid rgba(57, 84, 48, 0.4);
+  border-radius: 999px;
+  background: rgba(255, 254, 247, 0.78);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.ocr-start-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(255, 254, 247, 0.95);
+}
+.ocr-start-btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.ocr-start-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.v2-app[data-theme='dark'] .ocr-start-btn {
+  border-color: rgba(173, 199, 170, 0.4);
+  background: rgba(20, 24, 21, 0.72);
+  color: var(--text);
+}
+.v2-app[data-theme='dark'] .ocr-start-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(30, 36, 31, 0.9);
+}
+.ocr-start-status {
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+.ocr-start-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(420px, 70vw);
+}
+.ocr-start-progress-text {
+  color: var(--accent);
+  font-size: var(--fs-ui);
+}
+.ocr-progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+/* 定位以本文件后面的 .ocr-start-foot 统一规则为准（右下角绝对定位） */
+.ocr-start-foot {
+  padding: 0;
+  text-align: right;
+}
+
+/* ── PDF 翻页器（启动页与对比页共用）── */
+.ocr-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+.ocr-pager-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.ocr-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.ocr-start-pager {
+  margin-left: 0;
+}
+/* 左右栏拖拽手柄（.ocr-divider 本体样式复用三栏版；这里补双栏页的拖拽态） */
+.ocr-divider {
+  touch-action: none;
+}
+.ocr-page[data-dragging] .ocr-divider {
+  background: var(--accent);
+}
+.ocr-page[data-dragging] {
+  cursor: col-resize;
+  user-select: none;
 }
 .ocr-right {
   min-width: 0;

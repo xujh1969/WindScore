@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { TICKS_PER_BEAT, isLegalTick } from '../ticks';
 import { beatLabel, decodeDuration, groupCandidates, MAX_BEAMS } from '../edit';
-import { ExpClose } from './ExpClose';
+import { ExpClose, useEscapeClose } from './ExpClose';
 
 export interface CustomGroupMember {
   id: string;
@@ -54,6 +54,7 @@ function fallbackBeams(totalTicks: number, n: number): number {
  * 候选同一条写回路径。
  */
 export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, initialTuplet, onApply, onClose }: Props) {
+  useEscapeClose(onClose);
   const n = members.length;
   // 连音均分只在 3/5/6/7 音出现：2/4/8 音的均分本来就是常规时值，不需要连音。
   // 且**均分值本身要不可书写**（1 拍÷3=2240 这种）才需要连音标号——

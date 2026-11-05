@@ -26,6 +26,9 @@
 .ws-help-article code { font-family: var(--mono); font-size: .92em; border-radius: 4px; padding: 2px 5px; background: var(--surface-2); }
 .ws-help-article pre { overflow: auto; padding: 18px 20px; margin: 20px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); line-height: 1.7; }
 .ws-help-article pre code { padding: 0; }
+.ws-help-article figure { margin: 24px 0; }
+.ws-help-article figure img { display: block; width: 100%; max-width: 860px; margin: 0 auto; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); }
+.ws-help-article figcaption { margin-top: 10px; font-size: 12.5px; text-align: center; color: var(--muted); }
 .ws-help-table { overflow-x: auto; margin: 20px 0; }
 .ws-help-table table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
 .ws-help-table th { background: var(--surface-2); }

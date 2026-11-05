@@ -71,6 +71,12 @@ export interface JpNum {
   slurStop?: number;  // 本音符收了几条圆滑线 → `slur` Mark 的终点
   tieStart?: boolean;  // 连音线起点（弧下同音高）→ `tied` Mark 与 `Note.tie.start`
   tieStop?: boolean;   // 连音线终点 → `tied` Mark 与 `Note.tie.stop`
+  // [WindScore] 前奏/过门括号：印在音符**行内**、与数字同高的成对大括弧（不是上方弧线）。
+  // 印刷括号常被几何分类误读成 0/1——adapter/parenSlurs.ts 校正后删除括号块、在相邻音上打标记；
+  // 转换时在该音符 token 前/后各发一个**独立的全角括号 token**（`（` / `）`），
+  // 对应 WindScore 的 paren 指令（directive type:'paren'）——纯视觉记号，不占时值、不画连线弧。
+  parenBefore?: boolean;
+  parenAfter?: boolean;
   // 反复与一/二房结构锚定到边界相邻音符，建模型时（omr/todoc.ts）再提升为小节左右 `Barline`。
   repeatForward?: boolean;  // 本音符所在小节左边界为 ||:
   repeatBackward?: boolean; // 本音符所在小节右边界为 :||
@@ -148,6 +154,10 @@ export interface StaffRow {
   // → 模型里每个声部一个 part（todoc.ts），文本谱 `Q1:`…`Q4:`、123 `V:1`…`V:4`。
   system?: number;
   voice?: number;
+  // **小字谱行**：印在主谱行上方/下方的伴唱/伴奏小号谱行（核高 ≈ 主谱行的 0.5~0.82）。
+  // jianpu.ts 认出后打标（未归入连谱号系统的小字行），转换端（recognizedToJps）把它
+  // 从主谱行流里拆出来，转成 jps 的 `@小谱` 块，而不是混进主声部的一行。
+  cue?: boolean;
 }
 
 /** 一处带源图坐标的识别文本（页眉/歌词），供识别模式按原位、原字号叠加。 */

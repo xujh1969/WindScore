@@ -43,8 +43,14 @@ export function balancedBreaks(units: SpacingUnit[], available: number, compress
   return starts;
 }
 
-/** 按内容密度分配剩余空间；收紧时不越过安全宽度。 */
-export function fitSpacing(units: SpacingUnit[], available: number, justify: boolean): number[] {
+/**
+ * 按内容密度分配剩余空间；收紧时不越过安全宽度。
+ *
+ * justify 拉伸带**平衡上限** maxScale（行宽 / 自然宽的最大比值，默认 1.3）：
+ * 短行（比如只写了一小节就换行）也尽量拉伸对齐，但音符间距超过上限就
+ * 不再撑满，只保留最大允许间距——比「短行完全不拉」的参差观感好得多。
+ */
+export function fitSpacing(units: SpacingUnit[], available: number, justify: boolean, maxScale = 1.3): number[] {
   const ideal = units.reduce((sum, u) => sum + u.ideal, 0);
   const min = units.reduce((sum, u) => sum + u.min, 0);
   if (ideal > available) {
@@ -52,8 +58,9 @@ export function fitSpacing(units: SpacingUnit[], available: number, justify: boo
     return units.map(u => u.ideal - (u.ideal - u.min) * shrink);
   }
   if (!justify) return units.map(u => u.ideal);
+  const target = Math.min(available, ideal * Math.max(1, maxScale));
   const weight = units.reduce((sum, u) => sum + u.weight, 0);
-  return units.map(u => u.ideal + (available - ideal) * u.weight / Math.max(1, weight));
+  return units.map(u => u.ideal + (target - ideal) * u.weight / Math.max(1, weight));
 }
 
 /** 先确定增时线位置，命中范围和播放定位随后复用。 */

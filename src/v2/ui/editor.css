@@ -68,6 +68,9 @@ body {
 /* ── 顶栏 ── */
 .v2-head {
   position: relative;
+  /* 谱面校验的下拉错误列表（.v2-check-list）绝对定位伸出顶栏之外：
+     OCR 对照页等后续绘制的内容（左右栏背景）会盖住它——顶栏整体抬一层 */
+  z-index: 30;
   display: flex;
   align-items: baseline;
   gap: 16px;
@@ -1137,6 +1140,35 @@ details.v2-side-block[open] > summary::before {
 .v2-pad-num .v2-glyph-digit {
   font-size: 16px;
 }
+/* 休止符 0 按钮（输入排）：与音级键的数字同字号——0 是常用输入键，
+   混在小节线 / 附点那排 11px 的配角按钮里太小，不好认 */
+.v2-pad-rest-zero {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+}
+/* 转调 + 小字谱入口并排：两列各自「标签在上、控件在下」，
+   小字谱的文字与按钮分别落在转调标签 / 下拉框的右侧，省掉单独一行 */
+.v2-pad-duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  gap: 10px;
+  align-items: start;
+}
+.v2-pad-duo > .v2-field {
+  margin-bottom: 8px;
+}
+.v2-pad-duo-cue {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.v2-pad-duo-cue .v2-field-label {
+  white-space: nowrap;
+}
+.v2-pad-duo-cue .v2-meta-btn {
+  margin-top: 0;
+}
 /* 连音线图标：跟着按钮文字的颜色走（禁用 / 主色都自动一致） */
 .v2-slur-icon {
   display: block;
@@ -1198,6 +1230,20 @@ details.v2-side-block[open] > summary::before {
 .v2-pad-cands .v2-btn {
   flex: 0 0 auto;
 }
+
+/* 拖选区间条：有选区时固定在输入板最上方，小节线属性模式也不会把它吞掉。
+   文字按钮「删除所选」是找得到的入口；常驻排那颗 ⌫ 图标留给单选 / 插入态。 */
+.v2-pad-range {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--v2-border, #ddd);
+}
+.v2-pad-range .v2-field-label { flex: 1 1 auto; }
+.v2-pad-range .v2-btn { flex: 0 0 auto; font-weight: 600; }
 
 /* 次要工具键（小节线 / 0 / 附点 / 增时线 / 升8 / 括号…）：
    宽度跟着内容走、高度矮一截——它们是配角，不能跟五排音级键抢地方 */
@@ -1271,6 +1317,24 @@ details.v2-side-block[open] > summary::before {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* 属性区里的小按钮（如「去除所有换行标记」） */
+.v2-meta-btn {
+  white-space: nowrap; /* 按钮文字不折行（小字谱入口等中文按钮） */
+  margin-top: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.v2-meta-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .v2-grace-check {
@@ -2522,12 +2586,14 @@ details.v2-side-block[open] > summary::before {
   flex: 0 0 64px;
 }
 
-/* 比例按钮会换行：五档比例一行放不下，硬挤会挤成两行错位 */
+/* 比例按钮会换行：五档比例一行放不下，硬挤会挤成两行错位。
+   容器同时挂 .v2-view-switch 拿外框（不再是一排裸 .v2-seg），padding 让按钮不贴边 */
 .v2-exp-ratios {
   display: flex;
   flex: 1;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 4px;
 }
 
 .v2-exp-ratios .v2-seg {
@@ -3262,8 +3328,27 @@ details.v2-side-block[open] > summary::before {
    设计锁：颜色全部走 v2 令牌（surface / border / accent），浅深主题自动成立，
    不再引入孤立的蓝色；卡片统一 var(--radius) 圆角。
    主流程三张卡（选择文件 → 选择声部 → 转换结果）前置，
-   转录引导与记号支持说明作为参考资料后置。 */
+   转录引导与记号支持说明作为参考资料后置。
+
+   底图与启动页同源（/home-botanical.png，深色 /home-dark.png），层级照 OCR 启动页：
+   底图 z0、内容 z1；顶栏与卡片保持不透明表面，文字对比度不受底图影响。
+   遮罩沿用首页口径；卡片外的说明文字另垫不透明表面，不再靠加重遮罩保可读。 */
+.ws-xml-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: linear-gradient(90deg, rgba(250, 248, 240, .3), rgba(250, 248, 240, .5)),
+    url('/home-botanical.png');
+  background-size: cover;
+  background-position: center;
+}
+.v2-app[data-theme='dark'] .ws-xml-bg {
+  background-image: linear-gradient(90deg, rgba(9, 9, 11, .38), rgba(9, 9, 11, .58)),
+    url('/home-dark.png');
+}
 .ws-xml {
+  position: relative;
+  z-index: 1;
   max-width: 760px;
   margin: 0 auto;
   padding: 28px 16px 56px;
@@ -3436,10 +3521,15 @@ details.v2-side-block[open] > summary::before {
 .ws-xml-tip .ws-xml-tip-btn:hover {
   background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
 }
-/* 记号支持与限制：默认收起，不抢主流程 */
+/* 记号支持与限制：默认收起，不抢主流程。
+   有底图后这行灰字直接压在草叶纹上，给它垫一层不透明表面保证可读 */
 .ws-xml-more {
   font-size: var(--fs-ui);
   color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
 }
 /* 转换完毕弹窗：不展示源码，只给「直接编辑 / 保存 .jps」两个去处 */
 .ws-xml-done {
@@ -3506,4 +3596,39 @@ details.v2-side-block[open] > summary::before {
 .v2-xml-out:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* 小字谱录入窗口：整窗高度固定——输入板按钮行随选中状态增减时，
+   窗口不再忽高忽低；超高内容只在中间区域滚动，底栏按钮始终可见。
+   谱面输入区与输入板之间留固定空隙，不再让按钮贴着输入框下沿。 */
+.v2-cue-dialog {
+  height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+}
+.v2-cue-dialog .v2-cue-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 14px 10px;
+}
+.v2-cue-dialog .v2-cue-pad {
+  margin-top: 18px;
+}
+.v2-cue-dialog .v2-cue-foot {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+}
+.v2-cue-dialog .v2-cue-foot-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* OCR 校对场景：录入小字谱时还要看清弹窗后面的原图，遮罩只轻微压暗、不做模糊 */
+.v2-cue-mask {
+  backdrop-filter: none;
+  background: rgba(0, 0, 0, 0.28);
 }

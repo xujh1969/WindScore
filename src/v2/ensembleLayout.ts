@@ -1,5 +1,5 @@
 import type { LayoutLine, LayoutOptions, LayoutResult, PlacedItem } from './layout';
-import { METER_LEAD } from './layout';
+import { METER_LEAD, placeCueStaves } from './layout';
 import { partMeasures, partScore, scoreParts } from './parts';
 import type { Score } from './types';
 import { PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT } from './ticks';
@@ -16,10 +16,20 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   const all = scoreParts(score);
   const visible = all.filter((p) => !p.hidden);
   const parts = visible.length ? visible : all;
-  const singles = parts.map((p) => partScore(score, p.id));
+  // 子谱**显式剥掉 cues**：partScore 的 ...base 会把主谱的 cues 原样带进每个
+  // 声部，单声部排版就会各自按自己的行算一份坐标错误的小字谱（spread 回结果时
+  // 还会顶掉正确值）。小字谱只在总谱层放一次，行高也由本函数显式负责。
+  const singles = parts.map((p) => ({ ...partScore(score, p.id), cues: undefined }));
   const measured = singles.map((s) => layoutSingle(s, { ...opts, contentWidth: 1e9, showTitle: false }));
   const k = measured[0].glyph.fontSize / 21;
-  const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight));
+  // 小字谱要占锚行行带上方的高度：拿一份「带 cue 的单声部探测排版」的 lineHeight
+  // 作准（与 layoutScore 的 upNeed 口径同源），不在这里复刻公式、也不依赖隐式继承。
+  // opts.lineHeight 是播放页的显式覆盖，与单声部一样不涨。
+  const hasCue = !opts.lineHeight && (score.cues ?? []).some((c) => c.events?.length);
+  const cueRowH = hasCue
+    ? layoutSingle({ ...singles[0], cues: score.cues }, { ...opts, contentWidth: 1e9, showTitle: false }).lineHeight
+    : 0;
+  const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight), cueRowH);
   const left = (opts.padding ?? 40) + Math.min(112, Math.max(52, ...parts.map((p) => [...p.name].length * 12))) * k;
   const right = opts.contentWidth - (opts.padding ?? 40);
   const available = Math.max(160, right - left);
@@ -133,9 +143,9 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     systemLead[si] = units[from].lead;
     systemMeter[si] = previous?.kind === 'barline' ? previous.beatAfter ?? '' : '';
     const budget = available - systemLead[si] + (closingWidths[to - 1] - 20 * k) / 2;
-    const natural = widths.slice(from, to).reduce((sum, w) => sum + w, 0);
-    const shortTail = (si === starts.length - 1 || units[to - 1].forced) && natural < budget * 0.6;
-    const fitted = fitSpacing(units.slice(from, to), budget, !shortTail);
+    // 与单声部口径一致（0.4.40）：短行豁免改为 fitSpacing 内的平衡上限，
+    // 短行也尽量拉伸对齐，间距超过 1.3× 就不再撑满
+    const fitted = fitSpacing(units.slice(from, to), budget, true, opts.justifyMax);
     let offset = 0;
     for (let mi = from; mi < to; mi++) {
       systemOf[mi] = si;
@@ -155,7 +165,13 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     const lead = e.item.kind === 'note' || e.item.kind === 'rest' ? e.lead : 0;
     positions.set(e.item.eventId, { x: offset + (p.x + lead) * scale - lead, w: e.item.kind === 'barline' && e.tick > 0 ? p.w : p.w * scale, line: systemOf[e.measure], ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {}) });
   }
-  const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
+  const placed = singles.map((s, pi) => layoutSingle(
+    // 首声部排版还负责整谱的标题块：标题高度里有一条「上方留白」分支
+    // （upNeed>30 时多 12px），带小字谱的单声部版式会走它。这里显式把 cues
+    // 传回去只为标题同高；它自己算的 cue 坐标仍在下面重算并显式覆盖。
+    pi === 0 && score.cues?.length ? { ...s, cues: score.cues } : s,
+    { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false },
+  ));
   const title = placed[0].title;
   const startY = 20 + (title?.height ?? 0);
   const systemH = parts.length * rowH + 24 * k;
@@ -185,5 +201,9 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
   }
   addPlaybackAnchors(lines, measured[0].glyph);
-  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24, naturalWidth: naturalMax };
+  // 小字谱挂到多声部的总谱行上（锚声部的行带顶）。placed[0] 是 partScore 的
+  // 单声部排版，partScore 会把 cues 原样带进子谱——那里的 cue 坐标是对着
+  // 单声部行算的，必须用总谱行重排并**显式覆盖**，不能用 spread 继承的旧值。
+  const cues = placeCueStaves(score, { lines, lineHeight: rowH, unit: opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT, fontSize: measured[0].glyph.fontSize });
+  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24, naturalWidth: naturalMax, cues: cues.length ? cues : undefined };
 }

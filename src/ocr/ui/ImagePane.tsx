@@ -18,10 +18,12 @@ interface ImagePaneProps {
   activeBox?: { x: number; y: number; w: number; h: number } | null
   /** PDF 预览：二值图（无彩色原图）。 */
   bin?: Binary | null
+  /** 多页 PDF 翻页器：显示在栏头（页码 + 前后翻页）。 */
+  pager?: { page: number; total: number; onPrev(): void; onNext(): void }
 }
 
 /** 二值图 → canvas（PDF 预览用）。ref 转发给叠加层测量实际渲染矩形。 */
-const BinPreview = forwardRef<HTMLCanvasElement, { bin: Binary }>(function BinPreview({ bin }, ref) {
+export const BinPreview = forwardRef<HTMLCanvasElement, { bin: Binary }>(function BinPreview({ bin }, ref) {
   const inner = useRef<HTMLCanvasElement | null>(null)
   useEffect(() => {
     const canvas = inner.current
@@ -53,8 +55,12 @@ const BinPreview = forwardRef<HTMLCanvasElement, { bin: Binary }>(function BinPr
   )
 })
 
-export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBox, bin }: ImagePaneProps) {
+export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBox, bin, pager }: ImagePaneProps) {
   const boxes = overlayBoxes ?? locator.map((e) => ({ ...e.bbox, suspect: e.suspect }))
+  // 叠加层的原生尺寸：图片文件用原图，PDF 预览用当前页二值图（overlayBoxes 同口径）。
+  // 之前整块渲染以 img 为条件，PDF 载入时 img=null → 对比页左栏只剩「原图显示在此处」
+  // 空态，启动页能看到的预览进编辑界面就没了（用户实测）。
+  const dims = img ?? (bin ? { w: bin.w, h: bin.h } : null)
 
   // 叠加层贴住图片的**实际渲染矩形**（图片被 contain 缩放后 wrap 可能比图大）。
   // ResizeObserver 跟随图片尺寸变化（拖栏宽/窗口缩放/加载完成都会触发）。
@@ -78,7 +84,85 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
     }
   }, [img, bin])
 
+  // ── 查看器：滚轮缩放 + 拖拽平移 ──
+  // scale=1 是「刚好撑满可视区」的初始态（contain），也是缩小的下限；
+  // 平移量 (x,y) 是相对初始位置的偏移，**缩小时按比例向初始位置收敛**——
+  // 缩到下限时恰好归位，不会因为拖拽跑偏而回不来。放大以鼠标点为锚。
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null)
+  const suppressClickRef = useRef(false)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
+  // 换图/翻页时回到初始态
+  useEffect(() => {
+    setView({ scale: 1, x: 0, y: 0 })
+  }, [img, bin])
+
+  // 滚轮缩放要 preventDefault，React 的 onWheel 是 passive 的，挂原生监听
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const mx = ev.clientX - rect.left - rect.width / 2
+      const my = ev.clientY - rect.top - rect.height / 2
+      setView((v) => {
+        const factor = ev.deltaY < 0 ? 1.25 : 1 / 1.25
+        const scale = Math.min(8, Math.max(1, v.scale * factor))
+        if (scale === v.scale) return v
+        if (scale > v.scale) {
+          // 放大：以鼠标点为锚
+          const k = scale / v.scale
+          return { scale, x: mx * (1 - k) + v.x * k, y: my * (1 - k) + v.y * k }
+        }
+        // 缩小：平移量按「超出初始态的放大程度」等比收敛——缩到下限 scale=1 时
+        // 恰好回到初始位置（x=y=0），不会因为拖拽跑偏而停在旁边
+        const k = (scale - 1) / (v.scale - 1)
+        return { scale, x: v.x * k, y: v.y * k }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [img, bin])
+
+  // 拖拽平移（放大后才有意义）；拖过就算移动，松手后的 click 不再当点选
+  useEffect(() => {
+    const move = (ev: MouseEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      const dx = ev.clientX - d.sx
+      const dy = ev.clientY - d.sy
+      if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
+      setView((v) => ({ ...v, x: d.ox + dx, y: d.oy + dy }))
+    }
+    const up = () => {
+      const d = dragRef.current
+      dragRef.current = null
+      setDragging(false)
+      if (d?.moved) suppressClickRef.current = true
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+  }, [])
+
+  const onMouseDown = (ev: ReactMouseEvent<HTMLDivElement>) => {
+    if (view.scale <= 1 || ev.button !== 0) return
+    ev.preventDefault()
+    dragRef.current = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y, moved: false }
+    setDragging(true)
+  }
+
   const onClick = (ev: ReactMouseEvent<SVGSVGElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
     if (!onPickBox || !img || locator.length === 0) return
     const rect = ev.currentTarget.getBoundingClientRect()
     if (rect.width === 0) return
@@ -90,21 +174,55 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
 
   return (
     <section className="ocr-pane" data-pane="image">
-      <div className="ocr-pane-head">原图</div>
-      {img ? (
-        <div className="ocr-pane-body">
-          <div className="ocr-img-wrap">
+      <div className="ocr-pane-head">
+        原图
+        {pager ? (
+          <span className="ocr-pager">
+            <button
+              className="ocr-pager-btn"
+              onClick={pager.onPrev}
+              disabled={pager.page <= 0}
+              aria-label="上一页"
+              title="上一页"
+            >
+              ‹
+            </button>
+            <span>
+              {pager.page + 1} / {pager.total}
+            </span>
+            <button
+              className="ocr-pager-btn"
+              onClick={pager.onNext}
+              disabled={pager.page >= pager.total - 1}
+              aria-label="下一页"
+              title="下一页"
+            >
+              ›
+            </button>
+          </span>
+        ) : null}
+      </div>
+      {img || bin ? (
+        <div className="ocr-pane-body" ref={bodyRef}>
+          <div
+            className="ocr-img-wrap"
+            style={{
+              transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+              cursor: dragging ? 'grabbing' : view.scale > 1 ? 'grab' : undefined,
+            }}
+            onMouseDown={onMouseDown}
+          >
             {bin ? (
               <BinPreview ref={mediaRef as Ref<HTMLCanvasElement>} bin={bin} />
-            ) : (
-              <img ref={mediaRef as Ref<HTMLImageElement>} src={img.url} alt="原始简谱" data-testid="src-image" />
-            )}
-            {(boxes.length > 0 || activeBox) && (
+            ) : img ? (
+              <img ref={mediaRef as Ref<HTMLImageElement>} src={img.url} alt="原始简谱" data-testid="src-image" draggable={false} />
+            ) : null}
+            {(boxes.length > 0 || activeBox) && dims && (
               <svg
                 className="ocr-overlay"
-                width={img.w}
-                height={img.h}
-                viewBox={`0 0 ${img.w} ${img.h}`}
+                width={dims.w}
+                height={dims.h}
+                viewBox={`0 0 ${dims.w} ${dims.h}`}
                 data-testid="overlay"
                 onClick={onClick}
                 style={

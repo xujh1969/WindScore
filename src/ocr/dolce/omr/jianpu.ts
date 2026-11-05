@@ -946,6 +946,17 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   const musicRowH = median(rowMetaAll.filter((m) => m.rd.length >= 3 && m.barlineXs.length >= 2).map((m) => median(m.rd.map((k) => k.bbox.h)))) || numH;
   const keyLineBot = Math.max(-Infinity, ...rowMetaAll.filter((m) => m.botY < firstMusicTop && keyLineRow(m.rd)).map((m) => m.botY));
   const pageRowH = median(rowMetaAll.filter((m) => m.rd.length >= 3).map((m) => median(m.rd.map((k) => k.bbox.h))));
+  // **小字谱行**：印在主谱行上方/下方的伴唱/伴奏小号谱行（核高约为主谱行的 0.5~0.82）。
+  // 此前两条去路都坏：在第一谱行**之上**的被页眉门（pseudoRow.headerAboveFirst，hRow < 0.8×谱行高）
+  // 整行删掉；夹在谱行**之间**的混进主声部当一行正文。判据（三条都要，宁缺勿滥——
+  // 页眉的曲号连标题也凑得出几根「小节线」）：≥2 根贯穿小节线、≥5 个窄核（数字都是瘦长的），
+  // 行内核的中位高落在 [0.5, 0.82]×musicRowH。认出后保留并打 cue 标，转换端转成 @小谱 段。
+  const isCueLike = (m: (typeof rowMetaAll)[number]): boolean => {
+    if (m.barlineXs.length < 2 || m.rd.length < 5) return false;
+    const hs = m.rd.filter((k) => k.bbox.w <= numH * 1.1).map((k) => k.bbox.h);
+    const hRow = median(hs.length ? hs : m.rd.map((k) => k.bbox.h));
+    return hRow >= musicRowH * 0.5 && hRow <= musicRowH * 0.82;
+  };
   // **通栏横线以下是注释**：选本诗歌712 通本谱后隔一道过半页宽的细线印词语注释（「(11)1.昏沉若病：…」），
   // 注释里的数字凑成了几条伪谱行（`[1 0. 2. | 3 |`）。线上方至少已有两条谱行才认，免得页眉的装饰线误伤。
   const noteRuleY = Math.min(...c.hlines
@@ -975,7 +986,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     // （页眉小字「E调4/4」、大号曲号连标题）。
     const hRow = median(m.rd.map((k) => k.bbox.h));
     const offSize = hRow < musicRowH * 0.8 || hRow > musicRowH * 1.25;
-    if (Number.isFinite(firstMusicTop) && m.botY < firstMusicTop &&
+    // 小字谱行豁免：前奏/伴唱小号谱行印在第一谱行之上时，正好撞进这条页眉门被整行删掉。
+    if (Number.isFinite(firstMusicTop) && m.botY < firstMusicTop && !isCueLike(m) &&
       ((m.barlineXs.length <= 1 && (m.rd.length < 6 || offSize)) || hRow < musicRowH * 0.8)) { probe("pseudoRow.headerAboveFirst"); return false; }
     // **大字行**：核的中位高超过 1.4 字号——音符数字都在一个字号上下，大一号的是标题/曲号那一排
     //（补充本 71：「受难」小字 + 大号曲号「71」（59×46、60×26，字号 36）凑成一行，读成 `1 | 7 1`）。
@@ -1097,12 +1109,82 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   // 分组是否齐整（各系统行数相同、≥2 个系统）要等伪行剔完再验，见下面 `rows` 之后。
   const sysOf = new Map<object, { sys: number; voice: number }>();
   const braceRects: Rect[] = [];
+  const hookedCores: { m: (typeof rowMetaAll)[number]; cores: (typeof rowMetaAll)[number]["rd"] }[] = [];
   if (staff.length >= 4) {
     const firstX = median(staff.map((m) => Math.min(...m.rd.map((k) => k.bbox.x))));
-    const bars = raw.filter((k) => k.bbox.h >= numH * 4 && k.bbox.w <= numH * 2 && rright(k.bbox) < firstX)
+    type BraceBar = { y0: number; y1: number; x0: number; x1: number };
+    const inBrace = (m: (typeof rowMetaAll)[number], br: BraceBar) =>
+      Math.min(m.botY, br.y1 + numH * 0.5) - Math.max(m.topY, br.y0 - numH * 0.5) >= (m.botY - m.topY) * 0.3;
+    // 首系统带【女1】【男】这类声部名的谱：名字占掉左边距，连谱号被推到 firstX 右边
+    // （chorus_03 实测 firstX=162、括号 x187–218，卡 old 门整系统丢标记 → 三行被当齐唱
+    // 写进所有声部、声部名残迹误读成 ♯0/♭1 假音符）。右界放宽 2.5 字号：候选仍须
+    // 高 ≥4 字号、宽 ≤2 字号的竖块（谱行内没有这种东西）。放宽的代价是曲头装饰竖块
+    // （lyric_02 x74–93）会混进候选、摘核删掉头两行行首真音符——兜底是下面 hookedCores：
+    // 分组验收不过整页退回单声部时撤销摘核、重跑该行 nums。
+    const cand: BraceBar[] = raw.filter((k) => k.bbox.h >= numH * 4 && k.bbox.w <= numH * 2)
       .map((k) => ({ y0: k.bbox.y, y1: rbottom(k.bbox), x0: k.bbox.x, x1: rright(k.bbox) }))
       .sort((a, b) => a.y0 - b.y0);
-    const braces: { y0: number; y1: number; x0: number; x1: number }[] = [];
+    const gate = (b: BraceBar) => b.x1 < firstX + numH * 2.5;
+    let bars = cand.filter(gate);
+    const hOf = (b: BraceBar) => b.y1 - b.y0;
+    const join = (list: BraceBar[]): BraceBar[] => {
+      const out: BraceBar[] = [];
+      for (const b of list) {
+        const last = out[out.length - 1];
+        if (last && b.y0 <= last.y1) {
+          last.y1 = Math.max(last.y1, b.y1); last.x0 = Math.min(last.x0, b.x0); last.x1 = Math.max(last.x1, b.x1);
+        } else out.push({ ...b });
+      }
+      return out;
+    };
+    const covers = (b: BraceBar) => staff.filter((m) => inBrace(m, b)).length >= 2;
+    // **声部名把连谱号挤出绝对 x 门**：2.5 字号的界是按 chorus_03 定的，而 chorus_04 首系统
+    // 左侧印「女高/女高/女低/女低」，连谱号被推到 x120–142（其余无声部名的系统在 x35–58），
+    // firstX=68、numH=22 → 界 123，首系统那道被拒，四个声部行全成 orphan、按顺序发声。
+    // 单靠再放宽界会把全页中段的高竖块（曲头装饰、页边线）一起放进来。改用**模板互证**：
+    // 同一页各系统的连谱号是同一副铅字，高度几乎相同、纵向等距、各自罩住 ≥2 行谱行。
+    // ① 门内已有 ≥2 道可靠模板时，把被门排除但与模板同高、紧挨模板、也罩住 ≥2 行的块补回来；
+    // ② 门内凑不出模板（每个系统都印了声部名、整页连谱号全被推右）时，改在**全部候选**里
+    //    按高度聚类找那一组，不再依赖绝对 x 门。前两种情形都要求 ≥2 道且各罩 ≥2 行，
+    //    单声部谱的零星装饰竖块凑不出组；③ 只剩一道时另拿小节线整列对齐作孤证（见下）。
+    //    万一认错，下面的多声部验收会整页退回单声部并撤销摘核。
+    {
+      const tpl = join(bars);
+      const hTpl = median(bars.map(hOf));
+      const solid = tpl.length >= 2 && hTpl >= numH * 4 && tpl.every(covers);
+      if (solid) {
+        const tol = hTpl * 0.1;
+        const rescued = cand.filter((b) => !gate(b) && b.x1 < firstX + numH * 6 &&
+          Math.abs(hOf(b) - hTpl) <= hTpl * 0.12 && covers(b) &&
+          tpl.every((br) => b.y1 <= br.y0 + tol || b.y0 >= br.y1 - tol) &&
+          Math.min(...tpl.map((br) => b.y0 >= br.y1 ? b.y0 - br.y1 : br.y0 - b.y1)) <= hTpl * 1.5);
+        if (rescued.length) {
+          probe("brace.rescue");
+          bars = [...bars, ...rescued].sort((a, b) => a.y0 - b.y0);
+        }
+      } else {
+        const hAll = median(cand.map(hOf));
+        const pool = cand.filter((b) => b.x1 < firstX + numH * 6 &&
+          Math.abs(hOf(b) - hAll) <= hAll * 0.12 && covers(b));
+        const g = join(pool);
+        if (g.length >= 2 && g.every((br, i) => i === 0 || br.y0 - g[i - 1]!.y1 <= hAll * 1.5)) {
+          probe("brace.noGate");
+          bars = pool;
+        } else if (g.length === 1) {
+          // ③ 整页只有一个系统（或用户只截了首系统那一段）：没有别道连谱号可互证。
+          // 孤证要另拿**声部行互证**背书——同一个系统的平行声部行，小节线落在相同的 x 列上；
+          // 顺序印刷的几行单声部谱，小节线按小节长短散在各处，凑不出这种整列对齐。
+          // 一道高竖块罩住 ≥3 行、其中 ≥80% 的行各有 ≥2 根线与多数同行共列，才算连谱号。
+          const mates = staff.filter((m) => inBrace(m, g[0]!));
+          if (mates.length >= 3) {
+            const hit = (x: number) => mates.filter((m) => m.barlineXs.some((y) => Math.abs(y - x) <= numH * 0.3)).length;
+            const aligned = mates.filter((m) => m.barlineXs.filter((x) => hit(x) >= mates.length * 0.6).length >= 2);
+            if (aligned.length >= Math.ceil(mates.length * 0.8)) { probe("brace.solo"); bars = pool; }
+          }
+        }
+      }
+    }
+    const braces: BraceBar[] = [];
     for (const b of bars) {
       const last = braces[braces.length - 1];
       if (last && b.y0 <= last.y1) {
@@ -1110,8 +1192,6 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       } else braces.push({ ...b });
     }
     braceRects.push(...braces.map((br) => ({ x: br.x0, y: br.y0, w: br.x1 - br.x0, h: br.y1 - br.y0 })));
-    const inBrace = (m: (typeof rowMetaAll)[number], br: (typeof braces)[number]) =>
-      Math.min(m.botY, br.y1 + numH * 0.5) - Math.max(m.topY, br.y0 - numH * 0.5) >= (m.botY - m.topY) * 0.3;
     // **静默声部行**：系统里某声部整段不唱，只印一个行首 `0` 和几根小节线（新编赞美诗·四声部 12 第 3 系统 B 声部），
     // 核不到 3 个被上面当噪声剔了，这个系统少一行、整页声部分组验收不过退回单声部。比别的系统少行时，
     // 连谱号范围内的 1~2 核短行救回来：首核在声部行首音那一列（一字号内）、至少两根小节线与同系统谱行的线对齐。
@@ -1143,6 +1223,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
         const hook = m.rd.filter((k) => rright(k.bbox) <= br.x1 + numH * 0.3);
         if (hook.length && hook.length < m.rd.length) {
           probe("brace.hook");
+          // 记下被摘的核：万一整页分组验收不过退回单声部（连谱号根本是认错的，比如曲头装饰
+          // 竖块被当括号把真行首核摘了——lyric_02），还要原样放回去，见下面 voices.reject。
+          hookedCores.push({ m, cores: hook });
           m.rd = m.rd.filter((k) => !hook.includes(k));
           m.topY = Math.min(...m.rd.map((k) => k.bbox.y));
           m.botY = Math.max(...m.rd.map((k) => rbottom(k.bbox)));
@@ -2066,7 +2149,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     return [m, hs.length >= 3 ? median(hs) : 0] as const;
   }));
   const smallRows = [...rowDigitH.values()].some((h) => h > 0 && h <= numH * 1.1);
-  const allRows: StaffRow[] = staff.map((m) => {
+  // 行 → nums 构建（allRows 主体）。验收失败退回单声部、撤销连谱号钩摘核后要对同一行重跑，
+  // 故提成函数（连变音/延长/顿音等记号回挂一起走，见 buildJpNums 与 rd 一一对应那段）。
+  const buildRowNums = (m: (typeof staff)[number]) => {
     const mySys = sysOf.get(m)?.sys;
     // 歌词行不算别的声部：四声部谱夹在第 2、3 声部之间的几行歌词此时还在系统里（新编赞美诗·四声部 11《荣归天父歌》三行词 41px 见方，
     // 数字 38×22），第 2 声部压在字顶上的低音点被 nearerOther 判成「离下面那个数字更近」、整排丢掉（全本第 2 声部漏低音点七百多处）。
@@ -2100,13 +2185,22 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       if (accentOf.get(k) && nums[j]) nums[j].articulation = "accent";
       const g = graceOf.get(k); if (g && nums[j]) nums[j].grace = g;
     });
+    return nums;
+  };
+  const rowByMeta = new Map<(typeof staff)[number], StaffRow>();
+  const allRows: StaffRow[] = staff.map((m) => {
+    const nums = buildRowNums(m);
     const row: StaffRow = { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
       finalBarline: (m as { finalBarline?: "end" }).finalBarline,
       finalBarlineThin: (m as { finalBarlineThin?: boolean }).finalBarlineThin,
       doubleBarXs: (m as { doubleBarXs?: number[] }).doubleBarXs,
       endBarXs: (m as { endBarXs?: number[] }).endBarXs };
+    rowByMeta.set(m, row);
     const sv = sysOf.get(m);
     if (sv) { row.system = sv.sys; row.voice = sv.voice; }
+    // 小字谱标记：只在**没归入连谱号系统**时打——四声部谱的小号声部行（核高比旋律行小两成）
+    // 也是真声部，已归系统，不能当小字谱拆走。
+    if (row.system === undefined && isCueLike(m)) row.cue = true;
     const thickXs = (m as { thickBarXs?: number[] }).thickBarXs;
     if (thickXs) midThickBars.set(row, thickXs);
     return row;
@@ -2161,7 +2255,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     allRows.filter((r) => r !== topRow && r.barlineXs.length >= 3).length >= 2;
   const rows = allRows.filter((r) => {
     if (!r.nums.length) return false;
-    if (headerLike && r === topRow) { probe("pseudoRow.headerLine"); return false; }
+    if (headerLike && r === topRow && !r.cue) { probe("pseudoRow.headerLine"); return false; }
     const rest = restShare(r.nums);
     // 连谱号括着的行是实打实的声部行：四声部谱的伴奏声部休止多（78《马槽歌》第 2 系统 Q3 `5 5 0 0 | 0 0 6 …`
     // 过半是 0），按单声部的 0.5 会被当成和弦字母伪行删掉，整个系统缺一声部、分组验收失败。
@@ -2170,7 +2264,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     // 休止 0 是瘦长的椭圆（宽高比 ~0.6）；歌词行被读成一串 0 时核是近方的汉字（~1.0），这页小节线又穿过歌词区（18），要分开
     const silentVoice = r.system !== undefined && r.barlineXs.length >= 2 && rest >= 0.8 &&
       median(r.nums.map((n) => n.bbox.w / Math.max(1, n.bbox.h))) <= 0.8;
-    const ok = keepBy(r.nums) || (bracedOk && r.system !== undefined && rest < 0.8) || silentVoice;
+    // 小字谱行（伴奏声部休止常过半）不按休止占比删：cue 判据本身已含「≥2 根小节线 + ≥5 窄核 +
+    // 半号字高」，汉字正文/和弦字母凑不出这个形。
+    const ok = keepBy(r.nums) || r.cue || (bracedOk && r.system !== undefined && rest < 0.8) || silentVoice;
     if (silentVoice && !keepBy(r.nums)) probe("pseudoRow.silentVoice");
     const keep = ok || (r.topY > firstOkTop && trimProse(r));
     probe(!keep ? "pseudoRow.drop" : ok && rest >= 0.5 ? "pseudoRow.keepByAugment" : "row");
@@ -2274,7 +2370,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       for (let i = 0; i < byY.length; ) {
         let j = i;
         while (j < byY.length && byY[j].system === undefined) j++;
-        if (j - i === mode && mode >= 3) {
+        // 小字谱行不参与孤儿系统成组（它不是声部行）
+        if (j - i === mode && mode >= 3 && !byY.slice(i, j).some((r) => r.cue)) {
           probe("voices.orphanSystem");
           for (let k = i; k < j; k++) byY[k].system = nextSys;
           nextSys++;
@@ -2285,7 +2382,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       // ③ 连谱号下钩没够着的末声部行（34 第 1 系统第 4 行）、上钩没够着的首声部行（270 第 4 系统）：
       //    紧贴某系统的末行/首行（中间没隔歌词，间隔 <1.5 字号）、且那个系统比众数少一行，就并进去
       byY.forEach((r, i) => {
-        if (r.system !== undefined) return;
+        if (r.system !== undefined || r.cue) return;
         const prev = byY[i - 1], next = byY[i + 1];
         if (prev?.system !== undefined && (cnt.get(prev.system) ?? 0) < mode && r.topY - prev.bottomY < numH * 1.5) {
           probe("voices.adoptBelow");
@@ -2310,7 +2407,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       // 没归系统的碎行（64：一条 3 个音的碎块行）：音数不到全曲声部行中位数四成的剔掉，免得「每行都归了系统」这一条验收不过
       {
         const medAll = median(useRows.filter((r) => r.system !== undefined && !drop.has(r)).map((r) => r.nums.length));
-        for (const r of useRows) if (r.system === undefined && !drop.has(r) && r.nums.length < medAll * 0.4) { probe("voices.dropOrphanThin"); drop.add(r); }
+        for (const r of useRows) if (r.system === undefined && !drop.has(r) && !r.cue && r.nums.length < medAll * 0.4) { probe("voices.dropOrphanThin"); drop.add(r); }
       }
       if (drop.size) useRows = useRows.filter((r) => !drop.has(r));
       // 系统号按纵向位置重排（①② 新开的号排在后面）
@@ -2328,16 +2425,37 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     }
     const sizes = [...bySys.values()].map((g) => g.length);
     // 整首只有一个系统的（393）也算，但要 ≥3 行——两行的「系统」多半是连谱号认错。
-    // 局部多声部（946《大地音韵飘》：前两行单声部、后两个系统带连谱号分两声部）：没归系统的行照单声部留着，
-    // 每行都得像条正经谱行（两根以上小节线）、且系统是两声部的——三行以上的系统缺了连谱号的那几行（众数对上）上面 ② 已补，
-    // 补不上的多半是认残了，照旧整页退回单声部
+    // 局部多声部：没归系统的行照单声部留着，每行都得像条正经谱行（两根以上小节线）。
+    //   946《大地音韵飘》：前两行单声部、后两个系统带连谱号分两声部；
+    //   月亮代表我的心（chorus_04）：前五行的齐唱、后两个系统带连谱号分四声部——
+    //   系统行数不限二声部（sizes[0] >= 2），缺了连谱号那几行的系统（众数对不上）仍整页退回
     const orphans = useRows.filter((r) => r.system === undefined);
-    const partial = orphans.length > 0 && bySys.size >= 2 && sizes[0] === 2 && orphans.every((r) => r.barlineXs.length >= 2);
+    const partial = orphans.length > 0 && bySys.size >= 2 && sizes[0]! >= 2 && orphans.every((r) => r.barlineXs.length >= 2);
     const ok = (!orphans.length || partial) && (bySys.size >= 2 || sizes[0]! >= 3) && sizes.every((n) => n === sizes[0] && n >= 2)
       && [...bySys.values()].every((g) => g.every((r, i) => r.voice === i));
     if (ok && partial) probe("voices.partial");
     probe(ok ? "voices" : "voices.reject");
-    if (!ok) for (const r of useRows) { delete r.system; delete r.voice; }
+    if (!ok) {
+      // 退回单声部：撤销连谱号钩摘核——被摘的核放回原行、按 x 重排、行范围重算，并对该行
+      // 重跑 buildRowNums 重建 nums（nums 在验收前就已从摘核态的 rd 生成，只恢复 rd 不够，
+      // jps 会缺行首真音符——lyric_02 曲头装饰竖块混进括号候选的实测教训）。
+      const touched = new Set<(typeof staff)[number]>();
+      for (const h of hookedCores) {
+        h.m.rd.push(...h.cores);
+        h.m.rd.sort((a, b) => a.bbox.x - b.bbox.x);
+        h.m.topY = Math.min(...h.m.rd.map((k) => k.bbox.y));
+        h.m.botY = Math.max(...h.m.rd.map((k) => rbottom(k.bbox)));
+        touched.add(h.m);
+      }
+      for (const m of touched) {
+        const row = rowByMeta.get(m);
+        if (!row) continue;
+        row.nums = buildRowNums(m);
+        row.topY = m.topY;
+        row.bottomY = m.botY;
+      }
+      for (const r of useRows) { delete r.system; delete r.voice; }
+    }
     else {
       resolvePairOctaveDots(useRows, numH);
       // 系统行末线只画到上面几个声部（12 第 3 系统：下两声部一个尾音一行空、右端无线），各声部同一系统一起收尾——
@@ -2668,13 +2786,19 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   // digit=0 误判复原（取数字候选排序里首个非零值）。两条独立线索，任一命中即复原：
   //  ① 休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白→默认 0；
   //  ② 简谱 "0" 是空心环、从不带斜线；「digit=0 却中央横带占满」= 糊死的 "3" 等被读成"内含斜线的 0"。
+  // **干净空心环不复原**：字形就是标准的 0（中带近空 + 有内孔），即便歌词对齐到了它也不再翻案——
+  // 下雨的时候 实测 6 处清清楚楚的 0 被「复原」成 1：那份谱的歌词对齐本身是乱的（歌词行认成了碎片），
+  // 碎片字落到休止符头上，真 0 被连坐（model 在 digitCache 阶段读的就是 0，restRestore 才是改错的环节）。
+  // 环形而读错的字形（印刷 0 之外）几乎不存在——6/9 不封口、括号不闭环。
   if (ocr.rankDigits) {
     const bad: JpNum[] = [];
     for (const r of useRows) for (const n of r.nums) {
       if (n.digit !== 0) continue;
       const alignedToLyric = n.lyrics?.some((s) => s && s.trim());
       const notHollowRing = midbandInk(bin, n.bbox) >= 0.65 && !midbandHole(bin, n.bbox);
-      if (alignedToLyric || notHollowRing) bad.push(n);
+      if (!alignedToLyric && !notHollowRing) continue;
+      const cleanRing = midbandInk(bin, n.bbox) < 0.6 && midbandHole(bin, n.bbox);
+      if (!cleanRing) bad.push(n);
     }
     if (bad.length) {
       const ranks = await ocr.rankDigits(bin, bad.map((n) => n.bbox));

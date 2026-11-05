@@ -7,10 +7,32 @@
     <meta name="description" content="WindScore：简谱写谱器、对轨（伴奏对齐）与曲库，一体化动态谱制作工具" />
     <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href="/src/home.css" />
+    <script>
+      // 主题先于首帧定下（防止深色用户闪一帧白底）：ws-theme 与编辑器等各页面共用；
+      // 没记录过就跟随系统偏好
+      (function () {
+        try {
+          var t = localStorage.getItem('ws-theme');
+          if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.dataset.theme = 'dark';
+          }
+        } catch (e) { /* 隐私模式读不了 localStorage，落浅色 */ }
+      })();
+    </script>
   </head>
   <body class="ws-home">
     <div class="ws-home-bg" aria-hidden="true"></div>
     <nav class="ws-home-menu" aria-label="顶部菜单">
+      <button id="wsThemeBtn" class="ws-theme-btn" type="button" aria-label="切换深浅主题" title="切换深浅主题">
+        <!-- 浅色显示月亮（点去深色）；深色显示太阳（点回浅色）——全站统一约定 -->
+        <svg class="ws-theme-moon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15.5 12.2A6.5 6.5 0 0 1 7.8 4.5a6.5 6.5 0 1 0 7.7 7.7z" />
+        </svg>
+        <svg class="ws-theme-sun" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <circle cx="10" cy="10" r="3.4" fill="currentColor" stroke="none" />
+          <path d="M10 2.4v1.9M10 15.7v1.9M2.4 10h1.9M15.7 10h1.9M4.7 4.7l1.3 1.3M14 14l1.3 1.3M15.3 4.7L14 6M6 14l-1.3 1.3" />
+        </svg>
+      </button>
       <a class="ws-btn ws-btn-ghost" href="./help.html">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
           <circle cx="10" cy="10" r="8" />
@@ -107,5 +129,16 @@
       document.querySelectorAll('a[href="./editor.html"], a[href="./align.html"], a[href="./ocr.html"]')
         .forEach((a) => (a.style.display = 'none'));
     }
+  </script>
+  <script>
+    // 首页主题开关：切 html[data-theme]（home.css 据此换底图与配色），并记住选择（ws-theme）
+    document.getElementById('wsThemeBtn').addEventListener('click', function () {
+      var dark = document.documentElement.dataset.theme === 'dark';
+      var next = dark ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try {
+        localStorage.setItem('ws-theme', next);
+      } catch (e) { /* 隐私模式写不进就算了，本次会话内仍有效 */ }
+    });
   </script>
 </html>

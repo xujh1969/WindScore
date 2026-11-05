@@ -5,7 +5,7 @@ import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
 import './help.css';
 
-const ids = ['quick-start', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'staff', 'export', 'jps', 'faq'];
+const ids = ['quick-start', 'ocr', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'staff', 'export', 'jps', 'faq'];
 const topics = guide.split('\n## ').slice(1).map((part, i) => {
   const end = part.indexOf('\n');
   return { id: ids[i], title: part.slice(0, end).trim(), body: part.slice(end).trim() };
@@ -29,6 +29,18 @@ function GuideText({ body }: { body: string }) {
       while (i < lines.length && !lines[i].startsWith('```')) code.push(lines[i++]);
       i++; blocks.push(<pre key={key}><code>{code.join('\n')}</code></pre>); continue;
     }
+    // 独立成行的截图：帮助页与 GitHub 共用同一份手册，图片统一放在 public/screenshots，
+    // 手册里写 ../public/ 前缀（相对 docs/ 的仓库路径），这里归一化成站点根路径。
+    const img = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (img) {
+      blocks.push(
+        <figure key={key}>
+          <img src={img[2].replace(/^\.\.\/public\//, '')} alt={img[1]} loading="lazy" />
+          {img[1] ? <figcaption>{img[1]}</figcaption> : null}
+        </figure>,
+      );
+      i++; continue;
+    }
     if (line.startsWith('### ')) { blocks.push(<h2 key={key}>{inline(line.slice(4))}</h2>); i++; continue; }
     if (line.startsWith('|')) {
       const rows: string[][] = [];
@@ -43,7 +55,7 @@ function GuideText({ body }: { body: string }) {
       blocks.push(ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>); continue;
     }
     const paragraph: string[] = [line]; i++;
-    while (i < lines.length && lines[i].trim() && !/^(### |```|\||- |\d+\. )/.test(lines[i])) paragraph.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(### |```|\||- |\d+\. |!\[)/.test(lines[i])) paragraph.push(lines[i++]);
     blocks.push(<p key={key}>{inline(paragraph.join(' '))}</p>);
   }
   return <>{blocks}</>;

@@ -1,4 +1,4 @@
-// 浏览器侧打开 PDF：pdf.js 动态加载、worker 与 wasm 目录（`?url` / BASE_URL 下的 redist）。三路共用这一份。
+// 浏览器与 WebView 共用官方兼容构建；主线程和 worker 必须成对使用。
 import type { OpsEnum } from "./vector";
 
 /**
@@ -9,13 +9,21 @@ import type { OpsEnum } from "./vector";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function openPdf(bytes: Uint8Array, extra: Record<string, unknown> = {}): Promise<{ pdf: any; OPS: OpsEnum }> {
   streamAsyncIterator();
-  const pdfjs = await import("pdfjs-dist");
-  // worker 由 Vite `?url` 解析为同源资源 URL（离线自包含，dev/build 一致）。
-  const { default: workerUrl } = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const { default: workerUrl } = await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url");
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  const wasmUrl = `${import.meta.env.BASE_URL}redist/pdfjs/`;
+  const pdfBase = `${import.meta.env.BASE_URL}redist/pdfjs/`;
   // getDocument 会 detach 传入的 buffer，复制一份避免污染调用方字节。
-  const pdf = await pdfjs.getDocument({ data: bytes.slice(), wasmUrl, ...extra }).promise;
+  // standardFontDataUrl / cMapUrl 必须配：文字型 PDF（Word 导出）的文字渲染依赖标准字体
+  // 数据与 CJK CMap，不配的话 pdfjs 只在 console 里 warn 然后静默跳过文字——整页近乎
+  // 全白，预览空白、识别为空（北国之春.pdf 实测，渲染本身不报任何错）。
+  const pdf = await pdfjs.getDocument({
+    data: bytes.slice(),
+    wasmUrl: pdfBase,
+    standardFontDataUrl: `${pdfBase}standard_fonts/`,
+    cMapUrl: `${pdfBase}cmaps/`,
+    ...extra,
+  }).promise;
   return { pdf, OPS: pdfjs.OPS as unknown as OpsEnum };
 }
 

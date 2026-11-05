@@ -12,7 +12,7 @@
  */
 
 import { useState } from 'react';
-import { ExpClose } from './ExpClose';
+import { ExpClose, useEscapeClose } from './ExpClose';
 import { configureLibraryLocation, useDefaultLocation } from './storeInit';
 import { isPickCancelled } from './storeBackend';
 
@@ -30,6 +30,7 @@ export function LibrarySetupDialog({
   onSkip: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  useEscapeClose(onSkip, !busy);
   const [error, setError] = useState('');
 
   const wrap = (task: () => Promise<void> | void): void => {

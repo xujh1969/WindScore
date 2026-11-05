@@ -131,6 +131,10 @@ export interface PlacedItem {
   bpmAfter?: number;
   /** 谱中换音色（小节线「音5」）：画在小节线上方的 音色=5 标注 */
   patchAfter?: number;
+  /** 齐唱段起点（小节线「同2-3」）：画在线上方的目标声部标注 */
+  unisonAfter?: number[];
+  /** 齐唱段终点（小节线「分」）：画在线上方的「分」标注 */
+  splitAfter?: boolean;
   breakAfter?: 'line' | 'page';
   /** 隐藏：保留占位宽度但不画字形（隐藏休止 8 / 隐藏小节线 |*） */
   hidden?: boolean;
@@ -216,6 +220,9 @@ export interface LayoutLine {
   lyricLines?: LyricLine[];
   index: number;
   y: number;
+  /** 本行歌词锚（px，已按字号缩放）：歌词首段画在 y + lyricYOff + 24k。
+   *  基线与歌词之间没有力度/渐变层时贴紧（30k），有则退到它们下面。缺省 44k（旧口径）。 */
+  lyricYOff?: number;
   items: PlacedItem[];
   /**
    * 挪到**本行行首**的拍号：上一行以「带拍号的小节线」结尾时，
@@ -327,6 +334,44 @@ export interface LayoutResult {
    */
   naturalWidth: number;
   systems?: { from: number; to: number; top: number; bottom: number; bracketX: number }[];
+  /**
+   * 小字谱（ossia）：锚定在第一声部某些小节上方的小行谱。
+   * items 的 x 已线性映射到锚定小节的水平范围，glyph 是小字号度量
+   * （paint 绘制 cue 时切换字形度量，画完切回主谱的）。
+   */
+  cues?: PlacedCue[];
+}
+
+/** 一条排好的小字谱行 */
+export interface PlacedCue {
+  /** 画在第几行上方（对应 lines[index]） */
+  lineIndex: number;
+  /** 小字标注名（画在小行谱左端） */
+  name?: string;
+  /** 小行谱基线 y */
+  y: number;
+  /** 名称起始 x */
+  nameX: number;
+  /** 小行谱条目（x/w 已按锚定范围缩放平移） */
+  items: PlacedItem[];
+  /** 减时线段（x 已随 items 同步缩放平移；paintCueRow 照主谱减时线画法绘制） */
+  beams: { x0: number; x1: number; level: number; gray?: boolean }[];
+  /** 小行谱自己的字形度量（字号约为主谱 0.62 倍） */
+  glyph: GlyphMetrics;
+  /** 对应 score.cues 里的 id（画布双击定位到原数据用） */
+  cueId?: string;
+  /** 音符锚：锚定音符的 id；文本锚（@小谱 2-3）为空 */
+  anchorId?: string;
+  /**
+   * 锚点指示三角的位置：主谱锚音符**数字中心** x、所在行带中心 y。
+   * anchorX 是排版层的名义值；带 anchorItem 时 paint 会按实测字形宽重算，做到严格同心。
+   */
+  anchorX?: number;
+  anchorY?: number;
+  /** 三角所指的主谱音符（绘制层用它量真实数字字形宽度） */
+  anchorItem?: PlacedItem;
+  /** 双击命中盒（小行谱墨迹范围，含名称与减时线） */
+  hit?: { x0: number; y0: number; x1: number; y1: number };
 }
 
 export interface LayoutOptions {
@@ -346,6 +391,12 @@ export interface LayoutOptions {
   rightPadding?: number;
   /** 严格按容器宽度断行；普通编辑器保留原来的最小宽度。 */
   fitWidth?: boolean;
+  /** 行宽撑满（justify）：配合 fitWidth:false 使用——按「换行」标记分行，
+   *  但**每行一律两端对齐拉伸到满宽**，跳过「短行免拉伸」豁免（OCR 对照页用）。 */
+  justify?: boolean;
+  /** justify 拉伸的平衡上限（行宽 / 自然宽的最大比值，默认 1.3）：
+   *  短行也尽量拉对齐，但间距超过上限就不再撑满（避免单小节行被拉得过散）。 */
+  justifyMax?: number;
   /** 五线谱预览为行内转调调号预留的宽度；简谱不设置。 */
   staffKeySpace?: number;
   /** Enable actual written staff accidental and grace ink spacing. */
@@ -438,6 +489,13 @@ export const GLYPH: GlyphMetrics = {
   caretTail: 14,
   fontSize: 21,
 };
+
+/**
+ * 有小字谱时行带上方要预留的净空（21px 基准）：小字谱行自身 + 主谱上方标记。
+ * 行高公式与 placeCueStaves 共用它——歌词/力度把下伸撑大时，行带半高会跟着变大，
+ * 但小字谱是贴着主谱行的标注，不能按整个行带半高往上挪（用户实测两行歌词时跑远）。
+ */
+const CUE_UP_NEED = 52;
 
 /**
  * 按谱面字号派生一套度量：全部尺寸按 21px 基准等比缩放。
@@ -597,16 +655,45 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const k = glyph.fontSize / 21;
   /** 字间距（px）：加在每个记号的占位宽度上，正数拉开、负数收紧 */
   const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
-  // 行高要容得下自下而上的四层：减时线 → 音符 → 连音线 → 换气 / 吐音标记。
-  // 房子括线悬在小节线上方画（横线 y − barHalf − 16，数字最高到基线上方约 35px），
-  // 行高 86 的上半行（43px）装得下，不用为它加高
+  // ── 内容感知行高：不再一律给 86k，按谱面实际要画的元素算上下伸 ──
+  // 基线相对的墨迹范围（基准字号 px，×k 缩放）：
+  //   上：小节线 ±21、高八度点到 24、连线弧 24、连音括线 27、房号数字 ~37、
+  //      吐音/换气/自定义记号行锚在 44（墨迹上探到 ~54，允许伸进行间隙）、8va 标记 ~50
+  //   下：小节线 ±21、低八度点 26、减时线 18、力度文字 34（下伸到 ~38）、渐变楔形到 ~54、
+  //      歌词锚在 lyricBase（基线与歌词之间没有力度/渐变层时贴紧到 30）+ 每段 24
+  // 行距 = 2×max(上伸, 下伸) + 行间隙。基线保持在行带正中——导出分页 / 播放滚动按
+  // ±lineHeight/2 切行的老口径完全不动，只是这个「一半」现在是按内容算出来的。
   const verses = Math.max(score.part?.lyricNames?.length ?? 0, 0, ...score.events.map((e) => e.kind === 'note' ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
-  const lyricBottom = (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 64 : 44) + verses * 24;
-  // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 原紧凑行距
+  const notes = score.events.filter((e): e is NoteEvent => e.kind === 'note');
+  const hasMarkAbove = notes.some(
+    (e) => (e.ties?.length ?? 0) > 0 || e.fermata || e.tongue || (e.techniques?.length ?? 0) > 0 ||
+      (e.mark?.length ?? 0) > 0 || (e.ornaments?.length ?? 0) > 0 || (e.articulations?.length ?? 0) > 0 ||
+      (e.graceBefore?.length ?? 0) > 0 || (e.graceAfter?.length ?? 0) > 0,
+  );
+  const hasVolta = score.events.some((e) => e.kind === 'barline' && (e.volta?.length ?? 0) > 0);
+  const hasTuplet = score.groups.some((g) => g.tuplet);
+  const hasOctava = notes.some((e) => e.octava);
+  const hasDynamic = notes.some((e) => e.dynamic);
+  const hasHairpin = notes.some((e) => e.hairpin || e.hairpinTo);
+  const hasHighDots = notes.some((e) => e.octave > 0);
+  const hasLowDots = notes.some((e) => e.octave < 0);
+  // 小字谱画在行带顶部：给所有行统一加高度（行带均匀是导出分页 / 播放切行的前提）
+  const hasCue = (score.cues ?? []).some((c) => c.events?.length);
+  // 歌词锚：基线→歌词之间有力度/渐变层时退到它们下面（42），没有就贴紧（30）
+  const lyricAnchor = hasHairpin ? 64 : hasDynamic ? 42 : 30;
+  const upNeed = Math.max(24, hasHighDots ? 24 : 21, hasMarkAbove ? 38 : 0, hasTuplet ? 30 : 0, hasVolta ? 37 : 0, hasOctava ? 50 : 0, hasCue ? CUE_UP_NEED : 0);
+  const downNeed = Math.max(
+    hasLowDots ? 26 : 21,
+    hasDynamic ? 40 : 0,
+    hasHairpin ? 56 : 0,
+    verses > 0 ? lyricAnchor + verses * 24 + 5 : 0,
+  );
+  // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 内容感知的紧凑行距
   const lineGap = opts.lineGap ?? score.meta.lineGap ?? 0;
-  // 高八度演奏记号（8+虚线）悬在标记层之上（y−48k），有它时行高加一格
-  const hasOctava = score.events.some((e) => e.kind === 'note' && e.octava);
-  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score.events.some((e) => e.kind === 'note' && e.hairpinTo) ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
+  // 五线谱模式有自己的谱表高度体系，保持旧行高避免谱表相撞
+  const lineHeight = opts.lineHeight ?? (opts.staffPitchMode
+    ? glyph.lineHeight + (hasHairpin ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k
+    : (2 * Math.max(upNeed, downNeed) + 8 + lineGap) * k);
   // 上下留白：标记层向上到 44px、力度层向下到 34px，
   // 不留白的话第一行的弧线会被画布顶边裁掉
   const padTop = 20;
@@ -652,13 +739,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
               cy: y,
               size: PENCIL_SIZE,
             },
-            // 谱头总高：两列谁伸得更低取谁，底边再留 20px 净空
-            //（首行标记最高到中线上方 50px，别压住）
+            // 谱头总高：两列谁伸得更低取谁，底边留净空——首行有标记/8va 时留 20
+            //（标记墨迹上探到中线上方 ~54px，别压住），干净的首行只留 8px 贴紧
             height:
               Math.max(
                 tempoY + 6,
                 rightLines.length > 0 ? colY + 4 + (rightLines.length - 1) * rowH + 6 : 0,
-              ) + 20,
+              ) + (upNeed > 30 ? 20 : 8),
           };
         })();
   const titleHeight = title ? title.height : 0;
@@ -972,7 +1059,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const cuts = [from, ...measureCuts.filter(c => c > from && c < to), to];
     const units = cuts.slice(0, -1).map((a, i) => measureUnit(a, cuts[i + 1]));
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
-    const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
+    // 短行免拉伸豁免已移除（0.4.40）：改为 fitSpacing 里的**平衡上限**——
+    // 短行（含只写一小节就换行的行、曲尾短行）也尽量拉伸对齐，但音符间距
+    // 超过 justifyMax（行宽/自然宽 ≤1.3）就不再撑满。全拉伸 vs 完全不拉的
+    // 参差观感之间取中，编辑页 / 对轨页 / OCR 页三种模式口径一致。
     const lastBar = widths[to - 1];
     // 行末小节线的墨迹（竖线居中）要落在右锚线上，格子按占位公式探出半格；
     // 基准必须与 barlineWidthOf 同源，否则负字间距下右缘会多探出 5px
@@ -980,7 +1070,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 行内容消耗的是 maxX 口径（contentWidth − 2×padding），换算回 contentWidth 要补双倍 padding，
     // 少补会让临界行在贴紧宽度下被折行（chorus_02 实测 16 行变 20 行）
     naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
-    const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
+    const fitted = fitSpacing(units, maxX - lead + edge, true, opts.justifyMax);
     const advances = new Map<number, number>();
     if (!opts.positions) units.forEach((u, ui) => {
       const members = widths.slice(cuts[ui], cuts[ui + 1]);
@@ -1101,6 +1191,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
           ...(bar.bpmAfter !== undefined ? { bpmAfter: bar.bpmAfter } : {}),
           ...(bar.patchAfter !== undefined ? { patchAfter: bar.patchAfter } : {}),
+          ...(bar.unisonAfter?.length ? { unisonAfter: bar.unisonAfter } : {}),
+          ...(bar.splitAfter ? { splitAfter: true } : {}),
           ...(bar.breakAfter ? { breakAfter: bar.breakAfter } : {}),
           ...(bar.repeat ? { repeat: bar.repeat } : {}),
           ...(bar.repeat === 'end' && bar.times ? { repeatTimes: bar.times } : {}),
@@ -1443,9 +1535,16 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }
 
     const previous = score.events[from - 1];
+    // 本行歌词锚：行内有渐变楔形退到 64k，有力度文字退到 42k，都没有贴紧 30k
+    // （直接查本行事件区间——渐变起音带 hairpinTo 时不落 item.hairpin）
+    const lineEvents = score.events.slice(from, to);
+    const lineHasHairpin = lineEvents.some((e) => e.kind === 'note' && (e.hairpin || e.hairpinTo));
+    const lineHasDynamic = lineEvents.some((e) => e.kind === 'note' && e.dynamic);
+    const lyricYOff = (lineHasHairpin ? 64 : lineHasDynamic ? 42 : 30) * k;
     lines.push({
       index: li,
       y,
+      lyricYOff,
       items,
       beams,
       arcs,
@@ -1592,6 +1691,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }),
   })), 16 * k);
   lines.forEach((line, i) => { if (lyricLines[i].length) line.lyricLines = lyricLines[i]; });
+  const cues = placeCueStaves(score, { lines, lineHeight, unit, fontSize });
   return {
     lines,
     unit,
@@ -1602,7 +1702,171 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     width: opts.contentWidth,
     height: padTop + titleHeight + lines.length * lineHeight + padBottom,
     naturalWidth: naturalMax,
+    ...(cues.length ? { cues } : {}),
   };
+}
+
+/**
+ * 小字谱（ossia）排布：把每条 cue 的迷你排版行线性映射到锚定小节的
+ * 水平范围上，画在锚行行带顶部。cue 行依次对应锚定范围内的第 1、2…行
+ * （锚定跨行时 cue 也分段跟随）；cue 行数多于锚行时多余的不画。
+ */
+/**
+ * 音符**数字字形**的中心横坐标，与 paint.drawGlyph 的 `gx + gw/2` 同口径：
+ * `gx = it.x + glyph.pad + accW + graceInk`（变音记号 / 前倚音把数字整体推右）。
+ * 不能用 `it.x + it.w/2`：格子宽度按时值和增时线撑开，中心会落到数字右侧的
+ * 延音线上——小字谱黄色三角指偏就是这么来的（用户实测）。
+ */
+export function noteDigitCenter(it: PlacedItem, g: GlyphMetrics = GLYPH): number {
+  return it.x + g.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + g.nominalWidth / 2;
+}
+
+export function placeCueStaves(
+  score: Score,
+  ctx: { lines: LayoutLine[]; lineHeight: number; unit: number; fontSize: number },
+): PlacedCue[] {
+  const cues = (score.cues ?? []).filter((c) => c.events?.length);
+  if (!cues.length) return [];
+  const out: PlacedCue[] = [];
+  const g = deriveGlyph(ctx.fontSize);
+  for (const cue of cues) {
+    // 锚定两种：音符 id（0.4.41 界面录入，从锚音符的 x 起画）或小节起止（文本写法）
+    let rows: { line: LayoutLine; x0: number; x1: number; anchorX: number; anchorY: number; anchorItem?: PlacedItem }[] = [];
+    if (cue.anchorId) {
+      const line = ctx.lines.find((ln) => ln.items.some((it) => it.eventId === cue.anchorId));
+      const item = line?.items.find((it) => it.eventId === cue.anchorId);
+      if (line && item) {
+        const x1 = line.items[line.items.length - 1];
+        rows.push({ line, x0: item.x, x1: x1.x + x1.w,
+          anchorX: noteDigitCenter(item, g), anchorY: line.y, anchorItem: item });
+      }
+    } else {
+      // 锚行收集：行内小节集合（barline.measure，与 measureAt 同口径）与锚范围有交集的行
+      for (const line of ctx.lines) {
+        const bars = line.items.filter((it): it is PlacedItem & { measure: number } =>
+          it.kind === 'barline' && it.measure !== undefined);
+        const inRange = bars.filter((b) => b.measure >= (cue.anchorStart ?? 1) && b.measure <= (cue.anchorEnd ?? cue.anchorStart ?? 1));
+        if (!inRange.length) continue;
+        const firstM = Math.min(...inRange.map((b) => b.measure));
+        const prev = bars.find((b) => b.measure === firstM - 1);
+        const lastBar = inRange.reduce((a, b) => (b.measure > a.measure ? b : a));
+        const x0 = prev ? prev.x + prev.w : line.items[0]?.x ?? 0;
+        // 文本锚没有音符 id：指示三角落在锚段左界后的第一颗音的**数字正下方**。
+        // 多小节休止 / 隐藏休止 / 小节反复号都不画数字字形，跳过它们免得三角指空。
+        const firstNote = line.items.filter((it) => (it.kind === 'note' || it.kind === 'rest')
+          && !it.hidden && !it.multibar && !it.multibarCont && !it.repeatBar && it.x + it.w >= x0)
+          .reduce<PlacedItem | undefined>((a, b) => (!a || b.x < a.x ? b : a), undefined);
+        rows.push({
+          line,
+          // 锚段左边界 = 前一小节线右缘（第 1 小节或行首没有前线时用行首）
+          x0,
+          x1: lastBar.x + lastBar.w,
+          anchorX: firstNote ? noteDigitCenter(firstNote, g) : x0,
+          anchorY: line.y,
+          ...(firstNote ? { anchorItem: firstNote } : {}),
+        });
+      }
+    }
+    if (!rows.length) continue;
+    // 迷你排版：contentWidth 给足（单行不折行），字号约主谱 0.62 倍
+    const cueFont = Math.max(12, ctx.fontSize * 0.62);
+    const mini = layoutScore(
+      { version: 2, meta: { ...score.meta, title: '', sub: '', notes: [] }, events: cue.events!, groups: cue.groups ?? [] },
+      { contentWidth: 1_000_000, fitWidth: true, showTitle: false, padding: 0, rightPadding: 0, fontSize: cueFont, unit: ctx.unit * 0.62 },
+    );
+    // 小字谱一律按「主谱基线 + 固定上方净空」定位，不按锚音符标记分叉，也不随行带下伸漂移。
+    // 旧版按「锚音符有没有上方标记（连线 / 技法 / 倚音…）」分叉：有标记走行带顶、
+    // 没有就贴到主音数字上方（tightY）。同一份谱只是有没有连线，小字谱就一远一近
+    // （用户实测：无连线时几乎压在主音上）；而且锚在声部 2+ 时 score.events 里
+    // 找不到锚音符，也会误判成「无标记」而贴下去。
+    // 改成一律贴行带顶后又暴露新问题：行带半高取 max(上伸, 下伸)，两段歌词 / 力度 /
+    // @lineGap 把下伸撑大，小字谱就跟着行带顶越抬越高（实测两行歌词时间距 44px→80px）。
+    // 所以定位只用 CUE_UP_NEED 这么大的「上半行带」，多出来的高度留给上一行的歌词。
+    for (let ri = 0; ri < Math.min(rows.length, mini.lines.length); ri += 1) {
+      const row = rows[ri];
+      const items = mini.lines[ri].items.filter((it) => it.kind === 'note' || it.kind === 'rest' || it.kind === 'barline');
+      if (!items.length) continue;
+      const cx0 = items[0].x;
+      const cx1 = items[items.length - 1].x + items[items.length - 1].w;
+      // 拉伸/压缩到可用宽度：压缩下限 0.5（再窄宁可右溢也不挤成一团）；
+      // 拉伸上限 1.3（与主谱 justify 平衡口径一致——短 cue 不硬拉满整行）
+      const avail = row.x1 - row.x0;
+      const natural = cx1 - cx0;
+      const ratio = avail / Math.max(1, natural);
+      const scale = natural >= avail ? Math.max(0.5, ratio) : Math.min(ratio, 1.3);
+      const mapX = (x: number) => row.x0 + (x - cx0) * scale;
+      // 迷你排版里的**绝对横坐标**必须跟着 items 一起映射，只改 x / w 不够：
+      // dashXs 是增时线中心（drawGlyph 直接拿它画线），playXs 是播放定位点。
+      // 漏掉 dashXs 时 3--- 的数字跟着小字谱走，--- 却留在迷你坐标（≈画布最左），
+      // 看起来就像增时线画到前面去了（用户实测）。
+      const mapped = items.map((it) => ({
+        ...it,
+        x: mapX(it.x),
+        w: it.w * scale,
+        ...(it.dashXs ? { dashXs: it.dashXs.map(mapX) } : {}),
+        ...(it.playXs ? { playXs: it.playXs.map((p) => ({ ...p, x: mapX(p.x) })) } : {}),
+      }));
+      // 减时线段随 items 一起缩放平移（不画的话插入主谱后八分/十六分没有下划线）
+      const beams = mini.lines[ri].beams.map((b) => ({
+        ...b,
+        x0: mapX(b.x0),
+        x1: mapX(b.x1),
+      }));
+      const ck = cueFont / 21;
+      const k = ctx.fontSize / 21;
+      // 上半行带只按「小字谱自身需要的净空」算：下伸（歌词 / 力度 / 渐变 / @lineGap）
+      // 撑高行带时不参与定位；行带比它还矮时（五线谱模式、显式 lineHeight、负 @lineGap）
+      // 退回真正的行带顶，墨顶才不会越过行带、压住上一行内容。
+      const bandHalf = Math.min(ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
+      // 行带顶 + 小字谱自身上伸（≈21ck）再留 4px：墨顶刚好落在行带内，
+      // 也不挤主谱的上方标记。带低八度点的小字谱下伸深，再抬高 2k 留净空——
+      // 位置只由上方净空决定，不随锚音符标记有无、也不随歌词行数跳动。
+      const hasLowDots = cue.events!.some((e) => e.kind === 'note' && (e as { octave?: number }).octave !== undefined && (e as { octave: number }).octave < 0);
+      const looseY = row.line.y - bandHalf + 22 * ck + 4 - (hasLowDots ? 2 * k : 0);
+      const leftEdge = Math.min(row.x0, mapped[0]?.x ?? row.x0);
+      const rightEdge = Math.max(...mapped.map((it) => it.x + it.w), leftEdge);
+      out.push({
+        lineIndex: row.line.index,
+        ...(cue.name ? { name: cue.name } : {}),
+        y: looseY,
+        nameX: row.x0,
+        items: mapped,
+        beams,
+        glyph: mini.glyph,
+        cueId: cue.id,
+        ...(cue.anchorId ? { anchorId: cue.anchorId } : {}),
+        anchorX: row.anchorX,
+        anchorY: row.anchorY,
+        ...(row.anchorItem ? { anchorItem: row.anchorItem } : {}),
+        hit: {
+          x0: leftEdge - 8 * ck,
+          y0: looseY - cueFont * 0.9,
+          x1: rightEdge + 8 * ck,
+          y1: looseY + cueFont * 1.3, // 减时线画在基线下方
+        },
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 小字谱命中（画布双击编辑用）。小字谱不在 hitIndex 里——它的 item.eventId
+ * 属于小谱自己的事件，不是 score.events 下标，不能走 pickAt 的索引回查。
+ * 命中盒由 placeCueStaves 按墨迹范围填好；调用方须在 pickAt 之前判它。
+ */
+export function pickCueAt(layout: LayoutResult, x: number, y: number): PlacedCue | null {
+  // 同一渲染行可以有好几条小字谱段，命中盒会互相压住（OCR 分段后常见）。
+  // 取离点击点最近的那条：直接 return 第一个命中会让后段永远打不开编辑弹窗。
+  let best: PlacedCue | null = null;
+  let bestDist = Infinity;
+  for (const cue of layout.cues ?? []) {
+    const h = cue.hit;
+    if (!h || x < h.x0 || x > h.x1 || y < h.y0 || y > h.y1) continue;
+    const d = Math.abs(x - (h.x0 + h.x1) / 2) + Math.abs(y - (h.y0 + h.y1) / 2);
+    if (d < bestDist) { bestDist = d; best = cue; }
+  }
+  return best;
 }
 
 /**

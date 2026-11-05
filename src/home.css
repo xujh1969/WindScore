@@ -116,6 +116,9 @@ body.ws-home * {
   position: absolute;
   top: 20px;
   right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .ws-home-menu .ws-btn {
@@ -272,4 +275,120 @@ body.ws-home * {
 .ws-btn-test {
   border-style: dashed;
   opacity: 0.85;
+}
+
+/* ── 主题开关：与编辑器同一份定规——纯图标 22px 命中区 / 16px 图标，
+   无边框、无底色、无外圈，hover 与深色只变图标颜色。深色太阳、浅色月亮 ── */
+.ws-theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #365137;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ws-theme-btn:hover {
+  color: #526e45;
+}
+
+.ws-theme-btn:focus-visible {
+  outline: 2px solid #32664d;
+  outline-offset: 3px;
+}
+
+.ws-theme-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 图标按主题二选一：默认（浅色）月亮；深色换太阳 */
+.ws-theme-btn .ws-theme-sun {
+  display: none;
+}
+
+html[data-theme='dark'] .ws-theme-btn .ws-theme-sun {
+  display: block;
+}
+
+html[data-theme='dark'] .ws-theme-btn .ws-theme-moon {
+  display: none;
+}
+
+/* ═══ 深色主题：底图换 home-dark.png，文字与按钮全部翻色 ═══
+   配色沿用应用内深色档（#18181b/#e4e4e7 文字、#d9b23c 金强调），
+   绿色系提亮一档保证在深底上的对比度；深色遮罩保证文字可读。 */
+html[data-theme='dark'] body.ws-home {
+  color: #e4e4e7;
+  background: #09090b;
+}
+
+html[data-theme='dark'] .ws-home-bg {
+  background-image: linear-gradient(90deg, rgba(9, 9, 11, 0.38), rgba(9, 9, 11, 0.58)),
+    url('/home-dark.png');
+}
+
+html[data-theme='dark'] .ws-home-kicker {
+  color: #9db89a;
+}
+
+html[data-theme='dark'] .ws-home-title {
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
+}
+
+html[data-theme='dark'] .ws-home-title-en {
+  color: #a7c3a0;
+}
+
+html[data-theme='dark'] .ws-home-sub {
+  color: #bcc7b7;
+}
+
+html[data-theme='dark'] .ws-btn-primary {
+  border-color: #3f7a5c;
+  background: #2c5c44;
+  color: #f2fbf5;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+html[data-theme='dark'] .ws-btn-primary:hover {
+  background: #3a6f54;
+  border-color: #3a6f54;
+}
+
+html[data-theme='dark'] .ws-btn-ghost {
+  border-color: rgba(173, 199, 170, 0.4);
+  background: rgba(20, 24, 21, 0.62);
+  color: #d3e2cf;
+}
+
+html[data-theme='dark'] .ws-btn-ghost:hover {
+  border-color: #a7c3a0;
+  background: rgba(30, 36, 31, 0.85);
+}
+
+html[data-theme='dark'] .ws-theme-btn {
+  color: #d3e2cf;
+}
+
+html[data-theme='dark'] .ws-theme-btn:hover {
+  color: #a7c3a0;
+}
+
+html[data-theme='dark'] .ws-btn:focus-visible,
+html[data-theme='dark'] .ws-theme-btn:focus-visible {
+  outline-color: #d9b23c;
+}
+
+html[data-theme='dark'] .ws-home-author {
+  color: #98a68f;
+}
+
+html[data-theme='dark'] .ws-home-version {
+  color: #8b9a82;
 }

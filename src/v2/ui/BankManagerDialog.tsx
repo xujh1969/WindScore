@@ -10,7 +10,7 @@
  */
 import { useRef, useState } from 'react';
 import { ExpClose } from './ExpClose';
-import { listBanks, removeBank, saveBank, type BankInfo } from './instrumentBank';
+import { listBanks, removeBank, saveBank, type BankImportStage, type BankInfo } from './instrumentBank';
 
 interface Props {
   banks: BankInfo[];
@@ -23,16 +23,25 @@ interface Props {
 export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 导入进度：第几个 + 当前阶段（大包读文件/写存储都是秒级，得让用户看到卡在哪） */
+  const [progress, setProgress] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleImport = async (files: FileList | null): Promise<void> => {
     if (!files || files.length === 0) return;
+    const list = Array.from(files);
     setBusy(true);
     let ok = 0;
     const bad: string[] = [];
-    for (const f of Array.from(files)) {
+    for (let i = 0; i < list.length; i += 1) {
+      const f = list[i];
+      setProgress(list.length > 1 ? `导入 ${i + 1}/${list.length}「${f.name}」` : `导入「${f.name}」`);
       try {
-        await saveBank(f);
+        await saveBank(f, (stage: BankImportStage) => {
+          setProgress(
+            (list.length > 1 ? `导入 ${i + 1}/${list.length}：` : '') + `${f.name} · 正在${stage}…`,
+          );
+        });
         ok += 1;
       } catch (e) {
         bad.push(`${f.name}（${(e as Error).message}）`);
@@ -40,6 +49,7 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
     }
     onBanks(await listBanks());
     setBusy(false);
+    setProgress(null);
     onNotify(bad.length === 0 ? `已装入 ${ok} 个音色包` : `已装入 ${ok} 个；失败：${bad.join('、')}`);
   };
 
@@ -73,9 +83,9 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
             {busy ? '导入中…' : '导入音色包…'}
           </button>
           <span className="v2-bank-toolbar-info">
-            {banks.length > 0
+            {progress ?? (banks.length > 0
               ? `已装 ${banks.length} 个包 · 共 ${(banks.reduce((acc, b) => acc + b.size, 0) / 1048576).toFixed(1)}MB`
-              : '支持 .wsbank 音色包'}
+              : '支持 .wsbank 音色包')}
           </span>
         </div>
         <div className="v2-exp-body">

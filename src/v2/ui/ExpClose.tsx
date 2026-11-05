@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+
 /**
  * 弹窗右上角的 × 关闭按钮：所有弹窗统一用这一个组件。
  *
@@ -11,4 +13,22 @@ export function ExpClose({ onClose, disabled, title = '关闭' }: { onClose: () 
       ×
     </button>
   );
+}
+
+/**
+ * 弹窗统一 Esc 关闭：遮罩是 div 而不是原生 <dialog>，键盘焦点未必落在弹窗内，
+ * 所以监听 window 而不是给遮罩加 onKeyDown。enabled=false（导出中/忙）时不响应。
+ * onClose 用 ref 兜住，调用方不必包 useCallback。
+ */
+export function useEscapeClose(onClose: () => void, enabled = true): void {
+  const cb = useRef(onClose);
+  cb.current = onClose;
+  useEffect(() => {
+    if (!enabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cb.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [enabled]);
 }

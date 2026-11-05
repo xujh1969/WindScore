@@ -116,9 +116,10 @@ export function AccidentalField({ score, setScore, note }: FieldProps) {
 export function KeyChangeField({ score, setScore, note }: FieldProps) {
   return (
     <div className="v2-field">
-      <span className="v2-field-label">转调（演奏到此音起改用新调，选第一项清除）</span>
+      <span className="v2-field-label">转调（选第一项清除）</span>
       <select
         className="v2-meta-input"
+        style={{ width: '50%' }}
         value={note.keyChange ?? ''}
         onChange={(e) => setScore(setKeyChange(score, note.id, e.target.value || undefined))}
       >

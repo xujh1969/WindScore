@@ -23,7 +23,7 @@ import { VIDEO_RATIOS, recordSeconds, videoGeometry, videoLayoutFor, stripCanvas
 import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
 import { METRONOME_PATTERNS, meterSegmentsOf, patternFor } from '../metronome';
-import { ExpClose } from './ExpClose';
+import { ExpClose, useEscapeClose } from './ExpClose';
 
 export interface ExportDialogProps extends ExportNotation {
   songName: string;
@@ -91,6 +91,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   const [tab, setTab] = useState<'pdf' | 'video' | 'image'>('pdf');
   const [imageFormat, setImageFormat] = useState<'png' | 'svg'>('png');
   const [busy, setBusy] = useState(false);
+  useEscapeClose(onClose, !busy);
   const [note, setNote] = useState('');
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
@@ -476,7 +477,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
           <div className="v2-exp-body">
             <div className="v2-exp-row">
               <span>画面比例</span>
-              <div className="v2-exp-ratios">
+              <div className="v2-exp-ratios v2-view-switch">
                 {VIDEO_RATIOS.map((r) => (
                   <button
                     key={r.id}

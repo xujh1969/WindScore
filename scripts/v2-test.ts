@@ -10,7 +10,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { BeatClock } from '../src/v2/clock';
-import { DEFAULT_META, parseDsl, renderNoteToken, serializeDsl } from '../src/v2/dsl';
+import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
+import { expandUnisons } from '../src/v2/unison';
 import type { BarlineEvent, RestEvent } from '../src/v2/types';
 import { DEFAULT_FONT_SIZE, TICKS_PER_BEAT } from '../src/v2/types';
 import {
@@ -27,7 +28,7 @@ import {
 } from '../src/v2/layout';
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
-import { assembleParts, namespacePart, partScore, scoreParts, withConductor } from '../src/v2/parts';
+import { assembleParts, namespacePart, partScore, replacePart, scoreParts, withConductor } from '../src/v2/parts';
 import { buildTimeline } from '../src/v2/timeline';
 import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
 import { groupTicks, groupTierBeats } from '../src/v2/meter';
@@ -35,6 +36,7 @@ import {
   applyTier as applyTierOp,
   autoGroupBeats,
   candidatesFor,
+  cycleAccidentalAt,
   cycleDot,
   decodeDuration,
   deleteDynamic,
@@ -94,6 +96,7 @@ import {
   inRepeatMeasure,
   setBarlineStyle,
   setBarNotation,
+  clearLineBreaks,
 } from '../src/v2/edit';
 import {
   beamCount,
@@ -577,8 +580,8 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('去掉是删键而非置 undefined', !('accidental' in (setAccidental(on, id).events[0] as NoteEvent)));
 
   // 排版要给记号让位，否则数字会压在记号上
-  const withAcc = layoutScore(on, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === id)!;
-  const plain = layoutScore(base, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === id)!;
+  const withAcc = layoutScore(on, { contentWidth: 900, justifyMax: 1 }).lines[0].items.find((i) => i.eventId === id)!;
+  const plain = layoutScore(base, { contentWidth: 900, justifyMax: 1 }).lines[0].items.find((i) => i.eventId === id)!;
   check('带变音的音符格更宽', withAcc.w > plain.w, `${withAcc.w} vs ${plain.w}`);
   check('宽度回传给 paint（不许两处各写一个常量）', Math.abs(withAcc.accW! - (withAcc.w - plain.w)) < 1e-6, `${withAcc.accW} vs ${withAcc.w - plain.w}`);
 }
@@ -603,6 +606,162 @@ console.log('\n[变音记号 · 重升重降（GB/T 46845—2025 §6.2.5.1）]')
   const wW = layoutScore(wide, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'note')!.accW!;
   const pW = layoutScore(plain, { contentWidth: 900 }).lines[0].items.find((i) => i.kind === 'note')!.accW!;
   check('重升字形占位更宽', wW > pW, `${wW} vs ${pW}`);
+}
+
+console.log('\n[输入板 · 升 / 降 / 复原三按钮循环]');
+{
+  const base = parseDsl('@beat 4/4\n\n5 ||\n').score!;
+  const id = base.events.find((e) => e.kind === 'note')!.id;
+  const accOf = (s: Score) => (s.events.find((e) => e.id === id) as NoteEvent).accidental;
+  const seq = (kind: 'sharp' | 'flat' | 'natural', n: number) => {
+    let s: Score = base;
+    const out: (string | undefined)[] = [];
+    for (let i = 0; i < n; i++) {
+      s = cycleAccidentalAt(s, id, kind);
+      out.push(accOf(s));
+    }
+    return out;
+  };
+  const sharp = seq('sharp', 3);
+  check('升按钮三次：# → × → 复原（无记号）', sharp[0] === '#' && sharp[1] === 'x' && sharp[2] === undefined, sharp.map(String).join(','));
+  const flat = seq('flat', 3);
+  check('降按钮三次：b → bb → 复原（无记号）', flat[0] === 'b' && flat[1] === 'bb' && flat[2] === undefined, flat.map(String).join(','));
+  const natural = seq('natural', 2);
+  check('复原按钮两次：♮ → 复原（无记号）', natural[0] === '♮' && natural[1] === undefined, natural.map(String).join(','));
+  const fromFlat = cycleAccidentalAt(setAccidental(base, id, 'b'), id, 'sharp');
+  check('当前是降号时按升按钮，第一次直接落到 #', accOf(fromFlat) === '#', String(accOf(fromFlat)));
+  const fromSharp = cycleAccidentalAt(setAccidental(base, id, 'x'), id, 'natural');
+  check('当前是重升时按复原按钮，第一次直接写 ♮', accOf(fromSharp) === '♮', String(accOf(fromSharp)));
+  const otherId = base.events.find((e) => e.kind !== 'note')!.id;
+  check('目标不是音符时原谱不动', cycleAccidentalAt(base, otherId, 'sharp') === base);
+  // 双路径不变量：主谱与小字谱输入板必须共用同一份循环与同一组按钮（上次只改一处的教训）
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const cueSrc = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  check('主谱与小字谱输入板都委托同一个循环函数',
+    editorSrc.includes('cycleAccidentalAt(score, id, kind)') && cueSrc.includes('cycleAccidentalAt(draft, id, kind)'));
+  check('输入板两处按钮排共用同一组三按钮组件', (padSrc.match(/<AccidentalButtons\b/g) ?? []).length === 2);
+}
+
+// PDF 兼容性与真实 OCR 回归见 ocr-pdf-browser-test.mjs（运行旧 Chromium / WebView2）。
+console.log('\n[OCR · PDF 加载健壮性]');
+{
+  const pdfSrc = readFileSync(join(process.cwd(), 'src/ocr/dolce/omrkit/pdf.browser.ts'), 'utf8');
+  const decodeSrc = readFileSync(join(process.cwd(), 'src/ocr/dolce/omrkit/decode.browser.ts'), 'utf8');
+  check('getDocument 配置标准字体与 CMap（文字型 PDF 缺它们会被静默渲染成白页）',
+    pdfSrc.includes('standardFontDataUrl') && pdfSrc.includes('cMapUrl'));
+  check('画布尺寸防御非有限值（异常页 Infinity 会炸 OffscreenCanvas 构造）',
+    decodeSrc.includes('Number.isFinite(w)') && decodeSrc.includes('Number.isFinite(h)'));
+  check('页宽为 0 时 scale 不放大成 Infinity',
+    decodeSrc.includes('base > 0 ? PDF_W / base : 1'));
+  check('光栅化回读自检：GPU 画布丢内容时换软件后备重画（正常机器零变化）',
+    decodeSrc.includes('willReadFrequently') && decodeSrc.includes('imageHasInk'));
+}
+
+console.log('\n[OCR · 对比页 PDF 预览]');
+{
+  // 对比页左栏之前整块以 img 为条件：PDF 载入时 img=null（预览走 bin 二值图），
+  // 启动页能看到预览、进对比编辑界面就只剩「原图显示在此处」空态（用户实测）。
+  const paneSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/ImagePane.tsx'), 'utf8');
+  const pageSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/OcrPage.tsx'), 'utf8');
+  check('对比页 ImagePane 渲染条件兼容 PDF 二值图（不只认 img）',
+    paneSrc.includes('img || bin ?') && paneSrc.includes('const dims = img ?? (bin ?'));
+  check('svg 叠加层尺寸用统一口径（img 优先、PDF 用当前页 bin）',
+    paneSrc.includes('(boxes.length > 0 || activeBox) && dims &&') && paneSrc.includes('viewBox={`0 0 ${dims.w} ${dims.h}`}')
+    && paneSrc.includes('width={dims.w}'));
+  check('PDF 识别框折算回单页原始尺寸（长图坐标完整除以 s）',
+    pageSrc.includes('x: b.x / s') && pageSrc.includes('y: (b.y - y0) / s')
+    && pageSrc.includes('w: b.w / s') && pageSrc.includes('h: b.h / s'));
+}
+
+console.log('\n[选区 · 删除所选按钮]');
+{
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const cueSrc = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  const cssSrc = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  check('输入板在有选区时渲染「删除所选」文字按钮',
+    padSrc.includes('rangeCount >= 2') && padSrc.includes('className="v2-pad-range"')
+    && padSrc.includes('删除所选') && padSrc.includes('onClick={() => actions.del()}'));
+  check('选区条放在小节线属性分支之外（点线时不会被吞掉）',
+    padSrc.indexOf('className="v2-pad-range"') < padSrc.indexOf('{barline ? ('));
+  check('「删除所选」按含小节线的选区记号数判定（不看 batchIds）',
+    editorSrc.includes('rangeCount={range ? range[1] - range[0] : 0}')
+    && cueSrc.includes('rangeCount={range ? range.hi - range.lo : 0}'));
+  check('选区条有布局样式', /\.v2-pad-range\s*\{/.test(cssSrc));
+  // 行为：删整段（含小节线）时三种记号都要删掉，不能只删音符
+  const mixed = parseDsl('@beat 4/4\n\n1 2 | 3 4 ||\n').score!;
+  const picked = mixed.events.slice(0, 3).map((e) => e.id);
+  check('选区样例确实是音符与小节线混合', mixed.events.slice(0, 3).some((e) => e.kind === 'barline'),
+    mixed.events.slice(0, 3).map((e) => e.kind).join(','));
+  let cut = mixed;
+  for (const id of picked) cut = removeEvent(cut, id);
+  check('删除所选按整段事件删光（含小节线）', cut.events.length === mixed.events.length - 3,
+    JSON.stringify({ before: mixed.events.length, after: cut.events.length }));
+}
+
+console.log('\n[小字谱 · 粘贴主谱片段]');
+{
+  const main = parseDsl('@beat 4/4\n\n5 3 2 1 | 6- ||\n').score!;
+  const clip = main.events.slice(0, 4); // 误识别进主谱的那段小字谱（4 个音符）
+  const draft: Score = { ...main, events: [], groups: [], meta: { ...main.meta, title: '' } };
+  const r = pasteEvents(draft, 0, clip, main.groups);
+  const pasted = r?.score ?? draft;
+  check('粘贴返回草稿且事件数等于片段', r !== null && pasted.events.length === clip.length, String(pasted.events.length));
+  // 小字谱是独立谱：草稿从空谱起，pasteEvents 生成 e1.. 与主谱同号
+  // （既有手动录入路径也是如此，播放按 partId='cue' 区分），二者不共享引用。
+  // 这里只要求副本互不复用、草稿内 id 唯一。
+  check('粘贴后是独立副本（对象不复用）', pasted.events.every((e, i) => e !== clip[i]));
+  check('粘贴后草稿内 id 唯一', new Set(pasted.events.map((e) => e.id)).size === pasted.events.length);
+  const degs = pasted.events.filter((e) => e.kind === 'note').map((e) => (e as NoteEvent).degree).join(',');
+  const orig = clip.filter((e) => e.kind === 'note').map((e) => (e as NoteEvent).degree).join(',');
+  check('粘贴后音级与时值不变', degs === orig && (pasted.events[0] as NoteEvent)?.ticks === (clip[0] as NoteEvent).ticks, degs);
+  // 保存链路：buildCue 剥掉谱头 → EditorApp 用 parseDsl 重解析覆盖 events，不能丢音符
+  const body = serializeDsl(pasted).split('\n\n').slice(1).join('\n\n');
+  const back = parseDsl(body);
+  check('粘贴后的小字谱经序列化/重解析不丢音符',
+    !!back.score && back.errors.length === 0
+      && back.score!.events.filter((e) => e.kind === 'note').length === clip.filter((e) => e.kind === 'note').length,
+    back.errors.join('；'));
+  const cueSrc = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const cssSrc = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  check('主谱剪贴板已接到小字谱弹窗并支持 Ctrl+V',
+    editorSrc.includes('clip={clip}') && editorSrc.includes('clipGroups={clipGroups}')
+      && cueSrc.includes('pasteEvents(draft, snap.cursor, clip, clipGroups)')
+      && cueSrc.includes("e.key.toLowerCase() === 'v'"));
+  check('小字谱遮罩不模糊背景原图', /\.v2-cue-mask\s*\{[^}]*backdrop-filter:\s*none/.test(cssSrc));
+}
+
+console.log('\n[@part 谱 · 小字谱保存不丢]');
+{
+  // OCR 识别产物固定输出 @format 3 + @part 1，score.part 一定存在：
+  // 编辑器的 setScore 必然走 commit(whole=false) → replacePart。
+  const p = parseDsl('@format 3\n@beat 4/4\n\n@part 1 "声部 1"\n@mix 1 on all\n| 1 2 3 4 | 换行 5 3 2 1 ||\n').score!;
+  check('@part 谱确实带 part（复现前提）', !!p.part, p.part?.id);
+  const view = partScore(p, p.part!.id);
+  const anchorId = p.events.filter((e) => e.kind === 'note')[4]?.id ?? ''; // 第二行首个音
+  const cueBody = parseDsl('@beat 4/4\n\n5 3 2 1 ||\n').score!;
+  const cue = { id: 'cueT', anchorId, text: '5 3 2 1 ||', events: cueBody.events, groups: cueBody.groups };
+  const added = replacePart(p, { ...view, cues: [cue] });
+  check('@part 谱新增小字谱不被 replacePart 吞掉',
+    added.cues?.length === 1 && added.cues?.[0]?.anchorId === anchorId, String(added.cues?.length));
+  const text = serializeDsl(added);
+  check('@part 谱序列化写出 @小谱', text.includes('@小谱'),
+    text.split('\n').filter((l) => l.startsWith('@小谱')).join());
+  const back = parseDsl(text);
+  check('@part 谱回解析不报错且保留 cue',
+    back.errors.length === 0 && back.score?.cues?.length === 1, back.errors.join('；'));
+  const laid = layoutScore(back.score ?? added, { contentWidth: 900 });
+  check('@part 谱小字谱可见（layout.cues）', (laid.cues?.length ?? 0) === 1, String(laid.cues?.length));
+  const laidFit = layoutScore(back.score ?? added, { contentWidth: 900, fitWidth: false, rightPadding: 20, justify: true });
+  check('OCR 对比页 fitRows 排版同样可见小字谱', (laidFit.cues?.length ?? 0) === 1, String(laidFit.cues?.length));
+  const kept = replacePart(added, { ...view, cues: added.cues, events: view.events.slice(0, 3) });
+  check('普通改音符时已有小字谱仍在', kept.cues?.length === 1, String(kept.cues?.length));
+  const removed = replacePart(added, { ...view, cues: [] });
+  check('删除小字谱不会残留旧值', (removed.cues?.length ?? 0) === 0, String(removed.cues?.length));
+  const plain = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  check('无 @part 的单声部谱行为不变', replacePart(plain, { ...plain, cues: [cue] }).cues?.length === 1);
 }
 
 console.log('\n[校验报错附国标条款引用]');
@@ -886,8 +1045,8 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   check('琶音进字段', arpNote.arpeggio === true);
   check('琶音序列化写回 a', serializeDsl(arp.score!).includes('1a'), serializeDsl(arp.score!));
   // 排版要给波状竖线让位：带琶音的音符格更宽
-  const arpWide = layoutScore(arp.score!, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
-  const arpPlain = layoutScore(parseDsl('@beat 4/4\n\n1 2 ||\n').score!, { contentWidth: 900 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
+  const arpWide = layoutScore(arp.score!, { contentWidth: 900, justifyMax: 1 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
+  const arpPlain = layoutScore(parseDsl('@beat 4/4\n\n1 2 ||\n').score!, { contentWidth: 900, justifyMax: 1 }).lines[0].items.find((i) => i.eventId === arpNote.id)!;
   check('带琶音的音符格更宽（arpW 回传）', Math.abs((arpWide.w - arpPlain.w) - arpWide.arpW) < 1e-6 && arpWide.arpW > 0, `${arpWide.w - arpPlain.w} vs ${arpWide.arpW}`);
 
   // ── 震音 z / zz / zzz（GB/T 46845—2025 §7.8）──
@@ -1300,19 +1459,43 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   const tight = parseDsl('@space -20\n@beat 4/4\n\n5 5 5 5 ||\n');
   check('@space -20 接受', tight.errors.length === 0 && tight.score?.meta.letterSpacing === -20, tight.errors.join(' / '));
   check('@space -21 报错', parseDsl('@space -21\n\n5 ||\n').errors.length > 0);
-  // 行间距增量（@lineGap）：0–48，按字号比例增加行高
+  // 行间距增量（@lineGap）：-24–48，按字号比例增减行高（负数收紧行距）
   check('@lineGap 解析', parseDsl('@beat 4/4\n@lineGap 12\n\n5 ||\n').score?.meta.lineGap === 12);
   check(
     '@lineGap 序列化写回',
     serializeDsl(parseDsl('@beat 4/4\n@lineGap 12\n\n5 ||\n').score!).includes('@lineGap 12'),
   );
   check('@lineGap 99 报错', parseDsl('@beat 4/4\n@lineGap 99\n\n5 ||\n').errors.length > 0);
+  check('@lineGap 负数收紧（-24 合法）', parseDsl('@beat 4/4\n@lineGap -24\n\n5 ||\n').score?.meta.lineGap === -24);
+  check('@lineGap -25 报错', parseDsl('@beat 4/4\n@lineGap -25\n\n5 ||\n').errors.length > 0);
   check(
     '@lineGap 抬高行高',
     // lineGap 按字号比例增加（lineGap * k），用显式 @size 21 基线让差值恰为 12
     layoutScore(parseDsl('@size 21\n@beat 4/4\n@lineGap 12\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight -
       layoutScore(parseDsl('@size 21\n@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight ===
       12,
+  );
+  check(
+    '@lineGap 负数压缩行高（无歌词行）',
+    layoutScore(parseDsl('@size 21\n@beat 4/4\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight -
+      layoutScore(parseDsl('@size 21\n@beat 4/4\n@lineGap -24\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight ===
+      24,
+  );
+
+  // 属性区「去除所有换行标记」：清掉 breakAfter:'line'，「分页」保留
+  {
+    const s = parseDsl('@format 3\n@beat 4/4\n\n1 1 1 1 | 换行\n\n2 2 2 2 | 分页\n\n3 3 3 3 ||\n').score!;
+    const c = clearLineBreaks(s);
+    const bars = c.events.filter((e) => e.kind === 'barline');
+    check('清除所有换行标记', bars.every((e) => e.breakAfter !== 'line'));
+    check('分页标记保留', bars.some((e) => e.breakAfter === 'page'));
+    check('清除后源码无「换行」', !serializeDsl(c).includes('换行'));
+    check('分页序列化保留', serializeDsl(c).includes('分页'));
+  }
+  check(
+    '@lineGap 负数不压爆带歌词的行（歌词层保底）',
+    layoutScore(parseDsl('@size 21\n@beat 4/4\n@lineGap -24\n\n5 5 5 5 ||\n歌词1:一 二 三 四\n').score!, { contentWidth: 900 }).lineHeight >
+      layoutScore(parseDsl('@size 21\n@beat 4/4\n@lineGap -24\n\n5 5 5 5 ||\n').score!, { contentWidth: 900 }).lineHeight,
   );
   const metaBase = parseDsl('@beat 4/4\n\n5 ||\n').score!;
   check('setMeta 拒绝越界字号', setMeta(metaBase, { fontSize: 99 }) === metaBase);
@@ -1343,9 +1526,11 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   // 字间距：每个记号的占位加 5px（基线同字号 24px、显式 @space 0）
   const Lsp = layoutScore(parseDsl('@space 5\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
     contentWidth: 2000,
+    justifyMax: 1,
   });
   const Lsp0 = layoutScore(parseDsl('@space 0\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
     contentWidth: 2000,
+    justifyMax: 1,
   });
   const xs = Lsp.lines[0].items.map((i) => i.x);
   const xs0 = Lsp0.lines[0].items.map((i) => i.x);
@@ -3509,8 +3694,21 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
     JSON.stringify(overTimes.ex?.errors),
   );
 
-  // ④ 结构错误：必须明确报错、不展开（不猜）
-  check('孤单的 :| 报错', (melody('@beat 4/4\n\n1 2 :| 3 ||\n').ex?.errors ?? []).length > 0);
+  // ④ 结构错误：必须明确报错、不展开（不猜）。
+  // 例外（0.4.40 用户定）：单独的 :| / :||（没写 |:）是 GB 允许的规范写法 = 从头反复，不报错
+  const lonelyEnd = melody('@beat 4/4\n\n1 2 :| 3 ||\n');
+  check(
+    '孤单的 :| = 从头反复（不报错、展开两遍）',
+    (lonelyEnd.ex?.errors ?? []).length === 0 &&
+      (lonelyEnd.ex?.score?.events.filter((e) => e.kind === 'note').length ?? 0) === 5,
+    JSON.stringify(lonelyEnd.ex?.errors),
+  );
+  // :|| = 反复结束 + 终止线（GB 规范写法），round-trip 稳定
+  const dslFinal = parseDsl('@beat 4/4\n\n1 2 :||\n');
+  const finalBar = dslFinal.score?.events.find((e) => e.kind === 'barline') as { repeat?: string; style?: string; times?: number } | undefined;
+  check(':|| 解析为反复结束 + 终止线', dslFinal.errors.length === 0 && finalBar?.repeat === 'end' && finalBar.style === 'final', JSON.stringify(finalBar));
+  const finalRt = parseDsl(serializeDsl(dslFinal.score!));
+  check(':|| round-trip 稳定', finalRt.errors.length === 0 && serializeDsl(finalRt.score!) === serializeDsl(dslFinal.score!), serializeDsl(dslFinal.score!));
   check('孤单的 |: 报错', (melody('@beat 4/4\n\n|: 1 2 3 ||\n').ex?.errors ?? []).length > 0);
   // 房子挂在反复段外面的小节线上 = 声明了第二遍的结尾却没有反复
   check(
@@ -3664,10 +3862,14 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   const restored = setBarlineVoltaOpen(forced, base1.events[0]!.id, false);
   check('切回后恢复自动（封闭）', layoutScore(restored, { contentWidth: 800 }).lines[0].voltas[0]?.open === undefined);
 
-  // 行高：括线贴小节线顶端后不再额外加高
+  // 行高：内容感知模型下带房号的行要给房号数字（基线上方 ~37px）让位，
+  // 比干净行高一行档，但仍紧于旧的全局 86k
   const vLay = layoutScore(parseDsl('@beat 4/4\n\n| [1] 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
   const pLay = layoutScore(parseDsl('@beat 4/4\n\n| 5 6 | 5 6 :|\n').score!, { contentWidth: 800 });
-  check('带房子的谱行高不变', vLay.lineHeight === pLay.lineHeight);
+  check(
+    '带房子的行高按房号需要增加且紧于旧 86k（默认字号 24，86k=98.3px）',
+    vLay.lineHeight > pLay.lineHeight && vLay.lineHeight <= (86 * 24) / 21,
+  );
 
   // 跨行：横线罩满标记小节（画到段尾标记线后面的第一根线），行尾开放；
   // 下一行画延续段（无左钩、带遍数），演奏到 :| 处封闭
@@ -4930,6 +5132,236 @@ console.log('\n[多声部 · 隐藏声部（总谱不显示、仍播放）]');
   const allHidden = assembleParts(score, scoreParts(score).map((p) => ({ ...p, hidden: true })));
   const shownAll = [...new Set(layoutScore(allHidden, { contentWidth: 1400 }).lines.flatMap((l) => (l.partId ? [l.partId] : [])))];
   check('全部隐藏时按未隐藏显示（防空板）', shownAll.includes('1') && shownAll.includes('2'), JSON.stringify(shownAll));
+}
+
+console.log('\n[齐唱（同/分）与小字谱（@小谱）]');
+{
+  // ── parseUnisonTargets ──
+  check('同2-3 → [2,3]', JSON.stringify(parseUnisonTargets('2-3')) === '[2,3]');
+  check('同2,3（全角逗号）→ [2,3]', JSON.stringify(parseUnisonTargets('2，3')) === '[2,3]');
+  check('同2 → [2]', JSON.stringify(parseUnisonTargets('2')) === '[2]');
+  check('同2-4,6 → [2,3,4,6]', JSON.stringify(parseUnisonTargets('2-4,6')) === '[2,3,4,6]');
+  check('非法写法返回 null', parseUnisonTargets('abc') === null && parseUnisonTargets('') === null);
+
+  // ── 同/分 round-trip（多段、多处）──
+  const dsl = [
+    '@format 3', '@title t',
+    '@part 1 "A"', '1 2 3 |同2-3 4 5 |分 6 7 |同2 1 1 | 2 2 |',
+    '', '@part 2 "B"', '5 5 5 | 6 6 6 | 7 7 7 | 1 1 1 | 2 2 2 |',
+  ].join('\n');
+  const parsed = parseDsl(dsl);
+  check('同/分解析无错', parsed.errors.length === 0, parsed.errors.join('；'));
+  const score = parsed.score!;
+  const bar1 = score.events.find((e) => e.kind === 'barline' && e.unisonAfter) as { unisonAfter?: number[] } | undefined;
+  check('同2-3 落在小节线上', JSON.stringify(bar1?.unisonAfter) === '[2,3]');
+  const round = parseDsl(serializeDsl(score));
+  check('同/分 round-trip 无错且稳定', round.errors.length === 0 && serializeDsl(round.score!) === serializeDsl(score));
+
+  // ── expandUnisons：多处齐唱段展开 ──
+  const expanded = expandUnisons(score);
+  const part2 = expanded.parts![0];
+  // 段 1 = 第 2 小节（4 5）：声部 2 这一段应变成第一声部的拷贝
+  const seg1 = part2.events.filter((e) => (e.kind === 'note' || e.kind === 'rest') && e.ticks >= 3 * 6720 / 2 && e.ticks < 3 * 6720);
+  // 用事件度数检查更直接：找声部2里 degree=4 的音（原本只有 5 6 7 1 2）
+  const cloned = part2.events.filter((e) => e.kind === 'note' && (e.degree === 4 || e.degree === 5) && /u2x0/.test(e.id));
+  check('齐唱段拷入第一声部的音（id 带克隆后缀）', cloned.length === 2, JSON.stringify(part2.events.map((e) => e.id)));
+  const ownKept = part2.events.filter((e) => e.kind === 'note' && !/u\d+x\d+n\d+$/.test(e.id));
+  check('段外保留自己的音', ownKept.length === 6, JSON.stringify(ownKept.map((e) => (e as { degree?: number }).degree)));
+  // 第二段（同2 到曲终）：第 4、5 小节也应是拷贝（第一声部这两小节共 4 音）
+  const cloned2 = part2.events.filter((e) => e.kind === 'note' && /u2x1/.test(e.id));
+  check('第二段齐唱（到曲终）同样拷入', cloned2.length === 4, JSON.stringify(cloned2.map((e) => (e as { degree?: number }).degree)));
+  // 幂等：对展开谱再展开结果不变
+  const twice = expandUnisons(expanded);
+  check('展开幂等', serializeDsl(twice) === serializeDsl(expanded));
+
+  // ── 播放：展开后时间轴两声部齐唱段同音 ──
+  const tl = buildTimeline(score);
+  // 段 1 = 第 2 小节：tick [3 拍, 5 拍)（每小节 3 个四分音符）
+  const p1Seg = tl.filter((e) => e.partId === '1' && e.startTick >= 3 * 6720 && e.startTick < 5 * 6720 && e.midi !== null);
+  const p2Seg = tl.filter((e) => e.partId === '2' && e.startTick >= 3 * 6720 && e.startTick < 5 * 6720 && e.midi !== null);
+  check('齐唱段两声部同音高', p1Seg.length === 2 && p2Seg.length === 2 && p1Seg[0].midi === p2Seg[0].midi && p1Seg[1].midi === p2Seg[1].midi,
+    JSON.stringify({ p1: p1Seg.map((e) => e.midi), p2: p2Seg.map((e) => e.midi) }));
+
+  // ── 曲首齐唱：「同」挂在曲首引导小节线上（OCR 合唱谱转换的落盘形态）──
+  // 引导线前面没有任何音符，measureOf 必须按 0 算，段才覆盖小节 1 起；
+  // 各声部用 0*N 多小节休止补齐对齐（0*N 自带收口线由调用方保证）
+  const dslHead = [
+    '@format 3', '@title t',
+    '@part 1 "A"', '| 同2-2 1 1 | 2 2 | 分',
+    '', '@part 2 "B"', '| 0*2 | 5 5 | 6 6 |',
+  ].join('\n');
+  const parsedHead = parseDsl(dslHead);
+  check('曲首同解析无错', parsedHead.errors.length === 0, parsedHead.errors.join('；'));
+  const headScore = parsedHead.score!;
+  check('同落在曲首引导线上', (headScore.events[0] as { unisonAfter?: number[] }).unisonAfter?.[0] === 2,
+    JSON.stringify(headScore.events.slice(0, 3).map((e) => e.kind)));
+  const headExp = expandUnisons(headScore);
+  const headP2 = headExp.parts![0].events;
+  const headClones = headP2.filter((e) => (e.kind === 'note') && /u2x0/.test(e.id));
+  // 关键回归：段必须从小节 1 起（引导线 measureOf=0）——第 1 小节的 `1 1` 也要被拷入
+  check('曲首齐唱从小节 1 拷入（含第 1 小节）',
+    JSON.stringify(headClones.map((e) => (e as { degree?: number }).degree)) === '[1,1,2,2]',
+    JSON.stringify(headClones.map((e) => (e as { degree?: number }).degree)));
+  check('声部 2 自身内容保留（0*N 补齐格被删）',
+    headP2.filter((e) => e.kind === 'note').length === 8
+    && headP2.some((e) => e.kind === 'note' && (e as { degree?: number }).degree === 5)
+    && headP2.some((e) => e.kind === 'note' && (e as { degree?: number }).degree === 6),
+    JSON.stringify(headP2.filter((e) => e.kind === 'note').map((e) => (e as { degree?: number }).degree)));
+  const headRound = parseDsl(serializeDsl(headScore));
+  check('曲首同 round-trip 无错且稳定', headRound.errors.length === 0 && serializeDsl(headRound.score!) === serializeDsl(headScore));
+
+  // ── @小谱 round-trip ──
+  const dslCue = [
+    '@format 3', '@title t', '1 2 3 | 4 5 6 | 7 1 1 |',
+    '', '@小谱 2-3 "拍手"', 'X X X | X X X |',
+  ].join('\n');
+  const cueParsed = parseDsl(dslCue);
+  check('@小谱解析无错', cueParsed.errors.length === 0, cueParsed.errors.join('；'));
+  const cueScore = cueParsed.score!;
+  const cue = cueScore.cues?.[0];
+  check('@小谱锚定与名称', cue?.anchorStart === 2 && cue.anchorEnd === 3 && cue.name === '拍手');
+  check('@小谱内容解析成事件', (cue?.events?.length ?? 0) === 8 && (cue?.groups?.length ?? 0) >= 0);
+  const cueRound = parseDsl(serializeDsl(cueScore));
+  check('@小谱 round-trip 无错且稳定', cueRound.errors.length === 0 && serializeDsl(cueRound.score!) === serializeDsl(cueScore));
+  const cueRound2 = parseDsl(serializeDsl(cueRound.score!));
+  check('@小谱二次 round-trip 稳定', serializeDsl(cueRound2.score!) === serializeDsl(cueScore));
+
+  // ── 音符锚定（0.4.41 界面录入的落盘形式 @小谱 3/2）：定位 / round-trip / 播放锚 tick ──
+  const dslCue2 = '@format 3\n@title t\n1 2 3 | 4 5 6 | 7 1 1 |\n\n@小谱 2/1 "踩镲"\nX X |\n';
+  const p2 = parseDsl(dslCue2);
+  check('@小谱 2/1 解析无错', p2.errors.length === 0, p2.errors.join('；'));
+  const cue2 = p2.score!.cues?.[0];
+  const anchorNote = p2.score!.events.find((e) => e.kind === 'note' && (e as { degree?: number }).degree === 4);
+  check('@小谱 2/1 定位到第 2 小节第 1 个音', !!cue2?.anchorId && !!anchorNote && cue2.anchorId === anchorNote.id,
+    JSON.stringify({ anchorId: cue2?.anchorId, want: anchorNote?.id }));
+  check('音符锚 round-trip 回写 2/1', serializeDsl(p2.score!).includes('@小谱 2/1 "踩镲"'), serializeDsl(p2.score!).split('@小谱')[1]?.slice(0, 30));
+  const rt2 = parseDsl(serializeDsl(p2.score!));
+  check('音符锚二次 round-trip 稳定', rt2.errors.length === 0 && rt2.score!.cues?.[0]?.anchorId === cue2?.anchorId);
+  // 越界锚报错（第 4 小节没有第 5 个音）
+  const badAnchor = parseDsl('@format 3\n@title t\n1 2 3 | 4 5 6 |\n\n@小谱 4/5\nX X |\n');
+  check('音符锚越界报错', badAnchor.errors.some((e) => e.includes('锚定音符不存在')), JSON.stringify(badAnchor.errors));
+  // 播放：小字谱从锚音符的 tick 起奏（第 2 小节起点 = 3 拍）
+  const tl2 = buildTimeline(p2.score!);
+  const cueE2 = tl2.filter((e) => e.partId === 'cue');
+  check('小字谱从锚音符 tick 起奏', cueE2.length === 2 && cueE2[0].startTick === 3 * 6720,
+    JSON.stringify(cueE2.map((e) => e.startTick)));
+
+  // ── 布局：小字谱画在锚行上方、行高增加 ──
+  const layNo = layoutScore({ ...cueScore, cues: undefined }, { contentWidth: 900 });
+  const lay = layoutScore({ ...cueScore, cues: [{ ...cue!, events: cue!.events, groups: cue!.groups }] }, { contentWidth: 900 });
+  check('布局产出小字谱条目', (lay.cues?.length ?? 0) === 1, JSON.stringify(lay.cues?.length));
+  const cueRow = lay.cues![0];
+  const anchorLine = lay.lines.find((l) => l.items.some((it) => it.kind === 'barline' && (it.measure === 2 || it.measure === 3)))!;
+  check('小字谱基线在锚行上方', cueRow.y < anchorLine.y, JSON.stringify({ cueY: cueRow.y, lineY: anchorLine.y }));
+  check('小字谱条目非空（音符+小节线）', cueRow.items.length >= 8);
+  check('有小字谱的谱行高更大', lay.lineHeight > layNo.lineHeight);
+
+  // ── 多声部（@part）：小字谱必须照常放置（曾经总谱排版直接丢 cue，插入后完全不可见）──
+  const ensSrc = '@format 3\n@title t\n@part 1 "一"\n1 2 3 | 4 5 6 |\n\n@part 2 "二"\n5 5 5 | 6 6 6 |\n\n@小谱 2/1 "踩镲"\nX X |\n';
+  const ens = parseDsl(ensSrc);
+  check('多声部 @小谱 解析无错', ens.errors.length === 0, ens.errors.join('；'));
+  const ensLay = layoutScore(ens.score!, { contentWidth: 900 });
+  check('多声部布局产出小字谱条目', (ensLay.cues?.length ?? 0) === 1, JSON.stringify(ensLay.cues?.length));
+  const ensCueRow = ensLay.cues![0];
+  const ensAnchorLine = ensLay.lines.find((l) => l.items.some((it) => it.eventId === ens.score!.cues![0].anchorId));
+  check('多声部小字谱基线在锚行上方', !!ensAnchorLine && ensCueRow.y < ensAnchorLine.y,
+    JSON.stringify({ cueY: ensCueRow.y, lineY: ensAnchorLine?.y }));
+  check('多声部小字谱条目非空', ensCueRow.items.length >= 3, JSON.stringify(ensCueRow.items.length));
+  // 不变量：cue 基线必须落在**总谱锚行**的行带内。若哪天又让 {...placed[0]} 的
+  // 子谱 cues 顶回来，坐标会按单声部行算、基线落到行带外，这条断言立刻拦下。
+  check('多声部小字谱基线落在总谱锚行行带内（不沿用子谱坐标）',
+    !!ensAnchorLine && ensCueRow.y > ensAnchorLine.y - ensLay.lineHeight / 2 && ensCueRow.y < ensAnchorLine.y,
+    JSON.stringify({ cueY: ensCueRow.y, lineY: ensAnchorLine?.y, bandTop: ensAnchorLine && ensAnchorLine.y - ensLay.lineHeight / 2 }));
+  // 与单声部同口径：有小字谱时行带必须加高（防「显式剥离 cues 后忘了补行高」）
+  const ensNo = layoutScore({ ...ens.score!, cues: undefined }, { contentWidth: 900 });
+  check('多声部有小字谱的谱行高更大', ensLay.lineHeight > ensNo.lineHeight,
+    JSON.stringify({ withCue: ensLay.lineHeight, withoutCue: ensNo.lineHeight }));
+
+  // 小字谱纵向位置只由行带决定，不随「锚音符有没有上方标记」跳动：
+  // 旧版无连线时贴到主音数字上（gap≈17k），有连线时留在行带顶（gap≈44k）
+  const gapHead = '@format 3\n@title t\n@beat 4/4\n\n';
+  const gapTail = '\n\n@小谱 2/1 "提示"\n1 2 3 4 |\n';
+  const cueGapOf = (body: string): number => {
+    const L = layoutScore(parseDsl(gapHead + body + gapTail).score!, { contentWidth: 900 });
+    const cue = L.cues![0];
+    return L.lines[cue.lineIndex].y - cue.y;
+  };
+  const gapSlur = cueGapOf('1 2 3 4 | (5 6) 5 6 |');
+  const gapPlain = cueGapOf('1 2 3 4 | 5 6 5 6 |');
+  check('有无连音线的小字谱间距一致', Math.abs(gapSlur - gapPlain) < 0.01,
+    JSON.stringify({ withSlur: gapSlur, plain: gapPlain }));
+  check('无连音线时小字谱不贴主音（间距 ≥ 30）', gapPlain >= 30, JSON.stringify(gapPlain));
+
+  // 行带下伸撑高行高时，小字谱仍贴着主谱基线，不许越抬越远：
+  // 旧版 y 钉在行带顶（line.y - lineHeight/2），两段歌词时间距从 44px 涨到 80px（用户实测「跑远」）。
+  const cueLyric1 = '歌词1: 春 风 吹 过 山 川 云 海\n';
+  const cueLyric2 = '歌词2: 星 光 照 亮 前 路 心 远\n';
+  const cueGapOfDsl = (extra: string, head = gapHead, body = '1 2 3 4 | 5 6 5 6 |') => {
+    const L = layoutScore(parseDsl(head + body + '\n' + extra + gapTail).score!, { contentWidth: 900 });
+    const c = L.cues![0];
+    const ln = L.lines[c.lineIndex];
+    return { gap: ln.y - c.y, lineHeight: L.lineHeight, bandTop: ln.y - L.lineHeight / 2, cueY: c.y };
+  };
+  const g0 = cueGapOfDsl('');
+  const g1 = cueGapOfDsl(cueLyric1);
+  const g2 = cueGapOfDsl(cueLyric1 + cueLyric2);
+  check('歌词确实把行高撑大（间距用例前提）', g2.lineHeight > g1.lineHeight && g1.lineHeight > g0.lineHeight,
+    JSON.stringify([g0.lineHeight, g1.lineHeight, g2.lineHeight]));
+  check('1/2 段歌词不把小字谱推远', Math.abs(g1.gap - g0.gap) < 0.01 && Math.abs(g2.gap - g0.gap) < 0.01,
+    JSON.stringify([g0.gap, g1.gap, g2.gap]));
+  const gLineGap = cueGapOfDsl('', gapHead.replace('@beat 4/4', '@beat 4/4\n@lineGap 12'));
+  check('@lineGap 加大行距也不把小字谱推远',
+    gLineGap.lineHeight > g0.lineHeight && Math.abs(gLineGap.gap - g0.gap) < 0.01, JSON.stringify(gLineGap));
+  // 行带比上方净空还矮时（播放页显式 lineHeight / 负 @lineGap）必须退回行带顶
+  const tightLay = layoutScore(parseDsl(gapHead + '1 2 3 4 | 5 6 5 6 |' + gapTail).score!, { contentWidth: 900, lineHeight: 90 });
+  const tightCue = tightLay.cues![0];
+  const tightLine = tightLay.lines[tightCue.lineIndex];
+  check('行带被压矮时小字谱退回行带顶（基线不越出行带）',
+    tightCue.y >= tightLine.y - tightLay.lineHeight / 2 && tightLine.y - tightCue.y < g0.gap,
+    JSON.stringify({ cueY: tightCue.y, bandTop: tightLine.y - tightLay.lineHeight / 2, gap: tightLine.y - tightCue.y }));
+  // 多声部走 ensembleLayout 的独立调用点，两行歌词同样不能把它推远
+  const ensLyricDsl = '@format 3\n@title t\n@part 1 "一"\n1 2 3 4 | 5 6 5 6 |\n'
+    + cueLyric1 + cueLyric2 + '\n@part 2 "二"\n5 5 5 5 | 6 6 6 6 |\n' + gapTail;
+  const ensLyricLay = layoutScore(parseDsl(ensLyricDsl).score!, { contentWidth: 900 });
+  const ensLyricCue = ensLyricLay.cues![0];
+  const ensLyricGap = ensLyricLay.lines[ensLyricCue.lineIndex].y - ensLyricCue.y;
+  check('多声部两行歌词的小字谱间距与单声部一致', Math.abs(ensLyricGap - g0.gap) < 0.01,
+    JSON.stringify({ ens: ensLyricGap, single: g0.gap }));
+
+  console.log('\n[小字谱 · 增时线坐标]');
+  {
+    // 3--- 的数字跟着小字谱走，--- 曾经留在迷你排版坐标里画到画布最左（用户实测）。
+    // 根因：placeCueStaves 只映射了 x / w，没映射 dashXs（drawGlyph 直接拿它画线）。
+    const src = [
+      '@format 3', '@title t', '@beat 4/4', '',
+      '1 2 3 4 | 5 6 5 4 | 3 2 1 2 | 3 4 5- ||', '',
+      '@小谱 2-3 "提示"', '3--- | 5 3 2 1 |',
+    ].join('\n');
+    const L = layoutScore(parseDsl(src).score!, { contentWidth: 900 });
+    const long = L.cues?.[0]?.items.find((it) => (it.dashes ?? 0) >= 3);
+    const dx = long?.dashXs ?? [];
+    check('小字谱 3--- 解析出 3 条增时线', !!long && long.dashes === 3, JSON.stringify(long?.dashes));
+    check('增时线中心跟着音符格走（不留在迷你排版坐标）',
+      !!long && dx.length === 3 && dx.every((x) => x >= long.x && x <= long.x + long.w),
+      JSON.stringify({ x: long?.x, w: long?.w, dashXs: dx }));
+    check('三条增时线在格内顺序等距',
+      dx.length === 3 && dx[0] < dx[1] && dx[1] < dx[2]
+      && Math.abs((dx[1] - dx[0]) - (dx[2] - dx[1])) < 0.01, JSON.stringify(dx));
+    const layoutSrc = readFileSync(join(process.cwd(), 'src/v2/layout.ts'), 'utf8');
+    check('小字谱映射同时处理增时线与播放定位点',
+      layoutSrc.includes('dashXs: it.dashXs.map(mapX)') && layoutSrc.includes('playXs: it.playXs.map'));
+  }
+
+  // ── 播放：小字谱发声（partId 'cue'、锚定平移、音量更低）──
+  const cueTl = buildTimeline({ ...cueScore, cues: [{ ...cue!, events: cue!.events, groups: cue!.groups }] });
+  const cueEntries = cueTl.filter((e) => e.partId === 'cue');
+  check('小字谱出现在时间轴', cueEntries.length === 6, JSON.stringify(cueEntries.length));
+  const mainEntries = cueTl.filter((e) => e.partId !== 'cue');
+  const anchorTick = 3 * 6720; // 第 1 小节 3 拍 → 第 2 小节起点
+  check('小字谱按锚定小节平移（第 2 小节起点起响）', cueEntries.every((e) => e.startTick >= anchorTick));
+  const mainGain = mainEntries[0]?.gain ?? 1;
+  const cueGain = cueEntries[0]?.gain ?? 1;
+  check('小字谱音量低于主声部', cueGain < mainGain, JSON.stringify({ cueGain, mainGain }));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

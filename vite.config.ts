@@ -1,3 +1,5 @@
+import { rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import pkg from './package.json';
@@ -13,9 +15,22 @@ function versionInject(): Plugin {
   };
 }
 
+/**
+ * 安卓包剔除 OCR 模型资产：public/ 会被 vite 整拷进产物，而安卓不打包 OCR 页
+ * （OMR 模型约 26MB 且手机上不提供识别），留着只会白白撑大 APK。
+ */
+function stripOcrAssets(): Plugin {
+  return {
+    name: 'windscore-strip-ocr-assets',
+    closeBundle() {
+      rmSync(resolve(process.cwd(), 'dist-android', 'redist'), { recursive: true, force: true });
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => ({
   base: mode === 'android' ? './' : '/',
-  plugins: [react(), versionInject()],
+  plugins: [react(), versionInject(), ...(mode === 'android' ? [stripOcrAssets()] : [])],
   // onnxruntime-web 的 wasm 装配依赖不被预打包改写（ScoreOCR 同款配置）
   optimizeDeps: mode === 'android' ? undefined : { exclude: ['onnxruntime-web'] },
   define: {

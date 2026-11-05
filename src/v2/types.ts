@@ -242,6 +242,15 @@ export interface BarlineEvent extends BaseEvent {
    * 直到某根线写「拍N/M」声明新拍号才退出。
    */
   free?: boolean;
+  /**
+   * 齐唱段起点（DSL 写「同2-3」紧接小节线）：从这条线之后起，声部 2-3
+   * 暂停自己的内容、改唱第一声部，直到某根线写「分」（或下一段「同N-M」、曲终）。
+   * 可在一首谱里多处出现；只影响播放 / 导出（expandUnisons 展开成各声部拷贝），
+   * 显示层画原谱并在线上标「同2-3」。
+   */
+  unisonAfter?: number[];
+  /** 齐唱段终点（DSL 写「分」紧接小节线）：目标声部恢复唱自己的内容。 */
+  splitAfter?: boolean;
 }
 
 export type JumpMark = 'segno' | 'coda' | 'fine' | 'dc' | 'ds' | 'tocoda';
@@ -330,7 +339,8 @@ export interface ScoreMeta {
   letterSpacing?: number;
   /**
    * 行间距增量（px，按字号比例缩放）：行高的额外增加量，0 = 默认紧凑行距。
-   * 写进 DSL `@lineGap`；正数拉开行与行的距离（留白 / 歌词空间不够时用）
+   * 写进 DSL `@lineGap`；正数拉开行与行的距离（留白 / 歌词空间不够时用），
+   * 负数收紧行距（下限 -24；带歌词的行有歌词层保底行高，不会被压爆）
    */
   lineGap?: number;
   /**
@@ -345,6 +355,32 @@ export const DEFAULT_FONT_SIZE = 24;
 /** 新建谱面的默认字间距（px），与默认字号配套 */
 export const DEFAULT_LETTER_SPACING = -10;
 
+/**
+ * 小字谱（ossia，DSL 写 `@小谱 2-3 "名称"` 块）：锚定在第一声部第 2-3 小节
+ * 上方的一行小字谱，常为一两个小节的替代唱法 / 装饰提示。
+ * 内容直接存 jps 文本（解析与回写对称，编辑弹窗免二次转化）；
+ * 排版映射到锚定小节上方（字号缩小），播放作为附加声部并入时间轴（音量略低）。
+ */
+export interface CueStaff {
+  id: string;
+  /** 小字标注名（如「拍手」），画在小行谱左端；可省 */
+  name?: string;
+  /**
+   * 锚定音符（0.4.41 交互：选中主谱一个音符后录入，从这颗音起同时奏响）。
+   * 内存主键；落盘转「小节/小节内序号」（@小谱 3/2），避免手改文本后 id 漂移。
+   */
+  anchorId?: string;
+  /** 锚定起始小节号（文本锚定旧写法 @小谱 2-3，与 anchorId 二选一；从 1 数起） */
+  anchorStart?: number;
+  /** 锚定结束小节号（含）；缺省与起始相同 = 单小节 */
+  anchorEnd?: number;
+  /** 小字谱内容（jps 音符行，不含谱头与 @ 指令） */
+  text: string;
+  /** text 的解析产物（parseDsl 摘块时填充）；解析失败为 undefined——布局与播放跳过 */
+  events?: Event[];
+  groups?: BeatGroup[];
+}
+
 export interface Score {
   version: 2;
   meta: ScoreMeta;
@@ -356,6 +392,8 @@ export interface Score {
   /** events/groups 是第一声部，parts 只保存其余声部，避免重复真源。 */
   part?: PartInfo;
   parts?: ScorePart[];
+  /** 小字谱（锚定在第一声部某些小节上方的小行谱）；可多条，缺省无 */
+  cues?: CueStaff[];
 }
 
 export interface PartInfo {

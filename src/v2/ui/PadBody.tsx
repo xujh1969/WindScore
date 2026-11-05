@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { candidateGlyph } from '../edit';
-import type { TierCandidate } from '../edit';
+import type { AccidentalKind, TierCandidate } from '../edit';
 import { TICKS_PER_BEAT } from '../ticks';
 import { ACCIDENTAL_GLYPH } from '../paint';
 import { GroupGlyph } from './GroupGlyph';
@@ -18,7 +18,7 @@ import {
   TechniqueField,
   TrillField,
 } from './NoteFields';
-import type { BarlineEvent, JumpMark, NoteEvent, RestEvent, Score } from '../types';
+import type { Accidental, BarlineEvent, JumpMark, NoteEvent, RestEvent, Score } from '../types';
 import { instrumentPatches, instrumentLabel } from '../instrumentSamples';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from '../musicSymbols';
 
@@ -72,9 +72,30 @@ function BarlineGlyph({ kind }: { kind: 'single' | 'repeat-start' | 'repeat-end'
       {kind === 'final' && (
         <>
           {line(5.5)}
-          {line(10, true)}
+          {/* 粗线要明显粗过细线（谱面上是 2.5 : 1），小图标里再夸张一点才看得清 */}
+          <line x1={10.5} y1={2} x2={10.5} y2={16} stroke="currentColor" strokeWidth={4.2} />
         </>
       )}
+    </svg>
+  );
+}
+
+function DeleteGlyph(): ReactNode {
+  return (
+    <svg width={17} height={13} viewBox="0 0 24 18" aria-hidden="true">
+      <path
+        d="M8.5 1.5 H20.5 a1.8 1.8 0 0 1 1.8 1.8 v11.4 a1.8 1.8 0 0 1 -1.8 1.8 H8.5 L1.5 9 Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M11.5 6.2 l5.6 5.6 M17.1 6.2 l-5.6 5.6"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -105,11 +126,11 @@ export interface PadActions {
    * 带属性的小节线：反复开始 `|:` / 反复结束 `:|` / 双细线 `‖`（乐段结束）/ 终止 `||`。
    * 光标左边（或被选中）那根线就地改，没有就先插一根再设——不会多出一条线。
    */
-  barlineAs: (kind: 'repeat-start' | 'repeat-end' | 'repeat-both' | 'double' | 'final') => void;
+  barlineAs: (kind: 'single' | 'repeat-start' | 'repeat-end' | 'repeat-both' | 'double' | 'final') => void;
   /** 虚小节线（GB/T 46845—2025 §5.2.2）：光标左边（或被选中）那根线就地开 / 关虚线，没有就先插一根再设 */
   toggleDashedCursor: () => void;
-  /** 变音记号循环：升 # → 降 b → 还原 ♮ → 无（跟随调号） */
-  accidental: () => void;
+  /** 变音记号：升 / 降 / 复原三颗按钮各自循环（作用于光标左侧的音） */
+  accidental: (kind: AccidentalKind) => void;
   dot: () => void;
   breakLine: () => void;
   /** 升 8 / 降 8（对光标左侧的音） */
@@ -228,6 +249,12 @@ interface Props {
   target: NoteEvent | RestEvent | null;
   /** 批量选中的音（≥2 才显示选区操作） */
   batchIds: string[];
+  /**
+   * 选区内的**记号总数**（含小节线、跳转等所有事件）；0 = 没有拖选区间。
+   * 「删除所选」按整段长度判定，不能用 batchIds（只算音符 / 休止符）：
+   * 用户常把小节线一起框进来，那时 batchIds 可能只剩 1 个音。
+   */
+  rangeCount?: number;
   /** 直接写谱（与属性面板同一入口，撤销历史一致） */
   onSetScore: (s: Score) => void;
   /** 提交段落标注（编辑器负责光标位移与撤销） */
@@ -241,6 +268,19 @@ interface Props {
   /** 选区跳房子：ok = 当前选区能设为房子（选区头前是小节线墙） */
   volta: { ok: boolean; error: string | null };
   doSelectionVolta: (n: number) => void;
+  /**
+   * 小字谱精简模式（CueDialog 复用输入板时开启）：只留录入必需的按钮——
+   * 音级键盘 / 休止 / 普通小节线 / 附点 / 变音记号 / 时值 / 连音线 / 升降八度 /
+   * 音值组合。去掉反复（𝄍、|: :| :||:）、跳房子、跳转、多小节休止 0×N、
+   * X、换行 ↵、括号（延音）、虚小节线、终止线/双细线、技法/倚音/力度/记号、
+   * 选区操作（灰显/跨音力度/八度段/颤音）——小字谱是跟随主谱的小提示谱，这些没有意义。
+   */
+  cueMode?: boolean;
+  /**
+   * 小字谱入口插槽（主谱模式）：渲染在「转调」字段旁边——编辑器传来说明 + 按钮
+   * （选中音符时才传，按钮锚定当前选中的音）。
+   */
+  cueEntry?: ReactNode;
 }
 
 /**
@@ -272,6 +312,34 @@ const EXTREME_ROWS: OctaveRowDef[] = [
  * 写 5-- 容易被当成「按下去就输入 5」，x-- 才只是个时值样子。
  */
 const SAMPLE_DEGREE = 'x';
+
+/** 三颗变音按钮：主谱输入板与小字谱输入板都渲染这一份，避免两处各写一套循环 */
+const ACCIDENTAL_BUTTONS: { kind: AccidentalKind; label: string; glyphs: Accidental[]; title: string; aria: string }[] = [
+  { kind: 'sharp', label: '#', glyphs: ['#', 'x'], title: '升音：按一次 ♯，按两次 ×（重升），按三次复原（去掉记号）', aria: '升音循环' },
+  { kind: 'flat', label: 'b', glyphs: ['b', 'bb'], title: '降音：按一次 ♭，按两次 ♭♭（重降），按三次复原（去掉记号）', aria: '降音循环' },
+  { kind: 'natural', label: ACCIDENTAL_GLYPH['♮'], glyphs: ['♮'], title: '复原：按一次写 ♮ 还原号（按钮点亮），再按一次复原（去掉记号，跟随调号）', aria: '复原号' },
+];
+
+function AccidentalButtons({ note, actions }: { note?: NoteEvent | null; actions: PadActions }) {
+  return (
+    <>
+      {ACCIDENTAL_BUTTONS.map(({ kind, label, glyphs, title, aria }) => {
+        const on = !!note?.accidental && glyphs.includes(note.accidental);
+        return (
+          <button
+            key={kind}
+            className={`v2-btn${on ? ' is-on' : ''}`}
+            onClick={() => actions.accidental(kind)}
+            title={`${title}，对光标左侧的音`}
+            aria-label={aria}
+          >
+            {on && note?.accidental ? ACCIDENTAL_GLYPH[note.accidental] : label}
+          </button>
+        );
+      })}
+    </>
+  );
+}
 
 /** 一排音级键：7 个音，八度由这一排的 oct 决定 */
 function OctaveRow({ row, actions, na, litDegree, litOct }: { row: OctaveRowDef; actions: PadActions; na?: boolean; litDegree?: number; litOct?: number }) {
@@ -312,6 +380,7 @@ export function PadBody({
   score,
   target,
   batchIds,
+  rangeCount = 0,
   onSetScore,
   onAnnotate,
   barline,
@@ -321,6 +390,8 @@ export function PadBody({
   canEditConductor,
   volta,
   doSelectionVolta,
+  cueMode = false,
+  cueEntry,
 }: Props) {
   /**
    * 批量选中 ≥2 个音 = 选区模式：只留「对整段有意义」的按钮，
@@ -381,12 +452,30 @@ export function PadBody({
 
   return (
     <div className="v2-pad-body">
+      {/* 拖选区间条：放在 barline 分支之外——点中小节线时整块面板会切成小节线属性，
+          选区工具不能被它吞掉。判定用含小节线的选区总长，不用 batchIds。
+          常驻排那颗 ⌫ 图标仍保留给单选 / 插入态，这里是选区时找得到的文字入口。 */}
+      {rangeCount >= 2 ? (
+        <div className="v2-pad-range">
+          <span className="v2-field-label">已选 {rangeCount} 个记号</span>
+          <button
+            className="v2-btn"
+            onClick={() => actions.del()}
+            title="一次删光选区里的全部记号（含小节线），等同键盘 Backspace"
+          >
+            删除所选
+          </button>
+        </div>
+      ) : null}
       {barline ? (
         <>
         {!canEditConductor ? (
           <>
           <p className="v2-hint">全谱的拍号、速度、反复、跳房子与跳转由首声部控制，切回首声部再编辑。音色是各声部自己的设置，在这里改本声部的。</p>
           {patchAfterField}
+          <div className="v2-pad-tools">
+            <button className="v2-btn" onClick={() => actions.del()} aria-label="删除小节线" title="删除选中的小节线（与键盘 Del 相同）"><DeleteGlyph /></button>
+          </div>
           </>
         ) : (
         <>
@@ -408,10 +497,22 @@ export function PadBody({
             <button className={`v2-btn ${barline.breakAfter === 'page' ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter('page')}>分页</button>
           </div>
         </div>
-        <div className="v2-grid v2-grid-5">
-          <button className={`v2-btn ${barline.repeat === 'start' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('start')} title="把这条线改成反复开始 |:（再点一次取消）">|:</button>
-          <button className={`v2-btn ${barline.repeat === 'end' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('end')} title="把这条线改成反复结束 :|（再点一次取消）">:|</button>
-          <button className={`v2-btn ${barline.repeat === 'both' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('both')} title="双向反复 :||:——既是上一段的反复结束，又是下一段的反复开始（再点一次取消）">:||:</button>
+        <div className="v2-pad-tools" role="group" aria-label="小节线类型与删除">
+          <button className={`v2-btn ${barline.style === 'single' && !barline.repeat && !barline.dashed ? 'is-on' : ''}`} onClick={() => actions.barlineAs('single')} aria-label="普通小节线" title="普通小节线 |"><BarlineGlyph kind="single" /></button>
+          <button className={`v2-btn ${barline.repeat === 'start' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('start')} aria-label="反复开始" title="把这条线改成反复开始 |:（再点一次取消）"><BarlineGlyph kind="repeat-start" /></button>
+          <button className={`v2-btn ${barline.repeat === 'end' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('end')} aria-label="反复结束" title="把这条线改成反复结束 :|（再点一次取消）"><BarlineGlyph kind="repeat-end" /></button>
+          <button className={`v2-btn ${barline.repeat === 'both' ? 'is-on' : ''}`} onClick={() => barlineActions.setRepeat('both')} aria-label="双向反复" title="双向反复 :||:（再点一次取消）"><BarlineGlyph kind="repeat-both" /></button>
+          <button className={`v2-btn ${barline.style === 'double' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDouble()} title="双细线 ‖：乐段结束（再点一次变回普通小节线）"><BarlineGlyph kind="double" /></button>
+          <button className={`v2-btn ${barline.style === 'final' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFinal()} title="终止线 ||：细线+粗线，全曲结束（再点一次变回普通小节线）"><BarlineGlyph kind="final" /></button>
+          <button className={`v2-btn ${barline.dashed ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDashed()} title="虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线——混合拍子里按节拍分组、不拦拍感的细分线；校验与小节计数照常（再点一次变回实线）">
+            {/* 画成一条虚线竖线 */}
+            <svg width="8" height="16" viewBox="0 0 8 16" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
+              <line x1="4" y1="1.5" x2="4" y2="14.5" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.4 2.2" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button className="v2-btn" onClick={() => actions.del()} aria-label="删除小节线" title="删除选中的小节线（与键盘 Del 相同）"><DeleteGlyph /></button>
+        </div>
+        <div className="v2-grace-bar">
           <span className="v2-field-label v2-inline-label">遍数</span>
           <select className="v2-grace-pick" value={barline.repeat === 'end' ? (barline.times ?? 2) : 2} disabled={barline.repeat !== 'end'} onChange={(e) => barlineActions.setRepeatTimes(Number(e.target.value))}>
             {[2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
@@ -422,14 +523,6 @@ export function PadBody({
           {[1, 2, 3].map((n) => (
             <button key={n} className={`v2-btn ${(barline.volta ?? []).includes(n) ? 'is-on' : ''}`} onClick={() => barlineActions.setVolta(n)} title={`房子 [${n}] 的左墙设在这根线，向右自动延伸到 :| 或下一间房`}>[{n}]</button>
           ))}
-          <button className={`v2-btn ${barline.style === 'double' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDouble()} title="双细线 ‖：乐段结束（再点一次变回普通小节线）">‖</button>
-          <button className={`v2-btn ${barline.style === 'final' ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFinal()} title="终止线 ||：细线+粗线，全曲结束（再点一次变回普通小节线）">||</button>
-          <button className={`v2-btn ${barline.dashed ? 'is-on' : ''}`} onClick={() => barlineActions.toggleDashed()} title="虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线——混合拍子里按节拍分组、不拦拍感的细分线；校验与小节计数照常（再点一次变回实线）">
-            {/* 画成一条虚线竖线 */}
-            <svg width="8" height="16" viewBox="0 0 8 16" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
-              <line x1="4" y1="1.5" x2="4" y2="14.5" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.4 2.2" strokeLinecap="round" />
-            </svg>
-          </button>
           <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「サ」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">サ</button>
           {barline.volta ? (
             <button className={`v2-btn ${barline.voltaOpen ? 'is-on' : ''}`} title="手动强制右端开放（通常自动判断，点一下可覆盖）" onClick={() => barlineActions.toggleVoltaOpen()}>右端开放</button>
@@ -474,21 +567,7 @@ export function PadBody({
             title="删除（键盘 Backspace）：批量选中时一次删光选区；否则替换模式下删当前音，插入模式下删光标左边的音"
             aria-label="删除"
           >
-            <svg width={17} height={13} viewBox="0 0 24 18" aria-hidden="true">
-              <path
-                d="M8.5 1.5 H20.5 a1.8 1.8 0 0 1 1.8 1.8 v11.4 a1.8 1.8 0 0 1 -1.8 1.8 H8.5 L1.5 9 Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinejoin="round"
-              />
-              <path
-                d="M11.5 6.2 l5.6 5.6 M17.1 6.2 l-5.6 5.6"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-              />
-            </svg>
+            <DeleteGlyph />
           </button>
           {/* 连音线：多选整段连 / 取消，单光标向右多连一个——选区下也有意义 */}
           <button
@@ -520,14 +599,36 @@ export function PadBody({
               <span className="v2-pad-arrow">↓</span>8
             </span>
           </button>
-        </div>
-
-        {/* 输入排：批量选中时整排隐藏——这些按钮作用在光标处 / 单个音上，选区下没意义 */}
-        {!isRange && (
-        <div className="v2-pad-tools">
-          <button className="v2-btn" onClick={() => actions.barline()} title="小节线 |（连按两次变终止线）">
+          {/* cueMode（小字谱）：把录入排 / 变音排剩下的按钮并进这一排，
+              升 / 降 / 复原三颗按钮与主谱输入板共用同一份 */}
+          {cueMode && (
+          <>
+          <button className="v2-btn" onClick={() => actions.barline()} title="小节线 |">
             <BarlineGlyph kind="single" />
           </button>
+          <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
+            <span className="v2-pad-rest-zero">0</span>
+          </button>
+          <button className={`v2-btn${(target?.dot ?? 0) > 0 ? ' is-on' : ''}`} onClick={() => actions.dot()} title="附点 .（目标音带附点时点亮）">
+            <svg width="15" height="18" viewBox="0 0 16 18" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
+              <circle cx={8} cy={9} r={3.2} fill="currentColor" />
+            </svg>
+          </button>
+          <AccidentalButtons note={note} actions={actions} />
+          </>
+          )}
+        </div>
+
+        {/* 输入排：批量选中时整排隐藏——这些按钮作用在光标处 / 单个音上，选区下没意义。
+            cueMode（小字谱）去掉反复/终止/双细线/虚线、X、小节反复、多小节休止、换行，
+            剩余按钮已并入上面的常驻排（一排放下） */}
+        {!isRange && !cueMode && (
+        <div className="v2-pad-tools">
+          <button className="v2-btn" onClick={() => actions.barline()} title="小节线 |">
+            <BarlineGlyph kind="single" />
+          </button>
+          {!cueMode && (
+          <>
           <button
             className="v2-btn"
             onClick={() => actions.barlineAs('repeat-start')}
@@ -573,12 +674,6 @@ export function PadBody({
               <line x1="4" y1="1.5" x2="4" y2="14.5" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.4 2.2" strokeLinecap="round" />
             </svg>
           </button>
-          <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
-            0
-          </button>
-          <button className={`v2-btn${isX ? ' is-on' : ''}`} onClick={() => actions.x()} title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符">
-            X
-          </button>
           <button
             className={`v2-btn${target?.kind === 'rest' && target.repeatBar ? ' is-on' : ''}`}
             onClick={() => actions.repeatBar()}
@@ -608,6 +703,16 @@ export function PadBody({
           >
             0×N
           </button>
+          </>
+          )}
+          <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
+            <span className="v2-pad-rest-zero">0</span>
+          </button>
+          {!cueMode && (
+          <button className={`v2-btn${isX ? ' is-on' : ''}`} onClick={() => actions.x()} title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符">
+            X
+          </button>
+          )}
           <button className={`v2-btn${(target?.dot ?? 0) > 0 ? ' is-on' : ''}`} onClick={() => actions.dot()} title="附点 .（目标音带附点时点亮）">
             {/* 文本「·」太细小，画成加粗的实心圆点 */}
             <svg width="15" height="18" viewBox="0 0 16 18" aria-hidden="true" style={{ display: 'block', margin: '0 auto' }}>
@@ -615,6 +720,7 @@ export function PadBody({
             </svg>
           </button>
           {/* 增时线 - 不给按钮：与时值排的 x− 系长音按钮重复（键盘 - 键仍可用） */}
+          {!cueMode && (
           <button
             className="v2-btn"
             onClick={() => actions.breakLine()}
@@ -623,27 +729,24 @@ export function PadBody({
           >
             ↵
           </button>
+          )}
         </div>
         )}
 
-        {!isRange && (
+        {!isRange && !cueMode && (
         <div className="v2-pad-tools">
-          {/* 变音记号：按一次换一档，升 → 重升 → 降 → 重降 → 还原 → 无（GB 五种）；
-              目标音带变音时点亮并显示当前档 */}
-          <button
-            className={`v2-btn${note?.accidental ? ' is-on' : ''}`}
-            onClick={() => actions.accidental()}
-            title="变音记号循环：升 # → 重升 × → 降 b → 重降 ♭♭ → 还原 ♮ → 无（跟随调号），对光标左侧的音"
-            aria-label="变音记号循环"
-          >
-            {note?.accidental ? ACCIDENTAL_GLYPH[note.accidental] : <span style={{ fontSize: '0.85em' }}>#/b</span>}
-          </button>
+          {/* 升 / 降 / 复原三颗按钮各自循环；目标音带变音时对应按钮点亮并显示当前档 */}
+          <AccidentalButtons note={note} actions={actions} />
+          {!cueMode && (
+          <>
           <button className={`v2-btn${parenOpen ? ' is-on' : ''}`} onClick={() => actions.paren('open')} title="左括号（">
             （
           </button>
           <button className={`v2-btn${parenClose ? ' is-on' : ''}`} onClick={() => actions.paren('close')} title="右括号）">
             ）
           </button>
+          </>
+          )}
         </div>
         )}
 
@@ -705,7 +808,7 @@ export function PadBody({
         {!isRange && (
         <div className="v2-pad-row">
           <span className="v2-field-label">时值（所选音符）</span>
-          <div className="v2-grid v2-grid-4">
+          <div className="v2-grid v2-grid-4" style={cueMode ? { gridTemplateColumns: 'repeat(8, 1fr)' } : undefined}>
             {dur.map((t) => (
               <button
                 key={t.label}
@@ -728,21 +831,53 @@ export function PadBody({
           <OctaveRow key={row.oct} row={row} actions={actions} litDegree={note?.degree} litOct={note?.octave} />
         ))}
 
-        {note ? (
+        {note && !cueMode ? (
           // key 挂 note.id：换选一个音就重挂载并自动展开——选中即展开，
           // 不用再点一次；展开后仍可手动收起，收起状态保持到下一次换选
           <details key={`sec-${note.id}`} className="v2-pad-sec" open>
             <summary>技法 · 倚音 · 力度 · 记号（作用于选中的音）</summary>
             {/* 变音记号不在这里：前面工具排的 # 按钮就是它（循环切换），避免重复 */}
             <GraceField key={`p-${note.id}`} score={score} setScore={onSetScore} note={note} />
-            <KeyChangeField score={score} setScore={onSetScore} note={note} />
+            {cueEntry ? (
+              // 小字谱入口与「转调」并排：文字移到转调标签右侧、按钮移到下拉框右侧
+              // （两列各自标签在上 / 控件在下），不再单独占一整行
+              <div className="v2-pad-duo">
+                <KeyChangeField score={score} setScore={onSetScore} note={note} />
+                <div className="v2-field v2-pad-duo-cue">
+                  <span className="v2-field-label">小字谱 · 同时奏响</span>
+                  {cueEntry}
+                </div>
+              </div>
+            ) : (
+              <KeyChangeField score={score} setScore={onSetScore} note={note} />
+            )}
             <FingeringField key={`f-${note.id}`} score={score} setScore={onSetScore} note={note} />
             <TechniqueField key={`t-${note.id}`} score={score} setScore={onSetScore} note={note} />
             <DynamicsField score={score} setScore={onSetScore} note={note} />
             <AnnotationField score={score} note={note} onApply={(next, shift) => onAnnotate(next, shift)} />
           </details>
         ) : null}
-        {batchIds.length >= 2 ? (
+        {note && cueMode ? (
+          // 小字谱窗口只保留倚音（用户要求）：其余技法/转调/力度等对提示小谱无意义
+          <details key={`cue-${note.id}`} className="v2-pad-sec" open>
+            <summary>倚音（作用于选中的音）</summary>
+            <GraceField key={`p-${note.id}`} score={score} setScore={onSetScore} note={note} />
+          </details>
+        ) : null}
+        {!note && target?.kind === 'rest' && !cueMode && cueEntry ? (
+          // 休止符也能锚小字谱：时间轴（anchorTickOf 含 rest）与布局（按 eventId 找锚）
+          // 本来就支持 rest 锚，这里只补入口——休止符没有技法/倚音分区，单独给一节
+          <details key={`cue-${target.id}`} className="v2-pad-sec" open>
+            <summary>小字谱（锚定选中的休止符）</summary>
+            <div className="v2-field" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="v2-field-label" style={{ margin: 0, whiteSpace: 'nowrap' }}>
+                小字谱 · 同时奏响
+              </span>
+              {cueEntry}
+            </div>
+          </details>
+        ) : null}
+        {batchIds.length >= 2 && !cueMode ? (
           <details key={`sel-${batchIds.join(',')}`} className="v2-pad-sec" open>
             <summary>选区操作（{batchIds.length} 个音）</summary>
             <div className="v2-field">

@@ -46,9 +46,10 @@ import {
   pressBarline,
   pressRepeatBar,
   inRepeatMeasure,
-  setAccidental,
+  cycleAccidentalAt,
   setDegree,
   setMeta,
+  clearLineBreaks,
   setRepeatTimes,
   setOctave,
   setTicks,
@@ -62,7 +63,8 @@ import {
 import type { BeatClock } from '../clock';
 import { BeatClock as Clock } from '../clock';
 import { Player } from '../audio';
-import { DEFAULT_META, parseDsl, serializeDsl } from '../dsl';
+import { DEFAULT_META, locateAnchorId, parseDsl, serializeDsl } from '../dsl';
+import type { CueStaff } from '../types';
 import {
   canWriteInPlace,
   fromText,
@@ -136,6 +138,7 @@ import { PlayTimbreDialog } from './PlayTimbreDialog';
 import { AndroidTimbreDialog } from './AndroidTimbreDialog';
 import { applyTimbre, readTimbreMap, writeTimbre, type PlayTimbre } from './playTimbre';
 import { CustomGroupDialog } from './CustomGroupDialog';
+import { CueDialog } from './CueDialog';
 import { PadBody } from './PadBody';
 import {
   instrumentLabel,
@@ -145,7 +148,6 @@ import {
   preloadInstrumentSamples,
 } from '../instrumentSamples';
 import { loadSavedBanks } from './instrumentBank';
-import { ACCIDENTAL_CHOICES } from './NoteFields';
 import type { PadActions } from './PadBody';
 
 /** 变调锁死区间（半音）：±3 内无明显失真，放宽到 ±5 大调性移动也够用，再远「橡皮音」明显 */
@@ -323,11 +325,24 @@ function beatsPerMeasure(beat: string): number {
  */
 export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'android-player' | 'ocr';
 
-export function EditorApp({ entry = 'app', androidItem, androidDark, androidPreview = false, androidPack, onAndroidBack, ocrItem }: {
+/** 单条谱面校验结果（label 已本地化，warn=提示级不算错误）。 */
+export interface DiagnosticItem { code: string; label: string; message: string; warn: boolean }
+/** 谱面校验快照：源码草稿错误 + 排版/反复诊断（供外层页面顶栏显示，如 OCR 页）。 */
+export interface DiagnosticsSnapshot { draftErrors: string[]; issues: DiagnosticItem[] }
+
+export function EditorApp({ entry = 'app', androidItem, androidDark, androidPreview = false, androidPack, onAndroidBack, ocrItem, viewFontSize, onDiagnostics, theme, fitRows = false }: {
   entry?: Entry; androidItem?: LibraryItem; androidDark?: boolean; androidPreview?: boolean;
   androidPack?: PackBundle; onAndroidBack?: () => void;
   /** OCR 页（entry='ocr'）识别完成后由父组件传入的谱面：直接载入（同 androidItem 模式）。 */
   ocrItem?: { name: string; text: string };
+  /** 显示层字号覆盖（px）：只影响画布排版，不写进谱面属性——OCR 页用小字号一屏看更多。 */
+  viewFontSize?: number;
+  /** 谱面校验结果上报：源码错误 / 排版诊断每次变化时回调（调用方须用 useCallback 稳住引用）。 */
+  onDiagnostics?: (d: DiagnosticsSnapshot) => void;
+  /** 受控主题：给了就由外层统一管（OCR 页），内部月亮开关不再渲染。 */
+  theme?: 'dark' | 'light';
+  /** 行宽撑满（justify）：按「换行」标记分行、行内两端对齐铺满画布宽（OCR 对照页）。 */
+  fitRows?: boolean;
 }) {
   const androidPlayer = entry === 'android-player';
   const androidResumeTick = useRef<number | null>(null);
@@ -346,8 +361,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /**
    * 深浅主题。初始值：安卓由原生壳给定 → 上次手动选的（ws-theme）→ 系统偏好。
    * 各页面是独立 HTML，主题必须落 localStorage 才能跨页一致；月亮开关（ThemeToggle）负责改它。
+   * 嵌入场景（OCR 页）传 `theme` 受控：主题由外层页面统一管，内部开关隐藏、内部 state 只作摆设。
    */
-  const [dark, setDark] = useState(
+  const [ownDark, setOwnDark] = useState(
     () =>
       androidDark ??
       (localStorage.getItem('ws-theme') === 'dark'
@@ -356,6 +372,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           ? false
           : (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)),
   );
+  const dark = theme !== undefined ? theme === 'dark' : ownDark;
+  const setDark = setOwnDark;
   useEffect(() => {
     if (!androidPlayer) localStorage.setItem('ws-theme', dark ? 'dark' : 'light');
   }, [dark, androidPlayer]);
@@ -402,6 +420,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [metronomeFollow, setMetronomeFollow] = useState(false);
   /** 自定义音值组合弹窗（依附于 pending 的选区与目标时值） */
   const [customGroupOpen, setCustomGroupOpen] = useState(false);
+  /** 小字谱编辑弹窗的目标。cueId 让 OCR 产物的**文本锚**（@小谱 2-3）也能被编辑：
+   *  旧逻辑只按 anchorId 查 existing，文本锚永远查不到 → 用户反复点音符+按钮也找不回。 */
+  const [cueTarget, setCueTarget] = useState<{
+    anchorId: string; anchorLabel: string; cueId?: string; textAnchor?: boolean;
+  } | null>(null);
   /** 节拍器面板开关 */
   const [metronomeOpen, setMetronomeOpen] = useState(false);
   const [timbreOpen, setTimbreOpen] = useState(false);
@@ -581,11 +604,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       // 桌面端重开程序后音色下拉里就少了已导入的音色（0.3.2 修）。
       // 失败静默：包丢了自动回落内置，别挡着程序启动。
       void loadSavedBanks().catch(() => undefined);
-      // 安卓 App 没有文件夹模式，曲库固定走本机存储，不算「未配置」
-      setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
+      // 安卓 App 没有文件夹模式，曲库固定走本机存储，不算「未配置」。
+      // OCR 对照页也不弹：识别流程用不到曲库，全屏引导遮罩会把顶栏的「谱面校验」
+      // 弹出面板整个盖住（用户实测），要用曲库从编辑页/曲库页配置
+      setSetupOpen(entry !== 'ocr' && !androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
     });
     const recheck = (): void => {
-      if (storeReadyRef.current) setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
+      if (storeReadyRef.current && entry !== 'ocr') setSetupOpen(!androidPlayer && !IS_ANDROID_APP && !isLibraryConfigured());
     };
     return onStoreBackendChange(recheck);
   }, []);
@@ -2551,6 +2576,30 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     [bindPick, wavePos, activePartId, score, effectivePatchAt, previewOctave],
   );
 
+  /** 双击画布上的小字谱 → 直接打开它的编辑弹窗。
+   *  OCR 产物的 @小谱 是「小节范围」文本锚（没有 anchorId），旧流程按 anchorId 查 existing
+   *  永远查不到，用户只能反复「点音符 + 点小字谱按钮」却找不回那条小字谱。
+   *  这里按 cueId 找到原数据：文本锚用锚段首音的 id 作为弹窗定位，保存时仍保留文本锚。 */
+  const openCueById = useCallback((cueId: string) => {
+    const cue = score.cues?.find((c) => c.id === cueId);
+    if (!cue) return;
+    const isTextAnchor = !cue.anchorId && cue.anchorStart !== undefined;
+    const anchorId = cue.anchorId ?? (cue.anchorStart !== undefined
+      ? locateAnchorId(score.events, cue.anchorStart, 1) : null);
+    if (!anchorId) { setMsg('这条小字谱找不到锚定音符，请在源码里检查 @小谱 的锚'); return; }
+    const ev = score.events.find((e) => e.id === anchorId);
+    // 方块光标同步挪到锚音符：三角之外再给一个可见的选中框
+    const idx = score.events.findIndex((e) => e.id === anchorId);
+    if (idx >= 0) setSnap((s) => ({ ...s, partId: undefined, cursor: idx + 1, anchor: null, mode: 'over' }));
+    const label = isTextAnchor
+      ? `第 ${cue.anchorStart}${cue.anchorEnd !== undefined && cue.anchorEnd !== cue.anchorStart ? `-${cue.anchorEnd}` : ''} 小节${ev ? ` · ${eventLabel(ev)}` : ''}`
+      : `第 ${idx >= 0 ? measureAt(score.events, idx) : 1} 小节${ev ? ` · ${eventLabel(ev)}` : ''}`;
+    setCueTarget({
+      anchorId, anchorLabel: label, cueId: cue.id,
+      ...(isTextAnchor ? { textAnchor: true } : {}),
+    });
+  }, [score]);
+
   /**
    * 波形点击 = 设定试听起始点，并**立即从那里试听**（与谱面播放互斥）。
    * 反复点反复听，找到「这条节奏线对应谱面哪一处的界」。
@@ -2776,7 +2825,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         const left = snap.cursor > 0 ? score.events[snap.cursor - 1] : undefined;
         const target = focused ?? (left && left.kind === 'barline' ? (left as BarlineEvent) : null);
         const apply = (s: Score, id: string): Score => {
-          const styled = setBarlineStyle(s, id, kind === 'final' ? 'final' : kind === 'double' ? 'double' : 'single');
+          const styled = setBarNotation(setBarlineStyle(s, id, kind === 'final' ? 'final' : kind === 'double' ? 'double' : 'single'), id, { dashed: false });
           // 终止线不能同时挂着反复，反过来改成反复时也清掉终止属性
           return setBarlineRepeat(
             styled,
@@ -2802,7 +2851,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         const target = focused ?? (left && left.kind === 'barline' ? (left as BarlineEvent) : null);
         if (target) {
           // 与双细线 / 终止线互斥：开虚线先把样式退回单线
-          setScore(setBarlineStyle(setBarNotation(score, target.id, { dashed: !target.dashed }), target.id, target.dashed ? (target.style ?? 'single') : 'single'));
+          const next = setBarlineStyle(setBarNotation(score, target.id, { dashed: !target.dashed }), target.id, target.dashed ? (target.style ?? 'single') : 'single');
+          setScore(target.dashed ? next : setBarlineRepeat(next, target.id, undefined));
           return;
         }
         const s = insertBarline(score, snap.cursor);
@@ -2810,14 +2860,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         if (!fresh || fresh.kind !== 'barline') return;
         commit({ score: setBarNotation(s, fresh.id, { dashed: true }), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
       },
-      accidental: () => {
-        // 与属性面板那排按钮同一顺序：升 → 降 → 还原 → 无（跟随调号）
+      accidental: (kind) => {
         const id = padLeftId();
-        if (!id) return;
-        const ev = score.events.find((e) => e.id === id);
-        if (!ev || ev.kind !== 'note') return;
-        const i = ACCIDENTAL_CHOICES.indexOf(ev.accidental);
-        setScore(setAccidental(score, id, ACCIDENTAL_CHOICES[(i + 1) % ACCIDENTAL_CHOICES.length]));
+        if (id) setScore(cycleAccidentalAt(score, id, kind));
       },
       dot: () => {
         const id = padLeftId();
@@ -2896,6 +2941,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             score: removeEvent(score, score.events[snap.cursor - 1].id),
             cursor: snap.cursor - 1,
             anchor: null,
+            mode: 'insert',
           });
         }
       },
@@ -3077,9 +3123,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (repeat?: 'start' | 'end' | 'both') => {
       if (!barlineFocus) return;
       const next = barlineFocus.repeat === repeat ? undefined : repeat;
-      setScore(setBarlineRepeat(score, barlineFocus.id, next));
+      padActions.barlineAs(next === 'start' ? 'repeat-start' : next === 'end' ? 'repeat-end' : next === 'both' ? 'repeat-both' : 'single');
     },
-    [barlineFocus, score, setScore],
+    [barlineFocus, padActions],
   );
 
   /** 跳房子：点一次设上、再点一次取消（同一根线只属于一个房） */
@@ -3121,11 +3167,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setVolta,
       toggleFinal: () => {
         if (!barlineFocus) return;
-        setScore(setBarlineStyle(score, barlineFocus.id, barlineFocus.style === 'final' ? 'single' : 'final'));
+        padActions.barlineAs(barlineFocus.style === 'final' && !barlineFocus.repeat ? 'single' : 'final');
       },
       toggleDouble: () => {
         if (!barlineFocus) return;
-        setScore(setBarlineStyle(score, barlineFocus.id, barlineFocus.style === 'double' ? 'single' : 'double'));
+        padActions.barlineAs(barlineFocus.style === 'double' && !barlineFocus.repeat ? 'single' : 'double');
       },
       toggleVoltaOpen: () => {
         if (!barlineFocus) return;
@@ -3137,7 +3183,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         // 与双细线 / 终止线互斥：开虚线先把样式退回单线
         setScore(
           next
-            ? setBarlineStyle(setBarNotation(score, barlineFocus.id, { dashed: true }), barlineFocus.id, 'single')
+            ? setBarlineRepeat(setBarlineStyle(setBarNotation(score, barlineFocus.id, { dashed: true }), barlineFocus.id, 'single'), barlineFocus.id, undefined)
             : setBarNotation(score, barlineFocus.id, { dashed: false }),
         );
       },
@@ -3150,7 +3196,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         setScore(toggleJumpAfterBarline(score, barlineFocus.id, mark));
       },
     }),
-    [barlineFocus, score, setScore, setRepeat, setVolta],
+    [barlineFocus, score, setScore, setRepeat, setVolta, padActions],
   );
 
   // ─────────── 键盘 ───────────
@@ -3158,6 +3204,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      // 小字谱窗口打开时键盘全部让路：Delete/Backspace/音符快捷键
+      // 只能作用于主谱——弹窗盖着主谱，误删主谱内容看不见（0.4.45）
+      if (cueTarget !== null) {
+        if (e.key === 'Escape') setCueTarget(null);
+        return;
+      }
       if (lyricVerse !== null) {
         if (e.key === 'Escape') setLyricSelection(null);
         if (!(e.ctrlKey || e.metaKey) || !['z', 'y', 's'].includes(e.key.toLowerCase())) return;
@@ -3404,6 +3456,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               score: removeEvent(score, score.events[cur - 1].id),
               cursor: cur - 1,
               anchor: null,
+              mode: 'insert',
             });
           }
           return;
@@ -3438,7 +3491,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo, cueTarget]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
@@ -3508,6 +3561,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 源码视图的**实时**解析：编辑过程中错误列表跟着变，修好立即消失 */
   const draftParse = useMemo(() => (view === 'source' ? parseDsl(draft) : null), [view, draft]);
   const draftErrors = draftParse?.errors ?? [];
+
+  // 校验结果上报给外层页面顶栏（OCR 页用）：issues/draftErrors 都是 memo/状态，变化才回调
+  useEffect(() => {
+    if (!onDiagnostics) return;
+    onDiagnostics({
+      draftErrors,
+      issues: issues.map((v) => ({
+        code: v.code,
+        label: VIOLATION_LABEL[v.code] ?? '谱面',
+        message: v.message,
+        warn: v.code === 'I4' || v.code === 'R2',
+      })),
+    });
+  }, [onDiagnostics, issues, draftErrors]);
 
   const notes = score.events.filter((e) => e.kind === 'note').length;
 
@@ -3634,14 +3701,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           </span>
         </div>
         {/* 曲目信息只在谱面标题块 + 曲目信息面板出现，工具栏不再重复一遍 */}
-        <div className="v2-file" title={path ?? fileHandle?.name ?? '当前内容还没落到文件里'}>
+        <div className="v2-file" style={mode === 'library' ? { display: 'none' } : undefined} title={path ?? fileHandle?.name ?? '当前内容还没落到文件里'}>
           <span className={dirty ? 'v2-file-badge is-dirty' : 'v2-file-badge'}>
             {dirty ? '● 有未保存的改动' : '已保存'}
           </span>
           <span className="v2-file-name">{(path ?? fileHandle?.name) ? nameOf(path ?? fileHandle!.name!) : '未保存到文件'}</span>
         </div>
-        {/* 谱面校验：挪到工具栏正中。通过时只显示一行字，有问题才可点开明细 */}
-        <div className="v2-head-check">
+        {/* 谱面校验：挪到工具栏正中。通过时只显示一行字，有问题才可点开明细。
+            OCR 页（entry='ocr'）这层是嵌在双栏右区的编辑器，校验块上移到页面顶栏显示，这里不再重复 */}
+        <div className="v2-head-check" style={entry === 'ocr' || mode === 'library' ? { display: 'none' } : undefined}>
           <button
             className={issues.length === 0 && !draftErrors.length ? 'v2-check is-ok' : 'v2-check is-bad'}
             onClick={() => setCheckOpen((v) => !v)}
@@ -4287,6 +4355,39 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         />
       ) : null}
 
+      {cueTarget ? (
+        <CueDialog
+          score={score}
+          anchorId={cueTarget.anchorId}
+          anchorLabel={cueTarget.anchorLabel}
+          existing={score.cues?.find((c) => cueTarget.cueId ? c.id === cueTarget.cueId : c.anchorId === cueTarget.anchorId)}
+          preserveTextAnchor={cueTarget.textAnchor}
+          clip={clip}
+          clipGroups={clipGroups}
+          dark={dark}
+          onSave={(cue) => {
+            // 保存时重挂解析产物（文本可能被改过）；解析失败的小字谱布局与播放会跳过
+            const parsed = parseDsl(cue.text);
+            const stored: CueStaff = parsed.score && !parsed.errors.length
+              ? { ...cue, events: parsed.score.events, groups: parsed.score.groups }
+              : cue;
+            // 双击打开的文本锚 cue 按 id 去重（它自己没有 anchorId，按 anchorId 过滤会误删别的 cue）
+            const rest = (score.cues ?? []).filter((c) => cueTarget.cueId
+              ? c.id !== cueTarget.cueId && c.id !== cue.id
+              : c.anchorId !== cueTarget.anchorId && c.id !== cue.id);
+            setScore({ ...score, cues: [...rest, stored] });
+            setCueTarget(null);
+          }}
+          onDelete={() => {
+            setScore({ ...score, cues: score.cues?.filter((c) => cueTarget.cueId
+              ? c.id !== cueTarget.cueId
+              : c.anchorId !== cueTarget.anchorId) });
+            setCueTarget(null);
+          }}
+          onClose={() => setCueTarget(null)}
+        />
+      ) : null}
+
       {/*
         编辑器主体只在「记谱 / 对轨」两屏渲染。
         gate 必须逐个排除新 mode：discover 是后来加的，漏在这里的结果是
@@ -4412,8 +4513,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </button>
             </div>
 
-            {/* 深浅主题：月亮一枚，实心 = 深色，线条 = 浅色；CSS 变量与画布配色一起切 */}
-            <ThemeToggle dark={dark} onChange={setDark} />
+            {/* 深浅主题：月亮一枚，实心 = 深色，线条 = 浅色；CSS 变量与画布配色一起切。
+                OCR 页受控主题由页面顶栏的开关统一管，这里不再放第二枚 */}
+            {entry === 'ocr' ? null : <ThemeToggle dark={dark} onChange={setDark} />}
           </div>
 
           {/* 音轨分离入口已移到顶部工具条（对轨组），波形上方腾出一行竖向空间 */}
@@ -4597,6 +4699,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 activePartId={activePartId}
                 dark={dark}
                 unit={EDITOR_UNIT}
+                fontSize={viewFontSize}
+                fitRows={fitRows}
                 selectedIds={selectedIds}
                 cursor={snap.cursor}
                 /* 记谱页永远画原谱 → 用原谱口径的时间线（展开视图是播放页的事） */
@@ -4608,6 +4712,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 getPlayTick={getPlayTick}
                 onEnded={onPlayEnded}
                 onPick={handlePick}
+                onCueDoubleClick={openCueById}
                 onLayout={rememberLayout}
                 showBreaks={mode === 'score'}
                 focusId={overEvent?.id ?? null}
@@ -4755,14 +4860,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 options={KEY_OPTIONS}
                 onCommit={(v) => setScore(setMeta(score, { key: v }))}
               />
-              <MetaInput
-                label="拍号"
-                value={score.meta.beat}
-                placeholder="4/4"
-                onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: v })))}
+              <MetaSelect
+                label="拍号1"
+                value={score.meta.beat.split(/[|+]/)[0] || '4/4'}
+                options={['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
+                onCommit={(v) => {
+                  // 第一节拍：与拍号2 组装成 备选拍号（交替拍子），DSL 用 | 分隔
+                  const second = score.meta.beat.includes('|') || score.meta.beat.includes('+') ? score.meta.beat.split(/[|+]/)[1] : '';
+                  setScore(resplitOversizedGroups(setMeta(score, { beat: second ? `${v}|${second}` : v })));
+                }}
               />
               <MetaSelect
-                label="第二节拍"
+                label="拍号2"
                 value={score.meta.beat.includes('|') || score.meta.beat.includes('+') ? score.meta.beat.split(/[|+]/)[1]! : ''}
                 options={['无', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
                 values={['', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
@@ -4845,7 +4954,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 label="行间距"
                 type="number"
                 value={score.meta.lineGap ?? 0}
-                min={0}
+                min={-24}
                 max={48}
                 onCommit={(v) => setScore(setMeta(score, { lineGap: Number(v) }))}
               />
@@ -4858,6 +4967,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 />
                 显示小节号
               </label>
+              {/* 一键清掉手写「换行」标记（分页保留）：OCR 识别按原谱行写死换行，断行不合意时用 */}
+              <button
+                className="v2-meta-btn"
+                onClick={() => setScore(clearLineBreaks(score))}
+                title="删除所有「换行」标记（分页标记保留），恢复按宽度自动折行"
+              >
+                去除所有换行标记
+              </button>
             </div>
             <p className="v2-hint">
               调号支持升降号：1=bB、1=#F（♭B / ♯F 也认）。速度单位是 BPM；音色下拉里是
@@ -4884,9 +5001,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 <span className="v2-title-token" title="反复展开成顺序演奏后的事件数">
                   展开后 {expansion.score.events.filter((e) => e.kind === 'note').length} 音
                 </span>
-              ) : focus && (focus.kind === 'note' || focus.kind === 'rest') ? (
+              ) : padTarget ? (
                 <span className="v2-title-token">
-                  时值 {durLabel(undotTicks(focus.ticks, focus.dot ?? 0))}
+                  时值 {durLabel(undotTicks(padTarget.ticks, padTarget.dot ?? 0))}
                 </span>
               ) : null}
             </div>
@@ -4895,6 +5012,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               score={score}
               target={padTarget}
               batchIds={selectedTimedIds}
+              rangeCount={range ? range[1] - range[0] : 0}
               onSetScore={setScore}
               onAnnotate={padAnnotate}
               barline={barlineFocus}
@@ -4919,6 +5037,37 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                       cands: pending.cands,
                     }
                   : null
+              }
+              cueEntry={
+                /* 小字谱入口：锚定当前选中的音，从这颗音起同时奏响；已有小字谱则载入编辑。
+                   渲染在输入板「转调」字段旁（PadBody 内），选中音符时出现。
+                   OCR 产物按小节范围锚定（无 anchorId）：焦点小节落在范围内就算命中，
+                   否则用户点多少次按钮都只会新建，永远找不回那条小字谱。 */
+                padTarget ? (() => {
+                  const byId = score.cues?.find((c) => c.anchorId === padTarget.id)
+                  const byText = focusMeasure === null ? undefined : score.cues?.find((c) =>
+                    !c.anchorId && c.anchorStart !== undefined &&
+                    focusMeasure >= c.anchorStart! && focusMeasure <= (c.anchorEnd ?? c.anchorStart!))
+                  const hit = byId ?? byText
+                  const isText = !!hit && !hit.anchorId
+                  return (
+                    <button
+                      className="v2-meta-btn"
+                      onClick={() => {
+                        if (!padTarget) return
+                        setCueTarget({
+                          anchorId: padTarget.id,
+                          anchorLabel: `${focusMeasure ? `第 ${focusMeasure} 小节 · ` : ''}${eventLabel(padTarget)}`,
+                          ...(hit ? { cueId: hit.id } : {}),
+                          ...(isText ? { textAnchor: true } : {}),
+                        })
+                      }}
+                      title={hit ? (isText ? '编辑这条按小节范围锚定的小字谱' : '编辑锚定在这个音上的小字谱') : '从这个音起加一条小字谱（播放时同时奏响）'}
+                    >
+                      小字谱
+                    </button>
+                  )
+                })() : null
               }
             />
           </div>
@@ -5548,7 +5697,7 @@ function eventLabel(e: Event): string {
  */
 function MetronomeButton({ on, onToggle, onOpen }: { on: boolean; onToggle: () => void; onOpen: () => void }) {
   return (
-    <div className="v2-split-choice">
+    <div className="v2-split-choice v2-view-switch">
       <button
         className={on ? 'v2-seg is-on' : 'v2-seg'}
         aria-pressed={on}
@@ -5572,7 +5721,7 @@ function MetronomeButton({ on, onToggle, onOpen }: { on: boolean; onToggle: () =
   );
 }
 
-function StaffViewButton({ active, onSelect, onSettings }: { active: boolean; onSelect: () => void; onSettings: () => void }) {  return <div className={active ? 'v2-staff-choice is-on' : 'v2-staff-choice'}>
+function StaffViewButton({ active, onSelect, onSettings }: { active: boolean; onSelect: () => void; onSettings: () => void }) {  return <div className={`v2-view-switch ${active ? 'v2-staff-choice is-on' : 'v2-staff-choice'}`}>
     <button className="v2-seg" aria-pressed={active} onClick={onSelect}>五线谱</button>
     <button className="v2-seg v2-staff-gear" aria-label="五线谱设置" aria-haspopup="dialog" onClick={onSettings} title="五线谱设置：实音／移调、记谱乐器、谱号">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

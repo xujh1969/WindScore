@@ -13,7 +13,13 @@ import { ThemeToggle } from './ThemeToggle';
  * 转录引导与记号支持说明作为参考资料后置；样式全走 v2 令牌，浅深主题自动成立。
  */
 export function MusicXmlImport() {
-  const [dark, setDark] = useState(() => localStorage.getItem('ws-dark') === '1');
+  // 主题键与其他页统一（ws-theme：'dark'/'light'），旧键 ws-dark 只作迁移兜底
+  const [dark, setDark] = useState(() => {
+    const t = localStorage.getItem('ws-theme');
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return localStorage.getItem('ws-dark') === '1' || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
+  });
   const [fileName, setFileName] = useState('');
   const [summary, setSummary] = useState<MusicXmlSummary | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -26,7 +32,7 @@ export function MusicXmlImport() {
   const toggleDark = (d: boolean): void => {
     setDark(d);
     try {
-      localStorage.setItem('ws-dark', d ? '1' : '0');
+      localStorage.setItem('ws-theme', d ? 'dark' : 'light');
     } catch {
       /* 隐私模式写不进就算了 */
     }
@@ -109,6 +115,8 @@ export function MusicXmlImport() {
 
   return (
     <div className="v2-app" data-theme={dark ? 'dark' : 'light'} data-entry="musicxml">
+      {/* 与启动页同一张晨光草叶底图（深色换夜色底图），只作背景，卡片仍不透明 */}
+      <div className="ws-xml-bg" aria-hidden="true" />
       <header className="v2-head">
         <a className="v2-home-btn" href="./index.html" title="回到首页">
           ← 返回首页

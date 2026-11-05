@@ -285,7 +285,7 @@ console.log('\n[反复展开 · 结构错误必须报错]');
 {
   const cases: [string, string, string][] = [
     ['缺少 :|', '@beat 4/4\n\n|: 5 5 5 5 ||\n', '没有配对的 :|'],
-    ['缺少 |:', '@beat 4/4\n\n5 5 5 5 :| ||\n', '没有配对的 |:'],
+    // 0.4.40：单独的 :| / :||（没写 |:）是 GB 允许的规范写法 = 从头反复，不再报错
     ['嵌套三层', '@beat 4/4\n\n|: |: |: 5 5 5 5 :| :| :| ||\n', '嵌套超过'],
     ['房子不在反复段内', '@beat 4/4\n\n| [1] 5 5 5 5 | [2] 3 3 3 3 ||\n', '不在反复段内'],
     ['房子号数超出遍数', '@beat 4/4\n\n|: 5 5 5 5 | [3] 3 3 3 3 :| ||\n', '超出反复遍数'],
@@ -306,6 +306,15 @@ console.log('\n[反复展开 · 结构错误必须报错]');
     const blocked = r.errors.length > 0 || (!!e && !e.score);
     check(`${name} → 报错`, blocked && msg.includes(expect), msg || '（没报错）');
   }
+  // 从头反复（GB 规范写法）：5 5 5 5 :| = 5 5 5 5 5 5 5 5，共 8 个音
+  const fromHead = parseDsl('@beat 4/4\n\n5 5 5 5 :| ||\n');
+  const fromHeadEx = fromHead.score ? expandScore(fromHead.score) : null;
+  check(
+    '缺少 |: = 从头反复（不报错、展开两遍）',
+    fromHead.errors.length === 0 && !!fromHeadEx?.score &&
+      fromHeadEx.score.events.filter((e) => e.kind === 'note').length === 8,
+    JSON.stringify([...fromHead.errors, ...(fromHeadEx?.errors ?? [])]),
+  );
 }
 
 console.log('\n[反复展开 · 幂等与 round-trip]');

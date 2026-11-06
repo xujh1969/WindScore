@@ -80,10 +80,19 @@ export function ensembleIssues(score: Score): string[] {
     // 后面整段都是别的乐器。只要求它与首声部**前 N 小节逐小节对齐**：
     // 多出来（说明边界错开了）或重叠段拍数不一致才报错。
     if (current.length > measures[0].length) {
-      out.push(`${p.name}有 ${current.length} 小节，比${parts[0].name}的 ${measures[0].length} 小节多`);
+      out.push(
+        `「${p.name}」比「${parts[0].name}」多写了 ${current.length - measures[0].length} 小节（${current.length} 小节对 ${measures[0].length} 小节）。` +
+        `多声部谱里，其他声部不能比第一声部长：要么是这一声部多写了内容，要么是两个声部的小节线没对齐。` +
+        `请对照第一声部，从第 ${measures[0].length + 1} 小节开始检查。`,
+      );
     }
     current.forEach((m, i) => {
-      if (measures[0][i] && m.ticks !== measures[0][i].ticks) out.push(`${p.name}第 ${i + 1} 小节为 ${m.ticks / TICKS_PER_BEAT} 拍，与${parts[0].name}不一致`);
+      if (measures[0][i] && m.ticks !== measures[0][i].ticks) {
+        out.push(
+          `「${p.name}」的第 ${i + 1} 小节是 ${m.ticks / TICKS_PER_BEAT} 拍，而「${parts[0].name}」的同一小节是 ${measures[0][i].ticks / TICKS_PER_BEAT} 拍——两个声部的同一小节必须一样长。` +
+          `多半是这一小节多写或漏写了音符（休止符也算），请对照第一声部的第 ${i + 1} 小节补齐。`,
+        );
+      }
     });
   });
   return out;
@@ -111,12 +120,33 @@ export function withConductor(score: Score, id: string): Score {
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
   const targetStarts = [0, ...targetMeasures.map((m) => m.to)];
+  const srcBarOf = (boundary: number): BarlineEvent | undefined =>
+    boundary === 0
+      ? sourceHead.find((e) => e.kind === 'barline') as BarlineEvent | undefined
+      : score.events[sourceStarts[boundary] - 1] as BarlineEvent | undefined;
   for (let boundary = sourceStarts.length - 1; boundary >= 0; boundary--) {
     const at = sourceStarts[boundary];
-    const src = boundary === 0 ? sourceHead.find((e) => e.kind === 'barline') : score.events[at - 1];
+    let src = boundary === 0 ? sourceHead.find((e) => e.kind === 'barline') : score.events[at - 1];
     const dstOriginal = boundary === 0 ? targetHead.find((e) => e.kind === 'barline') : target.events[(targetStarts[boundary] ?? 0) - 1];
     let index = dstOriginal ? clean.findIndex((e) => e.id === dstOriginal.id) : -1;
     if (src?.kind === 'barline') {
+      // 声部提前结束于某个跳房子段内（例：首声部 `[1] … :| [2]`，本声部只写到 [1] 房中间）：
+      // 房子起线能抄过来，但收尾 `:|` 在本声部已不存在——只继承房子不继承收尾，
+      // 展开器会报「房子不在反复段内」。这是合法写法，房子整体不继承。
+      let dropVolta = false;
+      if (src.volta !== undefined || src.voltaOpen !== undefined) {
+        for (let j = boundary + 1; j < sourceStarts.length; j++) {
+          const b = srcBarOf(j);
+          if (b?.volta || b?.repeat === 'end' || b?.repeat === 'both') {
+            dropVolta = j >= targetStarts.length;
+            break;
+          }
+        }
+        if (dropVolta) {
+          const { volta: _v, voltaOpen: _o, ...rest } = src;
+          src = rest as BarlineEvent;
+        }
+      }
       const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter };
       if (clean[index]?.kind === 'barline') clean[index] = { ...clean[index], ...attributes } as BarlineEvent;
       else if (boundary === 0) {

@@ -189,7 +189,14 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       const leadingMeter = lead > 0 ? { meter: systemMeter[si] ?? '', x: left + lead * 0.45 } : undefined;
       // 本系统行末小节线的拍号是否挪给了下一系统（下一系统行首带拍号）
       const meterMoved = !!systemMeter[si + 1];
-      const line: LayoutLine = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved } : {
+      const line: LayoutLine = source ? {
+        ...source,
+        index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved,
+        // 跳房子括线只画在**每个系统的第一行**（总谱记谱惯例）：withConductor 把
+        // volta 属性抄给了每个声部，各声部的单声部排版都会算出一份，不剥的话
+        // 每行头上都悬一个「2」（用户 2026-11-06 实测）
+        ...(pi === 0 ? {} : { voltas: [] as LayoutLine['voltas'] }),
+      } : {
         index: lines.length, y, items: [], beams: [], arcs: [], badges: [], tuplets: [], voltas: [], partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved,
       };
       lines.push(line);

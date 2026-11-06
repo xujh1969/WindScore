@@ -1881,11 +1881,14 @@ export function setTicks(score: Score, id: string, ticks: number): Score {
 }
 
 /**
- * 自动成组：连续音符若时值之和恰好 1 拍，就打包成一个拍内组，
- * 让减时线连续拉通（不必手动框选再套档位）。
+ * 自动成组：连续音符若时值之和恰好占满「到下一个拍边界的距离」，就打包成
+ * 一个拍内组，让减时线连续拉通（不必手动框选再套档位）。
  *
  * 约束：
- *   - 只从整拍位置起算；跨拍的组合（如附点共 1.5 拍）不合并
+ *   - 从整拍起算的目标是整拍；从半拍等中间位置起算的「余数段」目标是
+ *     到下一拍边界的剩余（0.4.x 用户实测：一拍拆成 八分+两个十六分 时，
+ *     末尾两个十六分从半拍起算，旧规则不建组、减时线各画各的）
+ *   - 跨拍的组合（如附点共 1.5 拍）不合并；总和超出目标的 run 直接丢弃
  *   - 至少 2 个音；单个满 1 拍的音不建组
  *   - **只增不减**：已存在的组（含用户手动建的）一律不动，
  *     所以反复调用是幂等的，也不会把用户的意图拆掉
@@ -1920,18 +1923,22 @@ export function autoGroupBeats(score: Score): Score {
   let tick = 0;
   let run: string[] = [];
   let sum = 0;
+  // 本段的目标时长：从整拍起算 = 整拍；从中间起算 = 到下一拍边界的剩余。
+  // flush 之后 run 清空，下一段在新的位置重新起算
+  let target = 0;
 
   const flush = (): void => {
     const shortOnly = run.every((id) => {
       const e = score.events.find((event) => event.id === id);
       return e && isTimed(e) && undotTicks(e.ticks, e.dot ?? 0) < TICKS_PER_BEAT;
     });
-    if (run.length >= 2 && sum === beatTicks && shortOnly && !existing.has(run.join(','))) {
+    if (run.length >= 2 && sum === target && shortOnly && !existing.has(run.join(','))) {
       seq += 1;
-      added.push({ id: `${score.part ? `p${score.part.id}:` : ''}g${seq}`, totalTicks: beatTicks, memberIds: [...run], ...(score.format === 3 ? { auto: true } : {}) });
+      added.push({ id: `${score.part ? `p${score.part.id}:` : ''}g${seq}`, totalTicks: target, memberIds: [...run], ...(score.format === 3 ? { auto: true } : {}) });
     }
     run = [];
     sum = 0;
+    target = 0;
   };
 
   for (const ev of score.events) {
@@ -1948,15 +1955,16 @@ export function autoGroupBeats(score: Score): Score {
       tick += ev.ticks;
       continue;
     }
-    if (tick % beatTicks === 0) {
+    if (run.length === 0) {
       run = [ev.id];
       sum = ev.ticks;
-    } else if (run.length > 0) {
+      target = beatTicks - (tick % beatTicks);
+    } else {
       run.push(ev.id);
       sum += ev.ticks;
     }
     tick += ev.ticks;
-    if (sum >= beatTicks) flush();
+    if (run.length > 0 && sum >= target) flush();
   }
   flush();
 

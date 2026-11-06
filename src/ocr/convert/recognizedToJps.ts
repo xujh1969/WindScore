@@ -408,6 +408,12 @@ function renderRows(
   if (beats <= 0) emit.comments.push('[识别] 拍号缺失，按 4/4 处理') // 保守兜底提示
 }
 
+/** 歌词 token 与 v2/lyrics.ts 的 lyricRows 同口径转义：
+ *  OCR 偶尔把杂符认成 `"` 或 `\`，裸写进歌词行会让 lyricTokens 的 JSON 双引号解析
+ *  抛错，进而整份谱 parseDsl 失败（实测梁祝长图换二值化档后触发）。 */
+const lyricToken = (t: string): string =>
+  !t || t === '_' ? '_' : /[\s"\\]/.test(t) || t === '|' ? JSON.stringify(t) : t;
+
 /** 歌词行：逐音符对位，无字补 _（延音占位）。休止与节奏音符 X 不占歌词位
  *  （WindScore 里 X 是 rest-kind，applyLyrics 只对 note 事件对位）。 */
 function lyricLines(rows: StaffRow[]): string[] {
@@ -421,7 +427,7 @@ function lyricLines(rows: StaffRow[]): string[] {
     for (const r of rows) {
       for (const n of [...r.nums].sort((a, b) => a.bbox.x - b.bbox.x)) {
         if (n.digit === 0 || n.digit === RHYTHM_DIGIT) continue
-        toks.push(n.lyrics?.[v] || '_')
+        toks.push(lyricToken(n.lyrics?.[v] || '_'))
       }
     }
     if (toks.some((t) => t !== '_')) out.push(`歌词${v + 1}: ${toks.join(' ')}`)

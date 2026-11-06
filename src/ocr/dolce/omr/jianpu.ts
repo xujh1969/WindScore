@@ -701,37 +701,60 @@ export type JianpuStage = "comps" | "classified" | "cores" | "rows" | "repeats" 
 /** `refLyrics`：同一首诗歌的歌词文本（已解码），给了就与识别歌词互证纠错（reflyrics.ts），结果在 `lyricCheck`。
  *  `trace`：各阶段结束时回调一次中间产物（块表、谱行……）。**之后还会被就地改**，要留就在回调里当场序列化；不给就没有任何开销。 */
 export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
-  opts: { refLyrics?: string; review?: boolean; trace?: (stage: JianpuStage, data: unknown) => void } = {}): Promise<RecognizedScore> {
+  opts: { refLyrics?: string; review?: boolean; trace?: (stage: JianpuStage, data: unknown) => void;
+    /** [WindScore] 长图识别时让出主线程：每做完一个重计算步骤就 await 一次，浏览器才有机会
+     *  绘制进度条，也不会因单个同步任务超过 30 秒而弹「页面无响应」。不传时行为与原来完全一致。 */
+    yieldNow?: (label: string) => Promise<void> | void;
+    /** [WindScore] 器乐曲（用户在 OCR 启动页选择）：整页跳过歌词/和弦带识别。
+     *  不只省一次逐字 OCR——「有词的 0 复原」「弧按一字多音频裁决」这些歌词驱动的
+     *  步骤从此拿不到任何歌词线索，器乐谱上印的 0 是休止、弓法/段号文字也不会再被
+     *  误挂到音符上。 */
+    instrumental?: boolean } = {}): Promise<RecognizedScore> {
   const trace = opts.trace;
+  const yieldNow = opts.yieldNow;
   // 去连通：把贯穿全高的小节线（常像"桥"把弧/增时线粘成一团）从像素上擦掉重做连通域，
   // 让弧/小节线/数字各自独立、以干净连通块流入下面的 classify 与 detectSlurs。
+  await yieldNow?.('分析图像连通块');
   const raw = connectedComponents(bin, 4);
   // 每拆一步块表就换一份，字号随之重估；同一份块表只估一次（各 split 都返回新数组、不就地改块，按数组认就行）
   let nhOf: Component[] | null = null, nhVal = 0;
   const numHOf = (cs: Component[]): number => (cs === nhOf ? nhVal : ((nhOf = cs), (nhVal = estimateNumH(cs))));
+  await yieldNow?.('拆分粘连符号 1/12');
   let comps = mergeBrokenHlines(untangleBridged(raw, bin, numHOf(raw)), numHOf(raw));
+  await yieldNow?.('拆分粘连符号 2/12');
   comps = splitBarDash(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 3/12');
   comps = splitBarCap(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 4/12');
   if (isVoicedPage(comps, numHOf(comps))) comps = splitDigitDash(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 5/12');
   comps = splitArcTail(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 6/12');
   comps = splitArcFootDigit(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 7/12');
   comps = splitLineOverArc(bin, comps, numHOf(comps));
+  await yieldNow?.('拆分粘连符号 8/12');
   const preGlyphSplit = new Set(comps);
   comps = splitArcUnderGlyph(bin, comps, numHOf(comps));
   const glyphSplit = new Set(comps.filter((k) => !preGlyphSplit.has(k)));   // 从「弧 + 字」粘连块里拆出来的块
   comps = splitLineDot(bin, comps, numHOf(comps), isVoicedPage(comps, numHOf(comps)));
+  await yieldNow?.('拆分粘连符号 9/12');
   // 弧端切点在四声部页上也做：这种页的线跨两个声部（≥2.6 字号），进不了「干净页」的尺子；弧又贴着音起笔，
   // 右脚常压在下一个音的高音点上（新编赞美诗·四声部 172 `1̇⌒2̇` 弧连点 58×22，整本漏高音点三百多处）
   const cleanPage = isCleanPage(comps, numHOf(comps));
   // 这本的弧画得粗（4~5px、字号 32~36，中位列墨 0.13~0.15 字号），笔画门放到 0.18
   if (cleanPage || isVoicedPage(comps, numHOf(comps))) comps = splitArcEndDots(bin, comps, numHOf(comps), cleanPage ? 0.12 : 0.18, !cleanPage);
+  await yieldNow?.('拆分粘连符号 10/12');
   if (cleanPage) {
     comps = splitArcInnerDots(bin, comps, numHOf(comps));
     comps = splitMordentDot(bin, comps, numHOf(comps));
   }
+  await yieldNow?.('拆分粘连符号 11/12');
   trace?.("comps", comps);
   const { c, numH } = classify(comps, bin);
+  await yieldNow?.('符号形状分类');
   trace?.("classified", { numH, ...c });
+  await yieldNow?.('拆分粘连符号 12/12');
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
   // 与数字粘连的圆滑线弧帽在此切出，作为合成连通块补进 comps 供 detectSlurs 检测。
@@ -828,8 +851,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     if (inline.size) allCores = allCores.filter((k) => !inline.has(k));
   }
 
+  await yieldNow?.('定位音符完成，开始划分谱行');
   trace?.("cores", { allCores, meterMarks });
   const rowsC = groupRows(allCores, numH);
+  await yieldNow?.('谱行初步归组');
   // 每行的 y 范围 + 穿过的小节线。
   /** 小节线候选连上同一列上下紧挨着（隔 ≤3px）、不比它宽多少的碎段（只量高用，块表不动）。只接没归进小节线的碎块、接完不过两个字号：
    *  四声部谱穿过声部缝的线本身就是一段段小节线，接起来又高又长，行内尺子跟着抬高，正常的线反被剔掉（圣哉三一歌、马槽歌） */
@@ -1041,6 +1066,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       }
     }
   }
+  await yieldNow?.('整理每行音符与小节线');
   // **行首单独印的「前奏：」**（青年诗歌 15《活神的家》：首谱行「前奏：3 5 1̇ 3̇ | …」，不与页眉同排）读成 `0 1 0.`。
   // 认法：行首连着两个以上近方、不比本行数字矮的核（字里的碎块中心落在已摘的字框里跟着摘），其后至少三个核、
   // 其中七成不是近方的（本书数字 28×47，字 51×51）。摘下来交给下面同一段认字（认得出是汉字才挂段落词）。
@@ -1231,6 +1257,13 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
           m.botY = Math.max(...m.rd.map((k) => rbottom(k.bbox)));
         }
       });
+    });
+    // [ScoreOCR] 诊断钩子：默认关闭，只在 scripts/brace-dump.ts 之类脚本设置了
+    // globalThis.__omrBraceDump 时转储连谱号候选与筛选结果，不改变识别逻辑。
+    const braceDump = (globalThis as { __omrBraceDump?: unknown[] }).__omrBraceDump;
+    if (braceDump) braceDump.push({
+      staff: staff.length, numH, firstX, cand, bars, braces,
+      candDetail: cand.map((b) => ({ ...b, h: hOf(b), gate: gate(b), covers: covers(b) })),
     });
   }
 
@@ -2188,7 +2221,11 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     return nums;
   };
   const rowByMeta = new Map<(typeof staff)[number], StaffRow>();
-  const allRows: StaffRow[] = staff.map((m) => {
+  // [WindScore] 原来用 staff.map 一次性跑完所有谱行（含 buildJpNums 的逐核像素判定），
+  // 长图 60+ 行会连成一个十几秒的同步任务；改成每 4 行让出一次主线程，浏览器照常绘制。
+  const allRows: StaffRow[] = [];
+  for (let ri = 0; ri < staff.length; ri++) {
+    const m = staff[ri]!;
     const nums = buildRowNums(m);
     const row: StaffRow = { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
       finalBarline: (m as { finalBarline?: "end" }).finalBarline,
@@ -2203,8 +2240,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     if (row.system === undefined && isCueLike(m)) row.cue = true;
     const thickXs = (m as { thickBarXs?: number[] }).thickBarXs;
     if (thickXs) midThickBars.set(row, thickXs);
-    return row;
-  });
+    allRows.push(row);
+    if ((ri + 1) % 4 === 0) await yieldNow?.(`逐行生成音符序列 ${ri + 1}/${staff.length}`);
+  }
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
   // 休止(digit 0)，且贯穿小节线很少。实测真乐谱行休止占比 ≤18%、小节线 ≥4；伪行休止 ≥79%、
@@ -2274,6 +2312,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   });
   for (const r of rows) for (const n of r.nums) if (n.digit === RHYTHM_DIGIT) probe("rhythmX");
   // 整曲都被判伪行（极端情况）则回退，至少出点东西。
+  await yieldNow?.('谱行过滤完成，开始多声部分组验收');
   let useRows = rows.length ? rows : allRows;
   // 多声部分组验收：每条谱行都归了系统、≥2 个系统、各系统行数相同且声部号连续——缺一条就当单声部
   //（连谱号认错、伪行剔掉了其中一条，硬分声部会把音乐次序整个打乱）。
@@ -2404,6 +2443,30 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
         cnt.set(r.system, b - 1); cnt.set(prev.system, a + 1);
         r.system = prev.system;
       });
+      // ⑤ 个别系统比众数多一行，而多出来的那行明显不是完整声部行（小节线比同系统少、
+      //    或音数不到同系统中位六成）。四声部时代定的「剔完至少剩 3 行」保护对二声部谱
+      //    过严：一行歌词/碎行就能让整页几十个系统的分组全被退回单声部（梁祝四页拼长图
+      //    实测 29 个 2 行系统 + 1 个 3 行系统，65 行全丢 system/voice、连谱号核被放回成假音符）。
+      //    只修唯一一个异常系统，且剔完必须正好等于众数，否则不动，交给原验收兜底。
+      {
+        const freqNow = new Map<number, number>();
+        for (const n of cnt.values()) freqNow.set(n, (freqNow.get(n) ?? 0) + 1);
+        const over = [...cnt.entries()].filter(([, n]) => n === mode + 1);
+        if (mode >= 2 && over.length === 1 && (freqNow.get(mode) ?? 0) >= 3) {
+          const sys = over[0]![0];
+          const g = byY.filter((r) => r.system === sys && !drop.has(r));
+          const maxBars = Math.max(...g.map((r) => r.barlineXs.length));
+          const medNums = median(g.map((r) => r.nums.length));
+          const weak = g.filter((r) => r.barlineXs.length < maxBars || r.nums.length < medNums * 0.6);
+          if (weak.length === 1 && g.length - 1 === mode) {
+            probe("voices.dropOddVoiceRow");
+            const w = weak[0]!;
+            drop.add(w);
+            delete w.system; delete w.voice;
+            cnt.set(sys, g.length - 1);
+          }
+        }
+      }
       // 没归系统的碎行（64：一条 3 个音的碎块行）：音数不到全曲声部行中位数四成的剔掉，免得「每行都归了系统」这一条验收不过
       {
         const medAll = median(useRows.filter((r) => r.system !== undefined && !drop.has(r)).map((r) => r.nums.length));
@@ -2435,6 +2498,13 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
       && [...bySys.values()].every((g) => g.every((r, i) => r.voice === i));
     if (ok && partial) probe("voices.partial");
     probe(ok ? "voices" : "voices.reject");
+    // [ScoreOCR] 诊断钩子：默认关闭，转储分组验收内部状态（每个系统行数、声部号、孤儿行）。
+    const voiceDump = (globalThis as { __omrVoiceDump?: unknown[] }).__omrVoiceDump;
+    if (voiceDump) voiceDump.push({
+      ok, partial, sizes,
+      bySys: [...bySys].map(([sys, g]) => ({ sys, n: g.length, voices: g.map((r) => r.voice), bars: g.map((r) => r.barlineXs.length) })),
+      orphans: orphans.map((r) => ({ y: r.topY, nums: r.nums.length, bars: r.barlineXs.length, cue: r.cue })),
+    });
     if (!ok) {
       // 退回单声部：撤销连谱号钩摘核——被摘的核放回原行、按 x 重排、行范围重算，并对该行
       // 重跑 buildRowNums 重建 nums（nums 在验收前就已从摘核态的 rd 生成，只恢复 rd 不够，
@@ -2473,6 +2543,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     }
   }
 
+  await yieldNow?.('声部分组与连谱号判定完成');
   // 粘在弧上的高音点按全页高音点的离数距离裁决（先于认弧：tie 要看两端音高相同）
   promoteGluedUpDots(bin, useRows, numH);
 
@@ -2497,6 +2568,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   }
   for (const r of useRows) r.meters?.sort((a, b) => a.x - b.x);
 
+  await yieldNow?.('谱行划分完成');
   trace?.("rows", useRows);
   // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符，建模型时提升为小节线。
   await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
@@ -2560,8 +2632,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
+  await yieldNow?.('识别反复与跳房子完成，开始找连线');
   const slurArcs: Component[] = [];
   const slurRefits = detectSlurs(bin, [...comps, ...arcComps].filter((k) => !tupComps.has(k)), useRows, numH, slurArcs);
+  await yieldNow?.('连线识别完成');
   trace?.("slurs", useRows);
 
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
@@ -2589,6 +2663,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     headerRegions = h.regions.length ? h.regions : undefined;
     trace?.("header", h);
   }
+  await yieldNow?.('页眉、调号与拍号识别完成');
   // 与页眉同排的「前奏」字样：认出来是两三个汉字就当段落词，挂到它右边第一个音上（123 `"^前奏"`）
   if (preludeLabel && ocr.recognizeRegion) {
     const pad = numH * 0.3, r = preludeLabel;
@@ -2606,7 +2681,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
   let stanzaRegions: RecognizedScore["stanzaRegions"];
   let footnotes: RecognizedScore["footnotes"];
   let lyricCheck: RecognizedScore["lyricCheck"];
-  if (ocr.recognizeTexts) {
+  if (ocr.recognizeTexts && !opts.instrumental) {
+    // [WindScore] 器乐曲整块跳过：歌词带/和弦带识别、附段歌词、弧的「一字多音」裁决、
+    // 逐字复核都依赖歌词扫描结果，一并跳过；曲中「有词的 0」不再有复原线索，
+    // 器乐谱印的 0 就是休止，识别更准也更快。
     // 连谱号（多声部谱左侧那道 `[`）竖穿歌词带，它的竖笔与钩会被当成行首的字（《圣哉三一歌》第 1、2 系统
     // 歌词读成 `I///L`）。多声部分组成立时剔掉。右缘不放宽：钩已在连谱号的包围盒里，紧挨着的就是段号（「1圣哉」的 1）。
     // 只剔连谱号本身（够高的竖笔块）和上下钩那两端的块：钩向右伸，框把紧挨竖线的段号「1」也罩了进去（三一来临歌、马槽歌）。
@@ -2773,6 +2851,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend,
     if (opts.review !== false) await markLyricDoubts(useRows, lr.hooks);
     trace?.("lyrics", useRows);
   }
+  await yieldNow?.('歌词识别与对位完成');
   {
     const verses = Math.max(0, ...useRows.flatMap((r) => r.nums.map((n) => n.lyrics?.length ?? 0)));
     if (verses > 1) probe("lyrics.multiVerse");

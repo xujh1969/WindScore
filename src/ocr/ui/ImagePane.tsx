@@ -6,6 +6,10 @@ import { boxAtPoint } from '../convert/locator'
 import type { WorkbenchImage } from './ImagePaneTypes'
 import type { Binary } from '../dolce/omrkit/types'
 
+/** 平移量钳在 [min,max] 内：图片放得下时范围是 [0,0]（禁拖），
+ *  溢出时是 [−overflow, 0]——顶/左对齐布局，往负向拖看被裁的那一边。 */
+const clampPan = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
+
 interface ImagePaneProps {
   img: WorkbenchImage | null
   rec?: RecognizedScore | null
@@ -90,9 +94,21 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
   // 缩到下限时恰好归位，不会因为拖拽跑偏而回不来。放大以鼠标点为锚。
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
-  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null)
+  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number; xMin: number; xMax: number; yMin: number; yMax: number; moved: boolean } | null>(null)
   const suppressClickRef = useRef(false)
   const bodyRef = useRef<HTMLDivElement | null>(null)
+
+  /** 当前缩放下的平移范围。布局是「放得下居中、溢出顶/左对齐」（.ocr-img-wrap 的 margin:auto），
+   *  所以溢出方向的可拖范围就是 [−overflow, 0]：长图从顶拖到底一截不缺。
+   *  之前钳制按「居中各溢一半」算（maxY=(图高−栏高)/2），而外框的 max-height 又把溢出
+   *  全堆在下方——拼合长图只能拖到一半，第二张照片的下半永远显示不出来（用户实测）。
+   *  单图放得下时范围是 [0,0]，保持禁拖。 */
+  const panLimits = (scale: number) => {
+    const body = bodyRef.current
+    const overflowX = Math.max(0, (rendered?.w ?? 0) * scale - (body?.clientWidth ?? 0))
+    const overflowY = Math.max(0, (rendered?.h ?? 0) * scale - (body?.clientHeight ?? 0))
+    return { xMin: -overflowX, xMax: 0, yMin: -overflowY, yMax: 0 }
+  }
 
   // 换图/翻页时回到初始态
   useEffect(() => {
@@ -115,7 +131,12 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
         if (scale > v.scale) {
           // 放大：以鼠标点为锚
           const k = scale / v.scale
-          return { scale, x: mx * (1 - k) + v.x * k, y: my * (1 - k) + v.y * k }
+          const lim = panLimits(scale)
+          return {
+            scale,
+            x: clampPan(mx * (1 - k) + v.x * k, lim.xMin, lim.xMax),
+            y: clampPan(my * (1 - k) + v.y * k, lim.yMin, lim.yMax),
+          }
         }
         // 缩小：平移量按「超出初始态的放大程度」等比收敛——缩到下限 scale=1 时
         // 恰好回到初始位置（x=y=0），不会因为拖拽跑偏而停在旁边
@@ -125,7 +146,7 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [img, bin])
+  }, [img, bin, rendered])
 
   // 拖拽平移（放大后才有意义）；拖过就算移动，松手后的 click 不再当点选
   useEffect(() => {
@@ -135,7 +156,7 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
       const dx = ev.clientX - d.sx
       const dy = ev.clientY - d.sy
       if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
-      setView((v) => ({ ...v, x: d.ox + dx, y: d.oy + dy }))
+      setView((v) => ({ ...v, x: clampPan(d.ox + dx, d.xMin, d.xMax), y: clampPan(d.oy + dy, d.yMin, d.yMax) }))
     }
     const up = () => {
       const d = dragRef.current
@@ -152,9 +173,16 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
   }, [])
 
   const onMouseDown = (ev: ReactMouseEvent<HTMLDivElement>) => {
-    if (view.scale <= 1 || ev.button !== 0) return
+    if (ev.button !== 0) return
+    // 不再是「必须放大才能拖」：只要图片在任一方向超出可视区（拼合长图在 scale=1 就高度溢出）就能拖；
+    // 单图完整放得下时两个溢出量都为 0，仍禁止拖拽。
+    const lim = panLimits(view.scale)
+    if (lim.xMin >= lim.xMax && lim.yMin >= lim.yMax) return
     ev.preventDefault()
-    dragRef.current = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y, moved: false }
+    dragRef.current = {
+      sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y,
+      xMin: lim.xMin, xMax: lim.xMax, yMin: lim.yMin, yMax: lim.yMax, moved: false,
+    }
     setDragging(true)
   }
 
@@ -172,10 +200,14 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
     if (hit) onPickBox(hit)
   }
 
+  const pan = panLimits(view.scale)
+  const canPan = pan.xMin < -0.5 || pan.yMin < -0.5
+
   return (
     <section className="ocr-pane" data-pane="image">
       <div className="ocr-pane-head">
         原图
+        {canPan && view.scale === 1 ? <span className="ocr-pane-hint">长图 · 可拖拽查看</span> : null}
         {pager ? (
           <span className="ocr-pager">
             <button
@@ -208,7 +240,7 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
             className="ocr-img-wrap"
             style={{
               transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-              cursor: dragging ? 'grabbing' : view.scale > 1 ? 'grab' : undefined,
+              cursor: dragging ? 'grabbing' : canPan ? 'grab' : undefined,
             }}
             onMouseDown={onMouseDown}
           >

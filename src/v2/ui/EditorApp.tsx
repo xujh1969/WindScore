@@ -11,7 +11,7 @@ import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
 import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
 import lyricConnectionsDemo from '../../scores/lyric-connections-demo.jps?raw';
 import quartetDemo from '../../scores/quartet-demo.jps?raw';
-import { meterAt, meterBeatOptions } from '../meter';
+import { meterAt, meterBeatOptions, validMeter } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, setLyricLink } from '../lyrics';
 import type { LyricLink } from '../types';
@@ -174,6 +174,24 @@ function fmtClock(sec: number): string {
   const m = Math.floor(Math.max(0, sec) / 60);
   const s = Math.max(0, sec) - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+/** 常用拍号选项：含 1/4、1/8 这类单拍子。列表只是快捷入口，
+ *  任意合法拍号与任意段数都可在「拍号（完整）」里直接输入（DSL 用 | 连接各段）。 */
+const METER_OPTIONS = [
+  '1/4', '1/8', '2/4', '2/8', '3/4', '3/8', '4/4', '4/8',
+  '5/4', '5/8', '6/4', '6/8', '7/8', '9/8', '12/8',
+  '2/2', '3/2', '6/16', '9/16', '12/16',
+];
+const meterSeg = (beat: string, i: number): string => beat.split(/[|+]/).filter(Boolean)[i] ?? '';
+/** 改第 i 段拍号时保留其余所有段（旧版只拼前两段，三段谱一改就被压成两段）。 */
+function withMeterSegment(beat: string, index: number, value: string): string {
+  const segs = beat.split(/[|+]/).filter(Boolean);
+  if (!segs.length) segs.push('4/4');
+  if (index === 0) segs[0] = value || '4/4';
+  else if (value) segs[index] = value;
+  else segs.splice(index, 1);
+  return segs.join('|');
 }
 
 /** 校验违反的人话分类——I1/I3 这类内部代号用户看不懂，翻成是哪类问题 */
@@ -4862,24 +4880,24 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               />
               <MetaSelect
                 label="拍号1"
-                value={score.meta.beat.split(/[|+]/)[0] || '4/4'}
-                options={['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
-                onCommit={(v) => {
-                  // 第一节拍：与拍号2 组装成 备选拍号（交替拍子），DSL 用 | 分隔
-                  const second = score.meta.beat.includes('|') || score.meta.beat.includes('+') ? score.meta.beat.split(/[|+]/)[1] : '';
-                  setScore(resplitOversizedGroups(setMeta(score, { beat: second ? `${v}|${second}` : v })));
-                }}
+                value={meterSeg(score.meta.beat, 0) || '4/4'}
+                options={METER_OPTIONS}
+                onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: withMeterSegment(score.meta.beat, 0, v) })))}
               />
               <MetaSelect
                 label="拍号2"
-                value={score.meta.beat.includes('|') || score.meta.beat.includes('+') ? score.meta.beat.split(/[|+]/)[1]! : ''}
-                options={['无', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
-                values={['', '2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']}
-                onCommit={(v) => {
-                  // 备选拍号（交替拍子）：小节可以是第一节拍或第二节拍的拍数，DSL 用 | 分隔
-                  const base = score.meta.beat.split(/[|+]/)[0] || '4/4';
-                  setScore(resplitOversizedGroups(setMeta(score, { beat: v ? `${base}|${v}` : base })));
-                }}
+                value={meterSeg(score.meta.beat, 1)}
+                options={['无', ...METER_OPTIONS]}
+                values={['', ...METER_OPTIONS]}
+                onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: withMeterSegment(score.meta.beat, 1, v) })))}
+              />
+              <MetaInput
+                label="拍号（完整）"
+                value={score.meta.beat}
+                validate={validMeter}
+                hint="可直接写多段交替拍子，用 | 分隔，例如 4/4|2/4|1/4；段数不限，任意合法拍号都支持"
+                placeholder="4/4|2/4|1/4"
+                onCommit={(v) => setScore(resplitOversizedGroups(setMeta(score, { beat: v })))}
               />
               <MetaInput
                 label="速度"
@@ -5528,6 +5546,8 @@ function MetaInput({
   min,
   max,
   placeholder,
+  validate,
+  hint,
 }: {
   label: string;
   value: string | number;
@@ -5536,12 +5556,16 @@ function MetaInput({
   min?: number;
   max?: number;
   placeholder?: string;
+  /** 有语法的值（拍号）只在合法时提交，避免中间态被 setMeta 静默拒绝 */
+  validate?: (v: string) => boolean;
+  hint?: string;
 }) {
   const external = String(value);
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState(external);
 
   const tryCommit = (raw: string) => {
+    if (validate && !validate(raw)) return;
     if (type !== 'number') {
       onCommit(raw);
       return;
@@ -5561,6 +5585,7 @@ function MetaInput({
         min={min}
         max={max}
         placeholder={placeholder}
+        title={hint}
         value={focused ? draft : external}
         onFocus={() => {
           setFocused(true);

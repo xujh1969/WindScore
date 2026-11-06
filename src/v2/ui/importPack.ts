@@ -36,3 +36,17 @@ export async function importUploadedPack(bytes: Uint8Array, isActive: () => bool
     throw error;
   }
 }
+
+/** 网络传入的纯谱面（.jps）：无伴奏、无标定，直接入库，播放走合成音。 */
+export async function importUploadedJps(bytes: Uint8Array, name: string, isActive: () => boolean): Promise<string> {
+  const check = () => { if (!isActive()) throw new Error('上传服务已停用，导入已取消'); };
+  check();
+  const text = new TextDecoder('utf-8').decode(bytes);
+  if (metaOfText(text).broken) throw new Error('谱面内容无法解析');
+  check();
+  // importLibrary 内部会去掉 .jps 后缀并自动避开同名曲目
+  const item = importLibrary(name, text);
+  if (!item) throw new Error('曲库无法保存，请检查手机剩余空间');
+  await flushLibraryWrites();
+  return item.name;
+}

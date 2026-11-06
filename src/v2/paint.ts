@@ -6,6 +6,7 @@
  */
 
 import { playbackX } from './spacing';
+import { playheadIdCandidates } from './timeline';
 import { paintLyricLines } from './lyricLines';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
 import { shortInstrumentLabel } from './instrumentSamples';
@@ -955,11 +956,14 @@ function paintLine(
   const { selectedIds, caret, playhead, focusId } = o;
   const y = line.y;
   let headItem = playhead ? line.items.find((it) => it.eventId === playhead.eventId) : undefined;
-  // 反复展开出来的条目 eventId 带 +rb 后缀（+dbl 同理），精确匹配不中时剥掉后缀兜底，
-  // 否则反复段里小节底色会消失
+  // 时间线条目 id 可能带派生后缀（反复克隆 ~n、D.C./D.S. #n、底色副本 +rb/+dbl…），
+  // 精确匹配不中时按候选链剥后缀逐级回退，否则反复回跳段落里光标/底色会消失
+  // （用户 2026-11-06 实测：反复点光标不回跳）
   if (!headItem && playhead) {
-    const base = playhead.eventId.split('+')[0]!;
-    headItem = line.items.find((it) => it.eventId === base);
+    for (const cand of playheadIdCandidates(playhead.eventId)) {
+      headItem = line.items.find((it) => it.eventId === cand);
+      if (headItem) break;
+    }
   }
 
   // ── 播放中的**当前小节底色** ──
@@ -1195,16 +1199,22 @@ function paintLine(
     // 翻谱定位点），其余小节保持朴素小字——每颗都画框会太吵
     if (it.measure && o.showMeasureNumbers) {
       ctx.save();
-      ctx.font = M.badgeFont;
+      // 小节号用音符的**字体族**（用户 2026-11-06：monospace 小字不协调），
+      // 但字号只取音符的约一半（11px@21 基准，随谱面字号缩放）——
+      // 与音符同字号太抢眼，辅助信息要退后
+      const f = 11 * M.k;
+      ctx.font = `600 ${f}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
       ctx.textAlign = 'center';
       const label = String(it.measure);
-      const ny = y + M.barHalf + 9;
+      // 数字字形高约 0.72×字号：顶端要落在小节线末端下方 2px，不压线
+      const ny = y + M.barHalf + 2 + 0.72 * f;
       if (it.measure % 5 === 0) {
         // 方框强调（GB/T 46845—2025 §5.9.1）：数字必须落在框里——默认字母
         // 基线让数字偏下探出框外（用户实测），改用 middle 基线在框内垂直居中。
-        // 不能用 continue 跳出去：这条小节线可能还带反复记号，后面的绘制不能省
-        const boxTop = ny - 10;
-        const boxH = 13;
+        // 框高随字号走。不能用 continue 跳出去：这条小节线可能还带反复记号，
+        // 后面的绘制不能省
+        const boxH = 0.95 * f + 2;
+        const boxTop = ny - 0.72 * f - 2;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = theme.muted;
         ctx.strokeStyle = theme.muted;

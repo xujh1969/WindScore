@@ -85,5 +85,23 @@ console.log('── 拍数校验（小节满足任一拍号即无徽标）──
   check('转入备选拍号后 3 拍小节无徽标', allBadges(layout3).length === 0, JSON.stringify(allBadges(layout3).map((b) => b.text)));
 }
 
+console.log('── 三段及以上交替拍号（梁祝 4/4|2/4|1/4 实测）──');
+check('1/4 合法', validMeter('1/4'));
+check('四段 4/4|2/4|1/4|1/8 合法', validMeter('4/4|2/4|1/4|1/8'));
+check('三段拍数 → [4,2,1]', JSON.stringify(meterBeatOptions('4/4|2/4|1/4')) === '[4,2,1]', JSON.stringify(meterBeatOptions('4/4|2/4|1/4')));
+check('beatsPerMeasure 仍取首段 4 拍', beatsPerMeasure('4/4|2/4|1/4') === 4);
+{
+  const p = parseDsl('@format 3\n@key 1=C\n@beat 4/4|2/4|1/4\n@bpm 96\n\n1 2 3 4 | 1 2 | 1 | 1 2 3 4 ||\n');
+  check('三段 @beat 解析无错', p.errors.length === 0, p.errors.join('; '));
+  check('三段 round-trip 保留原串', serializeDsl(p.score!).includes('@beat 4/4|2/4|1/4'));
+  const layout = layoutScore(p.score!, { contentWidth: 1200, fitWidth: true });
+  check('4 / 2 / 1 拍小节都无徽标', allBadges(layout).length === 0, JSON.stringify(allBadges(layout).map((b) => b.text)));
+  const bad = parseDsl('@format 3\n@key 1=C\n@beat 4/4|2/4\n@bpm 96\n\n1 2 3 4 | 1 | 1 2 3 4 ||\n');
+  const badLayout = layoutScore(bad.score!, { contentWidth: 1200, fitWidth: true });
+  check('少一段时 1 拍小节报徽标', allBadges(badLayout).length > 0, JSON.stringify(allBadges(badLayout).map((b) => b.text)));
+  const s = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  check('setMeta 接受三段拍号', setMeta(s, { beat: '4/4|2/4|1/4' }).meta.beat === '4/4|2/4|1/4');
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 if (fail > 0) process.exit(1);

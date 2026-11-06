@@ -79,7 +79,8 @@ class LanUploadServer(
         directory.listFiles()?.forEach { it.delete() }
     }
 
-    private fun file(id: String) = File(directory, "$id.wspack")
+    // 暂存文件按 id 存原始字节；类型由任务名在 WebView 侧分流（乐谱包 / 纯谱面）
+    private fun file(id: String) = File(directory, "$id.bin")
     private fun reply(status: Response.Status, data: JSONObject): Response = secure(newFixedLengthResponse(status, "application/json; charset=utf-8", data.toString()))
     private fun fail(status: Response.Status, text: String) = reply(status, JSONObject().put("error", text))
     private fun secure(response: Response): Response {
@@ -136,7 +137,7 @@ class LanUploadServer(
     }
 
     private fun createBatch(session: IHTTPSession): Response {
-        val files = readJson(session).optJSONArray("files") ?: return fail(Response.Status.BAD_REQUEST, "请选择乐谱包")
+        val files = readJson(session).optJSONArray("files") ?: return fail(Response.Status.BAD_REQUEST, "请选择乐曲文件")
         return synchronized(this) { createBatch(files) }
     }
 
@@ -149,7 +150,8 @@ class LanUploadServer(
             val item = files.getJSONObject(i)
             val name = item.optString("name")
             val size = item.optLong("size", -1)
-            if (!name.endsWith(".wspack", true) || name.length !in 1..255 || name.contains('/') || name.contains('\\')) return fail(Response.Status.BAD_REQUEST, "只接收 .wspack 乐谱包")
+            val allowed = name.endsWith(".wspack", true) || name.endsWith(".jps", true)
+            if (!allowed || name.length !in 1..255 || name.contains('/') || name.contains('\\')) return fail(Response.Status.BAD_REQUEST, "只接收 .wspack 乐谱包或 .jps 谱面")
             if (size !in 1..MAX_FILE) return fail(Response.Status.BAD_REQUEST, "单文件不能超过 100 MiB，且不能为空")
             total += size
             batch.add(Job(UUID.randomUUID().toString(), name, size))

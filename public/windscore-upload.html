@@ -13,7 +13,7 @@ header { padding:24px 0; border-bottom:1px solid var(--line); display:flex; alig
 <main><h1>把曲谱，传到手机。</h1><p class="intro">无需数据线，在同一无线局域网中，将乐谱和伴奏一起收入手机曲库。</p>
 <p class="reminder">同一 Wi-Fi，保持双端亮屏。可切到聊天软件发地址；回手机完成导入，切到曲库或社区将停用服务。</p>
 <div id="status" role="status" aria-live="polite">正在连接手机…</div><p id="demo" hidden>界面演示：可以选择文件查看列表，不会上传或写入手机曲库。</p>
-<section id="drop" aria-label="选择或拖入乐谱包"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5"/></svg><p>将 .wspack 乐谱包拖到这里</p><button id="choose">选择乐谱包</button><input id="picker" type="file" accept=".wspack" multiple hidden></section>
+<section id="drop" aria-label="选择或拖入乐曲文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5"/></svg><p>将 .wspack 乐谱包或 .jps 谱面拖到这里</p><button id="choose">选择乐曲文件</button><input id="picker" type="file" accept=".wspack,.jps" multiple hidden></section>
 <p class="limit">每批最多 9 个 · 单文件不超过 100 MiB · 每批总大小不超过 500 MiB</p>
 <ul id="files" aria-label="上传文件与导入结果"></ul><button id="send" disabled>上传到手机曲库</button>
 </main><footer>文件由手机校验并保存，看到“手机已导入”即表示入库成功。同名曲目自动编号保留。</footer>
@@ -64,7 +64,7 @@ header { padding:24px 0; border-bottom:1px solid var(--line); display:flex; alig
   function select(files) {
     if (working) return;
     const next=Array.from(files);
-    const error = !next.length ? '请选择乐谱包' : next.length>9 ? '每批最多 9 个文件，请重新选择' : next.some(file=>!file.name.toLowerCase().endsWith('.wspack')) ? '只接收 .wspack 乐谱包' : next.some(file=>!file.size||file.size>100*1048576) ? '单文件不能为空或超过 100 MiB' : next.reduce((sum,file)=>sum+file.size,0)>500*1048576 ? '每批总大小不能超过 500 MiB' : '';
+    const error = !next.length ? '请选择乐曲文件' : next.length>9 ? '每批最多 9 个文件，请重新选择' : next.some(file=>!/\.(wspack|jps)$/i.test(file.name)) ? '只接收 .wspack 乐谱包或 .jps 谱面' : next.some(file=>!file.size||file.size>100*1048576) ? '单文件不能为空或超过 100 MiB' : next.reduce((sum,file)=>sum+file.size,0)>500*1048576 ? '每批总大小不能超过 500 MiB' : '';
     if (error) { selectionError=error; selected=[]; jobs=[]; render(); setStatus(error,true); picker.value=''; return; }
     selectionError=''; selected=next; jobs=[]; render(); setStatus(demo ? '演示列表：实际上传请使用手机提供的地址' : '已选择 '+selected.length+' 个文件，可以开始上传'); picker.value='';
   }

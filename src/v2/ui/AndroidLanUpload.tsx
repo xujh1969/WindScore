@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { importUploadedPack } from './importPack';
+import { importUploadedJps, importUploadedPack } from './importPack';
+import { isJpsFile } from './libraryStore';
 import { AndroidIcon } from './AndroidComponents';
 
 type JobState = 'waiting' | 'receiving' | 'queued' | 'importing' | 'success' | 'error';
@@ -37,7 +38,12 @@ export function useLanUpload(enabled: boolean, onImported: (message: string) => 
         try {
           const response = await fetch(`/lan-upload/${encodeURIComponent(job.id)}`, { cache: 'no-store' });
           if (!response.ok) throw new Error('暂存文件已失效，请重新上传');
-          const song = await importUploadedPack(new Uint8Array(await response.arrayBuffer()), () => !disposed && bridge!.isUploadActive(job.id));
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const active = () => !disposed && bridge!.isUploadActive(job.id);
+          // 纯谱面按文本入库（无伴奏、播放走合成音）；其余仍走 .wspack 解包流程
+          const song = isJpsFile(job.name)
+            ? await importUploadedJps(bytes, job.name, active)
+            : await importUploadedPack(bytes, active);
           bridge!.completeUpload(JSON.stringify({ id: job.id, song, error: '' }));
           if (!disposed) imported.current(`已从电脑导入：${song}`);
         } catch (error) {
@@ -91,7 +97,7 @@ export function AndroidLanUpload({ service, disabled, onNotice }: { service: Ret
       <div className="an-transfer-link"><AndroidIcon name="wifi"/><i/><span>同一局域网</span></div>
       <div className="an-transfer-device an-transfer-phone"><AndroidIcon name="phone"/><span>手机</span></div>
     </div>
-    <div className="an-lan-heading"><h2 id="an-lan-heading">局域网传曲</h2><div className="an-transfer-limits"><span>.wspack</span><span>每批 ≤ 9 个</span></div></div>
+    <div className="an-lan-heading"><h2 id="an-lan-heading">局域网传曲</h2><div className="an-transfer-limits"><span>.wspack / .jps</span><span>每批 ≤ 9 个</span></div></div>
     <p className={`an-lan-status ${state.running ? 'is-running' : ''}`} role="status"><i/>{status}</p>
     <ol className="an-transfer-steps" aria-label="传曲步骤">{['启动服务', '电脑打开地址', '上传乐曲'].map((label, i) => <li key={label} className={(i === 0 && state.running || i === 1 && state.connected || i === 2 && completed) ? 'is-done' : ''}><span>{i + 1}</span>{label}</li>)}</ol>
     {state.running && <>

@@ -78,18 +78,30 @@ async function nativeRun(model: number, chw: Float32Array, dims: number[]): Prom
   const data = new Float32Array(resp, (1 + nd) * 4); // (1+nd)*4 对齐合法
   return { data, dims: outDims };
 }
+/** [WindScore] 浏览器主线程让出钩子。wasm 的 session.run 是同步长任务，而多次推理
+ *  之间只有微任务 await 时，浏览器仍把它们算作「同一个任务」——长图几百次 rec 推理
+ *  会连续占住主线程几十秒，弹出「页面无响应」。每次推理后走一次宏任务让出即可切开。
+ *  Node 侧不装钩子，行为与原来完全一致。 */
+let _yieldHook: (() => Promise<void>) | null = null;
+export function setOcrYieldHook(fn: (() => Promise<void>) | null): void { _yieldHook = fn; }
+async function yielded<T>(p: Promise<T>): Promise<T> {
+  const r = await p;
+  if (_yieldHook) await _yieldHook();
+  return r;
+}
+
 async function runRec(chw: Float32Array, dims: number[]): Promise<OnnxOut> {
   if (nativeOcr()) return nativeRun(0, chw, dims);
-  return omrRuntime().run("rec", chw, dims);
+  return yielded(omrRuntime().run("rec", chw, dims));
 }
 async function runDet(chw: Float32Array, dims: number[]): Promise<OnnxOut> {
   if (nativeOcr()) return nativeRun(1, chw, dims);
-  return omrRuntime().run("det", chw, dims);
+  return yielded(omrRuntime().run("det", chw, dims));
 }
 
 /** 本地（非 Tauri）单张量 rec → 每时间步 argmax [N,T]（TS 内做 argmax，成本同原先 CTC 内层）。 */
 async function localRecArgmax(chw: Float32Array, dims: number[]): Promise<ArgmaxOut> {
-  const o = await omrRuntime().run("rec", chw, dims);
+  const o = await yielded(omrRuntime().run("rec", chw, dims));
   const [N, T, C] = o.dims;
   const arr = o.data;
   const idx = new Int32Array(N * T);

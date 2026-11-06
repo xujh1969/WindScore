@@ -125,6 +125,12 @@
   font-weight: 600;
   flex: none;
 }
+/* 拼合长图按宽度适配、高度溢出时提示可以直接拖着看 */
+.ocr-pane-hint {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.8;
+}
 .ocr-pane-body {
   flex: 1;
   min-height: 0;
@@ -169,8 +175,6 @@
 /* ── 中栏：原图 + 叠加层（图片最长边适配栏内容区，等比 contain）── */
 .ocr-pane[data-pane='image'] .ocr-pane-body {
   display: flex;
-  align-items: center;
-  justify-content: center;
   /* 缩放平移交给 transform（ImagePane），溢出不出滚动条——拖拽负责看被放大的部分 */
   overflow: hidden;
 }
@@ -178,7 +182,11 @@
   position: relative;
   padding: 8px;
   max-width: 100%;
-  max-height: 100%;
+  /* margin:auto = 「放得下就居中、溢出就顶/左对齐」：溢出时 auto margin 归零，
+     图片初始贴顶、拖拽往下看。之前这里的 max-height:100% 会把外框钳到栏高，
+     图片溢出全堆在下方，而拖拽钳制按「居中各溢一半」算——长图下半（第二张
+     照片的部分）永远拖不出来，用户看到的就是「预览缺少下面一半」。 */
+  margin: auto;
 }
 .ocr-img-wrap img,
 .ocr-img-wrap canvas {
@@ -351,6 +359,100 @@
 .v2-head.ocr-cmp-head {
   z-index: 40;
 }
+/* ── 对比页 · 谱面校验/识别备注下拉列表：诊断报告观感 ──
+   之前所有问题条目整片红字（.v2-diag .is-error 一律 --error），满屏红既难看
+   也降低可读性（用户 2026-11-06）。改成：条目卡片化 + 左侧严重度色条 +
+   位置徽标（<b> label）着色、正文保持中性可读。只作用于 OCR 页
+   （[data-entry='ocr']），简谱编辑区同款列表不受影响。 */
+[data-entry='ocr'] .v2-check-list {
+  min-width: 380px;
+  max-width: 620px;
+  padding: 5px;
+  border-radius: var(--radius);
+  box-shadow: 0 10px 34px rgb(0 0 0 / 24%);
+}
+[data-entry='ocr'] .v2-check-list li {
+  position: relative;
+  margin: 0;
+  padding: 8px 10px 8px 18px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  line-height: 1.6;
+}
+[data-entry='ocr'] .v2-check-list li + li {
+  margin-top: 3px;
+}
+/* 严重度色条：错误=红、警告=琥珀、无严重度（识别备注）=中性边框色 */
+[data-entry='ocr'] .v2-check-list li::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+[data-entry='ocr'] .v2-check-list li.is-error {
+  background: color-mix(in srgb, var(--error) 7%, transparent);
+}
+[data-entry='ocr'] .v2-check-list li.is-error::before {
+  background: var(--error);
+}
+[data-entry='ocr'] .v2-check-list li.is-warn {
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+[data-entry='ocr'] .v2-check-list li.is-warn::before {
+  background: var(--warn);
+}
+/* 位置徽标（「第 5 小节」等）：小圆角色块着色，正文不再跟着变红 */
+[data-entry='ocr'] .v2-check-list li b {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--error) 13%, transparent);
+  color: var(--error);
+  font-weight: 600;
+}
+[data-entry='ocr'] .v2-check-list li.is-warn b {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+/* 识别备注等无严重度条目：浅灰底的中性便签 */
+[data-entry='ocr'] .v2-check-list li:not(.is-error):not(.is-warn) {
+  background: var(--surface-2);
+}
+
+/* ── 右侧输入面板缩窄 1/4（320→240px），给中间简谱区腾空间（用户 2026-11-06）──
+   .v2-body 是 minmax(0,1fr) + var(--side-w) 两列 grid，改这一个变量画布自动变宽。
+   用 .v2-app[data-entry='ocr'] 提高优先级，稳压 editor.css 里 .v2-app 的 320px 定义
+   （不依赖文件加载顺序）。按钮同步收窄：网格是 minmax(0,1fr) 等分，随栏自动变窄，
+   这里只补 padding/min-width 微调让它不显臃肿。 */
+.v2-app[data-entry='ocr'] {
+  --side-w: 240px;
+}
+.v2-app[data-entry='ocr'] .v2-side {
+  padding: 10px 8px;
+  gap: 10px;
+}
+.v2-app[data-entry='ocr'] .v2-btn {
+  padding: 2px 5px;
+}
+.v2-app[data-entry='ocr'] .v2-grid .v2-btn {
+  padding: 2px 1px;
+}
+.v2-app[data-entry='ocr'] .v2-pad-num {
+  min-height: 32px;
+  padding: 3px 0;
+}
+.v2-app[data-entry='ocr'] .v2-pad-tools {
+  gap: 3px;
+}
+.v2-app[data-entry='ocr'] .v2-pad-tools .v2-btn {
+  min-width: 24px;
+  padding: 2px 4px;
+}
 .ocr-start {
   position: relative;
   z-index: 1;
@@ -474,6 +576,95 @@
 .ocr-start-progress-text {
   color: var(--accent);
   font-size: var(--fs-ui);
+  text-align: center;
+}
+/* 轮次 / 档位 / 校验问题数：让长图识别期间每一步都有可见反馈 */
+.ocr-progress-detail {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+/* 曲谱类型（歌曲/器乐）：分段单选，决定引擎是否识别歌词 */
+.ocr-piece-kind {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  align-self: center;
+}
+.ocr-piece-kind-label {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0 10px;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ocr-piece-kind button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ocr-piece-kind button.is-on {
+  background: rgba(127, 127, 127, 0.14);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ocr-piece-kind button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* 实验性功能提示卡：与启动页米色纸面/品牌金同源的暖琥珀调——
+   够醒目但不刺眼（不是报错红），浅色像便签纸、深色像暗房里的牛皮纸 */
+.ocr-experimental {
+  max-width: 380px;
+  padding: 12px 16px 13px;
+  border: 1px solid rgba(180, 131, 22, 0.45);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: rgba(255, 250, 233, 0.82);
+  box-shadow: 0 3px 14px rgba(120, 88, 10, 0.1);
+  backdrop-filter: blur(4px);
+}
+.ocr-experimental-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  color: var(--accent);
+}
+.ocr-experimental-head svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.ocr-experimental-head b {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.ocr-experimental p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ocr-experimental p b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.v2-app[data-theme='dark'] .ocr-experimental {
+  border-color: rgba(217, 178, 60, 0.35);
+  background: rgba(31, 27, 16, 0.78);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
 }
 .ocr-progress-bar-track {
   width: 100%;
@@ -486,6 +677,162 @@
 .ocr-start-foot {
   padding: 0;
   text-align: right;
+}
+
+/* ═══ 多张照片：一摞纸 + 循环翻页（识别启动页）═══
+   顶层沿用单张预览的位置与尺寸（尺寸锚 = 排序后的第一张），其余层只是纯白纸边，
+   按 depth 向右下错开并轻微旋转/缩小；箭头循环把后面的页翻到最前，
+   靠各层 transform 过渡完成，不另加横扫高光或整图滑入。 */
+.ocr-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: min(1040px, 88vw);
+  /* 与 .ocr-start-preview-wrap 同口径：align-items:center 把左 margin 计入，视觉右移 100px */
+  margin-left: 200px;
+}
+@media (max-width: 1100px) {
+  .ocr-stack { margin-left: 0; }
+}
+.ocr-stack-sheets {
+  position: relative;
+  max-width: 100%;
+  perspective: 1500px;
+  transform-style: preserve-3d;
+}
+/* 流内尺寸锚：沿用单张预览的「最长边 contain」规则，只占位不显示 */
+.ocr-stack-anchor {
+  display: block;
+  max-width: 100%;
+  max-height: 66vh;
+  width: auto;
+  height: auto;
+  visibility: hidden;
+}
+.ocr-sheet {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.2);
+  transform-origin: 50% 85%;
+  transform: translate3d(var(--dx, 0px), var(--dy, 0px), var(--dz, 0px))
+    rotate(var(--rot, 0deg)) scale(var(--sc, 1));
+  transition: transform 0.55s cubic-bezier(0.22, 0.8, 0.24, 1), box-shadow 0.5s ease;
+  will-change: transform;
+}
+.ocr-sheet img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+  user-select: none;
+}
+/* 后面的层只是纯白纸面：不压暗、不半透明、也不显示第二张照片，
+   避免两层照片深浅不一、看起来像两张图拼在一起。
+   旋转原点放左上角 + 只向右下偏移，保证左上角不会翘出顶层照片露成一块白；
+   顶层保持平面（不做 3D 后仰、也不随 hover 变），否则投影缩小就会露出下面那张白纸。 */
+.ocr-sheet:not(.is-top) {
+  transform-origin: 0 0;
+  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(0, 0, 0, 0.07);
+}
+/* 顶层沿用基础变换（depth=0 → 单位矩阵）：完整盖住容器，位置仍是原来的预览位置 */
+.ocr-sheet.is-top {
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.3);
+}
+.ocr-sheet-no {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.ocr-sheet.is-top .ocr-sheet-no {
+  opacity: 0.92;
+}
+/* 两侧翻页箭头：放在图片内缘，不会被右移的预览挤出视口 */
+.ocr-stack-arrow {
+  position: absolute;
+  top: 50%;
+  z-index: 999;
+  width: 42px;
+  height: 42px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(57, 84, 48, 0.35);
+  border-radius: 50%;
+  background: rgba(255, 254, 247, 0.84);
+  color: var(--accent);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+.ocr-stack-arrow:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  transform: translateY(-50%) scale(1.08);
+}
+.ocr-stack-arrow:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ocr-stack-arrow.is-prev { left: 14px; }
+.ocr-stack-arrow.is-next { right: 14px; }
+.v2-app[data-theme='dark'] .ocr-stack-arrow {
+  border-color: rgba(173, 199, 170, 0.4);
+  background: rgba(20, 24, 21, 0.84);
+}
+.ocr-stack-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: var(--fs-ui);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+.ocr-stack-caption b {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.ocr-stack-caption span {
+  max-width: 46vw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ocr-stack-caption small {
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 1100px) {
+  .ocr-stack-caption small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ocr-sheet,
+  .ocr-start-preview,
+  .ocr-start-preview-wrap canvas {
+    transition: none;
+  }
 }
 
 /* ── PDF 翻页器（启动页与对比页共用）── */

@@ -103,7 +103,7 @@ export function expandScore(score: Score): ExpandResult {
       }
       stack.push(i);
       if (stack.length > 2) {
-        errors.push(`第 ${measureAt(events, i)} 小节的 |: 让嵌套超过了 2 层（暂不支持更深的嵌套）`);
+        errors.push(`第 ${measureAt(events, i)} 小节的反复记号 |: 套得太深了：反复里面套反复最多只能两层，这里是第三层。请检查这个 |: 是不是多写了；如果确实需要更复杂的反复，建议把曲子拆成两段分别标反复。`);
       }
     } else if (bar.repeat === 'end') {
       const start = stack.pop();
@@ -116,12 +116,12 @@ export function expandScore(score: Score): ExpandResult {
       }
       const times = bar.times ?? 2;
       if (!Number.isInteger(times) || times < 2) {
-        errors.push(`第 ${measureAt(events, i)} 小节的 :| 重复遍数应为 2 以上（当前 ${times}）`);
+        errors.push(`第 ${measureAt(events, i)} 小节的反复结束记号 :| 写了重复 ${times} 遍，但遍数必须是 2 以上的整数——只弹一遍的段落不需要标 :|。请把遍数改成 2 以上的数字，或者删掉这个 :|。`);
       }
     }
   }
   for (const s of stack) {
-    errors.push(`第 ${measureAt(events, s)} 小节的 |: 没有配对的 :|`);
+    errors.push(`第 ${measureAt(events, s)} 小节有个反复开始记号 |:，但往后找不到和它配对的反复结束记号 :|。反复记号要成对使用：|: 标出重复段的开头，:| 标出结尾。请在这个 |: 对应的段落末尾补上 :|；如果这里其实不需要反复，删掉这个 |: 即可。`);
   }
 
   /**
@@ -162,7 +162,7 @@ export function expandScore(score: Score): ExpandResult {
     const times = timesOf(sec[1]);
     const bad = bar.volta.filter((n) => n < 1 || n > times);
     if (bad.length > 0) {
-      errors.push(`第 ${measureAt(events, i)} 小节的房子号 ${bad.join(',')} 超出反复遍数 ${times}`);
+      errors.push(`第 ${measureAt(events, i)} 小节的跳房子标了“第 ${bad.join('、')} 房”，但这里的反复只弹 ${times} 遍——第 ${bad.join('、')} 遍根本不存在，这个房子永远弹不到。请检查：要么房子号写大了，要么 :| 上的遍数写少了（如 :|3 表示弹 3 遍）。`);
     }
     let end = sec[1];
     for (let j = i + 1; j < sec[1]; j += 1) {
@@ -190,7 +190,7 @@ export function expandScore(score: Score): ExpandResult {
       if (start !== undefined) endIdx = endTimes.get(h) ?? endIdx;
     }
     if (start === undefined) {
-      errors.push(`第 ${measureAt(events, h)} 小节的 [${(barAt(h) as BarlineEvent).volta!.join(',')}] 不在反复段内`);
+      errors.push(`第 ${measureAt(events, h)} 小节标了“第 ${(barAt(h) as BarlineEvent).volta!.join(',')} 房”（跳房子），但它前面找不到可以接上的反复段。跳房子的规则：[1] 房要紧挨在反复结束线 :| 前面（或与 :| 写在同一条线上），表示“第一遍弹到这里”。请检查这个房子前面是否漏了 :|（或 |: … :| 反复段）；如果这里不需要跳房子，删掉这个 [N] 标记即可。`);
       continue;
     }
     // 房号超出遍数（`:|` 两遍却写了 [3]）＝这一遍不存在，房子永远奏不到。
@@ -211,7 +211,7 @@ export function expandScore(score: Score): ExpandResult {
     const times = timesOf(endIdx);
     const bad = (barAt(h) as BarlineEvent).volta!.filter((n) => n < 1 || n > times);
     if (bad.length > 0) {
-      errors.push(`第 ${measureAt(events, h)} 小节的房子号 ${bad.join(',')} 超出反复遍数 ${times}（这一遍不存在，房子奏不到）`);
+      errors.push(`第 ${measureAt(events, h)} 小节的跳房子标了“第 ${bad.join('、')} 房”，但这里的反复只弹 ${times} 遍——第 ${bad.join('、')} 遍根本不存在，这个房子永远弹不到。请检查：要么房子号写大了，要么 :| 上的遍数写少了（如 :|3 表示弹 3 遍）。`);
     }
   }
   const timesOfPair = (endIdx: number): number =>
@@ -235,7 +235,7 @@ export function expandScore(score: Score): ExpandResult {
     );
     if (missing.length > 0) {
       warnings.push(
-        `第 ${measureAt(events, s)} 小节起的反复段：第 ${missing.join('、')} 遍没有对应的房子`,
+        `第 ${measureAt(events, s)} 小节开始的反复段一共弹 ${times} 遍，但第 ${missing.join('、')} 遍没有标房子（[N]），这一遍会直接走完公共部分。如果每一遍的弹法不同，请补上对应的 [N] 房；如果这一遍本来就该走公共部分，可以忽略这条提示。`,
       );
     }
   }

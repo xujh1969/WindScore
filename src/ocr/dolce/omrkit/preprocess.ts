@@ -88,7 +88,8 @@ export function sauvola(gray: Uint8Array, w: number, h: number, r: number, k: nu
  * 先按「类间方差」从 R/G/B/luma 中挑分得最开的通道（暖色/泛黄扫描里墨迹吸蓝，
  * 蓝通道对比最高；纯黑白稿四通道一致退化为 luma），再走 Sauvola 局部阈值。
  */
-export function rgbaToBinary(rgba: Uint8ClampedArray, w: number, h: number): Binary {
+/** `binarizeK`：Sauvola 的 k（默认 0.2）。自动重识别时按校验反馈换档，不改变其他调用方。 */
+export function rgbaToBinary(rgba: Uint8ClampedArray, w: number, h: number, binarizeK = 0.2): Binary {
   const n = w * h;
   const cands: Uint8Array[] = [
     toGray(rgba, w, h),
@@ -103,5 +104,5 @@ export function rgbaToBinary(rgba: Uint8ClampedArray, w: number, h: number): Bin
   }
   // 窗口约取图像短边的 1/30（取奇数），覆盖一个字号又不至于退化成全局阈值。
   const win = Math.max(15, (Math.round(Math.min(w, h) / 30) | 1));
-  return { w, h, data: sauvola(best, w, h, win >> 1, 0.2) };
+  return { w, h, data: sauvola(best, w, h, win >> 1, binarizeK) };
 }

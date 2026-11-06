@@ -9,6 +9,8 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { planJoin, sortByName } from '../src/ocr/adapter/joinPhotos';
+import { diagnoseJps } from '../src/ocr/adapter/scoreDiagnostics';
 import { BeatClock } from '../src/v2/clock';
 import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
 import { expandUnisons } from '../src/v2/unison';
@@ -130,6 +132,7 @@ import { audioKey, clearAlign, loadAlign, saveAlign } from '../src/v2/ui/alignSt
 import { gridSkipOf, snapBeatToGrid } from '../src/v2/ui/AudioWaveform';
 import { crc32, unzip, zipStore } from '../src/v2/pack';
 import { buildPack, packFileName, readPack } from '../src/v2/ui/packBundle';
+import { importUploadedJps } from '../src/v2/ui/importPack';
 import {
   describeMeta,
   importLibrary,
@@ -160,6 +163,7 @@ import {
   activeMainAt,
   playOrderMeasures,
   buildTimeline,
+  playheadIdCandidates,
   keyOffset,
   normalizeKey,
   tickAtEvent,
@@ -672,6 +676,64 @@ console.log('\n[OCR · 对比页 PDF 预览]');
   check('PDF 识别框折算回单页原始尺寸（长图坐标完整除以 s）',
     pageSrc.includes('x: b.x / s') && pageSrc.includes('y: (b.y - y0) / s')
     && pageSrc.includes('w: b.w / s') && pageSrc.includes('h: b.h / s'));
+}
+
+console.log('\n[OCR · 对照页紧凑排版（原谱一行 = 预览一行）]');
+{
+  // fitRows 分支的两段收缩（ScoreCanvas relayout）：先按超宽画布探测每个「换行」组的
+  // 自然宽度；放不进栏宽先收紧拍距（字号不动），触底后再缩显示字号（下限 10px）。
+  // justify 弹性展开（上限放宽到 6）——行铺满栏宽、左右两缘与原谱对齐，方便核对；
+  // 最小密度由两段收缩保证（用户 2026-11-06：不足的行要弹性展开，不能死守最小间距）。
+  const EDITOR_UNIT = 33.6 / TICKS_PER_BEAT;
+  const compactRelayout = (score: Score, box: number, font: number) => {
+    const options = { contentWidth: box, unit: EDITOR_UNIT, fontSize: font, fitWidth: false as const, rightPadding: 20, justify: true, justifyMax: 6 };
+    const probe = { ...options, contentWidth: 100000, justify: false };
+    let effUnit = EDITOR_UNIT;
+    let effFont = font;
+    for (let i = 0; i < 12; i += 1) {
+      const natural = layoutScore(score, { ...probe, unit: effUnit, fontSize: effFont }).naturalWidth;
+      if (natural <= box) break;
+      const nextUnit = Math.max(EDITOR_UNIT * 0.12, effUnit * (box / natural));
+      if (nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
+      if (effFont > 10) { effFont = Math.max(10, effFont - 1); continue; }
+      break;
+    }
+    return layoutScore(score, { ...options, unit: effUnit, fontSize: effFont });
+  };
+  const systemCount = (L: ReturnType<typeof layoutScore>): number =>
+    L.systems?.length ?? new Set(L.lines.map((l) => l.system ?? l.index)).size;
+  const dense = parseDsl(
+    '@format 3\n@meta 1=bE 4/4 速86\n@part 1 "声部1"\n' +
+    '0 1 2 3 5 6 1 3--- 2 2 1 | 5 5 4 3 2 1 6. 7 1. 2 3 6 5- | 换行\n' +
+    '5- 4 3 2 1 6- 6 3 2 1 2- 1- 3 5 6 1 2 3 2 1 6. 5 3- | 换行\n' +
+    '0 1 2 3 5 6 1 3--- 2 2 1 | 5 5 4 3 2 1 6. 7 1. 2 3 6 5- ||\n' +
+    '@part 2 "声部2"\n' +
+    '0 0 0 0 0 0 0 6.- 7 1. 2 3 6 | 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 换行\n' +
+    '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 换行\n' +
+    '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ||\n',
+  );
+  check('两声部密行谱解析无错', dense.errors.length === 0, dense.errors.join(' / '));
+  if (dense.score) {
+    check('窄栏（575px）：3 行原谱 = 3 个系统块（不收紧时是 5 个）',
+      systemCount(compactRelayout(dense.score, 575, 14)) === 3,
+      `systems=${systemCount(compactRelayout(dense.score, 575, 14))}`);
+  }
+  const single = parseDsl(
+    '@format 3\n@beat 4/4\n' +
+    '0 1 2 3 5 6 1 3--- 2 2 1 | 5 5 4 3 2 1 6. 7 1. 2 3 6 5- | 换行\n' +
+    '5- 4 3 2 1 6- 6 3 2 1 2- 1- 3 5 6 1 2 3 2 1 6. 5 3- ||\n',
+  );
+  if (single.score) {
+    check('单声部窄栏（480px）：2 行原谱 = 2 行预览', systemCount(compactRelayout(single.score, 480, 14)) === 2);
+  }
+  const canvasSrc = readFileSync(join(process.cwd(), 'src/v2/ui/ScoreCanvas.tsx'), 'utf8');
+  check('ScoreCanvas fitRows 分支带探测收缩与弹性 justify',
+    canvasSrc.includes('contentWidth: 100000') && canvasSrc.includes('justifyMax: 6')
+    && canvasSrc.includes('baseUnit * 0.12') && canvasSrc.includes('effFont > 10'));
+  const ocrCss = readFileSync(join(process.cwd(), 'src/ocr/ui/ocr.css'), 'utf8');
+  check('OCR 页右栏缩窄 1/4（320→240）且按钮同步收窄',
+    ocrCss.includes("--side-w: 240px") && ocrCss.includes(".v2-app[data-entry='ocr'] .v2-pad-num")
+    && ocrCss.includes(".v2-app[data-entry='ocr'] .v2-pad-tools .v2-btn"));
 }
 
 console.log('\n[选区 · 删除所选按钮]');
@@ -1966,6 +2028,31 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 }
 
 {
+  // 《星》场景：首声部 `[1] … :| [2]` 反复段很长，声部 2 只写到第 1 房中间就结束
+  // （声部提前结束是合法写法）。旧版 withConductor 把 [1] 原样抄给声部 2，
+  // 但收尾 :| 在声部 2 里没有对应的线 → 展开器误报「[1] 不在反复段内」。
+  // 修复：房子段的收尾边界超出本声部小节数时，房子整体不继承。
+  console.log('\n[重奏：声部提前结束于跳房子段内不误报]');
+  const p1 = parseDsl('@beat 4/4\n\n|: 1 1 1 1 | 2 2 2 2 | 3 3 3 3 | [1] 4 4 4 4 :| [2] 5 5 5 5 ||\n').score!;
+  const p2 = parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 | 3 3 3 3 ||\n').score!;
+  const ids2 = new Map(p2.events.map((e) => [e.id, `h${e.id}`]));
+  const ens = { ...p1, parts: [{ id: '2', name: '声部 2', gain: 1, events: p2.events.map((e) => ({ ...e, id: ids2.get(e.id)! })), groups: p2.groups }] };
+  const exp2 = expandScore(ens);
+  check(
+    '声部2 提前结束于房内不报「不在反复段内」',
+    exp2.errors.every((e) => !e.includes('反复段')),
+    exp2.errors.join(' / '),
+  );
+  check('重奏展开成功', !!exp2.score, exp2.errors.join(' / '));
+  const horn = withConductor(ens, '2');
+  check(
+    'withConductor 不把收尾 :| 之外的房子抄给短声部',
+    !(horn.events as { kind: string; volta?: number[] }[]).some((e) => e.volta !== undefined),
+    JSON.stringify((horn.events as { kind: string; volta?: number[] }[]).filter((e) => e.volta !== undefined)),
+  );
+}
+
+{
   // 多声部里某个声部提前结束时，后面系统的该声部行是空的。
   // 光标在声部末尾（下标越过了所有 item）时，旧逻辑回退到「最后一行」——
   // 空行没有 item，光标就被画到整曲最后一行的声部名左边（用户实测）。
@@ -2207,6 +2294,30 @@ const blank = (): Score => ({
   const again = autoGroupBeats(autoGroupBeats(userGrouped));
   check('autoGroup 幂等', again.groups.length === userGrouped.groups.length, `${again.groups.length}`);
   check('autoGroup 不拆用户组', again.groups[0].totalTicks === userGrouped.groups[0].totalTicks);
+
+  // 余数段（用户 2026-11-06 实测）：从一拍中间起算的短音串也要建组——
+  // 2 拍 + 附点 1.5 拍后，两个十六分正好占第 4 拍的后半拍（3.5→4 拍），
+  // 旧规则「只从整拍起算」不建组、减时线各画各的；现在目标 = 到下一拍边界的剩余
+  const r = autoGroupBeats(parseDsl('@beat 4/4\n\n1- 2. 3/4 4/4 ||').score!);
+  check('半拍起算的两个十六分自动成组（余数段 0.5 拍）',
+    r.groups.length === 1 && r.groups[0].totalTicks === TICKS_PER_BEAT / 2 && r.groups[0].memberIds.length === 2,
+    JSON.stringify(r.groups.map((g) => ({ t: g.totalTicks, n: g.memberIds.length }))));
+  check('余数段组满足不变量', validateGroups(r).length === 0, validateGroups(r).map((v) => v.code).join(','));
+  // 整拍起算的行为不变：同样两个十六分若从整拍开始、后面没有音补满一拍，仍不建组
+  const r2 = autoGroupBeats(parseDsl('@beat 4/4\n\n1- 2- 3/4 4/4 ||').score!);
+  check('整拍起算但凑不满一拍仍不成组', r2.groups.length === 0, JSON.stringify(r2.groups));
+  // 渲染联动：余数段组的成员在 layout 里画出**连续**减时线——
+  // 存在某条线段（两级都要）同时覆盖两个成员的格中心（x0 在首成员格内、x1 过末成员格中心）
+  const rLay = layoutScore(r, { contentWidth: 900 });
+  const beams = rLay.lines.flatMap((l) => l.beams);
+  const memberItems = r.groups[0].memberIds
+    .map((id) => rLay.lines.flatMap((l) => l.items).find((it) => it.eventId === id))
+    .filter((it): it is NonNullable<typeof it> => !!it);
+  const spans = (level: number): boolean => beams.some((b) => b.level === level &&
+    b.x0 >= memberItems[0]!.x && b.x0 < memberItems[1]!.x && b.x1 > memberItems[1]!.x);
+  check('余数段组减时线连通（一、二级线段都跨两个成员）',
+    memberItems.length === 2 && spans(1) && spans(2),
+    JSON.stringify(beams.map((b) => ({ l: b.level, x0: Math.round(b.x0), x1: Math.round(b.x1) }))));
 }
 
 {
@@ -3688,8 +3799,8 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   // 明确报「超出反复遍数」，不能报误导性的「不在反复段内」
   const overTimes = melody('@beat 4/4\n\n|: 1 [1] 2 :| [2] 3 | [3] 4 ||\n');
   check(
-    '外挂房号超遍数报「超出反复遍数」',
-    (overTimes.ex?.errors ?? []).some((e) => e.includes('超出反复遍数')) &&
+    '外挂房号超遍数报「房子永远弹不到」',
+    (overTimes.ex?.errors ?? []).some((e) => e.includes('反复只弹')) &&
       !(overTimes.ex?.errors ?? []).some((e) => e.includes('不在反复段内')),
     JSON.stringify(overTimes.ex?.errors),
   );
@@ -3714,7 +3825,7 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   check(
     '房子不在反复段内要报错',
     (melody('@beat 4/4\n\n1 1 1 1 | [1] 3 3 3 3 ||\n').ex?.errors ?? []).some((e) =>
-      e.includes('不在反复段内'),
+      e.includes('找不到可以接上的反复段'),
     ),
     JSON.stringify(melody('@beat 4/4\n\n1 1 1 1 | [1] 3 3 3 3 ||\n').ex?.errors),
   );
@@ -3744,6 +3855,51 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
 
   // ⑥ 展开谱里的音能找回原谱（播放高亮靠它）
   check('firstIndex 覆盖反复段内的音', (volta.ex?.firstIndex.size ?? 0) > 0, String(volta.ex?.firstIndex.size));
+
+  // ⑧ 跳房子括线在**行首**的绘制（用户 2026-11-06 实测）：
+  // [2] 与换行写在同一根线上（breakAfter 优先于 volta 断行 → 房子线留在上一行行末）。
+  // 修复：墙段挪到下一行、从内容左缘起笔并画左竖钩；跨行延续段不再用裸 padding
+  const voltaLine = parseDsl('@format 3\n@beat 4/4\n\n|: 1 1 1 1 | [1] 2 2 2 2 :| [2] 换行 3 3 3 3 | 4 4 4 4 ||\n');
+  check('行首房子谱面解析无错', voltaLine.errors.length === 0, voltaLine.errors.join('; '));
+  if (voltaLine.score) {
+    const vl = layoutScore(voltaLine.score, { contentWidth: 900, fitWidth: false });
+    const vsegs = vl.lines.flatMap((ln, i) => ln.voltas.map((v) => ({ i, v })));
+    const v2 = vsegs.filter((s) => s.v.numbers.join(',') === '2');
+    check('volta [2] 恰好一段', v2.length === 1, JSON.stringify(vsegs.map((s) => ({ i: s.i, n: s.v.numbers, c: s.v.cont }))));
+    if (v2.length === 1) {
+      const { i, v } = v2[0];
+      check('volta [2] 画在房子内容行（不是上一行行末）', i > 0, `line=${i}`);
+      check('volta [2] 是墙段（有左竖钩，不是跨行延续）', !v.cont);
+      const firstIt = vl.lines[i].items.find((s) => s.kind === 'note' || s.kind === 'rest') ?? vl.lines[i].items[0];
+      const firstX = firstIt?.x ?? -1;
+      check('volta [2] 从第一个音符处起笔', v.x0 >= 0 && Math.abs(v.x0 - firstX) < 8, `x0=${v.x0.toFixed(1)} firstNote.x=${firstX.toFixed(1)}`);
+    }
+  }
+  // 多声部：withConductor 把 volta 抄给每个声部，但括线只画在每系统第一行
+  const voltaEns = parseDsl(
+    '@format 3\n@meta 1=bE 4/4 速86\n@part 1 "声部1"\n' +
+    '|: 1 1 1 1 | [1] 2 2 2 2 :| [2] 换行 3 3 3 3 | 4 4 4 4 ||\n' +
+    '@part 2 "声部2"\n' +
+    '|: 0 0 0 0 | [1] 0 0 0 0 :| [2] 换行 0 0 0 0 | 0 0 0 0 ||\n',
+  );
+  check('多声部房子谱面解析无错', voltaEns.errors.length === 0, voltaEns.errors.join('; '));
+  if (voltaEns.score) {
+    const el = layoutScore(voltaEns.score, { contentWidth: 900, fitWidth: false });
+    const withV = el.lines.filter((ln) => ln.voltas.length > 0);
+    // score.parts 只存第 2+ 声部（parseDsl 约定），首声部行的 partId 是 '1'
+    check(
+      '多声部 volta 只画在首声部行',
+      withV.length > 0 && withV.every((ln) => ln.partId === undefined || ln.partId !== '2'),
+      JSON.stringify(withV.map((ln) => ln.partId)),
+    );
+  }
+  // 播放头候选 id 链：反复克隆 / D.C. / 底色副本的后缀都能剥回原 id
+  check('候选 id 链剥后缀',
+    JSON.stringify(playheadIdCandidates('n12')) === JSON.stringify(['n12']) &&
+    JSON.stringify(playheadIdCandidates('n12~2+rb123')) === JSON.stringify(['n12~2+rb123', 'n12~2', 'n12']) &&
+    JSON.stringify(playheadIdCandidates('n12#3')) === JSON.stringify(['n12#3', 'n12']),
+    JSON.stringify([playheadIdCandidates('n12'), playheadIdCandidates('n12~2+rb123'), playheadIdCandidates('n12#3')]),
+  );
 
   // ⑦ 反复是**小节线的属性**：就地改，绝不多出一条线
   const plain = parseDsl('@beat 4/4\n\n| 5 6 5 6 2 3 | 5 5 5 5 ||\n').score!;
@@ -4294,6 +4450,23 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   check('删除成功', removeLibraryItem(c.id) === true && readLibrary().length === 1);
 
   check('描述串包含小节与速度', describeMeta(readLibrary()[0]!.meta).includes('63 BPM'));
+
+  // 局域网「从网络传入乐曲」：.jps 纯谱面按文本入库（无伴奏、播放走合成音）
+  const upBytes = new TextEncoder().encode(jps);
+  const upName = await importUploadedJps(upBytes, '上传的谱.jps', () => true);
+  check('网络传入 .jps 入库并返回实际曲名', upName === '上传的谱', upName);
+  check('网络传入 .jps 存的是谱面文本且解析正常',
+    readLibrary().some((it) => it.name === '上传的谱' && it.text === jps && !it.meta.broken));
+  const upName2 = await importUploadedJps(upBytes, '上传的谱.jps', () => true);
+  check('网络传入同名 .jps 自动编号', upName2 === '上传的谱 (2)', upName2);
+  let badRejected = false;
+  try { await importUploadedJps(new TextEncoder().encode('@@@ 不是谱'), '坏谱.jps', () => true); }
+  catch { badRejected = true; }
+  check('网络传入坏谱面被拒绝且不入库', badRejected && !readLibrary().some((it) => it.name === '坏谱'));
+  let cancelled = false;
+  try { await importUploadedJps(upBytes, '取消的谱.jps', () => false); }
+  catch { cancelled = true; }
+  check('上传服务停用时不入库', cancelled && !readLibrary().some((it) => it.name === '取消的谱'));
 
   g.localStorage = prevLs;
 }
@@ -5362,6 +5535,105 @@ console.log('\n[齐唱（同/分）与小字谱（@小谱）]');
   const mainGain = mainEntries[0]?.gain ?? 1;
   const cueGain = cueEntries[0]?.gain ?? 1;
   check('小字谱音量低于主声部', cueGain < mainGain, JSON.stringify({ cueGain, mainGain }));
+}
+
+// ── OCR 首页 · 多张照片堆叠与长图拼接 ──
+console.log('\n[OCR 多图 · 排序 / 长图 / 启动页接线]');
+{
+  const names = ['10.jpg', '2.jpg', '1.jpg', '第10页.png', '第2页.png'];
+  const sorted = sortByName(names.map((name) => ({ name }))).map((v) => v.name);
+  check('文件名自然排序：1、2、10 依次在前', sorted.slice(0, 3).join(',') === '1.jpg,2.jpg,10.jpg', sorted.join(','));
+  check('文件名自然排序：中文序号同样 2 在 10 前',
+    sorted.indexOf('第2页.png') < sorted.indexOf('第10页.png'), sorted.join(','));
+  const src = [{ w: 1200, h: 1600 }, { w: 1000, h: 1500 }, { w: 3000, h: 4000 }];
+  const plan = planJoin(src);
+  const decodeSrc = readFileSync(join(process.cwd(), 'src/ocr/dolce/omrkit/decode.ts'), 'utf8');
+  check('长图宽度与 decodeToBinary 的 MAX_W=2200 同口径（识别框 1:1 对齐）',
+    plan.w <= 2200 && decodeSrc.includes('const MAX_W = 2200'), JSON.stringify({ w: plan.w }));
+  check('长图高度 = 各页缩放高之和', plan.h === plan.heights.reduce((a, b) => a + b, 0), JSON.stringify(plan));
+  check('各页等比缩放，窄页右侧补白不拉伸',
+    plan.widths.every((w, i) => Math.abs(w / src[i]!.w - plan.scale) < 0.01) && plan.widths[1]! < plan.w,
+    JSON.stringify(plan));
+  const huge = planJoin(Array.from({ length: 10 }, () => ({ w: 8000, h: 12000 })));
+  check('超长整册整体等比收敛（单边/面积保护生效）',
+    huge.scale < 0.275 && huge.h <= 16384 * 1.01 && huge.w * huge.h <= 60_000_000 * 1.02,
+    JSON.stringify(huge));
+  const pageSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/OcrPage.tsx'), 'utf8');
+  const cssSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/ocr.css'), 'utf8');
+  check('上传入口支持多选且按文件名排序',
+    /type="file"[\s\S]{0,240}multiple/.test(pageSrc) && pageSrc.includes('sortByName(list)'));
+  check('多图识别走拼合长图，单图/PDF 路径保留',
+    pageSrc.includes('await joinPhotos(photos)')
+    && pageSrc.includes("recognizeWithFeedback(joined.bytes, 'image/png', onProgress, undefined, { instrumental: pieceKind === 'instrumental' })")
+    && pageSrc.includes('pending.pages ? joinPdfPageBins(pending.pages)'));
+  check('识别成功后左栏显示同一张长图（img 换成长图 URL）',
+    pageSrc.includes('setImg({ url: joined.url, w: joined.w, h: joined.h })'));
+  check('启动页渲染堆叠预览与循环翻页',
+    pageSrc.includes('<PhotoStack') && pageSrc.includes('(v + d + photos.length) % photos.length'));
+  check('堆叠样式保留箭头与层叠过渡，已取消横扫高光/滑入动画',
+    cssSrc.includes('.ocr-stack-arrow.is-prev') && cssSrc.includes('prefers-reduced-motion')
+    && !cssSrc.includes('ocr-stack-flash') && !cssSrc.includes('@keyframes ocr-turn-next')
+    && !cssSrc.includes('brightness(0.9)'));
+  const stackSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/PhotoStack.tsx'), 'utf8');
+  check('一摞纸只显示顶层照片，后面层是纯白纸面（不再深浅不一）',
+    stackSrc.includes('{top ? <img') && stackSrc.includes('key={p.name}')
+    && !stackSrc.includes('ocr-stack-flash'));
+  check('顶层纸页保持平面：hover 不改变换、下层只向右下露边（左上角不再露白块）',
+    !cssSrc.includes('.ocr-stack-sheets:hover') && cssSrc.includes('transform-origin: 0 0')
+    && !stackSrc.includes('rotateX') && stackSrc.includes("'--sc': 1 - depth * 0.012"));
+  const paneSrc = readFileSync(join(process.cwd(), 'src/ocr/ui/ImagePane.tsx'), 'utf8');
+  check('长图在 scale=1 初始态就能拖、能拖满整个溢出量（不再只到一半），单图无溢出仍禁拖',
+    paneSrc.includes('const panLimits') && paneSrc.includes('lim.xMin >= lim.xMax && lim.yMin >= lim.yMax')
+    && paneSrc.includes('clampPan(d.ox + dx, d.xMin, d.xMax)') && !paneSrc.includes('view.scale <= 1'));
+  const wrapCss = (cssSrc.match(/\.ocr-img-wrap \{[^}]*\}/)?.[0] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check('长图顶对齐布局：外框不再被 max-height 钳到栏高（溢出不再全堆在下方）',
+    wrapCss.includes('margin: auto') && !wrapCss.includes('max-height'));
+  const jianpuSrc = readFileSync(join(process.cwd(), 'src/ocr/dolce/omr/jianpu.ts'), 'utf8');
+  check('合奏谱个别系统多一行时局部剔除伪声部行，不整页退回单声部',
+    jianpuSrc.includes('voices.dropOddVoiceRow') && jianpuSrc.includes('(freqNow.get(mode) ?? 0) >= 3'));
+  const feedbackSrc = readFileSync(join(process.cwd(), 'src/ocr/adapter/recognizeProgress.ts'), 'utf8');
+  const diagSrc = readFileSync(join(process.cwd(), 'src/ocr/adapter/scoreDiagnostics.ts'), 'utf8');
+  check('长图识别逐步让出主线程（不再弹「页面无响应」）',
+    jianpuSrc.includes('yieldNow?.') && feedbackSrc.includes('setTimeout(r, 0)')
+    && feedbackSrc.includes('yieldNow: async'));
+  check('进度条细分到每个动作并显示轮次 / 档位 / 校验问题数',
+    feedbackSrc.includes('advance(label)') && pageSrc.includes('ocr-progress-detail')
+    && pageSrc.includes('progressState.issues') && pageSrc.includes('progressState.round'));
+  check('识别后自动校验，问题多最多三轮自优化重识别并取最优',
+    feedbackSrc.includes('FEEDBACK_ROUNDS = 3') && feedbackSrc.includes('diagnoseJps(conv.text)')
+    && feedbackSrc.includes('diagnostic.issues < best.diagnostic.issues')
+    && diagSrc.includes('validateGroups') && diagSrc.includes('expandScore'));
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  check('拍号 UI 覆盖 1/4、改单段不丢第三段、支持任意段数手输',
+    editorSrc.includes("'1/4'") && editorSrc.includes('withMeterSegment')
+    && editorSrc.includes('validate={validMeter}') && padSrc.includes('4/4|2/4|1/4'));
+  const paddleSrc = readFileSync(join(process.cwd(), 'src/ocr/dolce/omrkit/paddleocr.ts'), 'utf8');
+  const convSrc = readFileSync(join(process.cwd(), 'src/ocr/convert/recognizedToJps.ts'), 'utf8');
+  check('wasm 推理之间让出宏任务（长图不再长时间无响应）',
+    paddleSrc.includes('setOcrYieldHook') && paddleSrc.includes('yielded(omrRuntime().run')
+    && feedbackSrc.includes('setOcrYieldHook(async'));
+  check('逐行生成音符序列分片让出，进度条显示到每一行',
+    jianpuSrc.includes('逐行生成音符序列') && jianpuSrc.includes('ri + 1) % 4 === 0'));
+  check('歌词 token 按 DSL 转义，避免整份谱解析失败',
+    convSrc.includes('lyricToken') && convSrc.includes('JSON.stringify(t)'));
+  check('选优保护：解析失败与丢声部的候选都不采纳',
+    diagSrc.includes('parseFailed') && feedbackSrc.includes('!diagnostic.parseFailed')
+    && feedbackSrc.includes('lostVoices'));
+  {
+    // 自动校验纯函数：正常谱可用；歌词里的裸双引号会让整份谱解析失败，必须标记且惩罚性计分
+    const okDiag = diagnoseJps('@beat 4/4\n\n1 2 3 4 ||\n');
+    const badDiag = diagnoseJps('@format 3\n@beat 4/4\n\n1 2 3 4 ||\n歌词1: 高 " 粱 _\n');
+    check('自动校验：正常谱无问题、解析失败谱被标记且不被误判为最优',
+      !okDiag.parseFailed && okDiag.issues === 0
+      && badDiag.parseFailed && badDiag.issues >= 1000);
+  check('曲谱类型可选：器乐曲整块跳过歌词识别，不再被页面文字带偏',
+    jianpuSrc.includes('instrumental?: boolean') && jianpuSrc.includes('ocr.recognizeTexts && !opts.instrumental')
+    && pageSrc.includes('changePieceKind') && pageSrc.includes("'ws-ocr-piece-kind'")
+    && feedbackSrc.includes('instrumental: opts?.instrumental'));
+  check('单声部对称盲区：个别行误归的假声部（<4 行）不再触发多声部保护',
+    feedbackSrc.includes('baselineVoiced >= 4'));
+  }
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

@@ -648,3 +648,19 @@ export function activeHeadsAt(tl: TimelineEntry[], tick: number): { eventId: str
   });
 }
 
+/**
+ * 播放头 → 布局条目的**候选 id 链**：时间线条目 id 可能带派生后缀
+ * （反复克隆 `~n`、D.C./D.S. 克隆 `#n`、播放底色副本 `+rb…`），布局条目
+ * 的 eventId 是原事件 id。反查时按「原样 → 剥 +rb → 剥 ~n/#n」逐级回退，
+ * 反复跳回段落时任何一个环节口径不一致都能兜住（用户 2026-11-06 实测：
+ * 光标在反复点不回跳）。
+ */
+export function playheadIdCandidates(id: string): string[] {
+  const out = [id];
+  const noRb = id.split('+')[0]!;
+  if (noRb !== id) out.push(noRb);
+  const m = /^(.*?)(?:~\d+|#\d+)$/.exec(noRb);
+  if (m && m[1] && m[1] !== noRb) out.push(m[1]);
+  return out;
+}
+

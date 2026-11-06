@@ -1627,16 +1627,37 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const closes =
         nb >= 0 && (score.events[nb] as BarlineEvent).repeat === 'end' && !manualOpen;
       const endIdx = nb >= 0 ? nb : last;
-      const wp = barPos.get(wall);
-      if (!wp) continue;
+      const wpRaw = barPos.get(wall);
+      if (!wpRaw) continue;
+      // 换行记号优先于 volta 的断行规则（measureCuts：breakAfter → cut=i+1），
+      // 房子线会被留在**上一行的行末**。此时房子内容全在下一行——墙段必须
+      // 挪到下一行、从内容左缘（连谱号 / 声部名右边、第一个音符处）起笔，
+      // 并照常画左竖钩（用户 2026-11-06 实测：横线悬在声部名上方且没竖线）
+      const wallLine = lines[wpRaw.li];
+      const wallAtLineEnd =
+        wallLine.items[wallLine.items.length - 1]?.eventIndex === wall &&
+        wpRaw.li + 1 < lines.length;
+      // 括线在本行的起笔 x：**第一个音符**（用户 2026-11-06：即使行首有小节线 /
+      // 拍号条目，横线也要从音符处向右画，不从连谱号左侧起）。多声部时坐标
+      // 已含声部名 / 连谱号让位
+      const firstNoteX = (li: number): number => {
+        const ln = lines[li];
+        const first = ln.items.find((it) => it.kind === 'note' || it.kind === 'rest') ?? ln.items[0];
+        return first ? first.x : padding;
+      };
+      const wp = wallAtLineEnd
+        ? { li: wpRaw.li + 1, x: firstNoteX(wpRaw.li + 1), w: 0 }
+        : wpRaw;
       const ep = barPos.get(endIdx);
-      const to = ep ? ep.li : wp.li;
+      const to = Math.max(wp.li, ep ? ep.li : wp.li);
       for (let li = wp.li; li <= to; li += 1) {
         const isWallSeg = li === wp.li;
         const isEndSeg = li === to;
         // 只有收口行（且真的封闭在 :| 上）才画右钩；其余一律开放
         const open = !(closes && isEndSeg);
-        const x0 = isWallSeg ? wp.x + wp.w / 2 : padding;
+        // 跨行延续段同样从本行第一个音符起笔，绝不用裸 padding——
+        // 那会画到连谱号 / 声部名左边去
+        const x0 = isWallSeg ? wp.x + wp.w / 2 : firstNoteX(li);
         const x1 = isEndSeg && ep ? ep.x + ep.w / 2 : rightEdge(li);
         if (x1 - x0 <= 10) continue;
         lines[li].voltas.push({

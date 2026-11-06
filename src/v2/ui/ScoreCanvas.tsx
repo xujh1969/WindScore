@@ -18,8 +18,8 @@ import { buildStaffLayout, type StaffLayout } from '../staff';
 import { paintStaffLayout } from '../staffPaint';
 import { withStaffRows } from '../staffSpacing';
 import type { StaffPitchMode, StaffClef } from '../pitch';
-import { TICKS_PER_BEAT } from '../ticks';
-import { activeHeadsAt, activeMainAt, timelineTicks, type TimelineEntry } from '../timeline';
+import { TICKS_PER_BEAT, PX_PER_BEAT_DEFAULT } from '../ticks';
+import { activeHeadsAt, activeMainAt, playheadIdCandidates, timelineTicks, type TimelineEntry } from '../timeline';
 import { DEFAULT_FONT_SIZE, type Score, type LyricLink } from '../types';
 import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
@@ -351,8 +351,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       const options = { contentWidth: boxWidth(), unit, fontSize, letterSpacing, lineGap,
         // headerless（小字谱录入预览）：不画谱头——调号/拍号跟随主谱，重复写没意义
         ...(headerless ? { showTitle: false } : {}),
-        // fitRows（OCR 对照页）独立于 responsive 生效：尊重「换行」为行界 + 行内两端对齐铺满。
-        ...(fitRows ? { fitWidth: false, rightPadding: 20, justify: true }
+        // fitRows（OCR 对照页）独立于 responsive 生效：尊重「换行」为行界；
+        // justify **弹性展开**铺满栏宽（上限放宽到 6，仅防病态短行拉成天价间距）
+        // ——左右两缘与原谱逐行对齐，方便核对（用户 2026-11-06：不足的行要
+        // 弹性展开、不能死守最小间距；最小密度由下面的两段收缩负责）
+        ...(fitRows ? { fitWidth: false, rightPadding: 20, justify: true, justifyMax: 6 }
           : responsive ? { fitWidth: true, rightPadding: 20 } : {}),
         ...(notation === 'staff' ? {
           staffPitchMode,
@@ -360,7 +363,30 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21,
         } : {}) };
       const displayScore = responsive && boxWidth() < 560 ? { ...score, meta: { ...score.meta, sub: '', notes: [] } } : score;
-      let layout = layoutScore(displayScore, options);
+      // OCR 对照页紧凑排版：原谱一行 = 预览一个系统块。先按超宽画布探测每个
+      // 「换行」组的自然宽度，最宽一行放不进栏宽就**先收紧拍距**（字号不动，
+      // 间距变小——用户 2026-11-06：间距尽可能小、字体尽量别太小）；拍距触底
+      // （0.25×）后仍放不下的超密行再缩显示字号（下限 10px）——此时格子宽度
+      // 的主体是字形最小格宽，只有缩字号才有效。都触底还放不下才照旧折行。
+      let effOptions = options;
+      if (fitRows) {
+        const box = boxWidth();
+        const baseFont = fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE;
+        const baseUnit = unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT;
+        const probe = { ...options, contentWidth: 100000, justify: false };
+        let effUnit = baseUnit;
+        let effFont = baseFont;
+        for (let i = 0; i < 12; i += 1) {
+          const natural = layoutScore(displayScore, { ...probe, unit: effUnit, fontSize: effFont }).naturalWidth;
+          if (natural <= box) break;
+          const nextUnit = Math.max(baseUnit * 0.12, effUnit * (box / natural));
+          if (nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
+          if (effFont > 10) { effFont = Math.max(10, effFont - 1); continue; }
+          break;
+        }
+        if (effUnit !== baseUnit || effFont !== baseFont) effOptions = { ...options, unit: effUnit, fontSize: effFont };
+      }
+      let layout = layoutScore(displayScore, effOptions);
       if (responsive && layout.title) layout = { ...layout, title: { ...layout.title, leftX: 20, rightX: boxWidth() - 20 } };
       staffErrorRef.current = '';
       staffRef.current = null;
@@ -604,8 +630,9 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           ? headsRef.current.find((h) => layout.lines.some((line) => line.items.some((it) => it.eventId === h.eventId)))?.eventId ?? act.entry.eventId
           : cueRef.current?.eventId ?? null;
         if (followId) {
+          const cands = playheadIdCandidates(followId);
           const li = layout.lines.findIndex((ln) =>
-            ln.items.some((it) => it.eventId === followId),
+            ln.items.some((it) => cands.includes(it.eventId)),
           );
           if (li >= 0) {
             const system = layout.systems?.find((s) => li >= s.from && li < s.to);

@@ -40,14 +40,15 @@ function fitWidth(img: RgbaImage): RgbaImage {
 }
 
 /** 图片 / PDF 字节 → 二值图（前景=墨迹=1）。 */
-export async function decodeToBinary(bytes: Uint8Array, mime?: string): Promise<Binary> {
+export async function decodeToBinary(bytes: Uint8Array, mime?: string,
+  opts: { binarizeK?: number } = {}): Promise<Binary> {
   if (isPdf(bytes, mime)) {
     if (!_rasterizePdf) throw new Error("此环境不支持 PDF 输入（只装了位图解码器）");
     // 内嵌位图取的是源图（不渲染、不缩放），过宽的跟图片一样在这里统一缩
     const img = fitWidth(await _rasterizePdf(bytes));
-    return rgbaToBinary(img.data, img.width, img.height);
+    return rgbaToBinary(img.data, img.width, img.height, opts.binarizeK);
   }
   if (!_decodeImage) throw new Error("未装配图片解码器：浏览器侧应先 installBrowserOmr()，Node 侧见 cli/omr.ts");
   const img = fitWidth(await _decodeImage(bytes, mime));
-  return rgbaToBinary(img.data, img.width, img.height);
+  return rgbaToBinary(img.data, img.width, img.height, opts.binarizeK);
 }

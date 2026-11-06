@@ -4961,7 +4961,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 onCommit={(v) => setScore(setMeta(score, { fontSize: Number(v) }))}
               />
               <MetaInput
-                label="字间距"
+                label="字间距（净空隙）"
                 type="number"
                 value={score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING}
                 min={-20}

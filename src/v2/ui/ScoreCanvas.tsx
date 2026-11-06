@@ -376,12 +376,17 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         const probe = { ...options, contentWidth: 100000, justify: false };
         let effUnit = baseUnit;
         let effFont = baseFont;
-        for (let i = 0; i < 12; i += 1) {
+        // 净空隙口径下自然宽有字形下限：unit 再收也压不动时，继续收 unit 只是
+        // 白耗轮次，必须立刻转去缩字号，否则窄栏会多折出一个系统。
+        let prevNatural = Infinity;
+        for (let i = 0; i < 20; i += 1) {
           const natural = layoutScore(displayScore, { ...probe, unit: effUnit, fontSize: effFont }).naturalWidth;
           if (natural <= box) break;
+          const improved = natural < prevNatural * 0.995;
+          prevNatural = natural;
           const nextUnit = Math.max(baseUnit * 0.12, effUnit * (box / natural));
-          if (nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
-          if (effFont > 10) { effFont = Math.max(10, effFont - 1); continue; }
+          if (improved && nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
+          if (effFont > 10) { effFont = Math.max(10, effFont - 1); prevNatural = Infinity; continue; }
           break;
         }
         if (effUnit !== baseUnit || effFont !== baseFont) effOptions = { ...options, unit: effUnit, fontSize: effFont };

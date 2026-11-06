@@ -441,13 +441,19 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
               playing={false}
               clock={clockRef.current}
               onPick={(a: ScorePick, b: ScorePick | null) => {
-                if (b) {
-                  commit({ cursor: b.cursor, anchor: a.cursor, mode: 'insert' });
-                  setPending(null);
+                // ScoreCanvas 一次单击会回调两次：mousedown 传 (p,null)，window
+                // mouseup 传 (dragFrom,p)——两端是同一个音，但 b 非 null。必须和主谱
+                // handlePick 一样用 index 判「真的拖动了」，否则单击的第二次回调会被
+                // 当成拖选写进 mode:'insert'，overEvent 消失 → 下面输入板的倚音等按钮
+                // 在按下时出现、松手就还原，谱面也选不中（用户实测）。
+                if (b && b.index !== a.index) {
+                  const lo = Math.min(a.index, b.index);
+                  const hi = Math.max(a.index, b.index);
+                  commit({ cursor: hi + 1, anchor: lo, mode: 'insert' });
                 } else {
                   commit({ cursor: a.cursor, anchor: null, mode: a.mode });
-                  setPending(null);
                 }
+                setPending(null);
               }}
               onEnded={() => {}}
             />

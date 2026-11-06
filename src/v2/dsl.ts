@@ -433,7 +433,8 @@ function parseSingle(text: string, modern = false): ParseResult {
           break;
         }
         case 'space': {
-          // 字间距（px）。可以为负（收紧），范围 -20–20；绘制仍保留字形安全占位。
+          // 字间距档位（-20–20）：映射成音符数字间的目标净空隙，
+          // 0→10px、-20→3px、20→20px；绘制仍保留字形安全占位。
           const n = Number(v);
           if (Number.isFinite(n) && n >= -20 && n <= 20) meta.letterSpacing = n;
           else errors.push(`字间距解析失败（应为 -20–20 的数字）：${v}`);

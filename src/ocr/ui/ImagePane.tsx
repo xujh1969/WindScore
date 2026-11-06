@@ -3,11 +3,13 @@ import { forwardRef, useEffect, useRef, useState, type MouseEvent as ReactMouseE
 import type { RecognizedScore } from '../adapter/installOcr'
 import type { LocatorEntry } from '../convert/recognizedToJps'
 import { boxAtPoint } from '../convert/locator'
+import { panBounds } from './panBounds'
 import type { WorkbenchImage } from './ImagePaneTypes'
 import type { Binary } from '../dolce/omrkit/types'
 
-/** 平移量钳在 [min,max] 内：图片放得下时范围是 [0,0]（禁拖），
- *  溢出时是 [−overflow, 0]——顶/左对齐布局，往负向拖看被裁的那一边。 */
+/** 平移量钳在 [min,max] 内。放大用 CSS 默认的 transform-origin: 50% 50%，
+ *  图片以自身中心为原点膨胀，左右/上下都会溢出，因此正向平移也必须可达——
+ *  否则左缘被推出可视区后就再也拖不回来。范围由 wrap 的实际布局盒算出。 */
 const clampPan = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
 
 interface ImagePaneProps {
@@ -97,17 +99,20 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number; xMin: number; xMax: number; yMin: number; yMax: number; moved: boolean } | null>(null)
   const suppressClickRef = useRef(false)
   const bodyRef = useRef<HTMLDivElement | null>(null)
+  /** wrap 的布局盒（不含 transform）：放大以它的中心为原点，算上下界要量它 */
+  const wrapRef = useRef<HTMLDivElement | null>(null)
 
-  /** 当前缩放下的平移范围。布局是「放得下居中、溢出顶/左对齐」（.ocr-img-wrap 的 margin:auto），
-   *  所以溢出方向的可拖范围就是 [−overflow, 0]：长图从顶拖到底一截不缺。
-   *  之前钳制按「居中各溢一半」算（maxY=(图高−栏高)/2），而外框的 max-height 又把溢出
-   *  全堆在下方——拼合长图只能拖到一半，第二张照片的下半永远显示不出来（用户实测）。
-   *  单图放得下时范围是 [0,0]，保持禁拖。 */
+  /** 当前缩放下的平移范围：按 wrap 的实际布局盒算（几何见 panBounds.ts）。
+   *  scale=1 顶对齐长图仍是 [−overflowY, 0]；放大后正向平移也放开，
+   *  左缘被推出去能向右拖回来。 */
   const panLimits = (scale: number) => {
     const body = bodyRef.current
-    const overflowX = Math.max(0, (rendered?.w ?? 0) * scale - (body?.clientWidth ?? 0))
-    const overflowY = Math.max(0, (rendered?.h ?? 0) * scale - (body?.clientHeight ?? 0))
-    return { xMin: -overflowX, xMax: 0, yMin: -overflowY, yMax: 0 }
+    const wrap = wrapRef.current
+    if (!body || !wrap) return { xMin: 0, xMax: 0, yMin: 0, yMax: 0 }
+    return panBounds(
+      scale, body.clientWidth, body.clientHeight,
+      wrap.offsetLeft, wrap.offsetTop, wrap.offsetWidth, wrap.offsetHeight,
+    )
   }
 
   // 换图/翻页时回到初始态
@@ -122,8 +127,13 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault()
       const rect = el.getBoundingClientRect()
-      const mx = ev.clientX - rect.left - rect.width / 2
-      const my = ev.clientY - rect.top - rect.height / 2
+      const wrap = wrapRef.current
+      // 锚点要相对 wrap 的布局中心（transform-origin），不是容器中心：
+      // 长图在 scale=1 是顶对齐，两个中心差了半张图，按容器中心算会整体偏移。
+      const cx = wrap ? wrap.offsetLeft + wrap.offsetWidth / 2 : rect.width / 2
+      const cy = wrap ? wrap.offsetTop + wrap.offsetHeight / 2 : rect.height / 2
+      const mx = ev.clientX - rect.left - cx
+      const my = ev.clientY - rect.top - cy
       setView((v) => {
         const factor = ev.deltaY < 0 ? 1.25 : 1 / 1.25
         const scale = Math.min(8, Math.max(1, v.scale * factor))
@@ -141,7 +151,12 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
         // 缩小：平移量按「超出初始态的放大程度」等比收敛——缩到下限 scale=1 时
         // 恰好回到初始位置（x=y=0），不会因为拖拽跑偏而停在旁边
         const k = (scale - 1) / (v.scale - 1)
-        return { scale, x: v.x * k, y: v.y * k }
+        const lim = panLimits(scale)
+        return {
+          scale,
+          x: clampPan(v.x * k, lim.xMin, lim.xMax),
+          y: clampPan(v.y * k, lim.yMin, lim.yMax),
+        }
       })
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -201,7 +216,9 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
   }
 
   const pan = panLimits(view.scale)
-  const canPan = pan.xMin < -0.5 || pan.yMin < -0.5
+  // 只看负向溢出会漏掉「放大后仅能正向拖」的情形（左缘被推出去时 xMax>0、xMin<0
+  // 仍有范围），改成看区间宽度。
+  const canPan = pan.xMax - pan.xMin > 0.5 || pan.yMax - pan.yMin > 0.5
 
   return (
     <section className="ocr-pane" data-pane="image">
@@ -237,6 +254,7 @@ export function ImagePane({ img, locator = [], overlayBoxes, onPickBox, activeBo
       {img || bin ? (
         <div className="ocr-pane-body" ref={bodyRef}>
           <div
+            ref={wrapRef}
             className="ocr-img-wrap"
             style={{
               transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,

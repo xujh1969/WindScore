@@ -1,6 +1,31 @@
 import type { GlyphMetrics, LayoutLine, PlacedItem } from './layout';
 import { TICKS_PER_BEAT } from './ticks';
 
+/**
+ * 字间距档位（@space）→ 相邻音符数字之间的目标净空隙（px）。
+ *
+ * 用户 2026-11-06 重新标定：0 → 10px、-20 → 3px、20 → 20px。
+ * @space 不再是「加在格宽上的 px 增量」，旧文件里写的数值一律按新语义
+ * 解释（不做迁移、不做兼容换算）。负半轴与正半轴斜率不同，故分段线性。
+ * 净空隙是绝对 px、不随字号缩放：数字宽随字号变，空隙保持用户设定的值。
+ */
+export function letterGapOf(space: number): number {
+  const s = Math.max(-20, Math.min(20, Number.isFinite(space) ? space : 0));
+  return s < 0 ? 10 + 0.35 * s : 10 + 0.5 * s;
+}
+
+/** 净空隙标定所基于的一拍宽度（编辑页 EDITOR_UNIT = 33.6px/拍） */
+export const GAP_REFERENCE_BEAT_PX = 33.6;
+/**
+ * 每拍像素偏离标定基准时，净空隙等比缩放：
+ * 导出 / 播放页拍宽更大 → 空隙一起放大；OCR 对照页收紧 unit 时 → 空隙
+ * 一起收窄（它的「原谱一行 = 预览一行」紧凑算法正是靠收缩 unit 收敛的）。
+ * 钳制上下限防止安卓超大 unit 或极端缩图把版面撑爆 / 挤没。
+ */
+export function gapScaleOf(beatPx: number): number {
+  return Math.max(0.1, Math.min(3, beatPx / GAP_REFERENCE_BEAT_PX));
+}
+
 /** 一小节（或不能分开的记号段）的自然宽度和伸缩能力。 */
 export interface SpacingUnit {
   ideal: number;
@@ -58,7 +83,9 @@ export function fitSpacing(units: SpacingUnit[], available: number, justify: boo
     return units.map(u => u.ideal - (u.ideal - u.min) * shrink);
   }
   if (!justify) return units.map(u => u.ideal);
-  const target = Math.min(available, ideal * Math.max(1, maxScale));
+  // maxScale = Infinity 表示「无平衡上限，严格铺满」：自动换行的非末行用它
+  // 保证各行右锚线一致。不能写 ideal * Infinity（ideal=0 会得到 NaN）。
+  const target = Number.isFinite(maxScale) ? Math.min(available, ideal * Math.max(1, maxScale)) : available;
   const weight = units.reduce((sum, u) => sum + u.weight, 0);
   return units.map(u => u.ideal + (target - ideal) * u.weight / Math.max(1, weight));
 }

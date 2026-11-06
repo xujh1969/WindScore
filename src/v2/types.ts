@@ -335,7 +335,10 @@ export interface ScoreMeta {
    * 行高与命中测试一起缩——三处（排版 / 绘制 / 命中）必须同源，见 layout.deriveGlyph。
    */
   fontSize?: number;
-  /** 字间距（px），缺省见 DEFAULT_LETTER_SPACING。加在每个记号占位的横向空隙上，正数拉开、负数收紧 */
+  /** 字间距档位（-20…20），缺省见 DEFAULT_LETTER_SPACING。
+   *  经 letterGapOf 映射成「相邻音符数字之间的目标净空隙（px）」：0→10、-20→3、20→20。
+   *  不是加在格宽上的 px 增量；旧文件里的数值一律按这套语义解释。
+   *  这是自然宽的标定值：两端对齐把行撑开时，余量由各小节内音符均分，空隙随之放大。 */
   letterSpacing?: number;
   /**
    * 行间距增量（px，按字号比例缩放）：行高的额外增加量，0 = 默认紧凑行距。
@@ -352,7 +355,7 @@ export interface ScoreMeta {
 
 /** 新建谱面的默认字号（px）——用户 2026-10-23 定：24 */
 export const DEFAULT_FONT_SIZE = 24;
-/** 新建谱面的默认字间距（px），与默认字号配套 */
+/** 新建谱面的默认字间距档位（对应净空隙 6.5px），与默认字号配套 */
 export const DEFAULT_LETTER_SPACING = -10;
 
 /**

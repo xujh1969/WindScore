@@ -116,10 +116,9 @@ export function AccidentalField({ score, setScore, note }: FieldProps) {
 export function KeyChangeField({ score, setScore, note }: FieldProps) {
   return (
     <div className="v2-field">
-      <span className="v2-field-label">转调（选第一项清除）</span>
+      <span className="v2-field-label">转调</span>
       <select
-        className="v2-meta-input"
-        style={{ width: '50%' }}
+        className="v2-meta-input v2-key-select"
         value={note.keyChange ?? ''}
         onChange={(e) => setScore(setKeyChange(score, note.id, e.target.value || undefined))}
       >
@@ -398,9 +397,10 @@ export function GraceField({ score, setScore, note }: FieldProps) {
           后
         </label>
         <button
-          className="v2-btn"
+          className="v2-btn v2-grace-clear"
           disabled={list.length === 0}
-          title="删除这个音上的全部倚音（前后两侧都清）"
+          title="清除全部倚音（前后两侧都清）"
+          aria-label="清除全部倚音"
           onClick={() => {
             // 两侧都要清：必须在同一份 score 基础上链式算好再一次性 setScore，
             // 连发两次 setScore(同一份旧 score) 会互相覆盖（后一次赢）
@@ -411,7 +411,14 @@ export function GraceField({ score, setScore, note }: FieldProps) {
             setSlot(null);
           }}
         >
-          清除
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2.6 V10.4" strokeWidth="2.4" />
+              <path d="M8.6 10.8 H15.4" strokeWidth="1.8" />
+              <path d="M9.2 11.6 6.2 20.8M10.6 11.6 9.1 20.8M12 11.6 12 20.8M13.4 11.6 14.9 20.8M14.8 11.6 17.8 20.8" strokeWidth="1.5" />
+              <path d="M6.2 20.8 H17.8" strokeWidth="1.5" />
+            </g>
+          </svg>
         </button>
       </div>
       {slot !== null ? (

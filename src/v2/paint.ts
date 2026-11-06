@@ -12,6 +12,8 @@ import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
 import { shortInstrumentLabel } from './instrumentSamples';
 import {
   clusterSpan,
+  GLYPH,
+  noteDigitCenter,
   SCORE_START_ID,
   type GlyphMetrics,
   type LayoutLine,
@@ -182,6 +184,8 @@ export const DARK_THEME: PaintTheme = {
  * 所有函数都读同一份 M，不必把度量参数一路穿透到每个绘制函数。
  */
 const M = {
+  /** 当前排版层的字形度量：歌词锚点要跟 drawGlyph 共用同一份数字中心 */
+  glyph: GLYPH,
   /** 谱面数字的字体（随 meta.fontSize 变） */
   font: '600 21px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
   badgeFont: '12px ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -232,6 +236,11 @@ const M = {
   titleInfoFont: '13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
 };
 
+/** 仅供测试：把模块级度量复位到 21px 基准。
+ *  paintLayout 会按谱面字号改写 M，测试里画过一张谱后，后面写死基准值的
+ *  断言（lowDotOffset(0) === 17 等）必须先复位，否则会随前一个用例的字号漂移。 */
+export function resetPaintMetrics(): void { applyMetrics(GLYPH); }
+
 /**
  * 按排版层的度量刷新 M。字号变 → 数字字体、倚音 / 变音字号、
  * 八度点 / 减时线 / 标记行的位置全部等比跟进；
@@ -240,6 +249,7 @@ const M = {
  */
 function applyMetrics(g: GlyphMetrics): void {
   const fam = '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
+  M.glyph = g;
   M.k = g.fontSize / 21;
   M.font = `600 ${g.fontSize}px ${fam}`;
   M.graceFont = `600 ${12 * M.k}px ${fam}`;
@@ -1744,14 +1754,21 @@ function paintLine(
   }
 
   // 歌词在每个主音正下方，休止符和倚音不占歌词位置。
+  // textAlign 必须在这里显式设：前面拍号 / 房号等绘制块会把共享的 ctx 切成
+  // 'center' 或 'left'，继承下来的对齐方式会让歌词随「这行有没有换行标记」漂移。
   ctx.font = M.markFont.replace('12px', `${16 * M.k}px`);
   ctx.fillStyle = theme.ink;
+  ctx.textAlign = 'center';
   const lyricY = y + (line.lyricYOff ?? (line.hairpins?.length ? 64 : 44) * M.k);
   for (const it of line.items) if (it.kind === 'note' && it.lyrics) {
     const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
-    // 单字中心对齐数字；词组从同一字位展开，在本音的格宽内压缩，避免覆盖下一音。
-    it.lyrics.forEach((word, verse) => { if (word) ctx.fillText(word, it.x + 4 * M.k + shift, lyricY + (verse + 1) * 24 * M.k, Math.max(16 * M.k, it.w - shift - 8 * M.k)); });
+    // 锚到**数字字形中心**（与 drawGlyph 的 gx+gw/2、五线谱 staff.ts 同口径）。
+    // 旧版锚在 it.x + 4*k，比数字中心左了约 7.5*k，用户实测「歌词比音符偏左」。
+    // 词组仍以该点居中并在本音格宽内压缩，避免覆盖下一音。
+    const cx = noteDigitCenter(it, M.glyph);
+    it.lyrics.forEach((word, verse) => { if (word) ctx.fillText(word, cx, lyricY + (verse + 1) * 24 * M.k, Math.max(16 * M.k, it.w - shift - 8 * M.k)); });
   }
+  ctx.textAlign = 'left';
   ctx.font = M.font;
 
   ctx.strokeStyle = theme.ink;

@@ -424,35 +424,9 @@
   background: var(--surface-2);
 }
 
-/* ── 右侧输入面板缩窄 1/4（320→240px），给中间简谱区腾空间（用户 2026-11-06）──
-   .v2-body 是 minmax(0,1fr) + var(--side-w) 两列 grid，改这一个变量画布自动变宽。
-   用 .v2-app[data-entry='ocr'] 提高优先级，稳压 editor.css 里 .v2-app 的 320px 定义
-   （不依赖文件加载顺序）。按钮同步收窄：网格是 minmax(0,1fr) 等分，随栏自动变窄，
-   这里只补 padding/min-width 微调让它不显臃肿。 */
-.v2-app[data-entry='ocr'] {
-  --side-w: 240px;
-}
-.v2-app[data-entry='ocr'] .v2-side {
-  padding: 10px 8px;
-  gap: 10px;
-}
-.v2-app[data-entry='ocr'] .v2-btn {
-  padding: 2px 5px;
-}
-.v2-app[data-entry='ocr'] .v2-grid .v2-btn {
-  padding: 2px 1px;
-}
-.v2-app[data-entry='ocr'] .v2-pad-num {
-  min-height: 32px;
-  padding: 3px 0;
-}
-.v2-app[data-entry='ocr'] .v2-pad-tools {
-  gap: 3px;
-}
-.v2-app[data-entry='ocr'] .v2-pad-tools .v2-btn {
-  min-width: 24px;
-  padding: 2px 4px;
-}
+/* 右侧输入面板宽度回到全局的 --side-w（editor.css 里 320px）：
+   曾为给中间简谱区腾空间缩到 240px，实测太窄——转调下拉、倚音格等控件挤不下，
+   已整块撤销覆盖，OCR 页与编辑页共用同一份侧栏尺寸与按钮间距。 */
 .ocr-start {
   position: relative;
   z-index: 1;

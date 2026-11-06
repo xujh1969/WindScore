@@ -148,7 +148,9 @@ console.log('[导出 · PDF 字节]');
 
 console.log('[导出 · 谱面切页]');
 {
-  const score = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 6 5 6 | 1 2 3 4 | 5 6 5 6 ||\n').score!;
+  // 新净空隙口径下四小节能排进一页宽，改成十二小节确保真的排出多行
+  const bars = Array.from({ length: 12 }, (_, i) => i % 2 ? '5 6 5 6' : '1 2 3 4').join(' | ');
+  const score = parseDsl(`@beat 4/4\n\n${bars} ||\n`).score!;
   const geo = a4Geometry(false, 150, 1.55);
   check('A4 纵向比例正确', Math.abs(geo.pageW / geo.pageH - A4_PT.w / A4_PT.h) < 0.01);
   check('A4 横向宽高互换', a4Geometry(true, 150, 1.55).pageW === geo.pageH);

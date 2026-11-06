@@ -2,8 +2,9 @@ import type { LayoutLine, LayoutOptions, LayoutResult, PlacedItem } from './layo
 import { METER_LEAD, placeCueStaves } from './layout';
 import { partMeasures, partScore, scoreParts } from './parts';
 import type { Score } from './types';
+import { DEFAULT_LETTER_SPACING } from './types';
 import { PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT } from './ticks';
-import { addPlaybackAnchors, balancedBreaks, fitSpacing } from './spacing';
+import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf } from './spacing';
 
 type Position = { x: number; w: number; line: number; dashXs?: number[] };
 type Entry = { item: PlacedItem; tick: number; measure: number; lead: number };
@@ -20,14 +21,30 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   // 声部，单声部排版就会各自按自己的行算一份坐标错误的小字谱（spread 回结果时
   // 还会顶掉正确值）。小字谱只在总谱层放一次，行高也由本函数显式负责。
   const singles = parts.map((p) => ({ ...partScore(score, p.id), cues: undefined }));
-  const measured = singles.map((s) => layoutSingle(s, { ...opts, contentWidth: 1e9, showTitle: false }));
+  // 多声部总谱的横向坐标全由这里的共享时间网格给出（positions 会覆盖单声部
+  // 算出的格宽），所以净空隙必须直接注入网格，否则 @space 在总谱里无效。
+  // 与单声部 layout.ts 共用 letterGapOf，两端口径严格一致。
+  const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
+  const gap = letterGapOf(spacing);
+  // 字距变负只改网格自然宽（能多塞整小节）；行本身仍一律左右对齐铺满，
+  // 放不下下一小节的完整内容时折行点不变、画面「暂时不产生变化」。
+  // 探测排版固定 justify:false：既豁免「非末行强制铺满」（否则小节会被拉到
+  // 1e9 宽、污染墨迹测量），也保持 OCR 对照页紧凑算法依赖的探测标度。
+  const probeOpts = { ...opts, contentWidth: 1e9, showTitle: false, justify: false };
+  const measured = singles.map((s) => layoutSingle(s, probeOpts));
   const k = measured[0].glyph.fontSize / 21;
+  /** 与单声部同口径的一拍基准格宽（数字宽 + 缩放后的目标净空隙） */
+  const beatPx = TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT);
+  const gapPx = gap * gapScaleOf(beatPx);
+  const cell = measured[0].glyph.nominalWidth + gapPx;
+  /** 与单声部同口径的字形安全留白：不得超过目标净空隙，最紧档才不会被撑回 3.14px */
+  const inkPad = Math.min(3 * k, gapPx);
   // 小字谱要占锚行行带上方的高度：拿一份「带 cue 的单声部探测排版」的 lineHeight
   // 作准（与 layoutScore 的 upNeed 口径同源），不在这里复刻公式、也不依赖隐式继承。
   // opts.lineHeight 是播放页的显式覆盖，与单声部一样不涨。
   const hasCue = !opts.lineHeight && (score.cues ?? []).some((c) => c.events?.length);
   const cueRowH = hasCue
-    ? layoutSingle({ ...singles[0], cues: score.cues }, { ...opts, contentWidth: 1e9, showTitle: false }).lineHeight
+    ? layoutSingle({ ...singles[0], cues: score.cues }, probeOpts).lineHeight
     : 0;
   const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight), cueRowH);
   const left = (opts.padding ?? 40) + Math.min(112, Math.max(52, ...parts.map((p) => [...p.name].length * 12))) * k;
@@ -58,6 +75,7 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     const ticks = [...new Set([0, end, ...dashTicks, ...current.filter((e) => e.item.kind !== 'barline').map((e) => e.tick)])].sort((a, b) => a - b);
     const onsets = new Map<number, number>();
     const leads = new Map<number, number>();
+    const inkAt = new Map<number, number>();
     let x = 0;
     for (let ti = 0; ti < ticks.length; ti++) {
       const tick = ticks[ti];
@@ -71,10 +89,15 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       const ink = Math.max(0, ...here.filter((e) => e.item.kind === 'note' || e.item.kind === 'rest').map((e) => {
         const item = e.item;
         const lyric = Math.max(0, ...(item.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
-        return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k)
+        return Math.max(measured[0].glyph.nominalWidth + inkPad + (item.dot ? 7 * k : 0), lyric + 3 * k)
           + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));
-      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
+      inkAt.set(tick, ink);
+      // 与单声部同口径：一个 onset 至少占「数字宽 + 目标净空隙」，长音按
+      // √时值 额外让位；压不过字形墨迹 ink（数字/增时线/倚音不重叠）。
+      // step===0 是段尾，不再加间距。
+      const beatW = step > 0 ? cell * Math.max(1, Math.sqrt(step / TICKS_PER_BEAT)) : 0;
+      x += pre + opening + Math.max(ink, beatW);
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === 'barline' && e.tick > 0).map((e) => e.item.w));
     const close = Math.max(x, 60 * k - barW);
@@ -87,7 +110,10 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
         const until = e.tick + (it.ticks ?? 0);
         const endX = onsets.get(until) ?? close;
         const dashXs = Array.from({ length: it.dashes ?? 0 }, (_, i) => onsets.get(e.tick + (i + 1) * TICKS_PER_BEAT)! + measured[0].glyph.pad + measured[0].glyph.nominalWidth / 2);
-        local.set(it.eventId, { x: start, w: Math.max(26 * k + e.lead, endX - start - 3 * k), ...(dashXs.length ? { dashXs } : {}) });
+        // 下限必须是该 onset 的字形墨迹：固定的 26*k 比「数字宽 + 3px 空隙」
+        // 还宽，会把命中盒撑回旧的大间距，紧档就白设了
+        const minW = inkAt.get(e.tick) ?? 26 * k + e.lead;
+        local.set(it.eventId, { x: start, w: Math.max(minW, endX - start - 3 * k), ...(dashXs.length ? { dashXs } : {}) });
       } else {
         const pi = entries.findIndex((list) => list.includes(e));
         const key = `${pi}:${e.tick}`;
@@ -103,6 +129,8 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   }
   const systemOf: number[] = [];
   const offsetOf: number[] = [];
+  /** 每小节两端对齐后的目标宽度：小节线按它定位，音符格按它整段伸缩 */
+  const fittedOf: number[] = [];
   /**
    * 每个系统的行首让位（拍号）：上一小节以「带拍号的小节线」结尾时，
    * 拍号挪到新一行的行首（画在第一个声部那一行），整个系统的内容一起右移——
@@ -145,12 +173,21 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     const budget = available - systemLead[si] + (closingWidths[to - 1] - 20 * k) / 2;
     // 与单声部口径一致（0.4.40）：短行豁免改为 fitSpacing 内的平衡上限，
     // 短行也尽量拉伸对齐，间距超过 1.3× 就不再撑满
-    const fitted = fitSpacing(units.slice(from, to), budget, true, opts.justifyMax);
+    // 与单声部同口径：自动换行的非末行严格铺满到同一右锚线
+    const isLastRow = si + 1 === starts.length;
+    const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === undefined;
+    const fitted = fitSpacing(units.slice(from, to), budget, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
     let offset = 0;
     for (let mi = from; mi < to; mi++) {
       systemOf[mi] = si;
       offsetOf[mi] = offset;
-      scales[mi] = (fitted[mi - from] - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi]);
+      // 拉伸与压缩统一按整小节缩放：余量由小节内所有 onset 一起均分，宽页面
+      // 上不再出现「每个小节右侧一大块空白」（用户 2026-11-06 定）。
+      // 小节线仍站到 fittedOf 给的右锚线，offsetOf 按 fitted 累加保证各行右缘一致。
+      const want = fitted[mi - from];
+      fittedOf[mi] = want;
+      scales[mi] = Math.max(0.1,
+        (want - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi]));
       offset += fitted[mi - from];
     }
   }
@@ -163,7 +200,18 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     const scale = scales[e.measure];
     // 同一拍所有声部共同伸缩，字形不缩放；前置倚音和变音保持固定墨迹宽。
     const lead = e.item.kind === 'note' || e.item.kind === 'rest' ? e.lead : 0;
-    positions.set(e.item.eventId, { x: offset + (p.x + lead) * scale - lead, w: e.item.kind === 'barline' && e.tick > 0 ? p.w : p.w * scale, line: systemOf[e.measure], ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {}) });
+    // 小节线站到对齐后的行末（右锚线）；音符格按整小节缩放，余量摊进
+    // 小节内每个 onset，小节右侧不再留白。
+    const isBar = e.item.kind === 'barline' && e.tick > 0;
+    const isTimed = e.item.kind === 'note' || e.item.kind === 'rest';
+    positions.set(e.item.eventId, {
+      x: isBar ? offset + (fittedOf[e.measure] ?? (p.x + p.w)) - p.w : offset + (p.x + lead) * scale - lead,
+      // 只有音符/休止格跟着均分伸缩；力度、括号、房号这类记号只是跟着 onset
+      // 挪位置，占位与字形宽度保持自然宽，不能一起被放大到整小节那么宽。
+      w: isBar || !isTimed ? p.w : p.w * scale,
+      line: systemOf[e.measure],
+      ...(p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {}),
+    });
   }
   const placed = singles.map((s, pi) => layoutSingle(
     // 首声部排版还负责整谱的标题块：标题高度里有一条「上方留白」分支

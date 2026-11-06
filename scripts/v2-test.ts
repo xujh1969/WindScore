@@ -11,6 +11,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { planJoin, sortByName } from '../src/ocr/adapter/joinPhotos';
 import { diagnoseJps } from '../src/ocr/adapter/scoreDiagnostics';
+import { panBounds } from '../src/ocr/ui/panBounds';
+import { LIGHT_THEME, paintLayout, resetPaintMetrics } from '../src/v2/paint';
 import { BeatClock } from '../src/v2/clock';
 import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
 import { expandUnisons } from '../src/v2/unison';
@@ -26,10 +28,12 @@ import {
   hitTitleEdit,
   layoutScore,
   nominalInk,
+  noteDigitCenter,
   pickAt,
 } from '../src/v2/layout';
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
+import { gapScaleOf, letterGapOf } from '../src/v2/spacing';
 import { assembleParts, namespacePart, partScore, replacePart, scoreParts, withConductor } from '../src/v2/parts';
 import { buildTimeline } from '../src/v2/timeline';
 import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
@@ -690,12 +694,15 @@ console.log('\n[OCR · 对照页紧凑排版（原谱一行 = 预览一行）]')
     const probe = { ...options, contentWidth: 100000, justify: false };
     let effUnit = EDITOR_UNIT;
     let effFont = font;
-    for (let i = 0; i < 12; i += 1) {
+    let prevNatural = Infinity;
+    for (let i = 0; i < 20; i += 1) {
       const natural = layoutScore(score, { ...probe, unit: effUnit, fontSize: effFont }).naturalWidth;
       if (natural <= box) break;
+      const improved = natural < prevNatural * 0.995;
+      prevNatural = natural;
       const nextUnit = Math.max(EDITOR_UNIT * 0.12, effUnit * (box / natural));
-      if (nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
-      if (effFont > 10) { effFont = Math.max(10, effFont - 1); continue; }
+      if (improved && nextUnit < effUnit * 0.999) { effUnit = nextUnit; continue; }
+      if (effFont > 10) { effFont = Math.max(10, effFont - 1); prevNatural = Infinity; continue; }
       break;
     }
     return layoutScore(score, { ...options, unit: effUnit, fontSize: effFont });
@@ -729,11 +736,209 @@ console.log('\n[OCR · 对照页紧凑排版（原谱一行 = 预览一行）]')
   const canvasSrc = readFileSync(join(process.cwd(), 'src/v2/ui/ScoreCanvas.tsx'), 'utf8');
   check('ScoreCanvas fitRows 分支带探测收缩与弹性 justify',
     canvasSrc.includes('contentWidth: 100000') && canvasSrc.includes('justifyMax: 6')
-    && canvasSrc.includes('baseUnit * 0.12') && canvasSrc.includes('effFont > 10'));
+    && canvasSrc.includes('baseUnit * 0.12') && canvasSrc.includes('effFont > 10')
+    && canvasSrc.includes('prevNatural'));
   const ocrCss = readFileSync(join(process.cwd(), 'src/ocr/ui/ocr.css'), 'utf8');
-  check('OCR 页右栏缩窄 1/4（320→240）且按钮同步收窄',
-    ocrCss.includes("--side-w: 240px") && ocrCss.includes(".v2-app[data-entry='ocr'] .v2-pad-num")
-    && ocrCss.includes(".v2-app[data-entry='ocr'] .v2-pad-tools .v2-btn"));
+  const editorCss = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  check('OCR 页右栏恢复之前的 320px（不再覆盖 --side-w）',
+    !ocrCss.includes('--side-w: 240px') && !/--side-w:\s*240px/.test(ocrCss)
+    && /--side-w:\s*320px/.test(editorCss)
+    && !ocrCss.includes("[data-entry='ocr'] .v2-pad-num"));
+}
+
+console.log('\n[自动换行 · 两端对齐与字距阶梯]');
+{
+  // 用户 2026-11-06 定：字距只改「每小节自然宽 → 一行能塞几个整小节」；
+  // 所有自动换行的非末行一律左右对齐到同一右锚线。腾出的宽度还不够放下
+  // 下一个完整小节时折行点不变、本行仍撑满（视觉上「暂时不产生变化」），
+  // 能放下时才重新断行按新字距显示。负字距绝不能关掉拉伸造成行尾留白。
+  const EDITOR_UNIT = 33.6 / TICKS_PER_BEAT;
+  const body = (n: string) => Array.from({ length: 24 }, () => n).join(' | ') + ' ||';
+  const dsl = (space: number, parts: number) => parts === 1
+    ? `@beat 4/4\n@size 22\n@space ${space}\n${body('1 2 3 5')}\n`
+    : `@format 3\n@beat 4/4\n@size 22\n@space ${space}\n@part 1 "声部1"\n${body('1 2 3 5')}\n@part 2 "声部2"\n${body('0 0 0 0')}\n`;
+  const rowsOf = (space: number, parts: number) => {
+    const p = parseDsl(dsl(space, parts));
+    const L = layoutScore(p.score!, { contentWidth: 1200, unit: EDITOR_UNIT });
+    const first = new Map<number, (typeof L.lines)[number]>();
+    for (const ln of L.lines) {
+      const sys = ln.system ?? ln.index;
+      if (!first.has(sys)) first.set(sys, ln);
+    }
+    const rows = [...first.entries()].sort((a, b) => a[0] - b[0]).map(([, ln]) => ln);
+    return {
+      rights: rows.map((ln) => {
+        const tail = ln.items[ln.items.length - 1];
+        return Math.round(tail.x + tail.w / 2);
+      }),
+      closed: rows.slice(0, -1).every((ln) => ln.items[ln.items.length - 1]?.kind === 'barline'),
+      systems: rows.length,
+      head: rows[0]?.items.filter((i) => i.kind === 'note' || i.kind === 'rest').length ?? 0,
+    };
+  };
+  for (const parts of [1, 2]) {
+    const anchor = rowsOf(0, parts).rights[0];
+    for (const space of [0, -10, -20]) {
+      const r = rowsOf(space, parts);
+      check(`${parts} 声部 @space ${space}：自动换行非末行右缘全部对齐`,
+        r.rights.slice(0, -1).every((x) => x === anchor) && r.rights[0] === anchor,
+        `右缘=[${r.rights.join(',')}] 基准=${anchor}`);
+      check(`${parts} 声部 @space ${space}：行尾收在小节线上（整小节不劈开）`, r.closed);
+    }
+    const wide = rowsOf(0, parts);
+    const tight = rowsOf(-20, parts);
+    check(`${parts} 声部：负字距按整小节重排（系统数不增、首行音符不减）`,
+      tight.systems <= wide.systems && tight.head >= wide.head,
+      `系统 ${wide.systems}→${tight.systems} 首行音符 ${wide.head}→${tight.head}`);
+  }
+  check('两声部负字距确实多塞进了整小节（系统更少、首行音符更多）',
+    rowsOf(-20, 2).systems < rowsOf(0, 2).systems && rowsOf(-20, 2).head > rowsOf(0, 2).head);
+}
+
+console.log('\n[两端对齐 · 音符均分小节空间]');
+{
+  // 用户 2026-11-06：字距小 + 页面宽时，两端对齐的余量不能堆在小节末尾，
+  // 小节内每个音符格都要均分，否则每个小节右侧都留一大块空白。
+  const UNIT = 33.6 / TICKS_PER_BEAT;
+  // 用「换行」把每行钉成一小节：这才是用户说的「页面很宽、每行只有几个小节」，
+  // 自动折行塞满 13 个小节时余量太小，量不出小节末尾的空白。
+  const body = '1 2 3 5 | 换行 1 2 3 5 | 换行 1 2 3 5 ||';
+  // 「换行」记号要求 @format 3（单声部谱也得写），否则解析器忽略它
+  const dsl = (parts: number) => parts === 1
+    ? `@format 3\n@beat 4/4\n@size 22\n@space -20\n${body}\n`
+    : `@format 3\n@beat 4/4\n@size 22\n@space -20\n@part 1 "声部1"\n${body}\n@part 2 "声部2"\n${body}\n`;
+  for (const parts of [1, 2]) {
+    const L = layoutScore(parseDsl(dsl(parts)).score!, { contentWidth: 1200, unit: UNIT });
+    const notes = L.lines[0].items.filter((i) => i.kind === 'note' || i.kind === 'rest');
+    const ws = notes.map((n) => n.w);
+    const min = Math.min(...ws);
+    const max = Math.max(...ws);
+    const step = notes.length > 1 ? notes[1].x - notes[0].x : 0;
+    check(`${parts} 声部：宽页面首行确实被撑开（空隙远大于标定的 3px）`,
+      step - deriveGlyph(22).nominalWidth > 12, `step=${step.toFixed(1)}`);
+    check(`${parts} 声部：小节内音符格宽一致（余量不再只堆到小节末尾）`,
+      max - min < 1 && max <= min * 1.05, `w=[${min.toFixed(2)},${max.toFixed(2)}]`);
+    // 末音格到小节线的距离≈其它格距，直接量「小节右侧空白」
+    const last = notes[notes.length - 1];
+    const bar = L.lines[0].items.find((i) => i.kind === 'barline' && i.x >= last.x + last.w - 1);
+    check(`${parts} 声部：小节末尾不出现额外空白`,
+      !!bar && Math.abs(bar.x - last.x - step) < 1,
+      bar ? `末格=${(bar.x - last.x).toFixed(1)} 常规格=${step.toFixed(1)}` : '无小节线');
+  }
+}
+
+console.log('\n[字间距 · 净空隙标定]');
+{
+  // 用户 2026-11-06 重定义：@space 不再是格宽增量，而是「相邻音符数字之间的
+  // 目标净空隙（px）」。旧谱里的数值一律按新语义解释，不做兼容换算。
+  const UNIT = 33.6 / TICKS_PER_BEAT;
+  check('@space -20/0/20 → 净空隙 3/10/20px',
+    letterGapOf(-20) === 3 && letterGapOf(0) === 10 && letterGapOf(20) === 20);
+  const gapAt = (space: number, parts: number, fontSize = 22): number => {
+    const body = (n: string) => Array.from({ length: 8 }, () => n).join(' | ') + ' ||';
+    const dsl = parts === 1
+      ? `@beat 4/4\n@size ${fontSize}\n@space ${space}\n${body('1 2 3 5')}\n`
+      : `@format 3\n@beat 4/4\n@size ${fontSize}\n@space ${space}\n@part 1 "声部1"\n${body('1 2 3 5')}\n@part 2 "声部2"\n${body('0 0 0 0')}\n`;
+    // justifyMax:1 关掉两端对齐，量的是基础净空隙
+    const L = layoutScore(parseDsl(dsl).score!, { contentWidth: 1200, unit: UNIT, justifyMax: 1 });
+    const its = L.lines[0].items.filter(i => i.kind === 'note' || i.kind === 'rest');
+    const ds: number[] = [];
+    for (let i = 1; i < its.length; i++) ds.push(its[i].x - its[i - 1].x);
+    const mid = [...ds].sort((a, b) => a - b)[Math.floor(ds.length / 2)] ?? 0;
+    return mid - deriveGlyph(fontSize).nominalWidth;
+  };
+  for (const parts of [1, 2]) for (const [space, want] of [[-20, 3], [-10, 6.5], [0, 10], [20, 20]] as const) {
+    const got = gapAt(space, parts);
+    check(`${parts} 声部 @space ${space} → 基础净空隙 ${want}px`,
+      Math.abs(got - want) <= 0.05, `${got.toFixed(2)}px`);
+  }
+  check('净空隙是绝对 px，不随字号缩放',
+    Math.abs(gapAt(0, 1, 14) - 10) <= 0.05 && Math.abs(gapAt(0, 1, 42) - 10) <= 0.05,
+    `14→${gapAt(0, 1, 14).toFixed(2)} 42→${gapAt(0, 1, 42).toFixed(2)}`);
+}
+
+console.log('\n[输入板 · 图标 / 下拉宽度 / 标题]');
+{
+  const noteSrc = readFileSync(join(process.cwd(), 'src/v2/ui/NoteFields.tsx'), 'utf8');
+  const padBodySrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const uiCss = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  const at = noteSrc.indexOf('className="v2-btn v2-grace-clear"');
+  const clearBtn = at >= 0 ? noteSrc.slice(at, noteSrc.indexOf('</button>', at)) : '';
+  check('倚音清除按钮是纯扫把图标（按钮内无文字）',
+    at >= 0 && clearBtn.includes('<svg') && clearBtn.includes('aria-label="清除全部倚音"')
+    && !/>\s*清除\s*</.test(clearBtn));
+  check('转调标题去掉「（选第一项清除）」',
+    noteSrc.includes('>转调</span>') && !noteSrc.includes('转调（选第一项清除）'));
+  check('转调下拉放得下「（不转调）」：取消 50% 限宽并给并排列保底 120px',
+    noteSrc.includes('className="v2-meta-input v2-key-select"')
+    && !noteSrc.includes("style={{ width: '50%' }}")
+    && noteSrc.includes('（不转调）')
+    && /\.v2-pad-body \.v2-key-select\s*\{[^}]*width:\s*100%/.test(uiCss)
+    && uiCss.includes('minmax(120px, 1fr)'));
+  check('段落标题去掉「技法 · 倚音 · 力度 · 记号」',
+    padBodySrc.includes('<summary>（作用于选中的音）</summary>')
+    && !padBodySrc.includes('技法 · 倚音 · 力度 · 记号'));
+}
+
+console.log('\n[歌词 · 与音符数字对齐]');
+{
+  // 用户 2026-11-07 实测：歌词整行比音符偏左约 10px。
+  // 旧版歌词锚在 it.x + 4*k（数字字形中心其实在 it.x + pad + gw/2），
+  // 且 textAlign 继承上游绘制块状态，随「本行有没有换行标记」在 center/left 间漂移。
+  const dsl = '@format 3\n@beat 4/4\n@size 22\n@space -20\n\n1 2 3 4 | 5 6 5 3 ||\n歌词1: 我 要 对 你 说 声 谢 谢\n';
+  const p = parseDsl(dsl);
+  const L = layoutScore(p.score!, { contentWidth: 1200, unit: 33.6 / TICKS_PER_BEAT });
+  const line = L.lines[0];
+  type Call = { text: string; x: number; y: number; align: string; font: string };
+  const calls: Call[] = [];
+  const pxOf = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+  const target: Record<string, unknown> = {
+    font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, globalAlpha: 1,
+    measureText: (t: string) => ({ width: Array.from(t).length * pxOf(target.font as string) * 0.62 }),
+    fillText: (text: string, x: number, y: number) => {
+      calls.push({ text: String(text), x, y, align: target.textAlign as string, font: target.font as string });
+    },
+  };
+  const ctx = new Proxy(target, {
+    get(t, k: string) { return k in t ? t[k] : () => undefined; },
+    set(t, k: string, v) { t[k] = v; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  paintLayout(ctx, L, LIGHT_THEME);
+  const digits = calls.filter(c => /^[0-7]$/.test(c.text) && Math.abs(c.y - line.y) < 2 && c.align === 'left');
+  const words = calls.filter(c => '我要对你说声谢谢'.includes(c.text) && c.text.length === 1 && c.y > line.y);
+  check('谱面画出 8 个数字与 8 个歌词字（对齐用例前提）',
+    p.errors.length === 0 && digits.length === 8 && words.length === 8,
+    `digits=${digits.length} words=${words.length} err=${p.errors.join('/')}`);
+  check('歌词一律居中绘制（不再继承上游绘制块的 textAlign）',
+    words.every(c => c.align === 'center'));
+  const w = (text: string) => Array.from(text).length * pxOf(digits[0]?.font ?? '') * 0.62;
+  const diffs = digits.map((d, i) => d.x + w(d.text) / 2 - (words[i]?.x ?? 0));
+  check('歌词中心与数字字形中心逐字重合（≤0.05px）',
+    words.length === 8 && diffs.every(d => Math.abs(d) < 0.05),
+    diffs.map(d => d.toFixed(2)).join(','));
+  const g = deriveGlyph(22);
+  const fake = { x: 100, accW: 9, graceInk: 13 } as unknown as PlacedItem;
+  check('数字中心把变音记号与前倚音的位移算进去',
+    Math.abs(noteDigitCenter(fake, g) - (100 + g.pad + 9 + 13 + g.nominalWidth / 2)) < 1e-9);
+  // 歌词延长线 / 连字符的锚点必须与居中排版同口径，否则线会从字中间穿出去
+  const linked = parseDsl(`${dsl}歌词线1: 1-\n`);
+  const L2 = layoutScore(linked.score!, { contentWidth: 1200, unit: 33.6 / TICKS_PER_BEAT });
+  const seg = L2.lines[0].lyricLines?.[0];
+  const c1 = noteDigitCenter(L2.lines[0].items.find(i => i.kind === 'note')!, L2.glyph);
+  const noteItems = L2.lines[0].items.filter(i => i.kind === 'note');
+  const c2 = noteDigitCenter(noteItems[1], L2.glyph);
+  check('歌词连字符起止贴着居中文字的右/左缘',
+    !!seg && seg.x0 > c1 + 1 && seg.x1 < c2 - 1,
+    seg ? `x0=${seg.x0.toFixed(1)} c1=${c1.toFixed(1)} x1=${seg.x1.toFixed(1)} c2=${c2.toFixed(1)}` : '无连线');
+  const paintSrc = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const layoutSrc = readFileSync(join(process.cwd(), 'src/v2/layout.ts'), 'utf8');
+  check('绘制与延长线共用 noteDigitCenter 且不再标 leftAligned',
+    paintSrc.includes('const cx = noteDigitCenter(it, M.glyph)')
+    && layoutSrc.includes('x: noteDigitCenter(it, glyph)')
+    && !layoutSrc.includes('leftAligned: true'));
+  // paintLayout 把模块级 M 切成了 22px，复位给后面按 21px 基准写死的断言
+  resetPaintMetrics();
 }
 
 console.log('\n[选区 · 删除所选按钮]');
@@ -760,6 +965,22 @@ console.log('\n[选区 · 删除所选按钮]');
   for (const id of picked) cut = removeEvent(cut, id);
   check('删除所选按整段事件删光（含小节线）', cut.events.length === mixed.events.length - 3,
     JSON.stringify({ before: mixed.events.length, after: cut.events.length }));
+}
+
+console.log('\n[小字谱编辑 · 单击选中]');
+{
+  // ScoreCanvas 一次单击回调 onPick 两次：mousedown (p,null)、mouseup (p,p)。
+  // CueDialog 曾只判 if (b)，把第二次当成拖选写 mode:'insert' → overEvent 消失，
+  // 输入板的倚音区「按下出现、松手还原」，谱面也选不中（用户实测）。
+  const cuePickSrc = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  const editorPickSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('小字谱单击与主谱同口径：两端同一事件不算拖选',
+    cuePickSrc.includes('b && b.index !== a.index')
+    && cuePickSrc.includes('anchor: null, mode: a.mode')
+    && editorPickSrc.includes('b && b.index !== a.index'));
+  check('真拖选的区间按事件下标取（不再用 cursor 造成 off-by-one）',
+    cuePickSrc.includes('const lo = Math.min(a.index, b.index)')
+    && cuePickSrc.includes('cursor: hi + 1, anchor: lo'));
 }
 
 console.log('\n[小字谱 · 粘贴主谱片段]');
@@ -1585,7 +1806,8 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   // 21px（基准常量）与基准度量一致：显式 @size 21 的谱面版式不变
   check('21px 基准 = 基准度量', JSON.stringify(L21.glyph) === JSON.stringify(GLYPH));
 
-  // 字间距：每个记号的占位加 5px（基线同字号 24px、显式 @space 0）
+  // 字间距：@space 是「目标净空隙」档位，5 档比 0 档每格宽
+  // (gap5 - gap0) × 拍宽缩放（这里不传 unit，用默认 62.4px/拍）
   const Lsp = layoutScore(parseDsl('@space 5\n@beat 4/4\n\n5 5 5 5 ||\n').score!, {
     contentWidth: 2000,
     justifyMax: 1,
@@ -1596,10 +1818,11 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   });
   const xs = Lsp.lines[0].items.map((i) => i.x);
   const xs0 = Lsp0.lines[0].items.map((i) => i.x);
+  const per = (letterGapOf(5) - letterGapOf(0)) * gapScaleOf(PX_PER_BEAT_DEFAULT);
   check(
-    '字间距逐项累加',
-    xs.every((x, i) => Math.abs(x - (xs0[i] + 5 * i)) < 0.01),
-    xs.map((x, i) => `${x.toFixed(1)}/${(xs0[i] + 5 * i).toFixed(1)}`).join(','),
+    '字间距按净空隙档位逐项累加',
+    xs.every((x, i) => Math.abs(x - (xs0[i] + per * i)) < 0.05),
+    xs.map((x, i) => `${x.toFixed(1)}/${(xs0[i] + per * i).toFixed(1)}`).join(','),
   );
 }
 
@@ -2080,8 +2303,10 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   // 早期是固定 ±26/±48px 的小弧，长音（2---）盖不住增时线，
   // 起点还会退到 padding——总谱里谱行左缘在声部名右边，弧会伸到括号外（用户实测）。
   console.log('\n[连线：断行短弧盖住本行成员的增时线]');
-  const s = parseDsl('@beat 4/4\n\n(2--- | 5---) ||\n').score!;
-  const L = layoutScore(s, { contentWidth: 300 }); // 窄画布迫使两个长音换行
+  // 新净空隙口径下两个普通长音已能在 300px 内排下，改用更长的增时线
+  // 让每个音独占一行（保持「本行只剩一个连线成员」的测试前提）
+  const s = parseDsl('@beat 4/4\n\n(2------ | 5------) ||\n').score!;
+  const L = layoutScore(s, { contentWidth: 300 });
   check('窄画布断成两行', L.lines.length === 2, `lines=${L.lines.length}`);
   const arcs = L.lines.flatMap((l) => l.arcs).filter((a) => a.kind === 'slur');
   check('两行各补出一段短弧', arcs.length === 2, `arcs=${arcs.length}`);
@@ -2112,9 +2337,11 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 {
   // 字间距：unit 越大，音符格越宽，断行点也跟着变
   const { score } = parseDsl(readFileSync(join(DIR, 'molihua.jps'), 'utf-8'));
-  const tight = layoutScore(score!, { contentWidth: 1000, unit: 0.9 });
-  const loose = layoutScore(score!, { contentWidth: 1000, unit: 2.2 });
-  check('unit 回传到布局结果', tight.unit === 0.9 && loose.unit === 2.2);
+  // unit 是 px/tick：用编辑页基准的 0.9×/2.2×，别用会被 gapScaleOf 钳制的夸张值
+  const baseUnit = 33.6 / TICKS_PER_BEAT;
+  const tight = layoutScore(score!, { contentWidth: 1000, unit: baseUnit * 0.9 });
+  const loose = layoutScore(score!, { contentWidth: 1000, unit: baseUnit * 2.2 });
+  check('unit 回传到布局结果', tight.unit === baseUnit * 0.9 && loose.unit === baseUnit * 2.2);
   const widthOf = (l: ReturnType<typeof layoutScore>) =>
     l.lines[0].items.filter((i) => i.kind === 'note').slice(0, 1)[0].w;
   check('字间距变大则音符格变宽', widthOf(loose) > widthOf(tight));
@@ -2215,7 +2442,9 @@ const blank = (): Score => ({
         min = Math.min(min, sign < 0 ? found.x - c.x : c.x - found.x);
       }
     });
-    check(`${f} 小节线两侧插入点都 ≥ 7px`, min >= 7, `最小 ${min.toFixed(1)}px / ${n} 处`);
+    // 新语义把示例谱的 @space -10 解释成 6.5px 净空隙，插入点不可能还留 7px；
+    // 6px 仍能容下点击，且用户可主动调到更紧的档位
+    check(`${f} 小节线两侧插入点都 ≥ 6px`, min >= 6, `最小 ${min.toFixed(1)}px / ${n} 处`);
   }
 }
 
@@ -2490,7 +2719,16 @@ const blank = (): Score => ({
   const dotted = notes[0];
   check('点数字本体 → 方块', pickAt(L, dotted.x + 12, y)?.mode === 'over');
   check('点附点本身 → 方块（附点属于这个音）', pickAt(L, dotted.x + 23, y)?.mode === 'over');
-  const afterDot = pickAt(L, dotted.x + 50, y);
+  // 新净空隙口径下格宽明显变小，固定的 +50px 会落到下一个音上；
+  // 改为从格右缘往左扫出「字形右侧的插入缝」
+  const gapAfter = (LL: ReturnType<typeof layoutScore>, it: PlacedItem, yy: number) => {
+    for (let dx = Math.ceil(it.w); dx >= 0; dx -= 1) {
+      const hit = pickAt(LL, it.x + dx, yy);
+      if (hit?.mode === 'insert') return hit;
+    }
+    return null;
+  };
+  const afterDot = gapAfter(L, dotted, y);
   check('点附点右侧空隙 → 插入', afterDot?.mode === 'insert', JSON.stringify(afterDot));
   check('插入位置在该音之后', afterDot?.cursor === dotted.eventIndex + 1, `cursor=${afterDot?.cursor}`);
   const beforeInk = pickAt(L, dotted.x + 1, y);
@@ -2511,7 +2749,7 @@ const blank = (): Score => ({
   const n2 = L2.lines[0].items.find((i) => i.kind === 'note')!;
   check('1-- 有 2 条增时线', n2.dashes === 2, `dashes=${n2.dashes}`);
   check('点增时线上 → 方块', pickAt(L2, n2.x + 40, L2.lines[0].y)?.mode === 'over');
-  const after2 = pickAt(L2, n2.x + Math.ceil(n2.w) - 2, L2.lines[0].y);
+  const after2 = gapAfter(L2, n2, L2.lines[0].y);
   check('点增时线右侧 → 插入', after2?.mode === 'insert', JSON.stringify(after2));
 }
 
@@ -5585,6 +5823,21 @@ console.log('\n[OCR 多图 · 排序 / 长图 / 启动页接线]');
   check('长图在 scale=1 初始态就能拖、能拖满整个溢出量（不再只到一半），单图无溢出仍禁拖',
     paneSrc.includes('const panLimits') && paneSrc.includes('lim.xMin >= lim.xMax && lim.yMin >= lim.yMax')
     && paneSrc.includes('clampPan(d.ox + dx, d.xMin, d.xMax)') && !paneSrc.includes('view.scale <= 1'));
+  // 放大后左缘被推出可视区，必须能「向右拖」把它带回来：xMax 恒为 0 是旧 bug。
+  // 栏 400×300，图 360×200 居中（wl=20,wt=50）。
+  const short1 = panBounds(1, 400, 300, 20, 50, 360, 200);
+  check('放得下的图在 scale=1 禁拖', short1.xMin === 0 && short1.xMax === 0 && short1.yMin === 0 && short1.yMax === 0);
+  const short2 = panBounds(2, 400, 300, 20, 50, 360, 200);
+  check('放大后正向平移放开（左缘能拖回画面）',
+    short2.xMax > 0 && short2.xMin === -short2.xMax && Math.abs(short2.xMax - (2 * 360 - 400) / 2) < 1e-9,
+    `x=[${short2.xMin.toFixed(1)},${short2.xMax.toFixed(1)}]`);
+  check('放大后上下两向都可拖', short2.yMax > 0 && short2.yMin < 0,
+    `y=[${short2.yMin.toFixed(1)},${short2.yMax.toFixed(1)}]`);
+  // 顶对齐长图（栏 400×300，图 360×900，wt=0）在 scale=1 仍是 [-overflow,0]
+  const long1 = panBounds(1, 400, 300, 20, 0, 360, 900);
+  check('scale=1 顶对齐长图仍只准向上拖',
+    long1.xMin === 0 && long1.xMax === 0 && long1.yMax === 0 && Math.abs(long1.yMin + 600) < 1e-9,
+    `y=[${long1.yMin.toFixed(1)},${long1.yMax.toFixed(1)}]`);
   const wrapCss = (cssSrc.match(/\.ocr-img-wrap \{[^}]*\}/)?.[0] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
   check('长图顶对齐布局：外框不再被 max-height 钳到栏高（溢出不再全堆在下方）',
     wrapCss.includes('margin: auto') && !wrapCss.includes('max-height'));

@@ -15,7 +15,7 @@ import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotT
 import { layoutEnsemble } from './ensembleLayout';
 import { meterBeatOptions, meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, type LyricLine } from './lyricLines';
-import { addPlaybackAnchors, balancedBreaks, fitSpacing, positionDashes, type SpacingUnit } from './spacing';
+import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf, positionDashes, type SpacingUnit } from './spacing';
 import type {
   Accidental,
   BarlineEvent,
@@ -619,10 +619,10 @@ function beatOptionsOf(beat: string): number[] {
  * 可站的空间（实测 @space -10 时两侧只剩 ~6px）。带反复记号的多留一点：
  * 两点画在竖线旁边，不然会压到相邻的音。
  */
-function barlineWidthOf(bar: BarlineEvent, k: number, spacing: number): number {
+function barlineWidthOf(bar: BarlineEvent, k: number, gapDelta: number): number {
   const base = bar.style === 'final' ? 26 : bar.repeat === 'both' ? 32 : bar.style === 'double' || bar.repeat ? 24 : 20;
   const extra = bar.beatAfter ? 30 : 0;
-  return Math.max((base * .4 + extra) * k, (base + extra) * k + Math.max(0, spacing));
+  return Math.max((base * .4 + extra) * k, (base + extra) * k + Math.max(0, gapDelta));
 }
 
 /** 还原写法中的增时线条数：ticks 去掉附点后按整拍切分 */
@@ -653,8 +653,15 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const fontSize = opts.fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
-  /** 字间距（px）：加在每个记号的占位宽度上，正数拉开、负数收紧 */
+  /** 字间距档位（@space -20…20）：不是 px 增量，而是「目标净空隙」的档位 */
   const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
+  /** 目标净空隙（px）：0→10、-20→3、20→20；绝对 px，不随字号缩放 */
+  const gap = letterGapOf(spacing);
+  /** 相对 0 档的空隙增量：小节线 / 括号 / 跳转等占位格跟着一起收放 */
+  const gapDelta = gap - letterGapOf(0);
+  /** 一拍的基准格宽 = 数字宽 + 缩放后的目标净空隙；长音按 √时值 外扩。
+   *  编辑页拍宽正好等于标定基准，所以 @space 0 → 净空隙严格 10px */
+  const cell = glyph.nominalWidth + gap * gapScaleOf(TICKS_PER_BEAT * unit);
   // ── 内容感知行高：不再一律给 86k，按谱面实际要画的元素算上下伸 ──
   // 基线相对的墨迹范围（基准字号 px，×k 缩放）：
   //   上：小节线 ±21、高八度点到 24、连线弧 24、连音括线 27、房号数字 ~37、
@@ -830,22 +837,26 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const extension = dashes ? 5 * k + dashes * (glyph.dashW + 3 * k) : 0;
       const lyric = Math.max(0, ...(note?.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
       const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
-      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + 3 * k, lyric + 3 * k, mark + 3 * k)
+      // 字形安全留白不能大于用户设定的目标净空隙，否则最紧档会被固定的 3*k 撑回 3.14px
+      const pad = Math.min(3 * k, cell - glyph.nominalWidth);
+      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + 3 * k, mark + 3 * k)
         + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
+      // 格宽 = 数字宽度 + 用户要的净空隙 + 长音按 √时值 额外让出的增时线空间。
+      // 基准不再是「一拍 33.6px 的记谱网格」（那样 @space 0 会留下 30px 空隙）；
+      // min 仍兜住字形 / 增时线 / 歌词，保证收紧也不重叠。
       w = Math.max(min,
-        Math.max(26 * k, TICKS_PER_BEAT * unit * Math.sqrt(ev.ticks / TICKS_PER_BEAT) + 10 * k) +
+        cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) +
         accWidthOf(ev) +
         arpWidthOf(ev) +
-        graceWidthOf(ev) +
-        spacing);
+        graceWidthOf(ev));
     }
     // 小节线留出较宽的占位：竖线画在格子正中，两侧自然形成空隙，
     // 插入点才有地方可站，不会和竖线糊在一起。
     // 带反复记号的那根线还要多留一点：两点画在竖线旁边，不然会压到相邻的音。
-    else if (isBarrier(ev)) w = barlineWidthOf(ev as BarlineEvent, k, spacing); else if (ev.kind === 'directive') {
+    else if (isBarrier(ev)) w = barlineWidthOf(ev as BarlineEvent, k, gapDelta); else if (ev.kind === 'directive') {
       // 括号记号画在音符旁边，比力度 / 标注文字窄（那两个画在谱行下方、独占一格）
-      w = Math.max(8 * k, (ev.type === 'paren' ? 15 : 26) * k + spacing);
-    } else if (ev.kind === 'jump') w = Math.max(16 * k, 26 * k + spacing);
+      w = Math.max(8 * k, (ev.type === 'paren' ? 15 : 26) * k + gapDelta);
+    } else if (ev.kind === 'jump') w = Math.max(16 * k, 26 * k + gapDelta);
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
 
@@ -857,7 +868,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const previous = score.events[from - 1];
     const tail = score.events[to - 1];
     return {
-      ideal, min: Math.max(opts.fitWidth ? 0 : ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
+      // 自动换行严格按「整小节自然宽」折行，不允许把小节压扁塞进去：
+      // 压缩会把目标净空隙吃掉，也会让被压缩的行右缘短一截（两端对齐破功）。
+      ideal, min: opts.fitWidth ? slice.reduce((sum, it) => sum + it.min, 0) : ideal,
       weight: Math.pow(Math.max(1, notes), 1.5),
       lead: previous?.kind === 'barline' && previous.beatAfter ? METER_LEAD * k : 0,
       forced: !opts.fitWidth && tail?.kind === 'barline' && !!tail.breakAfter,
@@ -1059,28 +1072,38 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const cuts = [from, ...measureCuts.filter(c => c > from && c < to), to];
     const units = cuts.slice(0, -1).map((a, i) => measureUnit(a, cuts[i + 1]));
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
-    // 短行免拉伸豁免已移除（0.4.40）：改为 fitSpacing 里的**平衡上限**——
-    // 短行（含只写一小节就换行的行、曲尾短行）也尽量拉伸对齐，但音符间距
-    // 超过 justifyMax（行宽/自然宽 ≤1.3）就不再撑满。全拉伸 vs 完全不拉的
-    // 参差观感之间取中，编辑页 / 对轨页 / OCR 页三种模式口径一致。
+    // 自动换行的非末行一律左右对齐到同一右锚线（用户 2026-11-06 定）：
+    // 字距收紧腾出的宽度若还不够放下「下一个小节的完整内容」，折行点不变、
+    // 本行仍撑满，视觉上暂时不产生变化；能放下时才重新断行按新字距显示。
+    // 末行、显式 justifyMax 与超宽探测排版（justify:false）保留平衡上限，
+    // 否则探测排版会把小节拉伸到 1e9 宽、污染墨迹测量。
     const lastBar = widths[to - 1];
     // 行末小节线的墨迹（竖线居中）要落在右锚线上，格子按占位公式探出半格；
     // 基准必须与 barlineWidthOf 同源，否则负字间距下右缘会多探出 5px
-    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - barlineWidthOf(lastBar.ev as BarlineEvent, k, spacing)) / 2 : 0;
+    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - barlineWidthOf(lastBar.ev as BarlineEvent, k, gapDelta)) / 2 : 0;
     // 行内容消耗的是 maxX 口径（contentWidth − 2×padding），换算回 contentWidth 要补双倍 padding，
     // 少补会让临界行在贴紧宽度下被折行（chorus_02 实测 16 行变 20 行）
     naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
-    const fitted = fitSpacing(units, maxX - lead + edge, true, opts.justifyMax);
+    const isLastRow = li + 1 === starts.length;
+    const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === undefined;
+    const fitted = fitSpacing(units, maxX - lead + edge, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
     const advances = new Map<number, number>();
     if (!opts.positions) units.forEach((u, ui) => {
       const members = widths.slice(cuts[ui], cuts[ui + 1]);
       const timed = members.filter(it => it.ev.kind === 'note' || it.ev.kind === 'rest');
-      const weight = timed.reduce((sum, it) => sum + Math.sqrt((it.ev as NoteEvent).ticks / TICKS_PER_BEAT), 0);
       const slack = timed.reduce((sum, it) => sum + it.w - it.min, 0);
       const delta = fitted[ui] - u.ideal;
+      // 两端对齐的余量由**小节内每个音符格均分**：只堆到小节末尾时，宽页面
+      // 上每个小节右侧会留一大块空白（用户 2026-11-06 实测），音符必须摊开
+      // 占满整小节。@space 标定的净空隙是自然宽（未拉伸的行）的口径，被拉伸
+      // 的行按均分后的格宽等比放大空隙，这才是两端对齐该有的效果。
+      // 小节内没有音符（纯小节线/记号）时余量给末项，保证总宽仍等于 fitted。
+      // 压缩（fitWidth 窄屏）仍按可压缩量分摊，避免单格被压穿。
       members.forEach((it, index) => {
         const flexible = it.ev.kind === 'note' || it.ev.kind === 'rest';
-        const share = delta >= 0 ? flexible ? Math.sqrt((it.ev as NoteEvent).ticks / TICKS_PER_BEAT) / Math.max(1e-9, weight) : 0
+        const share = delta >= 0
+          ? (timed.length ? (flexible ? 1 / timed.length : 0)
+            : (index === members.length - 1 ? 1 : 0))
           : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
         advances.set(cuts[ui] + index, it.w + delta * share);
       });
@@ -1707,7 +1730,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     right: Math.max(padding, ...line.items.map(it => it.x + it.w)),
     notes: line.items.filter(it => it.kind === 'note').map(it => {
       const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
-      return { id: it.eventId, x: it.x + 4 * k + shift, leftAligned: true,
+      // 与 paint 画歌词、drawGlyph 画数字、五线谱 staff.ts 共用同一个数字字形中心，
+      // 且歌词是居中排版（不是左对齐），延长线 / 连字符的起止才跟文字对得上。
+      return { id: it.eventId, x: noteDigitCenter(it, glyph),
         widths: (it.lyrics ?? []).map(word => Math.min(lyricTextWidth(word, 16 * k), Math.max(16 * k, it.w - shift - 8 * k))) };
     }),
   })), 16 * k);
@@ -1793,7 +1818,7 @@ export function placeCueStaves(
     const cueFont = Math.max(12, ctx.fontSize * 0.62);
     const mini = layoutScore(
       { version: 2, meta: { ...score.meta, title: '', sub: '', notes: [] }, events: cue.events!, groups: cue.groups ?? [] },
-      { contentWidth: 1_000_000, fitWidth: true, showTitle: false, padding: 0, rightPadding: 0, fontSize: cueFont, unit: ctx.unit * 0.62 },
+      { contentWidth: 1_000_000, fitWidth: true, showTitle: false, padding: 0, rightPadding: 0, justify: false, fontSize: cueFont, unit: ctx.unit * 0.62 },
     );
     // 小字谱一律按「主谱基线 + 固定上方净空」定位，不按锚音符标记分叉，也不随行带下伸漂移。
     // 旧版按「锚音符有没有上方标记（连线 / 技法 / 倚音…）」分叉：有标记走行带顶、

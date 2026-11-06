@@ -842,7 +842,7 @@ export function PadBody({
           // key 挂 note.id：换选一个音就重挂载并自动展开——选中即展开，
           // 不用再点一次；展开后仍可手动收起，收起状态保持到下一次换选
           <details key={`sec-${note.id}`} className="v2-pad-sec" open>
-            <summary>技法 · 倚音 · 力度 · 记号（作用于选中的音）</summary>
+            <summary>（作用于选中的音）</summary>
             {/* 变音记号不在这里：前面工具排的 # 按钮就是它（循环切换），避免重复 */}
             <GraceField key={`p-${note.id}`} score={score} setScore={onSetScore} note={note} />
             {cueEntry ? (

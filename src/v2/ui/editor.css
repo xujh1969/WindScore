@@ -1151,7 +1151,8 @@ details.v2-side-block[open] > summary::before {
    小字谱的文字与按钮分别落在转调标签 / 下拉框的右侧，省掉单独一行 */
 .v2-pad-duo {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  /* 第一列保底 120px：转调下拉框要放得下「（不转调）」整串 */
+  grid-template-columns: minmax(120px, 1fr) minmax(0, auto);
   gap: 10px;
   align-items: start;
 }
@@ -1308,7 +1309,7 @@ details.v2-side-block[open] > summary::before {
 }
 
 /*
- * 倚音录入：`[ 前 ] [□][□][□] [ 后 ] 清除`
+ * 倚音录入：`[ 前 ] [□][□][□] [ 后 ] [扫把图标清除]`
  *   - 三格是音符输入框，点开下面弹出三排按键（上高八度 / 中正常 / 低八度）
  *   - 前 / 后勾选框互斥，勾上哪边，这三格就是哪一侧的倚音
  */
@@ -1317,6 +1318,15 @@ details.v2-side-block[open] > summary::before {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* 清除倚音：无文字的扫把图标按钮，图标居中、不随文字基线偏 */
+.v2-grace-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 6px;
+  line-height: 1;
 }
 
 /* 属性区里的小按钮（如「去除所有换行标记」） */
@@ -1711,6 +1721,13 @@ details.v2-side-block[open] > summary::before {
    占位文字「沿用之前的速度」被裁掉（0.4.9 实测） */
 .v2-pad-body .v2-meta-input {
   display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 转调下拉框：原先内联限死 50% 宽，「（不转调）」被截成「（不转…」。
+   现在整行铺满，宽度由 .v2-pad-duo 的保底列宽兜住。 */
+.v2-pad-body .v2-key-select {
   width: 100%;
   box-sizing: border-box;
 }

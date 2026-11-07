@@ -71,6 +71,8 @@ export interface StaffBarGlyph {
   bpmAfter?: number;
   /** 谱中换音色（小节线「音5」）：上方标注 音色=5 */
   patchAfter?: number;
+  /** 小节线换气 V：画在线左上方 */
+  breath?: boolean;
 }
 
 export type StaffSymbol = StaffGlyph | StaffBarGlyph | { kind: 'meter'; x: number; beat: string } | { kind: 'key'; x: number; key: string; previousKey: string };
@@ -386,6 +388,7 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
           ...(it.measure !== undefined ? { measure: it.measure } : {}),
           ...(it.bpmAfter !== undefined ? { bpmAfter: it.bpmAfter } : {}),
           ...(it.patchAfter !== undefined ? { patchAfter: it.patchAfter } : {}),
+          ...(it.breath ? { breath: true } : {}),
         });
         if (it.beatAfter) {
           curBeat = it.beatAfter;

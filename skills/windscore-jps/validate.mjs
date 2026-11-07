@@ -136,10 +136,16 @@ function ensembleIssues(score2) {
   parts.slice(1).forEach((p, pi) => {
     const current = measures2[pi + 1];
     if (current.length > measures2[0].length) {
-      out.push(`${p.name}\u6709 ${current.length} \u5C0F\u8282\uFF0C\u6BD4${parts[0].name}\u7684 ${measures2[0].length} \u5C0F\u8282\u591A`);
+      out.push(
+        `\u300C${p.name}\u300D\u6BD4\u300C${parts[0].name}\u300D\u591A\u5199\u4E86 ${current.length - measures2[0].length} \u5C0F\u8282\uFF08${current.length} \u5C0F\u8282\u5BF9 ${measures2[0].length} \u5C0F\u8282\uFF09\u3002\u591A\u58F0\u90E8\u8C31\u91CC\uFF0C\u5176\u4ED6\u58F0\u90E8\u4E0D\u80FD\u6BD4\u7B2C\u4E00\u58F0\u90E8\u957F\uFF1A\u8981\u4E48\u662F\u8FD9\u4E00\u58F0\u90E8\u591A\u5199\u4E86\u5185\u5BB9\uFF0C\u8981\u4E48\u662F\u4E24\u4E2A\u58F0\u90E8\u7684\u5C0F\u8282\u7EBF\u6CA1\u5BF9\u9F50\u3002\u8BF7\u5BF9\u7167\u7B2C\u4E00\u58F0\u90E8\uFF0C\u4ECE\u7B2C ${measures2[0].length + 1} \u5C0F\u8282\u5F00\u59CB\u68C0\u67E5\u3002`
+      );
     }
     current.forEach((m, i) => {
-      if (measures2[0][i] && m.ticks !== measures2[0][i].ticks) out.push(`${p.name}\u7B2C ${i + 1} \u5C0F\u8282\u4E3A ${m.ticks / TICKS_PER_BEAT} \u62CD\uFF0C\u4E0E${parts[0].name}\u4E0D\u4E00\u81F4`);
+      if (measures2[0][i] && m.ticks !== measures2[0][i].ticks) {
+        out.push(
+          `\u300C${p.name}\u300D\u7684\u7B2C ${i + 1} \u5C0F\u8282\u662F ${m.ticks / TICKS_PER_BEAT} \u62CD\uFF0C\u800C\u300C${parts[0].name}\u300D\u7684\u540C\u4E00\u5C0F\u8282\u662F ${measures2[0][i].ticks / TICKS_PER_BEAT} \u62CD\u2014\u2014\u4E24\u4E2A\u58F0\u90E8\u7684\u540C\u4E00\u5C0F\u8282\u5FC5\u987B\u4E00\u6837\u957F\u3002\u591A\u534A\u662F\u8FD9\u4E00\u5C0F\u8282\u591A\u5199\u6216\u6F0F\u5199\u4E86\u97F3\u7B26\uFF08\u4F11\u6B62\u7B26\u4E5F\u7B97\uFF09\uFF0C\u8BF7\u5BF9\u7167\u7B2C\u4E00\u58F0\u90E8\u7684\u7B2C ${i + 1} \u5C0F\u8282\u8865\u9F50\u3002`
+        );
+      }
     });
   });
   return out;
@@ -161,12 +167,27 @@ function withConductor(score2, id) {
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
   const targetStarts = [0, ...targetMeasures.map((m) => m.to)];
+  const srcBarOf = (boundary) => boundary === 0 ? sourceHead.find((e) => e.kind === "barline") : score2.events[sourceStarts[boundary] - 1];
   for (let boundary = sourceStarts.length - 1; boundary >= 0; boundary--) {
     const at = sourceStarts[boundary];
-    const src = boundary === 0 ? sourceHead.find((e) => e.kind === "barline") : score2.events[at - 1];
+    let src = boundary === 0 ? sourceHead.find((e) => e.kind === "barline") : score2.events[at - 1];
     const dstOriginal = boundary === 0 ? targetHead.find((e) => e.kind === "barline") : target.events[(targetStarts[boundary] ?? 0) - 1];
     let index = dstOriginal ? clean.findIndex((e) => e.id === dstOriginal.id) : -1;
     if (src?.kind === "barline") {
+      let dropVolta = false;
+      if (src.volta !== void 0 || src.voltaOpen !== void 0) {
+        for (let j = boundary + 1; j < sourceStarts.length; j++) {
+          const b = srcBarOf(j);
+          if (b?.volta || b?.repeat === "end" || b?.repeat === "both") {
+            dropVolta = j >= targetStarts.length;
+            break;
+          }
+        }
+        if (dropVolta) {
+          const { volta: _v, voltaOpen: _o, ...rest } = src;
+          src = rest;
+        }
+      }
       const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter };
       if (clean[index]?.kind === "barline") clean[index] = { ...clean[index], ...attributes };
       else if (boundary === 0) {
@@ -186,14 +207,31 @@ function withConductor(score2, id) {
 }
 
 // src/v2/meter.ts
+var SEG_RE = /^([1-9]\d*)\/(1|2|4|8|16|32)$/;
+function parseMeter(value) {
+  if (!value) return null;
+  const segs = [];
+  for (const part of value.split(/[|+]/)) {
+    const m = SEG_RE.exec(part.trim());
+    if (!m || Number(m[1]) > 32) return null;
+    segs.push({ num: Number(m[1]), den: Number(m[2]) });
+  }
+  return segs.length ? segs : null;
+}
 function validMeter(value) {
-  const m = /^([1-9]\d*)\/(1|2|4|8|16|32)$/.exec(value);
-  return !!m && Number(m[1]) <= 32;
+  return parseMeter(value) !== null;
+}
+function meterBeatOptions(beat) {
+  const segs = parseMeter(beat);
+  if (!segs) {
+    const [n, d] = beat.split("/").map(Number);
+    if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return [4];
+    return [n * (4 / d)];
+  }
+  return segs.map((s) => s.num * (4 / s.den));
 }
 function beatsPerMeasure(beat) {
-  const [n, d] = beat.split("/").map(Number);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-  return n * (4 / d);
+  return meterBeatOptions(beat)[0] ?? 4;
 }
 function meterAt(score2, index) {
   let beat = score2.meta.beat;
@@ -209,6 +247,10 @@ function groupTicks(beat) {
   if (m && [6, 9, 12].includes(Number(m[1]))) {
     const base = { 2: 2, 4: 1, 8: 0.5, 16: 0.25 }[Number(m[2])];
     return Math.round(TICKS_PER_BEAT * base * 3);
+  }
+  const segs = parseMeter(beat);
+  if (segs && segs.length > 1 && segs.every((s) => s.den === 8 && [6, 9, 12].includes(s.num))) {
+    return Math.round(TICKS_PER_BEAT * 1.5);
   }
   return TICKS_PER_BEAT;
 }
@@ -365,17 +407,19 @@ function autoGroupBeats(score2) {
   let tick = 0;
   let run = [];
   let sum = 0;
+  let target = 0;
   const flush = () => {
     const shortOnly = run.every((id) => {
       const e = score2.events.find((event) => event.id === id);
       return e && isTimed(e) && undotTicks(e.ticks, e.dot ?? 0) < TICKS_PER_BEAT;
     });
-    if (run.length >= 2 && sum === beatTicks && shortOnly && !existing.has(run.join(","))) {
+    if (run.length >= 2 && sum === target && shortOnly && !existing.has(run.join(","))) {
       seq += 1;
-      added.push({ id: `${score2.part ? `p${score2.part.id}:` : ""}g${seq}`, totalTicks: beatTicks, memberIds: [...run], ...score2.format === 3 ? { auto: true } : {} });
+      added.push({ id: `${score2.part ? `p${score2.part.id}:` : ""}g${seq}`, totalTicks: target, memberIds: [...run], ...score2.format === 3 ? { auto: true } : {} });
     }
     run = [];
     sum = 0;
+    target = 0;
   };
   for (const ev of score2.events) {
     if (ev.kind === "barline") {
@@ -390,15 +434,16 @@ function autoGroupBeats(score2) {
       tick += ev.ticks;
       continue;
     }
-    if (tick % beatTicks === 0) {
+    if (run.length === 0) {
       run = [ev.id];
       sum = ev.ticks;
-    } else if (run.length > 0) {
+      target = beatTicks - tick % beatTicks;
+    } else {
       run.push(ev.id);
       sum += ev.ticks;
     }
     tick += ev.ticks;
-    if (sum >= beatTicks) flush();
+    if (run.length > 0 && sum >= target) flush();
   }
   flush();
   if (added.length === 0) return score2;
@@ -493,7 +538,7 @@ function applyLyricLinks(score2, rows) {
 }
 
 // src/v2/dsl.ts
-var NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrguazR]*)('([0-5]))?(\[[^[\]]{1,3}\])?$/;
+var NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@HtkVfdmwsxqhrguazR]*)('([0-5]))?(\[[^[\]]{1,3}\])?$/;
 var TECHNIQUE_LETTER = {
   V: "breath",
   // 换气 V（大写，避开低八度点 v）
@@ -515,6 +560,8 @@ var TECHNIQUE_LETTER = {
   // 上弯音（向上折线箭头）
   h: "bendDown",
   // 下弯音（向下折线箭头）
+  H: "slideH",
+  // h 滑音（谱面画小写字母 h；小写 h 已被下弯音占用）
   u: "turn"
   // 回音（横置 ∞ 形，GB/T 46845—2025 §7.5.5）
 };
@@ -562,7 +609,56 @@ function renderGraceNote(g) {
   const oct = g.octave > 0 ? "^".repeat(g.octave) : "v".repeat(-g.octave);
   return `${g.accidental ? accidentalDsl(g.accidental) : ""}${g.degree}${oct}`;
 }
+function parseUnisonTargets(text2) {
+  const t = text2.trim();
+  if (!t) return null;
+  const out = [];
+  for (const seg of t.split(/[,，]/)) {
+    const m = /^(\d+)(?:\s*[-—~至]\s*(\d+))?$/.exec(seg.trim());
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    if (a < 1 || b < 1 || a > 32 || b > 32) return null;
+    for (let n = Math.min(a, b); n <= Math.max(a, b); n += 1) out.push(n);
+  }
+  return [...new Set(out)].sort((x, y) => x - y);
+}
 function parseDsl(text2) {
+  const cueBlocks = [];
+  const cueErrors = [];
+  let curCue = null;
+  const kept = [];
+  for (const raw of text2.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^@(?:小谱|cue)(?=\s|$)/i.test(line)) {
+      const m = /^@(?:小谱|cue)\s+(\d+)(?:\s*[-—~至]\s*(\d+))?(?:\s*\/\s*(\d+))?(?:\s+("(?:[^"\\]|\\.)*"))?\s*$/i.exec(line);
+      if (!m) {
+        cueErrors.push('\u5C0F\u5B57\u8C31\u58F0\u660E\u5E94\u4E3A @\u5C0F\u8C31 2-3 "\u540D\u79F0"\uFF08\u951A\u5C0F\u8282\u8D77\u6B62\uFF09\u6216 @\u5C0F\u8C31 3/2 "\u540D\u79F0"\uFF08\u951A\u7B2C 3 \u5C0F\u8282\u7B2C 2 \u4E2A\u97F3\u7B26\uFF09');
+        curCue = null;
+        continue;
+      }
+      const anchor = m[3] !== void 0 ? { start: Number(m[1]), end: Number(m[1]), nth: Number(m[3]) } : { start: Number(m[1]), end: m[2] ? Number(m[2]) : Number(m[1]), nth: void 0 };
+      curCue = {
+        ...anchor.nth !== void 0 ? { nth: anchor.nth } : {},
+        anchorStart: anchor.start,
+        anchorEnd: anchor.end,
+        name: m[4] ? JSON.parse(m[4]) : void 0,
+        lines: []
+      };
+      if (curCue.anchorEnd < curCue.anchorStart) cueErrors.push(`\u5C0F\u5B57\u8C31\u951A\u5B9A\u8303\u56F4\u4E0D\u5408\u6CD5\uFF08\u6B62\u5C0F\u8282\u4E0D\u80FD\u5C0F\u4E8E\u8D77\u5C0F\u8282\uFF09\uFF1A${line}`);
+      cueBlocks.push(curCue);
+      continue;
+    }
+    if (curCue) {
+      if (line.startsWith("@") || line === "---") curCue = null;
+      else {
+        curCue.lines.push(raw);
+        continue;
+      }
+    }
+    kept.push(raw);
+  }
+  text2 = kept.join("\n");
   const version = /^@format\s+(\S+)\s*$/mi.exec(text2)?.[1];
   if (version && version !== "3") return { score: null, errors: [`\u4E0D\u652F\u6301\u7684 JPS \u8BED\u6CD5\u7248\u672C\uFF1A${version}`] };
   const modern = version === "3";
@@ -624,32 +720,67 @@ function parseDsl(text2) {
       const block = blocks[blocks.length - 1];
       if (!m || Number(m[1]) < -2 || Number(m[1]) > 2) errors.push("\u58F0\u90E8\u97F3\u8272\u516B\u5EA6\u5E94\u4E3A @patchOct 1\uFF08-2 \u5230 2 \u7684\u6574\u6570\uFF09\uFF0C\u653E\u5728\u58F0\u90E8\u58F0\u660E\u4E4B\u540E");
       else block.patchOctave = Number(m[1]);
+    } else if (/^@hidden\b/i.test(line) && blocks.length) {
+      const m = /^@hidden\s+(on|off)\s*$/i.exec(line);
+      const block = blocks[blocks.length - 1];
+      if (!m) errors.push("\u58F0\u90E8\u9690\u85CF\u5E94\u4E3A @hidden on\uFF08\u6216 off\uFF09\uFF0C\u653E\u5728\u58F0\u90E8\u58F0\u660E\u4E4B\u540E");
+      else block.hidden = m[1].toLowerCase() === "on";
     } else if (line.startsWith("@")) header.push(raw);
     else if (blocks.length) blocks[blocks.length - 1].lines.push(raw);
     else if (line && !line.startsWith("//") && line !== "---") header.push(raw);
   }
-  if (errors.length) return { score: null, errors };
+  const withCues = (r2) => {
+    if (cueErrors.length) return { score: null, errors: [...r2.errors, ...cueErrors] };
+    if (!cueBlocks.length || !r2.score) return r2;
+    const cues = cueBlocks.map((cb, i) => {
+      const anchor = cb.nth !== void 0 ? `${cb.anchorStart}/${cb.nth}` : cb.anchorStart === cb.anchorEnd ? `${cb.anchorStart}` : `${cb.anchorStart}-${cb.anchorEnd}`;
+      const body = cb.lines.join("\n");
+      const parsed2 = modern ? (() => {
+        const pr = parseSingle(normalizeModern(body), true);
+        return pr.score && !pr.errors.length ? { ...pr, score: autoGroupBeats(pr.score) } : pr;
+      })() : parseDsl(body);
+      const base = {
+        id: `cue${i + 1}`,
+        ...cb.name ? { name: cb.name } : {},
+        ...cb.nth !== void 0 ? (() => {
+          const anchorId = locateAnchorId(r2.score.events, cb.anchorStart, cb.nth);
+          if (!anchorId) cueErrors.push(`\u5C0F\u5B57\u8C31\uFF08\u951A${anchor}\uFF09\uFF1A\u951A\u5B9A\u97F3\u7B26\u4E0D\u5B58\u5728\uFF08\u7B2C ${cb.anchorStart} \u5C0F\u8282\u6CA1\u6709\u7B2C ${cb.nth} \u4E2A\u97F3\uFF09`);
+          return { anchorId: anchorId ?? "" };
+        })() : { anchorStart: cb.anchorStart, anchorEnd: cb.anchorEnd },
+        text: cb.lines.join("\n")
+      };
+      if (parsed2.errors.length || !parsed2.score) {
+        cueErrors.push(...parsed2.errors.map((e) => `\u5C0F\u5B57\u8C31\uFF08\u951A${anchor}\uFF09\uFF1A${e}`));
+        return base;
+      }
+      return { ...base, events: parsed2.score.events, groups: parsed2.score.groups };
+    });
+    if (cueErrors.length) return { score: null, errors: [...r2.errors, ...cueErrors] };
+    return { ...r2, score: { ...r2.score, cues } };
+  };
+  if (errors.length) return withCues({ score: null, errors });
   if (!blocks.length) {
     const result = parseSingle(normalizeModern(text2), true);
-    return { ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null };
+    return withCues({ ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null });
   }
   if (header.some((l) => l.trim() && !l.trim().startsWith("@") && !l.trim().startsWith("//"))) return { score: null, errors: ["\u591A\u58F0\u90E8\u6587\u4EF6\u7684\u97F3\u7B26\u5FC5\u987B\u5199\u5728 @part \u58F0\u90E8\u58F0\u660E\u4E4B\u540E"] };
   const parsed = blocks.map((b) => ({ block: b, result: parseSingle(normalizeModern([...header, ...b.lines].join("\n")), true) }));
   for (const { block, result } of parsed) errors.push(...result.errors.map((e) => `${block.name}\uFF1A${e}`));
   if (errors.length || parsed.some((p) => !p.result.score)) return { score: null, errors };
-  return { score: assembleParts(parsed[0].result.score, parsed.map(({ block, result }) => {
+  return withCues({ score: assembleParts(parsed[0].result.score, parsed.map(({ block, result }) => {
     const { lines: _lines, ...info } = block;
     return namespacePart(autoGroupBeats(result.score), {
       ...info,
       muted: info.muted ?? false,
-      solo: info.solo ?? false
+      solo: info.solo ?? false,
+      hidden: info.hidden ?? false
     });
-  })), errors };
+  })), errors });
 }
 function normalizeModern(text2) {
   return text2.split(/(^\s*@[^\n]*$|^\s*\/\/[^\n]*$|^\s*歌词(?:线)?[1-6]:[^\n]*$)/m).map((segment) => {
     if (segment.trim().startsWith("@") || segment.trim().startsWith("//") || /^歌词(?:线)?[1-6]:/.test(segment.trim())) return segment;
-    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before, note, slashes) => `${before}${note}/${2 ** slashes.length}`).replace(/<(\d+):\s*([^<>]+)>/g, (full, numStr, body) => {
+    return segment.replace(/(^|\s|[<(}])([#b♯♭♮]?[v^]*[0-7Xx][v^]*\.{0,2})(\/{1,3})(?![\d/])/g, (_, before, note, slashes) => `${before}${note}/${2 ** slashes.length}`).replace(/<(\d+):\s*([^<>]+)>/g, (full, numStr, body) => {
       const n = Number(numStr);
       const tokens = body.trim().split(/\s+/);
       if (n < 2 || tokens.length !== n || !tokens.every((t) => /^[#b♯♭♮]?[0-7][v^]*[!=>@tkVrfdmwsxqh]*$/.test(t))) return full;
@@ -745,8 +876,8 @@ function parseSingle(text2, modern = false) {
         }
         case "linegap": {
           const n = Number(v);
-          if (Number.isFinite(n) && n >= 0 && n <= 48) meta.lineGap = n;
-          else errors.push(`\u884C\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A 0\u201348 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
+          if (Number.isFinite(n) && n >= -24 && n <= 48) meta.lineGap = n;
+          else errors.push(`\u884C\u95F4\u8DDD\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A -24\u201348 \u7684\u6570\u5B57\uFF09\uFF1A${v}`);
           break;
         }
         case "measureno": {
@@ -775,12 +906,13 @@ function parseSingle(text2, modern = false) {
   let hairpinStart = null;
   let octavaStart = null;
   const slurStack = [];
+  let slurSeq = 0;
   let currentGroup = null;
   const topGroup = () => currentGroup;
-  const addTie = (fromId, toId, kind) => {
+  const addTie = (fromId, toId, kind, g) => {
     const from = byId.get(fromId);
     if (!from || from.kind !== "note") return;
-    from.ties = [...from.ties ?? [], { to: toId, kind }];
+    from.ties = [...from.ties ?? [], { to: toId, kind, ...g ? { g } : {} }];
   };
   const pushTimed = (core, gBefore, gAfter, hiddenRest = false) => {
     const m = NOTE_RE.exec(core);
@@ -882,7 +1014,10 @@ function parseSingle(text2, modern = false) {
       lastNoteId = id;
       const s = slurStack[slurStack.length - 1];
       if (s) {
-        if (s.last && s.last !== id) addTie(s.last, id, "slur");
+        if (s.last && s.last !== id) {
+          addTie(s.last, id, "slur", s.id);
+          s.chain.push([s.last, id]);
+        }
         s.last = id;
         s.notes += 1;
       }
@@ -891,7 +1026,7 @@ function parseSingle(text2, modern = false) {
     }
   };
   const openSlur = () => {
-    slurStack.push({ last: null, notes: 0 });
+    slurStack.push({ last: null, notes: 0, id: `s${++slurSeq}`, chain: [] });
   };
   const closeSlur = () => {
     const s = slurStack.pop();
@@ -900,6 +1035,15 @@ function parseSingle(text2, modern = false) {
       return;
     }
     if (s.notes < 2) errors.push("\u8FDE\u97F3\u7EBF\u81F3\u5C11\u8981\u62EC\u4F4F\u4E24\u4E2A\u97F3");
+    const outer = slurStack[slurStack.length - 1];
+    if (outer && outer.notes === 0 && !outer.last && s.chain.length) {
+      outer.id = `s${++slurSeq}`;
+      outer.notes = s.notes;
+      for (const [a, b] of s.chain) {
+        addTie(a, b, "slur", outer.id);
+        outer.chain.push([a, b]);
+      }
+    }
   };
   const openGroup = () => {
     if (currentGroup) errors.push("\u62CD\u5185\u7EC4\u4E0D\u80FD\u5D4C\u5957");
@@ -947,15 +1091,15 @@ function parseSingle(text2, modern = false) {
       errors.push("\u62CD\u5185\u7EC4\u4E0D\u5F97\u8DE8\u53CD\u590D\u8BB0\u53F7\uFF0C\u8BF7\u5148\u7528 > \u6536\u5C3E");
       currentGroup = null;
     }
-    lastNoteId = null;
+    if (!pendingTie) lastNoteId = null;
   };
   const pushSimple = (ev) => {
     events.push(ev);
     byId.set(ev.id, ev);
   };
-  const pushRepeatBarline = (repeat, times) => {
+  const pushRepeatBarline = (repeat, times, style = "single") => {
     barrier();
-    const ev = { id: nextId(), kind: "barline", style: "single", repeat };
+    const ev = { id: nextId(), kind: "barline", style, repeat };
     if (repeat === "end") ev.times = times ?? 2;
     pushSimple(ev);
   };
@@ -982,7 +1126,7 @@ function parseSingle(text2, modern = false) {
     if (open) bar.voltaOpen = true;
   };
   for (const line of body) {
-    const tokens = line.replace(/~/g, "~ ").split(/\s+/).filter(Boolean);
+    const tokens = line.replace(/~(?=\s*[0-7Xx])/g, "~ ").split(/\s+/).filter(Boolean).flatMap((t) => /^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页|V)/.test(t) ? ["|", t.slice(1)] : [t]);
     for (let raw of tokens) {
       if (raw === "\uFF08" || raw === "\uFF09") {
         const id = nextId();
@@ -1019,6 +1163,15 @@ function parseSingle(text2, modern = false) {
         raw = raw.slice(0, -1);
       }
       closes.reverse();
+      const mids = [];
+      {
+        let rest = "";
+        for (const ch of raw) {
+          if (ch === "(" || ch === ")") mids.push(ch);
+          else rest += ch;
+        }
+        raw = rest;
+      }
       if (raw !== "" && /^\d+:$/.test(raw)) {
         const g = topGroup();
         if (g && g.memberIds.length === 0) {
@@ -1051,10 +1204,26 @@ function parseSingle(text2, modern = false) {
         }
       }
       if (raw !== "") {
-        if (raw === "\u6563") {
+        if (raw === "V") {
+          const bar = events[events.length - 1];
+          if (bar?.kind !== "barline") errors.push("\u300CV\u300D\u6362\u6C14\u9700\u8981\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199");
+          else bar.breath = true;
+        } else if (raw === "\u6563") {
           const bar = events[events.length - 1];
           if (bar?.kind !== "barline") errors.push("\u300C\u6563\u300D\u9700\u8981\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199");
           else bar.free = true;
+        } else if (/^同/.test(raw)) {
+          const bar = events[events.length - 1];
+          if (bar?.kind !== "barline") errors.push("\u300C\u540C\u300D\u9700\u8981\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199");
+          else {
+            const targets = parseUnisonTargets(raw.slice(1));
+            if (!targets) errors.push(`\u9F50\u5531\u58F0\u90E8\u5199\u6CD5\u4E0D\u5408\u6CD5\uFF08\u5E94\u4E3A \u540C2-3 / \u540C2,3 / \u540C2\uFF09\uFF1A${raw}`);
+            else bar.unisonAfter = targets;
+          }
+        } else if (raw === "\u5206") {
+          const bar = events[events.length - 1];
+          if (bar?.kind !== "barline") errors.push("\u300C\u5206\u300D\u9700\u8981\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199");
+          else bar.splitAfter = true;
         } else if (/^拍/.test(raw) || /^速\d/.test(raw) || /^音\d/.test(raw) || raw === "\u6362\u884C" || raw === "\u5206\u9875") {
           const bar = events[events.length - 1];
           if (!modern || bar?.kind !== "barline") errors.push(`${raw} \u9700\u8981 @format 3\uFF0C\u5E76\u7D27\u63A5\u5C0F\u8282\u7EBF\u4E66\u5199`);
@@ -1159,8 +1328,10 @@ function parseSingle(text2, modern = false) {
           pushRepeatBarline("start");
         } else if (raw === ":||:") {
           pushRepeatBarline("both");
-        } else if (/^:\|\d*$/.test(raw)) {
-          pushRepeatBarline("end", raw.length > 2 ? Number(raw.slice(2)) : 2);
+        } else if (/^:\|\|?(\d*)$/.test(raw)) {
+          const final = raw.includes("||");
+          const times = raw.match(/\d+$/)?.[0];
+          pushRepeatBarline("end", times ? Number(times) : 2, final ? "final" : "single");
         } else if (/^\[\d+(,\d+)*\]$/.test(raw)) {
           markVolta(raw.slice(1, -1).split(",").map(Number), false);
         } else if (/^\[\d+(,\d+)*$/.test(raw)) {
@@ -1190,6 +1361,18 @@ function parseSingle(text2, modern = false) {
           if (last?.kind !== "rest") errors.push(`\u9690\u85CF\u4F11\u6B62\u5199\u6CD5\u65E0\u6CD5\u8BC6\u522B\uFF1A${raw}`);
         } else {
           pushTimed(raw, graceBefore, graceAfter);
+        }
+      }
+      for (const m of mids) {
+        if (m === ")") {
+          closeSlur();
+        } else {
+          openSlur();
+          const s = slurStack[slurStack.length - 1];
+          if (s && lastNoteId) {
+            s.last = lastNoteId;
+            s.notes = 1;
+          }
         }
       }
       for (const t of closes) {
@@ -1295,6 +1478,7 @@ function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
   return `${gb}${body}${tieOut ? "~" : ""}${arts}${ferm}${tong}${tech}${arp}${trem}${trEnd}${fng}${cust}${gray}${ga}`;
 }
 function serializeDsl(score2) {
+  const cues = serializeCues(score2.cues, score2.events);
   if (score2.part || score2.parts?.length) {
     const parts = scoreParts(score2);
     const header = serializeSingle(partScore(score2, parts[0].id)).split("\n\n")[0];
@@ -1310,12 +1494,66 @@ ${parts.map((part) => {
 @patch ${part.patch}` : "";
       const octLine = part.patchOctave !== void 0 && part.patchOctave !== score2.meta.patchOctave ? `
 @patchOct ${part.patchOctave}` : "";
+      const hideLine = part.hidden ? "\n@hidden on" : "";
       return `@part ${part.id} ${JSON.stringify(part.name)}
-@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${patchLine}${octLine}${staff}${names}
+@mix ${part.gain} ${part.muted ? "off" : "on"} ${part.solo ? "solo" : "all"}${patchLine}${octLine}${hideLine}${staff}${names}
 ${body}`;
-    }).join("\n\n")}`;
+    }).join("\n\n")}${cues}`;
   }
-  return serializeSingle(score2);
+  return serializeSingle(score2) + cues;
+}
+function locateAnchorId(events, measure, nth) {
+  let measureNo = 1;
+  let seenTimed = false;
+  let count = 0;
+  for (const e of events) {
+    if (e.kind === "note" || e.kind === "rest") {
+      seenTimed = true;
+      if (measureNo === measure) {
+        count += 1;
+        if (count === nth) return e.id;
+      }
+      continue;
+    }
+    if (e.kind === "barline" && seenTimed) measureNo += 1;
+  }
+  return null;
+}
+function anchorIdToText(events, anchorId) {
+  let measureNo = 1;
+  let seenTimed = false;
+  let count = 0;
+  for (const e of events) {
+    if (e.kind === "note" || e.kind === "rest") {
+      seenTimed = true;
+      count += 1;
+      if (e.id === anchorId) return `${measureNo}/${count}`;
+      continue;
+    }
+    if (e.kind === "barline" && seenTimed) {
+      measureNo += 1;
+      count = 0;
+    }
+  }
+  return null;
+}
+function serializeCues(cues, events) {
+  if (!cues?.length) return "";
+  const anchor = (c) => {
+    if (c.anchorId) return anchorIdToText(events, c.anchorId);
+    if (c.anchorStart !== void 0) return c.anchorStart === (c.anchorEnd ?? c.anchorStart) ? `${c.anchorStart}` : `${c.anchorStart}-${c.anchorEnd ?? c.anchorStart}`;
+    return null;
+  };
+  const parts = [];
+  for (const c of cues) {
+    const a = anchor(c);
+    if (!a) continue;
+    parts.push(`@\u5C0F\u8C31 ${a}${c.name ? ` ${JSON.stringify(c.name)}` : ""}
+${c.text}`);
+  }
+  return parts.length ? `
+
+${parts.join("\n\n")}` : "";
 }
 function serializeSingle(score2) {
   const head = [
@@ -1353,34 +1591,29 @@ function serializeSingle(score2) {
     if (!next) return false;
     return (from.ties ?? []).some((t) => t.to === next.id && t.kind === "tie");
   };
-  const idxOf = new Map(score2.events.map((e, i) => [e.id, i]));
-  const slurNext = /* @__PURE__ */ new Map();
+  const outSlurOf = /* @__PURE__ */ new Map();
+  const inSlurOf = /* @__PURE__ */ new Map();
   for (const e of score2.events) {
     if (e.kind !== "note") continue;
-    for (const t of e.ties ?? []) if (t.kind === "slur") slurNext.set(e.id, t.to);
-  }
-  const slurSpan = /* @__PURE__ */ new Map();
-  {
-    const isTarget = new Set(slurNext.values());
-    for (const e of score2.events) {
-      if (e.kind !== "note" || !slurNext.has(e.id) || isTarget.has(e.id)) continue;
-      const seen = /* @__PURE__ */ new Set();
-      let cur = e.id;
-      let hi = idxOf.get(e.id);
-      while (cur !== void 0 && !seen.has(cur)) {
-        seen.add(cur);
-        hi = Math.max(hi, idxOf.get(cur) ?? hi);
-        cur = slurNext.get(cur);
-      }
-      slurSpan.set(idxOf.get(e.id), hi);
+    for (const t of e.ties ?? []) {
+      if (t.kind !== "slur") continue;
+      outSlurOf.set(e.id, t);
+      inSlurOf.set(t.to, t);
     }
   }
-  const slurEndsAt = /* @__PURE__ */ new Map();
-  for (const [lo, hi] of slurSpan) {
-    const arr = slurEndsAt.get(hi);
-    if (arr) arr.push(lo);
-    else slurEndsAt.set(hi, [lo]);
+  const gOf = (t) => t.g ?? "";
+  const slurHeads = /* @__PURE__ */ new Set();
+  const slurTails = /* @__PURE__ */ new Set();
+  for (const e of score2.events) {
+    if (e.kind !== "note") continue;
+    const out2 = outSlurOf.get(e.id);
+    const inn = inSlurOf.get(e.id);
+    if (out2 && (!inn || gOf(out2) !== gOf(inn))) slurHeads.add(e.id);
+    if (inn && (!out2 || gOf(out2) !== gOf(inn))) slurTails.add(e.id);
   }
+  const slurPreOf = (e) => e.kind === "note" && slurHeads.has(e.id) && !slurTails.has(e.id) ? "(" : "";
+  const slurMidOf = (e) => e.kind === "note" && slurHeads.has(e.id) && slurTails.has(e.id) ? ")(" : "";
+  const slurPostOf = (e) => e.kind === "note" && slurTails.has(e.id) && !slurHeads.has(e.id) ? ")" : "";
   const out = [];
   const emitted = /* @__PURE__ */ new Set();
   const hairpinEnds = /* @__PURE__ */ new Map();
@@ -1421,12 +1654,12 @@ function serializeSingle(score2) {
       if (g && g.memberIds[0] === ev.id) {
         const members = g.memberIds.map((id) => byId.get(id)).filter((m) => !!m && (m.kind === "note" || m.kind === "rest"));
         const inner = members.map((m) => {
-          const mi = idxOf.get(m.id);
-          const pre = slurSpan.has(mi) ? "(" : "";
-          const post = (slurEndsAt.get(mi) ?? []).length > 0 ? ")" : "";
+          const pre = slurPreOf(m);
+          const midSlur = slurMidOf(m);
+          const post = slurPostOf(m);
           const dyn = m.kind === "note" ? [m.dynamic, m.hairpinTo ? void 0 : m.hairpin].filter(Boolean).join(" ") : "";
           const kc = m.kind === "note" && m.keyChange ? `\u8F6C${m.keyChange} ` : "";
-          return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(m, tieOut(m), score2.format === 3, score2.format === 3 && g.tuplet != null)}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
+          return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(m, tieOut(m), score2.format === 3, score2.format === 3 && g.tuplet != null)}${midSlur}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
         }).join(" ");
         out.push(`<${g.tuplet ? `${g.tuplet}: ` : ""}${inner}>`);
         members.forEach((m) => emitted.add(m.id));
@@ -1437,12 +1670,12 @@ function serializeSingle(score2) {
     switch (ev.kind) {
       case "note":
       case "rest": {
-        const i = idxOf.get(ev.id);
-        const pre = slurSpan.get(i) !== void 0 ? "(" : "";
-        const post = (slurEndsAt.get(i) ?? []).length > 0 ? ")" : "";
+        const pre = slurPreOf(ev);
+        const midSlur = slurMidOf(ev);
+        const post = slurPostOf(ev);
         const dyn = ev.kind === "note" ? [ev.dynamic, ev.hairpinTo ? void 0 : ev.hairpin].filter(Boolean).join(" ") : "";
         const kc = ev.kind === "note" && ev.keyChange ? `\u8F6C${ev.keyChange} ` : "";
-        out.push(`${octavaStartOf(ev)}${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(ev, tieOut(ev), score2.format === 3)}${post}${rangeEnd(ev)}${octavaEndOf(ev)}`);
+        out.push(`${octavaStartOf(ev)}${rangeStart(ev)}${kc}${dyn ? `${dyn} ` : ""}${pre}${renderTimed(ev, tieOut(ev), score2.format === 3)}${midSlur}${post}${rangeEnd(ev)}${octavaEndOf(ev)}`);
         emitted.add(ev.id);
         break;
       }
@@ -1452,16 +1685,19 @@ function serializeSingle(score2) {
         else if (ev.dashed && ev.style === "single" && !ev.repeat && !ev.partial) tok = "|~";
         else if (ev.repeat === "start") tok = "|:";
         else if (ev.repeat === "both") tok = ":||:";
-        else if (ev.repeat === "end") tok = ev.times && ev.times > 2 ? `:|${ev.times}` : ":|";
+        else if (ev.repeat === "end") tok = `${ev.style === "final" ? ":||" : ":|"}${ev.times && ev.times > 2 ? ev.times : ""}`;
         else if (ev.style === "double") tok = "\u2016";
         else if (ev.style === "final") tok = "||";
         else if (ev.partial) tok = "|{partial}";
         else tok = "|";
         out.push(tok);
+        if (ev.breath) out.push("V");
         if (ev.beatAfter) out.push(`\u62CD${ev.beatAfter}`);
         if (ev.bpmAfter) out.push(`\u901F${ev.bpmAfter}`);
         if (ev.patchAfter !== void 0) out.push(`\u97F3${ev.patchAfter}`);
         if (ev.free) out.push("\u6563");
+        if (ev.unisonAfter?.length) out.push(`\u540C${ev.unisonAfter.join("-")}`);
+        if (ev.splitAfter) out.push("\u5206");
         if (ev.breakAfter) out.push(ev.breakAfter === "page" ? "\u5206\u9875" : "\u6362\u884C");
         if (ev.volta) out.push(ev.voltaOpen ? `[${ev.volta.join(",")}` : `[${ev.volta.join(",")}]`);
         emitted.add(ev.id);
@@ -1561,6 +1797,14 @@ function measureStaffInk(score2, glyph, mode) {
 }
 
 // src/v2/spacing.ts
+function letterGapOf(space) {
+  const s = Math.max(-20, Math.min(20, Number.isFinite(space) ? space : 0));
+  return s < 0 ? 10 + 0.35 * s : 10 + 0.5 * s;
+}
+var GAP_REFERENCE_BEAT_PX = 33.6;
+function gapScaleOf(beatPx) {
+  return Math.max(0.1, Math.min(3, beatPx / GAP_REFERENCE_BEAT_PX));
+}
 function balancedBreaks(units, available, compressionPenalty = 45) {
   const cost = new Array(units.length + 1).fill(Infinity);
   const next = new Array(units.length).fill(0);
@@ -1589,7 +1833,7 @@ function balancedBreaks(units, available, compressionPenalty = 45) {
   for (let at = 0; at < units.length; at = Math.max(at + 1, next[at])) starts.push(at);
   return starts;
 }
-function fitSpacing(units, available, justify) {
+function fitSpacing(units, available, justify, maxScale = 1.3) {
   const ideal = units.reduce((sum, u) => sum + u.ideal, 0);
   const min = units.reduce((sum, u) => sum + u.min, 0);
   if (ideal > available) {
@@ -1597,8 +1841,9 @@ function fitSpacing(units, available, justify) {
     return units.map((u) => u.ideal - (u.ideal - u.min) * shrink);
   }
   if (!justify) return units.map((u) => u.ideal);
+  const target = Number.isFinite(maxScale) ? Math.min(available, ideal * Math.max(1, maxScale)) : available;
   const weight = units.reduce((sum, u) => sum + u.weight, 0);
-  return units.map((u) => u.ideal + (available - ideal) * u.weight / Math.max(1, weight));
+  return units.map((u) => u.ideal + (target - ideal) * u.weight / Math.max(1, weight));
 }
 function positionDashes(items, glyph) {
   for (const item of items) {
@@ -1652,11 +1897,22 @@ function addPlaybackAnchors(lines, glyph) {
 
 // src/v2/ensembleLayout.ts
 function layoutEnsemble(score2, opts, layoutSingle) {
-  const parts = scoreParts(score2);
-  const singles = parts.map((p) => partScore(score2, p.id));
-  const measured = singles.map((s) => layoutSingle(s, { ...opts, contentWidth: 1e9, showTitle: false }));
+  const all = scoreParts(score2);
+  const visible = all.filter((p) => !p.hidden);
+  const parts = visible.length ? visible : all;
+  const singles = parts.map((p) => ({ ...partScore(score2, p.id), cues: void 0 }));
+  const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
+  const gap = letterGapOf(spacing);
+  const probeOpts = { ...opts, contentWidth: 1e9, showTitle: false, justify: false };
+  const measured = singles.map((s) => layoutSingle(s, probeOpts));
   const k = measured[0].glyph.fontSize / 21;
-  const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight));
+  const beatPx = TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT);
+  const gapPx = gap * gapScaleOf(beatPx);
+  const cell = measured[0].glyph.nominalWidth + gapPx;
+  const inkPad = Math.min(3 * k, gapPx);
+  const hasCue = !opts.lineHeight && (score2.cues ?? []).some((c) => c.events?.length);
+  const cueRowH = hasCue ? layoutSingle({ ...singles[0], cues: score2.cues }, probeOpts).lineHeight : 0;
+  const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight), cueRowH);
   const left = (opts.padding ?? 40) + Math.min(112, Math.max(52, ...parts.map((p) => [...p.name].length * 12))) * k;
   const right = opts.contentWidth - (opts.padding ?? 40);
   const available = Math.max(160, right - left);
@@ -1685,6 +1941,7 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     const ticks = [.../* @__PURE__ */ new Set([0, end, ...dashTicks, ...current.filter((e) => e.item.kind !== "barline").map((e) => e.tick)])].sort((a, b) => a - b);
     const onsets = /* @__PURE__ */ new Map();
     const leads = /* @__PURE__ */ new Map();
+    const inkAt = /* @__PURE__ */ new Map();
     let x = 0;
     for (let ti = 0; ti < ticks.length; ti++) {
       const tick = ticks[ti];
@@ -1698,9 +1955,11 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       const ink = Math.max(0, ...here.filter((e) => e.item.kind === "note" || e.item.kind === "rest").map((e) => {
         const item = e.item;
         const lyric = Math.max(0, ...(item.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
-        return Math.max(measured[0].glyph.nominalWidth + 3 * k + (item.dot ? 7 * k : 0), lyric + 3 * k) + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
+        return Math.max(measured[0].glyph.nominalWidth + inkPad + (item.dot ? 7 * k : 0), lyric + 3 * k) + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));
-      x += pre + opening + Math.max(ink, TICKS_PER_BEAT * (opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT) * Math.sqrt(step / TICKS_PER_BEAT) + (step > 0 ? 8 * k : 0));
+      inkAt.set(tick, ink);
+      const beatW = step > 0 ? cell * Math.max(1, Math.sqrt(step / TICKS_PER_BEAT)) : 0;
+      x += pre + opening + Math.max(ink, beatW);
     }
     const barW = Math.max(20 * k, ...current.filter((e) => e.item.kind === "barline" && e.tick > 0).map((e) => e.item.w));
     const close = Math.max(x, 60 * k - barW);
@@ -1713,7 +1972,8 @@ function layoutEnsemble(score2, opts, layoutSingle) {
         const until = e.tick + (it.ticks ?? 0);
         const endX = onsets.get(until) ?? close;
         const dashXs = Array.from({ length: it.dashes ?? 0 }, (_, i) => onsets.get(e.tick + (i + 1) * TICKS_PER_BEAT) + measured[0].glyph.pad + measured[0].glyph.nominalWidth / 2);
-        local.set(it.eventId, { x: start, w: Math.max(26 * k + e.lead, endX - start - 3 * k), ...dashXs.length ? { dashXs } : {} });
+        const minW = inkAt.get(e.tick) ?? 26 * k + e.lead;
+        local.set(it.eventId, { x: start, w: Math.max(minW, endX - start - 3 * k), ...dashXs.length ? { dashXs } : {} });
       } else {
         const pi = entries.findIndex((list) => list.includes(e));
         const key = `${pi}:${e.tick}`;
@@ -1729,6 +1989,7 @@ function layoutEnsemble(score2, opts, layoutSingle) {
   }
   const systemOf = [];
   const offsetOf = [];
+  const fittedOf = [];
   const systemLead = [0];
   const systemMeter = [];
   const units = widths.map((ideal, mi) => {
@@ -1742,6 +2003,20 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       forced: tail?.kind === "barline" && !!tail.breakAfter
     };
   });
+  let naturalMax = 0;
+  {
+    let acc = 0;
+    let leadAcc = 0;
+    for (let mi = 0; mi < units.length; mi++) {
+      acc += widths[mi];
+      leadAcc += units[mi].lead ?? 0;
+      if (units[mi].forced || mi === units.length - 1) {
+        naturalMax = Math.max(naturalMax, left + leadAcc + acc + (opts.padding ?? 40));
+        acc = 0;
+        leadAcc = 0;
+      }
+    }
+  }
   const starts = balancedBreaks(units, available);
   const scales = [];
   for (let si = 0; si < starts.length; si++) {
@@ -1751,14 +2026,19 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     systemLead[si] = units[from].lead;
     systemMeter[si] = previous?.kind === "barline" ? previous.beatAfter ?? "" : "";
     const budget = available - systemLead[si] + (closingWidths[to - 1] - 20 * k) / 2;
-    const natural = widths.slice(from, to).reduce((sum, w) => sum + w, 0);
-    const shortTail = (si === starts.length - 1 || units[to - 1].forced) && natural < budget * 0.6;
-    const fitted = fitSpacing(units.slice(from, to), budget, !shortTail);
+    const isLastRow = si + 1 === starts.length;
+    const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === void 0;
+    const fitted = fitSpacing(units.slice(from, to), budget, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
     let offset = 0;
     for (let mi = from; mi < to; mi++) {
       systemOf[mi] = si;
       offsetOf[mi] = offset;
-      scales[mi] = (fitted[mi - from] - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi]);
+      const want = fitted[mi - from];
+      fittedOf[mi] = want;
+      scales[mi] = Math.max(
+        0.1,
+        (want - closingWidths[mi]) / Math.max(1, widths[mi] - closingWidths[mi])
+      );
       offset += fitted[mi - from];
     }
   }
@@ -1769,9 +2049,24 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     const offset = left + (systemLead[systemOf[e.measure]] ?? 0) + offsetOf[e.measure];
     const scale = scales[e.measure];
     const lead = e.item.kind === "note" || e.item.kind === "rest" ? e.lead : 0;
-    positions.set(e.item.eventId, { x: offset + (p.x + lead) * scale - lead, w: e.item.kind === "barline" && e.tick > 0 ? p.w : p.w * scale, line: systemOf[e.measure], ...p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {} });
+    const isBar = e.item.kind === "barline" && e.tick > 0;
+    const isTimed2 = e.item.kind === "note" || e.item.kind === "rest";
+    positions.set(e.item.eventId, {
+      x: isBar ? offset + (fittedOf[e.measure] ?? p.x + p.w) - p.w : offset + (p.x + lead) * scale - lead,
+      // 只有音符/休止格跟着均分伸缩；力度、括号、房号这类记号只是跟着 onset
+      // 挪位置，占位与字形宽度保持自然宽，不能一起被放大到整小节那么宽。
+      w: isBar || !isTimed2 ? p.w : p.w * scale,
+      line: systemOf[e.measure],
+      ...p.dashXs ? { dashXs: p.dashXs.map((x) => offset + x * scale) } : {}
+    });
   }
-  const placed = singles.map((s, pi) => layoutSingle(s, { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }));
+  const placed = singles.map((s, pi) => layoutSingle(
+    // 首声部排版还负责整谱的标题块：标题高度里有一条「上方留白」分支
+    // （upNeed>30 时多 12px），带小字谱的单声部版式会走它。这里显式把 cues
+    // 传回去只为标题同高；它自己算的 cue 坐标仍在下面重算并显式覆盖。
+    pi === 0 && score2.cues?.length ? { ...s, cues: score2.cues } : s,
+    { ...opts, lineHeight: rowH, positions, showTitle: pi === 0 && opts.showTitle !== false }
+  ));
   const title = placed[0].title;
   const startY = 20 + (title?.height ?? 0);
   const systemH = parts.length * rowH + 24 * k;
@@ -1786,7 +2081,20 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       const lead = systemLead[si] ?? 0;
       const leadingMeter = lead > 0 ? { meter: systemMeter[si] ?? "", x: left + lead * 0.45 } : void 0;
       const meterMoved = !!systemMeter[si + 1];
-      const line = source ? { ...source, index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved } : {
+      const line = source ? {
+        ...source,
+        index: lines.length,
+        y,
+        partId: parts[pi].id,
+        partName: parts[pi].name,
+        system: si,
+        leadingMeter,
+        meterMoved,
+        // 跳房子括线只画在**每个系统的第一行**（总谱记谱惯例）：withConductor 把
+        // volta 属性抄给了每个声部，各声部的单声部排版都会算出一份，不剥的话
+        // 每行头上都悬一个「2」（用户 2026-11-06 实测）
+        ...pi === 0 ? {} : { voltas: [] }
+      } : {
         index: lines.length,
         y,
         items: [],
@@ -1810,7 +2118,8 @@ function layoutEnsemble(score2, opts, layoutSingle) {
     systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
   }
   addPlaybackAnchors(lines, measured[0].glyph);
-  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24 };
+  const cues = placeCueStaves(score2, { lines, lineHeight: rowH, unit: opts.unit ?? PX_PER_BEAT_DEFAULT / TICKS_PER_BEAT, fontSize: measured[0].glyph.fontSize });
+  return { ...placed[0], lines, hitIndex, systems, width: Math.max(opts.contentWidth, left + Math.max(...widths) + (opts.padding ?? 40)), height: startY + (system + 1) * systemH + 24, naturalWidth: naturalMax, cues: cues.length ? cues : void 0 };
 }
 
 // src/v2/lyricLines.ts
@@ -1898,6 +2207,7 @@ var GLYPH = {
   caretTail: 14,
   fontSize: 21
 };
+var CUE_UP_NEED = 52;
 function deriveGlyph(fontSize) {
   const k = Math.min(56, Math.max(12, fontSize)) / 21;
   const s = (v) => v * k;
@@ -1950,15 +2260,13 @@ function clusterSpan(it, glyphWidth = GLYPH.nominalWidth, g = GLYPH) {
 function isBarrier(ev) {
   return ev.kind === "barline";
 }
-function beatsPerMeasureOf(beat) {
-  const [n, d] = beat.split("/").map(Number);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 4;
-  return n * (4 / d);
+function beatOptionsOf(beat) {
+  return meterBeatOptions(beat).map((b) => Math.round(b * TICKS_PER_BEAT));
 }
-function barlineWidthOf(bar, k, spacing) {
+function barlineWidthOf(bar, k, gapDelta) {
   const base = bar.style === "final" ? 26 : bar.repeat === "both" ? 32 : bar.style === "double" || bar.repeat ? 24 : 20;
   const extra = bar.beatAfter ? 30 : 0;
-  return Math.max((base * 0.4 + extra) * k, (base + extra) * k + Math.max(0, spacing));
+  return Math.max((base * 0.4 + extra) * k, (base + extra) * k + Math.max(0, gapDelta));
 }
 function dashCountOf(ticks, dot) {
   const factor = dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75;
@@ -1979,11 +2287,32 @@ function layoutScore(score2, opts) {
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
   const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
+  const gap = letterGapOf(spacing);
+  const gapDelta = gap - letterGapOf(0);
+  const cell = glyph.nominalWidth + gap * gapScaleOf(TICKS_PER_BEAT * unit);
   const verses = Math.max(score2.part?.lyricNames?.length ?? 0, 0, ...score2.events.map((e) => e.kind === "note" ? Math.max(e.lyrics?.length ?? 0, e.lyricLinks?.length ?? 0) : 0));
-  const lyricBottom = (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 64 : 44) + verses * 24;
+  const notes = score2.events.filter((e) => e.kind === "note");
+  const hasMarkAbove = notes.some(
+    (e) => (e.ties?.length ?? 0) > 0 || e.fermata || e.tongue || (e.techniques?.length ?? 0) > 0 || (e.mark?.length ?? 0) > 0 || (e.ornaments?.length ?? 0) > 0 || (e.articulations?.length ?? 0) > 0 || (e.graceBefore?.length ?? 0) > 0 || (e.graceAfter?.length ?? 0) > 0
+  );
+  const hasVolta = score2.events.some((e) => e.kind === "barline" && (e.volta?.length ?? 0) > 0);
+  const hasTuplet = score2.groups.some((g) => g.tuplet);
+  const hasOctava = notes.some((e) => e.octava);
+  const hasDynamic = notes.some((e) => e.dynamic);
+  const hasHairpin = notes.some((e) => e.hairpin || e.hairpinTo);
+  const hasHighDots = notes.some((e) => e.octave > 0);
+  const hasLowDots = notes.some((e) => e.octave < 0);
+  const hasCue = (score2.cues ?? []).some((c) => c.events?.length);
+  const lyricAnchor = hasHairpin ? 64 : hasDynamic ? 42 : 30;
+  const upNeed = Math.max(24, hasHighDots ? 24 : 21, hasMarkAbove ? 38 : 0, hasTuplet ? 30 : 0, hasVolta ? 37 : 0, hasOctava ? 50 : 0, hasCue ? CUE_UP_NEED : 0);
+  const downNeed = Math.max(
+    hasLowDots ? 26 : 21,
+    hasDynamic ? 40 : 0,
+    hasHairpin ? 56 : 0,
+    verses > 0 ? lyricAnchor + verses * 24 + 5 : 0
+  );
   const lineGap = opts.lineGap ?? score2.meta.lineGap ?? 0;
-  const hasOctava = score2.events.some((e) => e.kind === "note" && e.octava);
-  const lineHeight = opts.lineHeight ?? Math.max(glyph.lineHeight + (score2.events.some((e) => e.kind === "note" && e.hairpinTo) ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k, verses ? (lyricBottom + 8) * 2 * k : 0);
+  const lineHeight = opts.lineHeight ?? (opts.staffPitchMode ? glyph.lineHeight + (hasHairpin ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k : (2 * Math.max(upNeed, downNeed) + 8 + lineGap) * k);
   const padTop = 20;
   const padBottom = 24;
   const padding = opts.padding ?? 40;
@@ -2020,12 +2349,12 @@ function layoutScore(score2, opts) {
         cy: y,
         size: PENCIL_SIZE
       },
-      // 谱头总高：两列谁伸得更低取谁，底边再留 20px 净空
-      //（首行标记最高到中线上方 50px，别压住）
+      // 谱头总高：两列谁伸得更低取谁，底边留净空——首行有标记/8va 时留 20
+      //（标记墨迹上探到中线上方 ~54px，别压住），干净的首行只留 8px 贴紧
       height: Math.max(
         tempoY + 6,
         rightLines.length > 0 ? colY + 4 + (rightLines.length - 1) * rowH + 6 : 0
-      ) + 20
+      ) + (upNeed > 30 ? 20 : 8)
     };
   })();
   const titleHeight = title ? title.height : 0;
@@ -2035,7 +2364,7 @@ function layoutScore(score2, opts) {
   for (const g of score2.groups) {
     for (const id of g.memberIds) groupOfEvent.set(id, g.id);
   }
-  const slurNext = /* @__PURE__ */ new Map();
+  const slurNextByG = /* @__PURE__ */ new Map();
   const slurCrossedBars = /* @__PURE__ */ new Set();
   {
     const idxOf = new Map(score2.events.map((e, i) => [e.id, i]));
@@ -2043,7 +2372,13 @@ function layoutScore(score2, opts) {
       if (ev.kind !== "note") continue;
       for (const t of ev.ties ?? []) {
         if (t.kind !== "slur") continue;
-        slurNext.set(ev.id, t.to);
+        const g = t.g ?? "";
+        let next = slurNextByG.get(g);
+        if (!next) {
+          next = /* @__PURE__ */ new Map();
+          slurNextByG.set(g, next);
+        }
+        next.set(ev.id, t.to);
         const a = idxOf.get(ev.id);
         const b = idxOf.get(t.to);
         if (a === void 0 || b === void 0) continue;
@@ -2054,9 +2389,9 @@ function layoutScore(score2, opts) {
     }
   }
   const slurChains = [];
-  {
-    const isTarget = new Set(slurNext.values());
-    for (const head of slurNext.keys()) {
+  for (const next of slurNextByG.values()) {
+    const isTarget = new Set(next.values());
+    for (const head of next.keys()) {
       if (isTarget.has(head)) continue;
       const chain = [];
       const seen = /* @__PURE__ */ new Set();
@@ -2064,7 +2399,7 @@ function layoutScore(score2, opts) {
       while (cur !== void 0 && !seen.has(cur)) {
         chain.push(cur);
         seen.add(cur);
-        cur = slurNext.get(cur);
+        cur = next.get(cur);
       }
       if (chain.length >= 2) slurChains.push(chain);
     }
@@ -2087,28 +2422,31 @@ function layoutScore(score2, opts) {
       const extension = dashes ? 5 * k + dashes * (glyph.dashW + 3 * k) : 0;
       const lyric = Math.max(0, ...(note?.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
       const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
-      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + 3 * k, lyric + 3 * k, mark + 3 * k) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
+      const pad = Math.min(3 * k, cell - glyph.nominalWidth);
+      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + 3 * k, mark + 3 * k) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
       w = Math.max(
         min,
-        Math.max(26 * k, TICKS_PER_BEAT * unit * Math.sqrt(ev.ticks / TICKS_PER_BEAT) + 10 * k) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + spacing
+        cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev)
       );
-    } else if (isBarrier(ev)) w = barlineWidthOf(ev, k, spacing);
+    } else if (isBarrier(ev)) w = barlineWidthOf(ev, k, gapDelta);
     else if (ev.kind === "directive") {
-      w = Math.max(8 * k, (ev.type === "paren" ? 15 : 26) * k + spacing);
-    } else if (ev.kind === "jump") w = Math.max(16 * k, 26 * k + spacing);
+      w = Math.max(8 * k, (ev.type === "paren" ? 15 : 26) * k + gapDelta);
+    } else if (ev.kind === "jump") w = Math.max(16 * k, 26 * k + gapDelta);
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
   const denseEndings = /* @__PURE__ */ new Set();
   const measureUnit = (from, to) => {
     const slice = widths.slice(from, to);
     const ideal = slice.reduce((sum, it) => sum + it.w, 0);
-    const notes = slice.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest").length;
+    const notes2 = slice.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest").length;
     const previous = score2.events[from - 1];
     const tail = score2.events[to - 1];
     return {
+      // 自动换行严格按「整小节自然宽」折行，不允许把小节压扁塞进去：
+      // 压缩会把目标净空隙吃掉，也会让被压缩的行右缘短一截（两端对齐破功）。
       ideal,
-      min: Math.max(opts.fitWidth ? 0 : ideal * 0.88, slice.reduce((sum, it) => sum + it.min, 0)),
-      weight: Math.pow(Math.max(1, notes), 1.5),
+      min: opts.fitWidth ? slice.reduce((sum, it) => sum + it.min, 0) : ideal,
+      weight: Math.pow(Math.max(1, notes2), 1.5),
       lead: previous?.kind === "barline" && previous.beatAfter ? METER_LEAD * k : 0,
       forced: !opts.fitWidth && tail?.kind === "barline" && !!tail.breakAfter,
       penalty: tail?.kind === "barline" ? (slurCrossedBars.has(to - 1) ? 2 : 0) + (denseEndings.has(to) ? 1.5 : 0) : opts.fitWidth ? 0.1 : 0
@@ -2239,6 +2577,7 @@ function layoutScore(score2, opts) {
     return Math.min(...numbers) < times;
   };
   let anyTimed = false;
+  let naturalMax = 0;
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
@@ -2264,20 +2603,21 @@ function layoutScore(score2, opts) {
     const cuts = [from, ...measureCuts.filter((c) => c > from && c < to), to];
     const units = cuts.slice(0, -1).map((a, i) => measureUnit(a, cuts[i + 1]));
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
-    const shortTail = (li === starts.length - 1 || units[units.length - 1]?.forced) && natural < (maxX - lead) * 0.6;
     const lastBar2 = widths[to - 1];
-    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - barlineWidthOf(lastBar2.ev, k, spacing)) / 2 : 0;
-    const fitted = fitSpacing(units, maxX - lead + edge, !shortTail);
+    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - barlineWidthOf(lastBar2.ev, k, gapDelta)) / 2 : 0;
+    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
+    const isLastRow = li + 1 === starts.length;
+    const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === void 0;
+    const fitted = fitSpacing(units, maxX - lead + edge, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
     const advances = /* @__PURE__ */ new Map();
     if (!opts.positions) units.forEach((u, ui) => {
       const members = widths.slice(cuts[ui], cuts[ui + 1]);
       const timed = members.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest");
-      const weight = timed.reduce((sum, it) => sum + Math.sqrt(it.ev.ticks / TICKS_PER_BEAT), 0);
       const slack = timed.reduce((sum, it) => sum + it.w - it.min, 0);
       const delta = fitted[ui] - u.ideal;
       members.forEach((it, index) => {
         const flexible = it.ev.kind === "note" || it.ev.kind === "rest";
-        const share = delta >= 0 ? flexible ? Math.sqrt(it.ev.ticks / TICKS_PER_BEAT) / Math.max(1e-9, weight) : 0 : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
+        const share = delta >= 0 ? timed.length ? flexible ? 1 / timed.length : 0 : index === members.length - 1 ? 1 : 0 : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
         advances.set(cuts[ui] + index, it.w + delta * share);
       });
     });
@@ -2366,11 +2706,14 @@ function layoutScore(score2, opts) {
           measure: anyTimed ? measureNo : void 0,
           ...bar.hidden ? { hidden: true } : {},
           ...bar.dashed ? { dashed: true } : {},
+          ...bar.breath ? { breath: true } : {},
           ...bar.free ? { freeAfter: true } : {},
           ...bar.partial ? { partial: true } : {},
           ...bar.beatAfter ? { beatAfter: bar.beatAfter } : {},
           ...bar.bpmAfter !== void 0 ? { bpmAfter: bar.bpmAfter } : {},
           ...bar.patchAfter !== void 0 ? { patchAfter: bar.patchAfter } : {},
+          ...bar.unisonAfter?.length ? { unisonAfter: bar.unisonAfter } : {},
+          ...bar.splitAfter ? { splitAfter: true } : {},
           ...bar.breakAfter ? { breakAfter: bar.breakAfter } : {},
           ...bar.repeat ? { repeat: bar.repeat } : {},
           ...bar.repeat === "end" && bar.times ? { repeatTimes: bar.times } : {},
@@ -2395,7 +2738,7 @@ function layoutScore(score2, opts) {
       let measurePartial = false;
       let firstPartial = false;
       let seenFirst = false;
-      let expected = Math.round(beatsPerMeasureOf(meterAt(score2, from)) * TICKS_PER_BEAT);
+      let expectedOpts = beatOptionsOf(meterAt(score2, from));
       let freeMode = false;
       for (const it of items) {
         if (it.kind === "note" || it.kind === "rest") {
@@ -2404,19 +2747,15 @@ function layoutScore(score2, opts) {
         } else if (it.kind === "barline") {
           if (open && complete && !(measurePartial || it.partial) && !freeMode) {
             const beats = acc / TICKS_PER_BEAT;
-            const exp = expected / TICKS_PER_BEAT;
-            if (acc > expected) {
-              badges.push({
-                x: barX,
-                text: `${trimNum(beats)}/${trimNum(exp)} \u2717`,
-                level: "error"
-              });
-            } else if (acc < expected && !(it.final && firstPartial)) {
-              badges.push({
-                x: barX,
-                text: `${trimNum(beats)}/${trimNum(exp)} \u26A0`,
-                level: "warn"
-              });
+            const expList = expectedOpts.map((t) => t / TICKS_PER_BEAT);
+            const label = expList.map(trimNum).join("\u6216");
+            if (!expList.some((o) => Math.abs(o - beats) < 1e-6)) {
+              const underAll = expList.every((o) => beats < o);
+              if (!underAll) {
+                badges.push({ x: barX, text: `${trimNum(beats)}/${label} \u2717`, level: "error" });
+              } else if (!(it.final && firstPartial)) {
+                badges.push({ x: barX, text: `${trimNum(beats)}/${label} \u26A0`, level: "warn" });
+              }
             }
           }
           acc = 0;
@@ -2429,7 +2768,7 @@ function layoutScore(score2, opts) {
           }
           barX = it.x;
           if (it.beatAfter) {
-            expected = Math.round(beatsPerMeasureOf(it.beatAfter) * TICKS_PER_BEAT);
+            expectedOpts = beatOptionsOf(it.beatAfter);
             freeMode = false;
           } else if (it.freeAfter) {
             freeMode = true;
@@ -2603,9 +2942,14 @@ function layoutScore(score2, opts) {
       hitIndex.push({ eventId: it.eventId, x: it.x, y: y + 14, w: it.w, h: 30 });
     }
     const previous = score2.events[from - 1];
+    const lineEvents = score2.events.slice(from, to);
+    const lineHasHairpin = lineEvents.some((e) => e.kind === "note" && (e.hairpin || e.hairpinTo));
+    const lineHasDynamic = lineEvents.some((e) => e.kind === "note" && e.dynamic);
+    const lyricYOff = (lineHasHairpin ? 64 : lineHasDynamic ? 42 : 30) * k;
     lines.push({
       index: li,
       y,
+      lyricYOff,
       items,
       beams,
       arcs,
@@ -2661,15 +3005,23 @@ function layoutScore(score2, opts) {
       const nb = nextBarIdxOf(last);
       const closes = nb >= 0 && score2.events[nb].repeat === "end" && !manualOpen;
       const endIdx = nb >= 0 ? nb : last;
-      const wp = barPos.get(wall);
-      if (!wp) continue;
+      const wpRaw = barPos.get(wall);
+      if (!wpRaw) continue;
+      const wallLine = lines[wpRaw.li];
+      const wallAtLineEnd = wallLine.items[wallLine.items.length - 1]?.eventIndex === wall && wpRaw.li + 1 < lines.length;
+      const firstNoteX = (li) => {
+        const ln = lines[li];
+        const first = ln.items.find((it) => it.kind === "note" || it.kind === "rest") ?? ln.items[0];
+        return first ? first.x : padding;
+      };
+      const wp = wallAtLineEnd ? { li: wpRaw.li + 1, x: firstNoteX(wpRaw.li + 1), w: 0 } : wpRaw;
       const ep = barPos.get(endIdx);
-      const to = ep ? ep.li : wp.li;
+      const to = Math.max(wp.li, ep ? ep.li : wp.li);
       for (let li = wp.li; li <= to; li += 1) {
         const isWallSeg = li === wp.li;
         const isEndSeg = li === to;
         const open = !(closes && isEndSeg);
-        const x0 = isWallSeg ? wp.x + wp.w / 2 : padding;
+        const x0 = isWallSeg ? wp.x + wp.w / 2 : firstNoteX(li);
         const x1 = isEndSeg && ep ? ep.x + ep.w / 2 : rightEdge(li);
         if (x1 - x0 <= 10) continue;
         lines[li].voltas.push({
@@ -2678,8 +3030,9 @@ function layoutScore(score2, opts) {
           numbers,
           ...open ? { open: true } : {},
           ...isWallSeg ? {} : { cont: true },
-          // 开放段尾若是「非末遍房子」的跳回点（如 [1] 后面跟 [2]），标「↩跳回」；
-          // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号
+          // 开放段尾若是「非末遍房子」的跳回点（如 [1] 后面跟 [2]），标结构化 jump；
+          // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号。
+          // 这个标记只进数据层，绘制层不再写「跳回」文字。
           ...isEndSeg && open && houseJumps(wall, numbers) ? { jump: true } : {}
         });
       }
@@ -2713,8 +3066,7 @@ function layoutScore(score2, opts) {
       const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
       return {
         id: it.eventId,
-        x: it.x + 4 * k + shift,
-        leftAligned: true,
+        x: noteDigitCenter(it, glyph),
         widths: (it.lyrics ?? []).map((word) => Math.min(lyricTextWidth(word, 16 * k), Math.max(16 * k, it.w - shift - 8 * k)))
       };
     })
@@ -2722,6 +3074,7 @@ function layoutScore(score2, opts) {
   lines.forEach((line, i) => {
     if (lyricLines[i].length) line.lyricLines = lyricLines[i];
   });
+  const cues = placeCueStaves(score2, { lines, lineHeight, unit, fontSize });
   return {
     lines,
     unit,
@@ -2730,8 +3083,116 @@ function layoutScore(score2, opts) {
     hitIndex,
     title,
     width: opts.contentWidth,
-    height: padTop + titleHeight + lines.length * lineHeight + padBottom
+    height: padTop + titleHeight + lines.length * lineHeight + padBottom,
+    naturalWidth: naturalMax,
+    ...cues.length ? { cues } : {}
   };
+}
+function noteDigitCenter(it, g = GLYPH) {
+  return it.x + g.pad + (it.accW ?? 0) + (it.graceInk ?? 0) + g.nominalWidth / 2;
+}
+function placeCueStaves(score2, ctx) {
+  const cues = (score2.cues ?? []).filter((c) => c.events?.length);
+  if (!cues.length) return [];
+  const out = [];
+  const g = deriveGlyph(ctx.fontSize);
+  for (const cue of cues) {
+    let rows = [];
+    if (cue.anchorId) {
+      const line = ctx.lines.find((ln) => ln.items.some((it) => it.eventId === cue.anchorId));
+      const item = line?.items.find((it) => it.eventId === cue.anchorId);
+      if (line && item) {
+        const x1 = line.items[line.items.length - 1];
+        rows.push({
+          line,
+          x0: item.x,
+          x1: x1.x + x1.w,
+          anchorX: noteDigitCenter(item, g),
+          anchorY: line.y,
+          anchorItem: item
+        });
+      }
+    } else {
+      for (const line of ctx.lines) {
+        const bars = line.items.filter((it) => it.kind === "barline" && it.measure !== void 0);
+        const inRange = bars.filter((b) => b.measure >= (cue.anchorStart ?? 1) && b.measure <= (cue.anchorEnd ?? cue.anchorStart ?? 1));
+        if (!inRange.length) continue;
+        const firstM = Math.min(...inRange.map((b) => b.measure));
+        const prev = bars.find((b) => b.measure === firstM - 1);
+        const lastBar = inRange.reduce((a, b) => b.measure > a.measure ? b : a);
+        const x0 = prev ? prev.x + prev.w : line.items[0]?.x ?? 0;
+        const firstNote = line.items.filter((it) => (it.kind === "note" || it.kind === "rest") && !it.hidden && !it.multibar && !it.multibarCont && !it.repeatBar && it.x + it.w >= x0).reduce((a, b) => !a || b.x < a.x ? b : a, void 0);
+        rows.push({
+          line,
+          // 锚段左边界 = 前一小节线右缘（第 1 小节或行首没有前线时用行首）
+          x0,
+          x1: lastBar.x + lastBar.w,
+          anchorX: firstNote ? noteDigitCenter(firstNote, g) : x0,
+          anchorY: line.y,
+          ...firstNote ? { anchorItem: firstNote } : {}
+        });
+      }
+    }
+    if (!rows.length) continue;
+    const cueFont = Math.max(12, ctx.fontSize * 0.62);
+    const mini = layoutScore(
+      { version: 2, meta: { ...score2.meta, title: "", sub: "", notes: [] }, events: cue.events, groups: cue.groups ?? [] },
+      { contentWidth: 1e6, fitWidth: true, showTitle: false, padding: 0, rightPadding: 0, justify: false, fontSize: cueFont, unit: ctx.unit * 0.62 }
+    );
+    for (let ri = 0; ri < Math.min(rows.length, mini.lines.length); ri += 1) {
+      const row = rows[ri];
+      const items = mini.lines[ri].items.filter((it) => it.kind === "note" || it.kind === "rest" || it.kind === "barline");
+      if (!items.length) continue;
+      const cx0 = items[0].x;
+      const cx1 = items[items.length - 1].x + items[items.length - 1].w;
+      const avail = row.x1 - row.x0;
+      const natural = cx1 - cx0;
+      const ratio = avail / Math.max(1, natural);
+      const scale = natural >= avail ? Math.max(0.5, ratio) : Math.min(ratio, 1.3);
+      const mapX = (x) => row.x0 + (x - cx0) * scale;
+      const mapped = items.map((it) => ({
+        ...it,
+        x: mapX(it.x),
+        w: it.w * scale,
+        ...it.dashXs ? { dashXs: it.dashXs.map(mapX) } : {},
+        ...it.playXs ? { playXs: it.playXs.map((p) => ({ ...p, x: mapX(p.x) })) } : {}
+      }));
+      const beams = mini.lines[ri].beams.map((b) => ({
+        ...b,
+        x0: mapX(b.x0),
+        x1: mapX(b.x1)
+      }));
+      const ck = cueFont / 21;
+      const k = ctx.fontSize / 21;
+      const bandHalf = Math.min(ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
+      const hasLowDots = cue.events.some((e) => e.kind === "note" && e.octave !== void 0 && e.octave < 0);
+      const looseY = row.line.y - bandHalf + 22 * ck + 4 - (hasLowDots ? 2 * k : 0);
+      const leftEdge = Math.min(row.x0, mapped[0]?.x ?? row.x0);
+      const rightEdge = Math.max(...mapped.map((it) => it.x + it.w), leftEdge);
+      out.push({
+        lineIndex: row.line.index,
+        ...cue.name ? { name: cue.name } : {},
+        y: looseY,
+        nameX: row.x0,
+        items: mapped,
+        beams,
+        glyph: mini.glyph,
+        cueId: cue.id,
+        ...cue.anchorId ? { anchorId: cue.anchorId } : {},
+        anchorX: row.anchorX,
+        anchorY: row.anchorY,
+        ...row.anchorItem ? { anchorItem: row.anchorItem } : {},
+        hit: {
+          x0: leftEdge - 8 * ck,
+          y0: looseY - cueFont * 0.9,
+          x1: rightEdge + 8 * ck,
+          y1: looseY + cueFont * 1.3
+          // 减时线画在基线下方
+        }
+      });
+    }
+  }
+  return out;
 }
 function trimNum(n) {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);

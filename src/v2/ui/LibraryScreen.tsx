@@ -88,6 +88,17 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
   const [busy, setBusy] = useState(false);
   /** 音色包管理弹窗：装了哪些包 / 移除 / 导入，都收在这一个界面里，不占曲库列表 */
   const [bankOpen, setBankOpen] = useState(false);
+  /** 行尾「更多」菜单：同一时刻只开一个，点别处收起 */
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuId) return;
+    const close = (e: PointerEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuId(null);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [menuId]);
   const packRef = useRef<HTMLInputElement>(null);
   const jpsRef = useRef<HTMLInputElement>(null);
   /** 已导入的音色包（.wsbank）：音色下拉里多出来的那些音色就是它们给的 */
@@ -364,11 +375,18 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
 
       <div className="v2-lib-list">
         {items.length === 0 ? (
-          <p className="v2-hint">
-            {readOnly
-              ? '本机曲库还是空的。去「曲库制作」导入一个 .wspack（谱面 + 伴奏 + 标定），或在对轨界面配好伴奏后点「打包」。'
-              : '曲库还是空的。点「导入打包」收进一个 .wspack（谱面 + 伴奏 + 标定就都有了），或「导入 .jps」只收谱面。在对轨界面配好伴奏后点「打包」，就能得到 .wspack。'}
-          </p>
+          <div className="v2-lib-empty">
+            <p className="v2-hint">
+              {readOnly
+                ? '本机曲库还是空的。去「曲库制作」导入一个 .wspack（谱面 + 伴奏 + 标定），或在对轨界面配好伴奏后点「打包」。'
+                : '曲库还是空的。导入一个 .wspack（谱面 + 伴奏 + 标定就都有了），或只导入 .jps 谱面。'}
+            </p>
+            {readOnly ? null : (
+              <button className="v2-btn" onClick={() => packRef.current?.click()}>
+                导入乐谱
+              </button>
+            )}
+          </div>
         ) : null}
         {items.length > 0 && visible.length === 0 ? (
           <p className="v2-hint">没有匹配「{query}」的谱面。</p>
@@ -442,38 +460,48 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
               ) : (
                 <span className="v2-lib-actions">
                   {readOnly || IS_ANDROID_APP ? null : (
-                    <>
-                      <button
-                        className="v2-btn"
-                        title={it.meta.broken ? '打开源码修复，原始内容会完整保留' : '进对轨：配伴奏 / 调标定'}
-                        onClick={() => onEdit(it)}
-                      >
-                        {it.meta.broken ? '修复' : '对轨'}
-                      </button>
-                      <button
-                        className="v2-btn"
-                        title="谱面 + 伴奏 + 标定打包成一个 .wspack（可分享）"
-                        onClick={() => void handlePack(it)}
-                      >
-                        打包
-                      </button>
-                    </>
+                    <button
+                      className="v2-btn"
+                      title={it.meta.broken ? '打开源码修复，原始内容会完整保留' : '进对轨：配伴奏 / 调标定'}
+                      onClick={() => onEdit(it)}
+                    >
+                      {it.meta.broken ? '修复' : '对轨'}
+                    </button>
                   )}
                   {readOnly ? null : (
-                    <>
+                    <div className="v2-lib-more" ref={menuId === it.id ? menuRef : undefined}>
                       <button
                         className="v2-btn"
-                        onClick={() => {
-                          setRenaming(it.id);
-                          setRenameValue(it.name);
-                        }}
+                        aria-label="更多操作"
+                        aria-expanded={menuId === it.id}
+                        aria-haspopup="menu"
+                        onClick={() => setMenuId(menuId === it.id ? null : it.id)}
                       >
-                        重命名
+                        ⋯
                       </button>
-                      <button className="v2-btn" onClick={() => setConfirming(it.id)}>
-                        删除
-                      </button>
-                    </>
+                      {menuId === it.id ? (
+                        <div className="v2-lib-menu" role="menu">
+                          {IS_ANDROID_APP ? null : (
+                            <button role="menuitem" onClick={() => { setMenuId(null); void handlePack(it); }}>
+                              打包
+                            </button>
+                          )}
+                          <button
+                            role="menuitem"
+                            onClick={() => {
+                              setMenuId(null);
+                              setRenaming(it.id);
+                              setRenameValue(it.name);
+                            }}
+                          >
+                            重命名
+                          </button>
+                          <button role="menuitem" onClick={() => { setMenuId(null); setConfirming(it.id); }}>
+                            删除
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   )}
                 </span>
               )}

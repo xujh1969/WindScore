@@ -510,6 +510,16 @@ function drawBarline(
   } else if (s.final) stroke(s.x - sp * .6, thin);
   else if (s.double) stroke(s.x - sp * .6, thin);
   ctx.restore();
+  // 小节线换气 V：与简谱同口径，画在线左上方、用淡黄的 tongue 色
+  if (s.breath) {
+    ctx.save();
+    ctx.font = `600 ${Math.round(sp * 1.4)}px ${FAM}`;
+    ctx.fillStyle = theme.tongue;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('V', s.x - sp * 0.9, y0 - sp * 0.9);
+    ctx.restore();
+  }
   // 谱中变速 / 换音色标注（0.4.10）：小节线上方「♩=96 · 小提琴」，
   // muted 灰不抢音符的注意力；音色只写简略名，括号备注只留在下拉列表里
   const labels: string[] = [];

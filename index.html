@@ -59,12 +59,11 @@
       </div>
 
       <header class="ws-home-head">
-        <p class="ws-home-kicker">电吹管动态谱</p>
         <h1 class="ws-home-title">
           <span class="ws-home-title-en">WindScore</span>
           动态谱制作工具
         </h1>
-        <p class="ws-home-sub">简谱写谱、伴奏对轨、曲库管理，一首歌从纸面到动态谱。</p>
+        <p class="ws-home-sub">给电吹管的简谱写谱、伴奏对轨与曲库管理，一首歌从纸面到动态谱。</p>
       </header>
 
       <nav class="ws-home-actions" aria-label="入口">
@@ -93,24 +92,30 @@
           </svg>
           曲库管理
         </a>
-        <!-- 乐谱导入（MusicXML 转译，musicxml.html）：测试功能入口，虚线边框以示区别 -->
-        <a class="ws-btn ws-btn-ghost ws-btn-test" href="./musicxml.html" title="测试功能：从 MusicXML（.musicxml / .xml / .mxl）导入并转译为 .jps">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M11 2H5.5A1.5 1.5 0 0 0 4 3.5v13A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5V7z" />
-            <path d="M11 2v5h5M7.5 12.5l1.5 1.5 3-3.5" />
-          </svg>
-          乐谱导入
-        </a>
-        <!-- 按简谱识别（ScoreOCR 集成，ocr.html）：测试功能入口，虚线边框以示区别 -->
-        <a class="ws-btn ws-btn-ghost ws-btn-test" href="./ocr.html" title="测试功能：识别简谱图片 / PDF，转为可编辑的 .jps（首次识别需下载约 25MB 识别模型）">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="14" height="14" rx="2" />
-            <circle cx="8" cy="12.5" r="1.4" fill="currentColor" stroke="none" />
-            <path d="M9.4 12.5V6.8l4.2-1v5.2" />
-            <circle cx="12.2" cy="11" r="1.4" fill="currentColor" stroke="none" />
-          </svg>
-          按简谱识别
-        </a>
+        <!-- 两个测试功能收进「更多」：启动页默认只露四个主入口 -->
+        <details class="ws-home-more">
+          <summary>更多</summary>
+          <div class="ws-home-more-list">
+            <!-- 乐谱导入（MusicXML 转译，musicxml.html）：测试功能，虚线边框以示区别 -->
+            <a class="ws-btn ws-btn-ghost ws-btn-test" href="./musicxml.html" title="测试功能：从 MusicXML（.musicxml / .xml / .mxl）导入并转译为 .jps">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M11 2H5.5A1.5 1.5 0 0 0 4 3.5v13A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5V7z" />
+                <path d="M11 2v5h5M7.5 12.5l1.5 1.5 3-3.5" />
+              </svg>
+              乐谱导入
+            </a>
+            <!-- 按简谱识别（ScoreOCR 集成，ocr.html）：测试功能，虚线边框以示区别 -->
+            <a class="ws-btn ws-btn-ghost ws-btn-test" href="./ocr.html" title="测试功能：识别简谱图片 / PDF，转为可编辑的 .jps（首次识别需下载约 25MB 识别模型）">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="14" height="14" rx="2" />
+                <circle cx="8" cy="12.5" r="1.4" fill="currentColor" stroke="none" />
+                <path d="M9.4 12.5V6.8l4.2-1v5.2" />
+                <circle cx="12.2" cy="11" r="1.4" fill="currentColor" stroke="none" />
+              </svg>
+              按简谱识别
+            </a>
+          </div>
+        </details>
       </nav>
 
       <footer class="ws-home-foot">

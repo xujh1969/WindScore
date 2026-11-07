@@ -129,7 +129,7 @@ export function buildStaffMarks(score: Score, staff: StaffLayout): StaffMark[] {
         const t = TECHNIQUE_GLYPH[technique];
         if (technique === 'breath') place({ ...base, kind: 'shape', shape: 'breath', color: 'tongue', x: glyph.x - sp * .65, width: sp * 1.3, height: sp * 1.1 }, true);
         else if (t?.path) place({ ...base, kind: 'path', path: t.path, color: 'tech', height: t.path.startsWith('bend') ? 1.7 * sp : sp }, true);
-        else textMark(e.id, row, glyph.x, technique === 'trill' ? 'tr' : technique === 'da' ? t.mark : t?.label ?? technique, 'tech', true, e.gray);
+        else textMark(e.id, row, glyph.x, technique === 'trill' ? 'tr' : technique === 'da' || technique === 'slideH' ? t.mark : t?.label ?? technique, 'tech', true, e.gray);
       }
       if (e.tongue) textMark(e.id, row, glyph.x, e.tongue, 'tongue', true, e.gray);
       if (e.mark) textMark(e.id, row, glyph.x, e.mark, 'tech', true, e.gray);

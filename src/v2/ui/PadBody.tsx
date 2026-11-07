@@ -169,6 +169,8 @@ export interface PadBarlineActions {
   toggleDashed: () => void;
   /** 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：此线之后拍号位置记「散」，不做拍数校验 */
   toggleFree: () => void;
+  /** 小节线换气：在线左上方标 V（声部私有，非首声部也能改） */
+  toggleBreath: () => void;
   toggleJump: (mark: JumpMark | null) => void;
 }
 
@@ -476,6 +478,20 @@ export function PadBody({
       ) : null}
       {barline ? (
         <>
+        {/* 气息与技法（小节线版）：V 换气是声部私有记号，放在 conductor 门之外，
+            首声部与非首声部点中竖线都能看到；V 画在这根线左上方 */}
+        <div className="v2-field">
+          <span className="v2-field-label">气息与技法（标在小节线左上方）</span>
+          <div className="v2-grid v2-grid-4">
+            <button
+              className={`v2-btn v2-btn-breath ${barline.breath ? 'is-on' : ''}`}
+              onClick={() => barlineActions.toggleBreath()}
+              title="换气，谱面在这根小节线左上方标 V（再点一次取消）"
+            >
+              换气 V
+            </button>
+          </div>
+        </div>
         {!canEditConductor ? (
           <>
           <p className="v2-hint">全谱的拍号、速度、反复、跳房子与跳转由首声部控制，切回首声部再编辑。音色是各声部自己的设置，在这里改本声部的。</p>

@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { planJoin, sortByName } from '../src/ocr/adapter/joinPhotos';
 import { diagnoseJps } from '../src/ocr/adapter/scoreDiagnostics';
 import { panBounds } from '../src/ocr/ui/panBounds';
+import { pieceSelectState } from '../src/v2/ui/pieceLabel';
 import { LIGHT_THEME, paintLayout, resetPaintMetrics } from '../src/v2/paint';
 import { BeatClock } from '../src/v2/clock';
 import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
@@ -878,6 +879,78 @@ console.log('\n[输入板 · 图标 / 下拉宽度 / 标题]');
   check('段落标题去掉「技法 · 倚音 · 力度 · 记号」',
     padBodySrc.includes('<summary>（作用于选中的音）</summary>')
     && !padBodySrc.includes('技法 · 倚音 · 力度 · 记号'));
+}
+
+console.log('\n[左上角示例乐谱下拉 · 曲谱改名同步]');
+{
+  const builtin = ['茉莉花', '生日快乐（3/4 拍）'];
+  const opened = parseDsl('@format 3\n@title 旧曲名\n\n1 2 3 4 |').score!;
+  const openedTitle = opened.meta.title;
+  const original = pieceSelectState(openedTitle, openedTitle, '旧曲名.jps', builtin);
+  check('打开谱面时下拉框仍显示打开时的名字（旧行为不变）',
+    original.label === '旧曲名.jps' && original.value === '', JSON.stringify(original));
+  const renamed = setMeta(opened, { title: '草原之夜' });
+  const after = pieceSelectState(renamed.meta.title, openedTitle, '旧曲名.jps', builtin);
+  check('曲谱属性改名后左上角下拉框显示新名',
+    after.label === '草原之夜' && after.value === '', JSON.stringify(after));
+  const fresh = pieceSelectState(DEFAULT_META.title, DEFAULT_META.title, '新建谱面', builtin);
+  check('新建未改名的谱面显示「新建谱面」',
+    fresh.label === '新建谱面' && fresh.value === '');
+  check('新建后改名同样立即显示新名',
+    pieceSelectState('我的歌', DEFAULT_META.title, '新建谱面', builtin).label === '我的歌');
+  // 内置示例曲的 @title 与下拉选项名本来不同，未改名时必须仍选中内置项
+  const demo = pieceSelectState('生日快乐', '生日快乐', '生日快乐（3/4 拍）', builtin);
+  check('内置示例曲未改名时仍选中自己的下拉项',
+    demo.value === '生日快乐（3/4 拍）' && demo.label === '生日快乐（3/4 拍）');
+  const demoNamed = pieceSelectState('新编', '生日快乐', '生日快乐（3/4 拍）', builtin);
+  check('内置示例曲改名后当前项换成新名、不再选中内置项',
+    demoNamed.label === '新编' && demoNamed.value === '');
+  check('清空曲名不把下拉框留空',
+    pieceSelectState('', openedTitle, '旧曲名.jps', builtin).label === '旧曲名.jps');
+  const restored = pieceSelectState('草原之夜', '旧曲名.jps', '旧曲名.jps', builtin);
+  check('刷新恢复会话后（基线是旧的会话名）仍显示谱面里的新名字',
+    restored.label === '草原之夜' && restored.value === '');
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('编辑器下拉框使用该状态，且换谱 / 会话恢复都设曲名基线',
+    editorSrc.includes('value={pieceSelect.value}')
+    && editorSrc.includes('{pieceSelect.label}')
+    && !editorSrc.includes('BUILTIN.some((s) => s.name === active)')
+    && editorSrc.includes('setLoadedTitle(s.name')
+    && (editorSrc.match(/setLoadedTitle\(/g) ?? []).length === 4);
+}
+
+console.log('\n[UI 规范 · 圆角 / 发光 / 强调色 / 信息密度]');
+{
+  const editorCss = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  const ocrCss = readFileSync(join(process.cwd(), 'src/ocr/ui/ocr.css'), 'utf8');
+  const homeCss = readFileSync(join(process.cwd(), 'src/home.css'), 'utf8');
+  const homeHtml = readFileSync(join(process.cwd(), 'index.html'), 'utf8');
+  const libSrc = readFileSync(join(process.cwd(), 'src/v2/ui/LibraryScreen.tsx'), 'utf8');
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('全站不再有一律胶囊的圆角，也不再有文字/LOGO 发光',
+    ![editorCss, ocrCss, homeCss].some((s) =>
+      s.includes('border-radius: 999px') || s.includes('text-shadow') || s.includes('drop-shadow')));
+  check('深浅两档同一套纸墨金，主按钮不再用绿色与有色大阴影',
+    homeCss.includes('#8a6a12') && homeCss.includes('#d9b23c')
+    && !homeCss.includes('box-shadow: 0 10px 30px'));
+  check('首页去掉眉标，两个测试入口收进「更多」',
+    !homeHtml.includes('ws-home-kicker')
+    && homeHtml.includes('<details class="ws-home-more">')
+    && (homeHtml.match(/ws-btn-test/g) ?? []).length === 2);
+  check('选中态与曲库提示改为弱底细边，弹窗阴影收敛',
+    /\.v2-seg\.is-on \{[^}]*color-mix\(/s.test(editorCss)
+    && editorCss.includes('color-mix(in srgb, var(--accent) 10%, var(--surface))')
+    && !editorCss.includes('0 18px 48px'));
+  check('播放页显示设置分组且侧栏标题提到 14px',
+    editorSrc.includes('className="v2-play-group"')
+    && editorCss.includes('.v2-play-group {')
+    && /\.v2-side-title \{[^}]*font-size: var\(--fs-title\)/s.test(editorCss));
+  check('曲库行操作收进「⋯」菜单且空状态有直接动作',
+    libSrc.includes('v2-lib-menu') && libSrc.includes('menuRef')
+    && libSrc.includes('v2-lib-empty') && editorCss.includes('.v2-lib-menu button'));
+  check('OCR 对照页右栏不再重复一层品牌/文件状态顶栏',
+    ocrCss.includes('.ocr-right .v2-head .v2-brand')
+    && ocrCss.includes('.ocr-right .v2-head .v2-file'));
 }
 
 console.log('\n[歌词 · 与音符数字对齐]');
@@ -4306,6 +4379,29 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   const jLast = jLay.lines[0].voltas.find((v) => v.numbers[0] === 2);
   check('[1] 非末遍：段尾标跳回', jFirst?.jump === true);
   check('[2] 末遍：不标（:| 本身就是跳回记号）', jLast !== undefined && !jLast.jump);
+  // 用户 2026-11-07：1 号房子横线下面不要写「跳回」那几个字。
+  // jump 只留在数据层；真实绘制一遍，捕获 fillText 确认谱面没有提示文字。
+  const voltaTexts: string[] = [];
+  const vPx = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+  const vTarget: Record<string, unknown> = {
+    font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, globalAlpha: 1,
+    measureText: (t: string) => ({ width: Array.from(t).length * vPx(vTarget.font as string) * 0.62 }),
+    fillText: (text: string) => { voltaTexts.push(String(text)); },
+  };
+  const vCtx = new Proxy(vTarget, {
+    get(t, k: string) { return k in t ? t[k] : () => undefined; },
+    set(t, k: string, v) { t[k] = v; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  paintLayout(vCtx, jLay, LIGHT_THEME);
+  resetPaintMetrics();
+  check('1 号房号仍绘制，但横线下面不再写「跳回」字样',
+    voltaTexts.some(t => t.includes('1.')) && voltaTexts.some(t => t.includes('2.'))
+    && voltaTexts.every(t => !t.includes('跳回') && !t.includes('↩')),
+    voltaTexts.filter(t => t.includes('跳回') || t.includes('↩')).join(',') || '无提示文字');
+  const staffStructSrc = readFileSync(join(process.cwd(), 'src/v2/staffStructure.ts'), 'utf8');
+  check('五线谱同样不画「↩」跳回提示',
+    !staffStructSrc.includes("fillText('↩'") && !staffStructSrc.includes('跳回'));
 }
 
 {
@@ -5887,6 +5983,83 @@ console.log('\n[OCR 多图 · 排序 / 长图 / 启动页接线]');
   check('单声部对称盲区：个别行误归的假声部（<4 行）不再触发多声部保护',
     feedbackSrc.includes('baselineVoiced >= 4'));
   }
+}
+
+console.log('\n[小节线换气 V 与音符 h 滑音]');
+{
+  // 用户 2026-11-08：点小节线 → 右侧栏「气息与技法」出现 V 换气；
+  // 点音符 → 同单元出现「h滑音」。两者都走同一套 DSL / 排版 / 绘制链路。
+  const src = '@format 3\n@beat 4/4\n\n5H 1 1 1 | V 2 2 2 2 ||\n';
+  const p = parseDsl(src);
+  const score = p.score!;
+  const bars = score.events.filter((e): e is BarlineEvent => e.kind === 'barline');
+  check('| V 解析成小节线换气，不产生额外事件',
+    p.errors.length === 0 && bars.length === 2 && bars[0].breath === true && !bars[1].breath,
+    p.errors.join('; '));
+  const tight = parseDsl('@format 3\n@beat 4/4\n\n5H 1 1 1 |V 2 2 2 2 ||\n');
+  check('紧贴写法 |V 与 | V 等价',
+    tight.errors.length === 0 && stable(tight.score) === stable(score), tight.errors.join('; '));
+  const round = serializeDsl(score);
+  check('小节线 V 与 5H 都无损往返',
+    round.includes('| V') && round.includes('5H') && stable(parseDsl(round).score) === stable(score),
+    round.split('\n').pop()?.trim());
+  check('V 不紧跟小节线时报错，不静默吞掉',
+    parseDsl('@format 3\n@beat 4/4\n\n1 V 1 1 ||\n').errors.some((e) => e.includes('紧接小节线')));
+  check('5H = h 滑音；5h 仍是下弯音',
+    (score.events[0] as NoteEvent).techniques?.includes('slideH') === true
+    && (parseDsl('@format 3\n@beat 4/4\n\n5h 1 1 1 ||\n').score!.events[0] as NoteEvent).techniques?.includes('bendDown') === true);
+  const off = setBarNotation(score, bars[0].id, { breath: !bars[0].breath });
+  check('按钮再点一次清除小节线换气',
+    (off.events.find((e) => e.id === bars[0].id) as BarlineEvent).breath !== true
+    && !serializeDsl(off).includes('| V'));
+  // 真实绘制：V 在小节线左上方、h 在音符正上方
+  const L = layoutScore(score, { contentWidth: 1200, unit: 33.6 / TICKS_PER_BEAT });
+  const line = L.lines[0];
+  type Mark = { text: string; x: number; y: number; align: string };
+  const marks: Mark[] = [];
+  const mPx = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+  const mTarget: Record<string, unknown> = {
+    font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, globalAlpha: 1,
+    measureText: (t: string) => ({ width: Array.from(t).length * mPx(mTarget.font as string) * 0.62 }),
+    fillText: (text: string, x: number, y: number) => {
+      marks.push({ text: String(text), x, y, align: mTarget.textAlign as string });
+    },
+  };
+  const mCtx = new Proxy(mTarget, {
+    get(t, k: string) { return k in t ? t[k] : () => undefined; },
+    set(t, k: string, v) { t[k] = v; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  paintLayout(mCtx, L, LIGHT_THEME);
+  resetPaintMetrics();
+  const barItem = line.items.find((i) => i.kind === 'barline' && i.breath);
+  const v = marks.find((c) => c.text === 'V');
+  const h = marks.find((c) => c.text === 'h');
+  const noteItem = line.items.find((i) => i.kind === 'note' && (i.techniques ?? []).includes('slideH'));
+  const digit = marks.find((c) => c.text === '5' && Math.abs(c.y - line.y) < 2 && c.align === 'left');
+  const center = noteItem ? noteDigitCenter(noteItem, L.glyph) : NaN;
+  check('V 画在小节线左上方（x 在线左、y 在行上方）',
+    !!barItem && !!v && v.x < barItem.x + barItem.w / 2 && v.y < line.y,
+    v ? `V=(${v.x.toFixed(1)},${v.y.toFixed(1)}) bx=${((barItem?.x ?? 0) + (barItem?.w ?? 0) / 2).toFixed(1)}` : 'V 未绘制');
+  check('h 画在音符正上方（与数字字形中心同列）',
+    !!noteItem && !!h && !!digit && h.y < line.y && Math.abs(h.x - center) < 1,
+    h ? `h.x=${h.x.toFixed(1)} center=${center.toFixed(1)} digit.x=${digit?.x.toFixed(1)}` : 'h 未绘制');
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const noteSrc = readFileSync(join(process.cwd(), 'src/v2/ui/NoteFields.tsx'), 'utf8');
+  const appSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const paintSrc2 = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const staffPaintSrc = readFileSync(join(process.cwd(), 'src/v2/staffPaint.ts'), 'utf8');
+  const staffMarksSrc = readFileSync(join(process.cwd(), 'src/v2/staffMarks.ts'), 'utf8');
+  check('点小节线后右侧栏出现「气息与技法」V 换气按钮（非首声部也有）',
+    padSrc.includes('气息与技法（标在小节线左上方）')
+    && padSrc.includes('barlineActions.toggleBreath()')
+    && padSrc.indexOf('气息与技法（标在小节线左上方）') < padSrc.indexOf('!canEditConductor'));
+  check('点音符后「气息与技法」出现文字为「h滑音」的按钮',
+    paintSrc2.includes("slideH: { mark: 'h', label: 'h滑音' }")
+    && noteSrc.includes('g.label.startsWith(g.mark)')
+    && appSrc.includes('toggleBreath: () => {'));
+  check('五线谱同步：小节线 V 与音符 h 都按字母绘制',
+    staffPaintSrc.includes("fillText('V'") && staffMarksSrc.includes("technique === 'slideH'"));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

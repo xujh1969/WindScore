@@ -58,7 +58,7 @@ import type {
  */
 // 音级位支持 X/x：无音高音符（打击 / 拍手），小写 x 只在独立记号位生效，
 // 跟在音符后的 x 仍是下滑音后缀（5x）——正则的音级位在前，无歧义。
-const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@tkVfdmwsxqhrguazR]*)('([0-5]))?(\[[^[\]]{1,3}\])?$/;
+const NOTE_RE = /^([v^#b♯♭♮]*)([0-7Xx])([v^]*)(\.{0,2})(?:\/([1-8]))?(-*)(~?)([!=>@HtkVfdmwsxqhrguazR]*)('([0-5]))?(\[[^[\]]{1,3}\])?$/;
 
 /**
  * 技法记号的后缀字母 → 数据值。
@@ -75,6 +75,7 @@ const TECHNIQUE_LETTER: Record<string, string> = {
   x: 'slideDown', // 下滑音 ↓
   q: 'bendUp', // 上弯音（向上折线箭头）
   h: 'bendDown', // 下弯音（向下折线箭头）
+  H: 'slideH', // h 滑音（谱面画小写字母 h；小写 h 已被下弯音占用）
   u: 'turn', // 回音（横置 ∞ 形，GB/T 46845—2025 §7.5.5）
 };
 
@@ -779,9 +780,9 @@ function parseSingle(text: string, modern = false): ParseResult {
     // 只在 ~ 后面（可隔空白）跟着音符时才切分：5~@（延音+延长号）这类「~ 后带技法
     // 后缀」的合法写法（NOTE_RE 允许）必须保持整 token，否则 @ 会被孤成独立记号报错。
     const tokens = line.replace(/~(?=\s*[0-7Xx])/g, '~ ').split(/\s+/).filter(Boolean)
-      // 小节线后缀记号允许紧贴书写（|速96 / |同2-3 / |分）：
+      // 小节线后缀记号允许紧贴书写（|速96 / |同2-3 / |分 / |V）：
       // 序列化产物是分开的 token（`| 速96`），但用户手写紧贴很自然——拆开再走各自的分支
-      .flatMap((t) => (/^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页)/.test(t) ? ['|', t.slice(1)] : [t]));
+      .flatMap((t) => (/^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页|V)/.test(t) ? ['|', t.slice(1)] : [t]));
     for (let raw of tokens) {
       /*
        * 左右括号记号：**全角** （ ）
@@ -891,7 +892,13 @@ function parseSingle(text: string, modern = false): ParseResult {
       }
 
       if (raw !== '') {
-        if (raw === '散') {
+        if (raw === 'V') {
+          // 小节线换气：独立 token 的 V 属于**上一根小节线**；音符技法的 V 是
+          // 5V 的后缀，不会被切成独立 token。V 画在这根线左上方，与 5V 的音左上分开。
+          const bar = events[events.length - 1];
+          if (bar?.kind !== 'barline') errors.push('「V」换气需要紧接小节线书写');
+          else bar.breath = true;
+        } else if (raw === '散') {
           // 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：拍号位置记「散」，
           // 从这根线之后不做小节拍数校验，直到某根线写「拍N/M」声明新拍号
           const bar = events[events.length - 1];
@@ -1493,6 +1500,8 @@ function serializeSingle(score: Score): string {
         else if (ev.partial) tok = '|{partial}';
         else tok = '|';
         out.push(tok);
+        // 换气 V 写在这根线的 token 之后：与「速96」等属性一样不新增事件
+        if (ev.breath) out.push('V');
         if (ev.beatAfter) out.push(`拍${ev.beatAfter}`);
         if (ev.bpmAfter) out.push(`速${ev.bpmAfter}`);
         if (ev.patchAfter !== undefined) out.push(`音${ev.patchAfter}`);

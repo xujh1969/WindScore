@@ -16,7 +16,7 @@
 .ws-help-nav nav { display: flex; flex-direction: column; gap: 3px; }
 .ws-help-nav nav button { padding: 10px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
 .ws-help-nav nav button:hover { background: var(--border); }
-.ws-help-nav nav button[aria-current='page'] { color: var(--accent); background: var(--accent-soft); font-weight: 700; }
+.ws-help-nav nav button[aria-current='page'] { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 600; }
 .ws-help-article { overflow: auto; padding: 36px clamp(24px, 4vw, 64px); font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
 .ws-help-article h1 { font-size: 28px; letter-spacing: -.02em; line-height: 1.3; margin: 0 0 30px; }
 .ws-help-article h2 { font-size: 17px; line-height: 1.5; margin: 32px 0 12px; }

@@ -457,11 +457,10 @@ details.v2-side-block[open] > summary::before {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: var(--fs-ui);
+  font-size: var(--fs-title);
   font-weight: 600;
-  letter-spacing: 0.04em;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 /* 属性检查器：成组的可点选项，取代记忆语法 */
@@ -790,8 +789,9 @@ details.v2-side-block[open] > summary::before {
 }
 
 .v2-seg.is-on {
-  background: var(--accent);
-  color: var(--surface);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 /*
@@ -1390,7 +1390,7 @@ details.v2-side-block[open] > summary::before {
   color: rgba(255, 255, 255, 0.75);
   background: rgba(0, 0, 0, 0.45);
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   pointer-events: none;
 }
 
@@ -1416,7 +1416,7 @@ details.v2-side-block[open] > summary::before {
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.5);
   font-size: 11px;
   color: #fff;
@@ -1936,10 +1936,44 @@ details.v2-side-block[open] > summary::before {
   flex-shrink: 0;
   margin: 0;
   padding: 6px 10px;
-  border: 1px solid var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: var(--radius-sm);
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
+
+/* 曲谱行：主操作外露，打包 / 重命名 / 删除收进「⋯」 */
+.v2-lib-more { position: relative; flex-shrink: 0; }
+.v2-lib-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.v2-lib-list > .v2-lib-row:last-child .v2-lib-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.v2-lib-menu button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.v2-lib-menu button:hover { background: var(--surface-2); }
+.v2-lib-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px 0; }
 
 /* 顶栏里的「返回首页」：单功能页的必备出口，放在品牌位左边 */
 .v2-home-btn {
@@ -1985,9 +2019,22 @@ details.v2-side-block[open] > summary::before {
 .v2-play-bar > .v2-play-adj { flex-shrink: 0; }
 .v2-play-bar .v2-seg { padding-inline: 10px; white-space: nowrap; }
 .v2-play-bar > .v2-play-title { min-width: 0; flex: 0 1 auto; }
+/* 显示设置成组：与播放控制之间一条细线，工具条不再二十个控件同权重 */
+.v2-play-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.v2-play-group > .v2-play-adj { flex-shrink: 0; }
 .v2-staff-choice { display: flex; }
-.v2-staff-choice.is-on { background: var(--accent); }
-.v2-staff-choice.is-on .v2-seg { color: var(--surface); }
+.v2-staff-choice.is-on {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.v2-staff-choice.is-on .v2-seg { color: var(--accent); }
 .v2-staff-choice > .v2-seg:first-child { padding-right: 10px; }
 .v2-staff-choice > .v2-staff-gear { position: relative; display: grid; place-items: center; padding-inline: 8px; }
 .v2-staff-gear::before { content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: currentColor; opacity: .3; }
@@ -2084,7 +2131,7 @@ details.v2-side-block[open] > summary::before {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   color: var(--text);
 }
 
@@ -2247,7 +2294,7 @@ details.v2-side-block[open] > summary::before {
   margin-left: 4px;
   padding: 0 4px;
   border: 1px solid var(--warn);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--warn);
   font-size: 10px;
 }
@@ -2360,7 +2407,7 @@ details.v2-side-block[open] > summary::before {
   margin-left: 6px;
   padding: 0 5px;
   border: 1px solid var(--ok);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--ok);
   font-weight: 400;
   font-size: 10px;
@@ -2533,7 +2580,7 @@ details.v2-side-block[open] > summary::before {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   color: var(--text);
 }
 
@@ -2700,7 +2747,7 @@ details.v2-side-block[open] > summary::before {
   margin-left: 8px;
   padding: 1px 6px;
   border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--accent);
   font-size: 10px;
   vertical-align: middle;
@@ -2711,7 +2758,7 @@ details.v2-side-block[open] > summary::before {
   flex: 0 0 auto;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--fs-ui);
   white-space: nowrap;
@@ -2897,7 +2944,7 @@ details.v2-side-block[open] > summary::before {
   min-width: 0;
   padding: 7px 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   font-family: inherit;
@@ -3058,7 +3105,7 @@ details.v2-side-block[open] > summary::before {
 .v2-dc-tag {
   padding: 0 5px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: 11px;
   flex: 0 0 auto;
@@ -3094,7 +3141,7 @@ details.v2-side-block[open] > summary::before {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   overflow: hidden;
 }
@@ -3526,7 +3573,7 @@ details.v2-side-block[open] > summary::before {
   margin-left: 6px;
   padding: 2px 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--accent);
   font-size: 12.5px;

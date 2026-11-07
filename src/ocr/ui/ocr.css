@@ -505,7 +505,7 @@
   min-width: 200px;
   padding: 12px 30px;
   border: 1px solid rgba(57, 84, 48, 0.4);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 254, 247, 0.78);
   color: var(--text);
   font-size: 16px;
@@ -725,7 +725,7 @@
   min-width: 22px;
   height: 22px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: 50%;
   background: var(--accent);
   color: #fff;
   font-size: 11px;
@@ -778,7 +778,7 @@
   gap: 10px;
   max-width: 100%;
   padding: 4px 14px;
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--accent-soft);
   color: var(--text);
   font-size: var(--fs-ui);
@@ -818,7 +818,7 @@
   color: var(--text);
   font-size: var(--fs-ui);
   background: var(--accent-soft);
-  border-radius: 999px;
+  border-radius: 6px;
   padding: 2px 10px;
 }
 .ocr-pager-btn {
@@ -858,4 +858,18 @@
 .ocr-right > * {
   flex: 1;
   min-height: 0;
+}
+
+/* 对照页右栏内嵌的编辑器不再重复一层品牌 / 文件状态顶栏：
+   页面顶栏已有返回、校验、主题，这里只留一组动作按钮的细条 */
+.ocr-right .v2-head {
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border-bottom: 0;
+}
+.ocr-right .v2-head .v2-brand,
+.ocr-right .v2-head .v2-file,
+.ocr-right .v2-head .v2-head-check {
+  display: none;
 }

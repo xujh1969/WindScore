@@ -17,6 +17,7 @@ import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, 
 import type { LyricLink } from '../types';
 import { toggleParen } from '../edit';
 import { HelpDialog } from './HelpCenter';
+import { pieceSelectState } from './pieceLabel';
 import { AndroidPlayer } from './AndroidPlayer';
 import type { PackBundle } from './packBundle';
 import {
@@ -259,6 +260,7 @@ const BUILTIN: { name: string; text: string }[] = [
   { name: '歌词延唱与英文连字', text: lyricConnectionsDemo },
   { name: '小星星（四声部示例）', text: quartetDemo },
 ];
+const BUILTIN_NAMES = BUILTIN.map((s) => s.name);
 
 /** 播放页观看偏好的本地存取（字号 / 字距 / 行距；null = 跟随谱面） */
 function readPlayViewPref(): { font: number | null; gap: number | null; lineGap: number | null } {
@@ -406,6 +408,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [, bumpBanks] = useState(0);
   useEffect(() => onInstrumentBanksChange(() => bumpBanks((v) => v + 1)), []);
   const [active, setActive] = useState('');
+  /** 载入时的 @title：判断用户是否在曲谱属性里改过曲名（active 是文件名，不会跟着改） */
+  const [loadedTitle, setLoadedTitle] = useState(DEFAULT_META.title);
   const [snap, setSnap] = useState<Snap>({
     score: emptyScore(),
     cursor: 0,
@@ -1157,6 +1161,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setFuture([]);
       setPending(null);
       setActive(name);
+      setLoadedTitle(opened.meta.title ?? DEFAULT_META.title);
       setPath(file);
       setFileHandle(null); // 会话恢复没有句柄：这一轮保存仍走下载
       setLibraryId(fromLibraryId);
@@ -1175,6 +1180,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const s = loadSession();
     if (s) {
       load(s.name, s.text, s.path, s.libraryId ?? null);
+      // 会话里的 name 是打开时的文件名 / 曲库条目名。上次若在曲谱属性里改过
+      // @title 但没另存，谱面里的新名字才是当前名字——拿会话名当基线，
+      // 刷新后左上角下拉框仍显示改后的名字，不会退回旧文件名。
+      setLoadedTitle(s.name || DEFAULT_META.title);
       setMsg(fromText(s.text, s.name).score ? '已恢复上次编辑的内容' : '已恢复待修复源码，请根据错误提示继续修改');
       // 进来就看到一份谱面会让人发懵，说明一下它是上次没存完的草稿
       toastInfo('已恢复上次编辑的内容', s.name);
@@ -1216,6 +1225,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setFuture([]);
       setPending(null);
       setActive(res.name);
+      setLoadedTitle(opened.meta.title ?? DEFAULT_META.title);
       setPath(res.path);
       setFileHandle(res.handle ?? null);
       setLibraryId(fromLibraryId);
@@ -1245,6 +1255,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     setFuture([]);
     setPending(null);
     setActive('新建谱面');
+    setLoadedTitle(DEFAULT_META.title);
     setPath(null);
     setFileHandle(null);
     setLibraryId(null);
@@ -1561,6 +1572,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const documentScore = snap.score;
   const activePartId = scoreParts(documentScore).find((p) => p.id === snap.partId)?.id ?? scoreParts(documentScore)[0].id;
   const score = useMemo(() => partScore(documentScore, activePartId), [documentScore, activePartId]);
+  /** 工具栏「示例乐谱」下拉的当前项：曲谱属性里改了 @title 就跟着显示新名 */
+  const pieceSelect = pieceSelectState(score.meta.title, loadedTitle, active, BUILTIN_NAMES);
   const lyricVerse = lyricSelection?.partId === activePartId && lyricSelection.verse < lyricTrackNames(score).length ? lyricSelection.verse : null;
   const canEditConductor = !documentScore.part || activePartId === documentScore.part.id;
   /** 播放页生效的字号 / 字距：观看偏好优先，没设过就跟随谱面自带设置（缺省 24 / -10） */
@@ -3209,6 +3222,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         if (!barlineFocus) return;
         setScore(setBarNotation(score, barlineFocus.id, { free: !barlineFocus.free }));
       },
+      toggleBreath: () => {
+        if (!barlineFocus) return;
+        setScore(setBarNotation(score, barlineFocus.id, { breath: !barlineFocus.breath }));
+      },
       toggleJump: (mark: JumpMark | null) => {
         if (!barlineFocus) return;
         setScore(toggleJumpAfterBarline(score, barlineFocus.id, mark));
@@ -3959,6 +3976,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 }}
               />
             ) : null}
+            {/* 播放控制与显示设置分组：一条工具条里不再二十个控件同权重 */}
+            <div className="v2-play-group">
             {/* 字号 / 字距：观看偏好，只影响播放界面的显示，谱面文件不变；⟲ 恢复跟随谱面 */}
             <div className="v2-play-adj" title="字号（只影响播放界面，谱面本身不变）">
               <span>字号</span>
@@ -4045,6 +4064,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               >
                 光球
               </button>
+            </div>
             </div>
             {restoringAudio || !audioReady || playSource !== 'audio' ? <span className="v2-play-note">
               {restoringAudio
@@ -4423,14 +4443,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               <select
                 id="v2-library"
                 className="v2-library-select"
-                value={BUILTIN.some((s) => s.name === active) ? active : ''}
+                value={pieceSelect.value}
                 onChange={(e) => {
                   const s = BUILTIN.find((x) => x.name === e.target.value);
                   if (s) load(s.name, s.text);
                 }}
               >
-                {!BUILTIN.some((s) => s.name === active) ? (
-                  <option value="">{active || '（当前谱面）'}</option>
+                {pieceSelect.value === '' ? (
+                  <option value="">{pieceSelect.label}</option>
                 ) : null}
                 {BUILTIN.map((s) => (
                   <option key={s.name} value={s.name}>

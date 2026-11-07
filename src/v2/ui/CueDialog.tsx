@@ -484,6 +484,7 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
               toggleDashed: () => {},
               toggleFree: () => {},
               toggleJump: () => {},
+              toggleBreath: () => {},
             }}
             jumpAfter={null}
             playOrder={null}

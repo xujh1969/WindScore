@@ -22,13 +22,7 @@ export function paintStaffStructure(ctx: CanvasRenderingContext2D, line: StaffLi
     if (!v.open) ctx.lineTo(v.x1, v.y + 1.5 * sp);
     ctx.stroke();
     ctx.fillText(`${v.cont ? '(' : ''}${v.numbers.join(',')}${v.cont ? ')' : '.'}`, v.x0 + .4 * sp, v.y + 1.1 * sp);
-    if (v.jump) {
-      ctx.save();
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'right';
-      ctx.fillText('↩', v.x1 - .3 * sp, v.y + 1.1 * sp);
-      ctx.restore();
-    }
+    // 五线谱同样不在房号旁画提示符号，与简谱保持一致的干净版面
   }
   for (const j of line.jumps ?? []) {
     const y = j.y + 1.1 * sp;

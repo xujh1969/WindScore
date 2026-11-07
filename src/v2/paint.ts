@@ -94,6 +94,8 @@ export const TECHNIQUE_GLYPH: Record<
   mordentDown: { mark: '≈', label: '下波音', path: 'mordentDown' },
   slideUp: { mark: '↑', label: '上滑音' },
   slideDown: { mark: '↓', label: '下滑音' },
+  // h 滑音：谱面就是小写字母 h（DSL 后缀用大写 H，避开已占用的下弯音 h）
+  slideH: { mark: 'h', label: 'h滑音' },
   bendUp: { mark: '↗', label: '上弯音', path: 'bendUp' },
   bendDown: { mark: '↘', label: '下弯音', path: 'bendDown' },
   // 回音：横置 S 曲线（turnPath），不用字体字形——回音码位覆盖不稳
@@ -1144,6 +1146,18 @@ function paintLine(
     ctx.lineTo(bx, y + M.barHalf);
     ctx.stroke();
     ctx.setLineDash([]);
+    // 小节线换气 V：单独画在这根线的**左上方**（先换气，再进下一小节）。
+    // 与音符技法 5V 不同：那是某个音的左上，这里属于整条边界。
+    if (it.breath) {
+      ctx.save();
+      ctx.font = M.markFont;
+      ctx.fillStyle = theme.tongue;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const vw = ctx.measureText('V').width;
+      ctx.fillText('V', bx - 7 * M.k - vw / 2, y - M.barHalf - 7 * M.k);
+      ctx.restore();
+    }
     // 双小节反复记号（GB/T 46845—2025 §5.8.4）：左右两小节都是 % 时，
     // 记号画在这根**中间小节线**上——两条左下→右上的斜线，左右各一点；
     // 两格 % 的字形由 repeatPairAt 压掉，只画这一份
@@ -1323,16 +1337,9 @@ function paintLine(
       // 印刷谱的段次序号是斜体——等宽字体没有真斜体面，canvas 会合成倾斜
       ctx.font = 'italic 12px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.fillText(`${v.numbers.join(', ')}.`, v.x0 + 6 * M.k, vy + 11);
-      ctx.textAlign = 'center';
-      // 非末遍房子的段尾：明确提示「唱完这里跳回反复起点」——
-      // 印刷谱靠 [1] 房末尾的 :| 传达这个信息，本应用的反复段里没有它
-      if (v.jump) {
-        ctx.save();
-        ctx.font = M.badgeFont;
-        ctx.fillStyle = theme.muted;
-        ctx.fillText('↩跳回', v.x1 + 3, vy + 11);
-        ctx.restore();
-      }
+      // 段尾不写「↩跳回」提示（用户 2026-11-07 定）：房号 + 括线已经说明遍次，
+      // 反复语义由 :| 与展开器表达，横线下面多一行文字反而干扰读谱。
+      // jump 仍留在数据层作结构化标记，这里不再绘制。
     }
     ctx.restore();
   }
@@ -1583,7 +1590,9 @@ function paintLine(
       r.path ? 16 * M.k * TECHNIQUE_PATH_SCALE[r.path] : ctx.measureText(r.mark).width,
     );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
-    let mx = it.x + 11 + (it.graceInk ?? 0) - total / 2;
+    // 记号串以数字字形中心对齐（与 drawGlyph 的 gx + gw/2 同口径），
+    // 单个技法（如 h 滑音）正好落在音符正上方
+    let mx = noteDigitCenter(it, M.glyph) - total / 2;
     // 颤音波线（GB/T 46845—2025 §7.5.3）的终点：
     //   选区套用的颤音（后面有 trillEnd 音）→ 波浪拉到那个音的尾部；
     //   单音带增时线 → 波浪与延音线等长（数字右侧到格尾的增时线区段长）；

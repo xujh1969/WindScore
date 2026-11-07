@@ -1138,7 +1138,7 @@ export function setHairpinRange(score: Score, ids: string[], kind?: 'cresc' | 'd
   return { ...score, format: 3, events };
 }
 
-export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter' | 'dashed' | 'free'>): Score {
+export function setBarNotation(score: Score, id: string, change: Pick<BarlineEvent, 'beatAfter' | 'breakAfter' | 'bpmAfter' | 'patchAfter' | 'dashed' | 'free' | 'breath'>): Score {
   return { ...score, format: 3, events: score.events.map((e) => e.id === id && e.kind === 'barline' ? { ...e, ...change } : e) };
 }
 

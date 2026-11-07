@@ -29,7 +29,7 @@ body[data-entry='android'] { overflow: hidden; overscroll-behavior: none; }
 .an-app svg, .an-dialog svg { width: 22px; height: 22px; flex-shrink: 0; }
 .an-app h1, .an-app h2, .an-app h3, .an-app p, .an-dialog h2, .an-dialog h3 { margin: 0; }
 .an-top { display: flex; flex-shrink: 0; justify-content: space-between; align-items: center; padding: calc(8px + env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) 8px max(24px, env(safe-area-inset-left)); width: min(100%, 808px); margin-inline: auto; }
-.an-wordmark { display: inline-flex; align-items: center; gap: 10px; font-weight: 650; font-size: 19px; letter-spacing: -.025em; color: inherit; text-decoration: none; }
+.an-wordmark { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; font-size: 19px; letter-spacing: -.025em; color: inherit; text-decoration: none; }
 .an-wordmark h1 { font: inherit; }
 .an-transfer-top { gap: 10px; }
 .an-transfer-top h1 { flex: 1; font-size: 18px; font-weight: 600; }
@@ -97,7 +97,7 @@ body[data-entry='android'] { overflow: hidden; overscroll-behavior: none; }
 .an-local-note { padding-top: 20px; text-align: center; }
 .an-app p.an-build-info { margin: 0; padding: 6px 16px; flex-shrink: 0; font-size: 12px; text-align: center; color: var(--an-muted); }
 .an-main > .an-lan { max-width: 520px; padding: 10px 0 24px; }
-.an-transfer-visual { display: flex; align-items: center; justify-content: center; gap: 16px; min-height: 160px; padding: 20px 0; background: radial-gradient(ellipse at center, var(--an-accent-soft), transparent 68%); }
+.an-transfer-visual { display: flex; align-items: center; justify-content: center; gap: 16px; min-height: 160px; padding: 20px 0; }
 .an-transfer-device { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--an-accent); }
 .an-transfer-device svg { width: 62px; height: 62px; stroke-width: 1; }
 .an-transfer-device span { font-size: 11px; color: var(--an-muted); }

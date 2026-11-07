@@ -251,6 +251,12 @@ export interface BarlineEvent extends BaseEvent {
   unisonAfter?: number[];
   /** 齐唱段终点（DSL 写「分」紧接小节线）：目标声部恢复唱自己的内容。 */
   splitAfter?: boolean;
+  /**
+   * 小节线换气（DSL 写「V」紧接小节线）：V 画在这根线的**左上方**。
+   * 与音符技法 5V 区分：那是给某个音的记号，这是给整条边界的。
+   * 声部私有，withConductor 不把它同步给其它声部。
+   */
+  breath?: boolean;
 }
 
 export type JumpMark = 'segno' | 'coda' | 'fine' | 'dc' | 'ds' | 'tocoda';

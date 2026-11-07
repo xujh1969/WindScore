@@ -283,7 +283,7 @@ export function TechniqueField({ score, setScore, note }: FieldProps) {
                     strokeLinecap={TECHNIQUE_PATHS[g.path].fill ? 'round' : 'butt'}
                   />
                 </svg>
-              ) : (
+              ) : g.label.startsWith(g.mark) ? null : (
                 <span className="v2-mark-prefix" aria-hidden>{g.mark}</span>
               )}
               {g.label}

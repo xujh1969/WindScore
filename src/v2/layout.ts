@@ -140,6 +140,8 @@ export interface PlacedItem {
   hidden?: boolean;
   /** 虚小节线（GB/T 46845—2025 §5.2.2）：竖线画成虚线 */
   dashed?: boolean;
+  /** 小节线换气：V 画在这根线的左上方 */
+  breath?: boolean;
   /** 散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：线后拍号位置记「散」 */
   freeAfter?: boolean;
   /** X 符号（无音高音符）：画 X 不画 0，发声为打击声 */
@@ -212,7 +214,9 @@ export interface PlacedVolta {
   open?: boolean;
   /** 跨行延续段（不画左钩，从行首画起） */
   cont?: boolean;
-  /** 这一遍唱完要跳回反复起点（非末遍的房子），段尾画「↩跳回」提示 */
+  /** 这一遍唱完要跳回反复起点（非末遍的房子）。
+   *  只作结构化语义标记：谱面不再在段尾画「↩跳回」文字（用户 2026-11-07 定），
+   *  遍次由房号 + 括线表达，跳回由 :| 与展开器表达。 */
   jump?: boolean;
 }
 
@@ -1209,6 +1213,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           measure: anyTimed ? measureNo : undefined,
           ...(bar.hidden ? { hidden: true } : {}),
           ...(bar.dashed ? { dashed: true } : {}),
+          ...(bar.breath ? { breath: true } : {}),
           ...(bar.free ? { freeAfter: true } : {}),
           ...(bar.partial ? { partial: true } : {}),
           ...(bar.beatAfter ? { beatAfter: bar.beatAfter } : {}),
@@ -1689,8 +1694,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           numbers,
           ...(open ? { open: true } : {}),
           ...(isWallSeg ? {} : { cont: true }),
-          // 开放段尾若是「非末遍房子」的跳回点（如 [1] 后面跟 [2]），标「↩跳回」；
-          // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号
+          // 开放段尾若是「非末遍房子」的跳回点（如 [1] 后面跟 [2]），标结构化 jump；
+          // 封闭在真正 :| 上的房子不用标——那根线本身就是跳回记号。
+          // 这个标记只进数据层，绘制层不再写「跳回」文字。
           ...(isEndSeg && open && houseJumps(wall, numbers) ? { jump: true } : {}),
         });
       }

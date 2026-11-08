@@ -1,5 +1,5 @@
 /**
- * 导出弹窗：PDF（A4 分页 + 页脚页码）与视频（手机 / Pad 横竖屏比例）。
+ * 导出弹窗：PDF（A4 分页，不画页脚）与视频（手机 / Pad 横竖屏比例）。
  *
  * 两种导出都**只用当前显示的那份谱**：播放界面开着「展开反复」时，
  * 导出的就是拉平后的线性谱——所见即所得。
@@ -44,7 +44,8 @@ export interface ExportDialogProps extends ExportNotation {
    * 弹窗里那行小字只在你还盯着弹窗时有用，关掉就什么都没了；
    * 视频导出动辄几十秒，结果必须在外面也说一声。
    */
-  onDone?: (note: string, ok: boolean) => void;
+  /** cancelled：用户主动取消保存，不算失败（不要弹红色「导出失败」） */
+  onDone?: (note: string, ok: boolean, cancelled?: boolean) => void;
   video: {
     timeline: TimelineEntry[];
     /** 画的是原谱时传映射回原谱 id 的那份时间线，指示才对得上谱面 */
@@ -228,7 +229,8 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       onBegin?.();
       const note = await task();
       setNote(note);
-      onDone?.(note, !/^已取消/.test(note));
+      const cancelled = /^已取消/.test(note);
+      onDone?.(note, !cancelled, cancelled);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       setError(why);
@@ -430,7 +432,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               </label>
             </div>
             <p className="v2-exp-hint">
-              共 <b>{preview.pages}</b> 页。页脚每页都写「{songName}-页号/总页数」。
+              共 <b>{preview.pages}</b> 页。曲目「{songName}」按 A4 分页，不画页脚页码。
             </p>
           </div>
           <section className="v2-pdf-preview" aria-label="PDF 页面预览">
@@ -522,6 +524,9 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 />
                 小节（共 {preview.total} 小节）
               </span>
+              {mFrom !== preview.from || (mTo > 0 && mTo !== preview.to) ? (
+                <span className="v2-exp-hint">输入超出范围，已调整为第 {preview.from}–{preview.to} 小节。</span>
+              ) : null}
               <button
                 className="v2-btn"
                 disabled={busy}

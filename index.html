@@ -21,6 +21,7 @@
     </script>
   </head>
   <body class="ws-home">
+<noscript data-ws-noscript><div style="padding:16px;font:14px/1.6 system-ui,sans-serif">WindScore 需要启用 JavaScript 才能显示谱面。请在浏览器设置里打开 JavaScript 后刷新本页。</div></noscript>
     <div class="ws-home-bg" aria-hidden="true"></div>
     <nav class="ws-home-menu" aria-label="顶部菜单">
       <button id="wsThemeBtn" class="ws-theme-btn" type="button" aria-label="切换深浅主题" title="切换深浅主题">
@@ -63,7 +64,7 @@
           <span class="ws-home-title-en">WindScore</span>
           动态谱制作工具
         </h1>
-        <p class="ws-home-sub">给电吹管的简谱写谱、伴奏对轨与曲库管理，一首歌从纸面到动态谱。</p>
+        <p class="ws-home-sub">给电吹管的简谱写谱、伴奏对轨与曲库，一首歌从纸面到动态谱。</p>
       </header>
 
       <nav class="ws-home-actions" aria-label="入口">
@@ -83,21 +84,21 @@
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
             <path d="M3 8v4M6.5 5v10M10 2v16M13.5 6v8M17 8v4" />
           </svg>
-          动态谱生成
+          伴奏对轨
         </a>
-        <!-- 曲库管理是独立页面（library.html）：不进记谱，直接管一批谱 -->
+        <!-- 曲库是独立页面（library.html）：不进记谱，直接管一批谱 -->
         <a class="ws-btn ws-btn-ghost" href="./library.html">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 4h4v12H3zM8.5 4h4v12h-4zM14 3.6h3.1l-1 12.8H14z" />
           </svg>
-          曲库管理
+          曲库
         </a>
         <!-- 两个测试功能收进「更多」：启动页默认只露四个主入口 -->
         <details class="ws-home-more">
           <summary>更多</summary>
           <div class="ws-home-more-list">
             <!-- 乐谱导入（MusicXML 转译，musicxml.html）：测试功能，虚线边框以示区别 -->
-            <a class="ws-btn ws-btn-ghost ws-btn-test" href="./musicxml.html" title="测试功能：从 MusicXML（.musicxml / .xml / .mxl）导入并转译为 .jps">
+            <a class="ws-btn ws-btn-ghost ws-btn-test" href="./musicxml.html" title="从 MusicXML（.musicxml / .xml / .mxl）导入并转译为 .jps">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M11 2H5.5A1.5 1.5 0 0 0 4 3.5v13A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5V7z" />
                 <path d="M11 2v5h5M7.5 12.5l1.5 1.5 3-3.5" />

@@ -75,7 +75,7 @@ export function LibrarySetupDialog({
         </div>
         <div className="v2-exp-foot">
           <span className="v2-exp-note">
-            {busy ? '正在连接…' : isExe ? '用默认位置，或自己选一个文件夹' : '点「确定」选择一个文件夹'}
+            {busy ? '正在连接…' : isExe ? '用默认位置，或自己选一个文件夹' : '点「选择文件夹…」指定曲库位置'}
           </span>
           <div className="v2-exp-btns">
             {isExe && defaultPath ? (

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>曲库管理 · WindScore</title>
+    <title>曲库 · WindScore</title>
     <link rel="icon" href="/favicon.svg" />
     <script>
       // 主题先于首帧定下（防深色用户闪白底）：ws-theme 与首页等各页面共用
@@ -20,6 +20,7 @@
     </script>
   </head>
   <body data-entry="library">
+<noscript data-ws-noscript><div style="padding:16px;font:14px/1.6 system-ui,sans-serif">WindScore 需要启用 JavaScript 才能显示谱面。请在浏览器设置里打开 JavaScript 后刷新本页。</div></noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

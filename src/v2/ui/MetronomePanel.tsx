@@ -49,7 +49,7 @@ export function MetronomePanel(props: MetronomePanelProps) {
       : '已关闭';
 
   return (
-    <div className="v2-exp-mask" onClick={onClose}>
+    <div className="v2-exp-mask" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
         className="v2-exp v2-metronome-panel"
         role="dialog"

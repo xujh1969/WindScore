@@ -1,19 +1,19 @@
 /**
  * 波形 + 节拍网格（音频对齐的手工标定视图）。
  *
- * 用法（指导书 §7.2 锚点校正）：波形上点一条**节奏线**（自动吸附，见下）→
- * 回谱面点一根**小节线** → 两者绑成锚点，原点自动重算（≥2 个锚点合成变速曲线）。
+ * 用法（指导书 §7.2 对齐点校正）：波形上点一条**网格线**（自动吸附，见下）→
+ * 回谱面点一根**小节线** → 两者绑成对齐点，原点自动重算（≥2 个对齐点合成变速曲线）。
  * 小节线是拍位明确的界点，比拿单颗音去对更稳——音可能带弱起 / 倚音 / 附点，
  * 小节线的拍位是干净的。
  *
  * 交互：
  *   滚轮     缩放（以光标为中心，最小 8s）
  *   拖动     平移
- *   单击     选中最近的节奏线（**吸附**：吸到画面上真画出来的那条）
+ *   单击     选中最近的网格线（**吸附**：吸到画面上真画出来的那条）
  *   悬停     虚线预览要吸到哪一条，并报出拍号 / 小节 / 时间
  *
  * 网格线画的是**音频标定格**（gridPhase + 拍 × 60/gridBpm），两种 TempoMap
- * 形式下语义一致——锚点引用的永远是「音频第几拍」。
+ * 形式下语义一致——对齐点引用的永远是「音频第几拍」。
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { beatToSec, secToBeat as beatOfSec, type TempoMap } from '../tempo';
@@ -38,7 +38,7 @@ interface Props {
   markerSec: number | null;
   /** 起始点吸附到的音频拍（整数）；显示用——标的永远是「第几拍」不是秒 */
   markerBeat: number | null;
-  /** 单击是否吸附到最近的节奏线（默认开；网格本身还没标准时可关掉自由定点） */
+  /** 单击是否吸附到最近的网格线（默认开；网格本身还没标准时可关掉自由定点） */
   snap: boolean;
   /** 谱面开头（原点）在音频里的位置（秒）：拖放对齐的参照物 */
   originSec: number | null;
@@ -64,14 +64,14 @@ interface Props {
   bindLabel?: string;
   onHover?: (info: { beat: number; bar: number; sec: number } | null) => void;
   /**
-   * 网格整组平移：**拖任意一条（非锚点）节奏线 = 整张网格平移**。
+   * 网格整组平移：**拖任意一条（非对齐点）网格线 = 整张网格平移**。
    * Shift 按住时位移 ×0.1 细调（组件内部处理）；deltaSec 是相对拖动起点的累计偏移。
    * 三个回调缺一不可，缺了就不启用拖拽。
    */
   onGridShiftStart?: () => void;
   onGridShift?: (deltaSec: number) => void;
   onGridShiftEnd?: () => void;
-  /** 被选中的起点是否已经是对齐点（锚点）：浮层里据此显示「删除」 */
+  /** 被选中的起点是否已经是对齐点（对齐点）：浮层里据此显示「删除」 */
   markerIsAnchor?: boolean;
   /** 删除被选中起点上的对齐点 */
   onDeleteAnchor?: () => void;
@@ -203,7 +203,7 @@ export function AudioWaveform({
   const view = useRef({ start: 0, span: duration });
   const drag = useRef<{ x: number; start: number } | null>(null);
   /**
-   * 网格拖拽态：按在节奏线附近（±6px）时，拖动 = 整组平移而不是平移视图。
+   * 网格拖拽态：按在网格线附近（±6px）时，拖动 = 整组平移而不是平移视图。
    * lastApplied 记上次已上报的偏移，本次只上报增量（细调中途切换 Shift 也不跳变）。
    */
   const gridDrag = useRef<{
@@ -269,7 +269,7 @@ export function AudioWaveform({
     return Math.abs(xOfBeat - cx) <= LINE_HIT_PX ? b : null;
   };
 
-  /** 这条线上是否钉着对齐点（锚点线不参与整组平移——它是对齐的依据） */
+  /** 这条线上是否钉着对齐点（对齐点线不参与整组平移——它是对齐的依据） */
   const anchoredAt = (beat: number): boolean =>
     anchors.some((a) => Math.abs(a.audioBeat - beat) < 0.5);
 
@@ -417,7 +417,7 @@ export function AudioWaveform({
       }
     }
 
-    // 锚点（已绑定）
+    // 对齐点（已绑定）
     for (const a of anchors) {
       const x = xOf(beatTime(a.audioBeat));
       ctx.fillStyle = wt.anchor;
@@ -504,7 +504,7 @@ export function AudioWaveform({
       }
     }
 
-    // 绑定起始点（波形上点出来的位置；吸附后必落在某条节奏线上）
+    // 绑定起始点（波形上点出来的位置；吸附后必落在某条网格线上）
     if (markerSec !== null) {
       const x = xOf(markerSec);
       if (x >= -4 && x <= w + 4) {
@@ -575,15 +575,15 @@ export function AudioWaveform({
         ref={wrapRef}
         className={`v2-wave ${previewing ? 'is-previewing' : ''}`}
       title={
-        (snap ? '点节奏线 = 选中并试听（吸附）' : '点波形 = 从这里试听（未吸附）') +
-        ' · 放大到线距够宽时拖节奏线 = 整组平移（Shift 细调）；缩得小时拖拽 = 平移视图 · 滚轮缩放'
+        (snap ? '点网格线 = 选中并试听（吸附）' : '点波形 = 从这里试听（未吸附）') +
+        ' · 放大到线距够宽时拖网格线 = 整组平移（Shift 细调）；缩得小时拖拽 = 平移视图 · 滚轮缩放'
       }
       onPointerDown={(e) => {
         const rect = wrapRef.current?.getBoundingClientRect();
         if (rect) {
           const sec = view.current.start + ((e.clientX - rect.left) / rect.width) * view.current.span;
           const line = lineAt(sec);
-          // 按在节奏线上（线距够稀、且线上没钉对齐点）→ 拖动 = 整组平移网格；
+          // 按在网格线上（线距够稀、且线上没钉对齐点）→ 拖动 = 整组平移网格；
           // 线距太密（缩得很小）时一律当平移视图，否则满屏都是线，根本没法平移
           if (
             line !== null &&
@@ -717,7 +717,7 @@ export function AudioWaveform({
         ) : null}
       </div>
       {/*
-        节奏线浮层：选中一条线后就地给出的操作——
+        网格线浮层：选中一条线后就地给出的操作——
         整组平移（微调对齐）、删除对齐点（绑错了撤销）。
         **渲染在 .v2-wave 之外**：它有 overflow:hidden，浮层贴到波形下方会被裁掉。
         挂到外层相对定位的 wrap 上，位置由 draw 循环每帧贴在波形正下方。

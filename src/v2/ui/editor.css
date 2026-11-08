@@ -3657,10 +3657,58 @@ details.v2-side-block[open] > summary::before {
   resize: vertical;
   white-space: pre;
 }
-.v2-xml-out:focus {
-  outline: none;
+.v2-xml-out:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   border-color: var(--accent);
 }
+
+/* ── Hallmark 批次 3：全站交互底线 ───────────────────────────────
+   焦点环瞬时出现（不加 transition），按下有位移反馈，按钮文案不折行；
+   系统要求减少动态效果时关掉装饰动画。 */
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.v2-btn:active:not(:disabled),
+.ocr-btn:active:not(:disabled),
+.ws-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  opacity: .88;
+}
+.v2-btn, .ocr-btn { white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 错误页救援卡片（src/main.tsx showFatal）：挂在 body 上，自带一套局部变量，
+   不依赖 .v2-app 主题作用域；给得出下一步，技术原文折叠。 */
+.ws-fatal {
+  --surface: #fff; --surface-2: #fafafa; --border: #e4e4e7; --text: #27272a;
+  --muted: #71717a; --accent: #8a6a12; --accent-soft: #f6e7bd; --error: #b91c1c;
+  --radius: 10px; --radius-sm: 6px; --mono: ui-monospace, Menlo, Consolas, monospace;
+  position: fixed; left: 10px; right: 10px; bottom: 10px; z-index: 99999;
+  max-height: 45%; overflow: auto; padding: 14px 16px;
+  border: 1px solid var(--border); border-left: 4px solid var(--error);
+  border-radius: var(--radius); background: var(--surface); color: var(--text);
+  font-size: 13px; line-height: 1.5; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+}
+.ws-fatal strong { display: block; font-size: 15px; margin-bottom: 4px; }
+.ws-fatal p { margin: 0 0 10px; }
+.ws-fatal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.ws-fatal-actions button { padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.ws-fatal-actions button:hover { background: var(--accent-soft); }
+.ws-fatal-detail { color: var(--muted); }
+.ws-fatal-detail summary { cursor: pointer; }
+.ws-fatal-detail pre { white-space: pre-wrap; word-break: break-all; padding: 8px; border-radius: var(--radius-sm); background: var(--surface-2); font: 12px/1.5 var(--mono); }
+
+/* 放弃草稿 / 确认清除 的内联二次确认条 */
+.v2-inline-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font-size: 12px; }
 
 /* 小字谱录入窗口：整窗高度固定——输入板按钮行随选中状态增减时，
    窗口不再忽高忽低；超高内容只在中间区域滚动，底栏按钮始终可见。

@@ -184,6 +184,8 @@ export interface PlacedArc {
    * 弧线贴着音符画；只要有一个音带符号，整条弧仍抬在记号行之上。
    */
   tight?: boolean;
+  /** h 滑音连音线：弧线中央正上方标一个小写 h（链首音带 slideH 技法） */
+  h?: boolean;
 }
 
 export interface PlacedBadge {
@@ -1484,6 +1486,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
         // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
         tight,
+        // 链首带 slideH → 弧线中央标 h。只在本行段含该音时为真，
+        // 跨行续段不会重复标；断行 stub 弧不走 pushArc，也不标。
+        ...(kind === 'slur' && chain.some((i) => (i.techniques ?? []).includes('slideH')) ? { h: true } : {}),
       });
     };
 

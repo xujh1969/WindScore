@@ -25,6 +25,8 @@ import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
 import { lyricTrackNames } from '../lyrics';
 import { hitStaffClef } from '../staffSystems';
+import { edgeScrollTop, eventScrollTop, type ScrollRequest } from './scoreScroll';
+import { CARET_BLINK_MS, caretBlinkActive } from './caretBlink';
 
 /** 一次命中的结果，判定逻辑在 layout.pickAt（纯几何，可单测） */
 export type ScorePick = LayoutPick;
@@ -57,6 +59,11 @@ interface Props {
   /** 是否画 I 形插入符。over 模式下只画方块，不画竖线 */
   showCaret?: boolean;
   showBreaks?: boolean;
+  /**
+   * 键盘定位（跳小节 / 跳首尾）时把视口一起带过去。seq 变化才算一次新请求
+   * （连按同一个快捷键也必须重新滚，不能只靠目标去重）。
+   */
+  scrollRequest?: ScrollRequest | null;
   onLayout?: (layout: LayoutResult, options: LayoutOptions) => void;
   /** 播放指示方式：head = 色块+竖线；band = 高亮条；ball = 跳跃光球 */
   playStyle?: PlayStyle;
@@ -114,6 +121,7 @@ export function ScoreCanvas({
   focusId,
   showCaret,
   showBreaks = false,
+  scrollRequest = null,
   onLayout,
   pairing = false,
   onPickStart,
@@ -215,6 +223,8 @@ export function ScoreCanvas({
   // 谱面 / 选区 / 尺寸变化 → 重排并重绘
   /** 最近一帧的播放头：悬停重绘时照原样传回去，别把指示条画没了 */
   const headRef = useRef<Playhead>(null);
+  /** 插入点闪烁的当前相位：true = 画 I 形光标。闪烁只切这一位，不重排。 */
+  const caretBlinkRef = useRef(true);
 /** KTV 式入拍提醒：前奏期间（播放 tick 为负）在第一个音上闪烁 + 倒数 */
 const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | null>(null);
   /** 配对态悬停的小节线 id：拖到别的线上要立刻换靶标 */
@@ -325,7 +335,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         // 交互页常驻画小字谱锚点三角；导出（export/render.ts）不传这个开关，不带辅助记号
         showCueAnchors: true,
         selectedIds,
-        caret: showCaret === false ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
+        // 闪烁相位只决定插入符画不画；停用时常亮，定位点不会消失
+        caret: showCaret === false || !caretBlinkRef.current ? null : caretAt(activePartId && layout.systems ? { ...layout, lines: layout.lines.filter((line) => line.partId === activePartId) } : layout, cursor),
         playhead: displayHead,
         playheads: displayHead ? headsRef.current : [],
         cue: cueRef.current,
@@ -445,6 +456,39 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
   }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, fitRows, headerless, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
+  /**
+   * 插入点闪烁：只切「画不画那根 I 形竖线」，不重排。每次光标移动 / 主题切换
+   * 都重启计时，保证刚打完字光标立刻是亮的；停用时恢复常亮，别让定位标记消失。
+   * 五线谱路径本来就不画插入符，那里不起定时器。
+   */
+  useEffect(() => {
+    const reduced = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const blink = notation !== 'staff' && caretBlinkActive(showCaret, playing, !!lyricEdit, reduced, document.hidden);
+    if (!blink) {
+      if (!caretBlinkRef.current) {
+        caretBlinkRef.current = true;
+        paintRef.current(headRef.current);
+      }
+      return;
+    }
+    caretBlinkRef.current = true;
+    let on = true;
+    const id = window.setInterval(() => {
+      if (document.hidden) return; // 后台标签页不空转重绘
+      on = !on;
+      caretBlinkRef.current = on;
+      paintRef.current(headRef.current);
+    }, CARET_BLINK_MS);
+    return () => {
+      window.clearInterval(id);
+      if (!caretBlinkRef.current) {
+        caretBlinkRef.current = true;
+        paintRef.current(headRef.current);
+      }
+    };
+  }, [showCaret, playing, lyricEdit, cursor, focusId, score, dark, notation]);
+
   // 切换动效只重绘，不重排整首谱，也不重启播放循环或触发尾音余跳。
   useEffect(() => {
     ++ballFadeGen.current;
@@ -480,6 +524,39 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     if (x - pad < wrap.scrollLeft) wrap.scrollLeft = Math.max(0, x - pad);
     else if (x + pad > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = x + pad - wrap.clientWidth;
   }, [cursor, focusId, activePartId, score, showBreaks, playing, lyricEdit, dragFrom]);
+
+  /**
+   * 键盘定位（跳小节 / 跳首尾）：光标与起播点到位还不够，谱面视口必须跟着走。
+   * 放在「保证光标可见」那个 effect 之后，同一次提交里由它最后定位；
+   * 它不依赖焦点是否在画布上，所以播放页 / 对轨页签也能生效。
+   */
+  const lastScrollSeq = useRef(-1);
+  useEffect(() => {
+    const req = scrollRequest;
+    if (!req || req.seq === lastScrollSeq.current) return;
+    lastScrollSeq.current = req.seq;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    // 明确的导航意图 = 交还滚动控制权，别让播放跟随的 rAF 每帧把视口拽回去
+    followRef.current = false;
+    if (req.edge) {
+      wrap.scrollTop = edgeScrollTop(req.edge, wrap.scrollHeight, wrap.clientHeight);
+      if (req.edge === 'start') wrap.scrollLeft = 0;
+      return;
+    }
+    if (!req.eventId) return;
+    const layout = layoutRef.current;
+    if (!layout) return;
+    // 展开反复的谱里事件 id 带副本后缀，用播放头同款候选去匹配
+    const cands = playheadIdCandidates(req.eventId);
+    const li = layout.lines.findIndex((ln) => ln.items.some((it) => cands.includes(it.eventId)));
+    if (li < 0) return;
+    const system = layout.systems?.find((s) => li >= s.from && li < s.to);
+    const y = system ? (system.top + system.bottom) / 2 : layout.lines[li].y;
+    const top = wrap.scrollTop;
+    if (y >= top + 48 && y <= top + wrap.clientHeight - 48) return; // 已经看得见就别抖
+    wrap.scrollTop = eventScrollTop(y, wrap.scrollHeight, wrap.clientHeight);
+  }, [scrollRequest]);
 
   useEffect(() => {
     if (!lyricEdit) { lyricFocusKey.current = ''; return; }

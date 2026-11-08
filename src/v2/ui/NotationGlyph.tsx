@@ -75,6 +75,19 @@ export function SlurGlyph() {
 }
 
 /**
+ * h 滑音连音线图标：下面一条连音线那样的弧，弧的正上方写一个小写 h。
+ * 与谱面效果同形（弧线中央正上方标 h），按钮和画出来的记号一眼对得上。
+ */
+export function SlurHGlyph() {
+  return (
+    <svg className="v2-slur-icon" width="18" height="14" viewBox="0 0 24 18" aria-hidden focusable="false">
+      <text x="12" y="8.5" textAnchor="middle" fontSize="9" fontStyle="italic" fill="currentColor" stroke="none">h</text>
+      <path d="M2 16 C 6 8, 18 8, 22 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/**
  * 时值的形象画法：`5` / `5−`（增时线）/ `5·`（附点）/ 数字下加横线（减时线）。
  * 画的是谱面上的样子，不是「1/4 拍」这种要换算的文字。
  */

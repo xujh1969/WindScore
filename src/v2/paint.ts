@@ -967,6 +967,8 @@ function paintLine(
 ): void {
   const { selectedIds, caret, playhead, focusId } = o;
   const y = line.y;
+  // h 滑音连音线：h 由弧线中央统一绘制，覆盖范围内的音符不再重复标 h
+  const hSlurSpans = line.arcs.filter((a) => a.h).map((a) => [a.x0, a.x1] as const);
   let headItem = playhead ? line.items.find((it) => it.eventId === playhead.eventId) : undefined;
   // 时间线条目 id 可能带派生后缀（反复克隆 ~n、D.C./D.S. #n、底色副本 +rb/+dbl…），
   // 精确匹配不中时按候选链剥后缀逐级回退，否则反复回跳段落里光标/底色会消失
@@ -1563,6 +1565,11 @@ function paintLine(
     const breath = (it.techniques ?? []).includes('breath');
     for (const v of it.techniques ?? []) {
       if (v === 'breath') continue;
+      // 带 h 的连音线：h 已画在弧线中央，链内音符上方不再重复
+      if (v === 'slideH' && hSlurSpans.some(([x0, x1]) => {
+        const cx = noteDigitCenter(it, M.glyph);
+        return cx >= x0 - 1 && cx <= x1 + 1;
+      })) continue;
       const g = TECHNIQUE_GLYPH[v];
       if (g) run.push({ mark: g.mark, color: theme.tech, flip: g.flip, path: g.path });
     }
@@ -1813,6 +1820,16 @@ function paintLine(
       segs = [{ p0: { x: a.x0, y: ay }, c: { x: (a.x0 + a.x1) / 2, y: ay - a.lift * 2 }, p1: { x: a.x1, y: ay } }];
     }
     fillTaperedCurve(ctx, segs, 1.5);
+    if (a.h) {
+      // 弧线中央正上方：平线弧顶与抛物线中点的高度都是 ay − lift
+      ctx.save();
+      ctx.font = M.markFont;
+      ctx.fillStyle = theme.tech;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('h', (a.x0 + a.x1) / 2, ay - a.lift - 2 * M.k);
+      ctx.restore();
+    }
   }
 
   // 连音标号：组上方一条向下弯的弧线，**中间断开**、断口里写数字（3 / 6 …）——

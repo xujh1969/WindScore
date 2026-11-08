@@ -10,13 +10,52 @@ import './v2/ui/editor.css';
 // 独立成异步 chunk，其他页面的主包完全不碰它们
 const OcrPage = lazy(() => import('./ocr/ui/OcrPage').then((m) => ({ default: m.OcrPage })));
 
-// 白屏救援：任何未捕获的错误直接画在页面上。手机上没有开发者工具，
-// 白屏 = 用户只能看到一片空白无从反馈；把错误原文显示出来才能定位问题。
+// 白屏救援：错误页给得出下一步（重试 / 回首页 / 复制信息），技术原文折叠展示。
+// 手机上没有开发者工具，只贴异常原文等于让用户对着红框发呆。
 const showFatal = (message: string): void => {
   try {
+    document.querySelectorAll('[data-ws-fatal]').forEach((n) => n.remove());
     const box = document.createElement('div');
-    box.style.cssText = 'position:fixed;left:10px;right:10px;bottom:10px;z-index:99999;background:#b44036;color:#fff;font:12px/1.5 monospace;padding:10px;border-radius:8px;white-space:pre-wrap;max-height:45%;overflow:auto';
-    box.textContent = message;
+    box.className = 'ws-fatal';
+    box.setAttribute('data-ws-fatal', '');
+    const title = document.createElement('strong');
+    title.textContent = '页面出了点问题';
+    const hint = document.createElement('p');
+    hint.textContent = '可以先重试；若仍然出现，请复制下面的信息反馈给我们。';
+    const actions = document.createElement('div');
+    actions.className = 'ws-fatal-actions';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = '重试';
+    retry.onclick = () => window.location.reload();
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = '复制错误信息';
+    copy.onclick = () => {
+      if (!navigator.clipboard?.writeText) { copy.textContent = '当前环境不支持复制'; return; }
+      void navigator.clipboard.writeText(message).then(
+        () => { copy.textContent = '已复制'; },
+        () => { copy.textContent = '复制失败'; },
+      );
+    };
+    // 安卓 WebView 没有落地页可回，别给一个点了白屏的按钮
+    if (document.body.dataset.entry !== 'android') {
+      const home = document.createElement('button');
+      home.type = 'button';
+      home.textContent = '返回首页';
+      home.onclick = () => { window.location.href = './index.html'; };
+      actions.append(retry, home, copy);
+    } else {
+      actions.append(retry, copy);
+    }
+    const detail = document.createElement('details');
+    detail.className = 'ws-fatal-detail';
+    const summary = document.createElement('summary');
+    summary.textContent = '查看技术信息';
+    const raw = document.createElement('pre');
+    raw.textContent = message;
+    detail.append(summary, raw);
+    box.append(title, hint, actions, detail);
     document.body.appendChild(box);
   } catch { /* 页面连 body 都没有时无能为力 */ }
 };

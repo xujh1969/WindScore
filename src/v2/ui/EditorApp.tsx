@@ -18,6 +18,7 @@ import type { LyricLink } from '../types';
 import { toggleParen } from '../edit';
 import { HelpDialog } from './HelpCenter';
 import { pieceSelectState } from './pieceLabel';
+import type { ScrollRequest } from './scoreScroll';
 import { AndroidPlayer } from './AndroidPlayer';
 import type { PackBundle } from './packBundle';
 import {
@@ -43,6 +44,7 @@ import {
   extendSlurRight,
   nextTimed,
   prevTimed,
+  measureJumpCursor,
   removeEvent,
   pressBarline,
   pressRepeatBar,
@@ -58,6 +60,7 @@ import {
   shiftOctave,
   shiftOctaveMany,
   toggleSlur,
+  toggleSlurH,
   toggleTongue,
   type TierCandidate,
 } from '../edit';
@@ -298,7 +301,7 @@ interface Snap {
   partId?: string;
   /** 缝隙下标：0 .. events.length */
   cursor: number;
-  /** 选区锚点，null 表示无选区 */
+  /** 选区对齐点，null 表示无选区 */
   anchor: number | null;
   mode: CursorMode;
   /**
@@ -338,9 +341,9 @@ function beatsPerMeasure(beat: string): number {
  * 应用入口（HTML 的 body[data-entry]）：
  *   app     — 内嵌模式（各段切换都在）
  *   editor  — 简谱编辑：记谱
- *   align   — 动态谱生成：配伴奏与对齐
- *   library — 曲库管理单功能页（可编辑曲库）
- *   play    — 动态谱演奏：曲库查询 + 播放（不导入 / 不打包 / 不删除）
+ *   align   — 伴奏对轨：配伴奏与对齐
+ *   library — 曲库单功能页（可编辑曲库）
+ *   play    — 动态谱演奏：曲库（只读） + 播放（不导入 / 不打包 / 不删除）
  * 编辑、生成与曲库单功能页显示左上角「返回首页」。
  */
 export type Entry = 'app' | 'editor' | 'align' | 'library' | 'play' | 'android-player' | 'ocr';
@@ -525,7 +528,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (!androidPlayer) localStorage.setItem('ws-mode', mode);
     if (mode === 'align' && view === 'source') setView('score'); // 对轨只认谱面视图
     // 离开对轨 = 退出配对：不然回到记谱模式，光标还是绑定样式、
-    // 小节线上还挂着靶标，点一条线会莫名其妙绑个锚点
+    // 小节线上还挂着靶标，点一条线会莫名其妙绑个对齐点
     if (mode !== 'align') {
       setWavePos(null);
       setWaveBeat(null);
@@ -609,7 +612,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 工具栏正中的谱面校验明细是否展开 */
   const [checkOpen, setCheckOpen] = useState(false);
   /**
-   * 「先配置曲库位置」引导窗：进入曲库管理或动态谱演奏首页时，
+   * 「先配置曲库位置」引导窗：进入曲库或动态谱演奏首页时，
    * 若曲库位置还没配置（exe 首次运行没选目录且数据目录为空 / Web 没选过文件夹）就弹。
    * storeReady = 存储探测完成，在此之前不弹（exe 启动瞬间探测还没回来，别闪窗）。
    */
@@ -637,7 +640,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return onStoreBackendChange(recheck);
   }, []);
   useEffect(() => {
-    // 进曲库管理 / 演奏首页时再查一次（配置好之前每次进入都提醒）
+    // 进曲库 / 演奏首页时再查一次（配置好之前每次进入都提醒）
     if ((mode === 'discover' || mode === 'library') && storeReadyRef.current) {
       setSetupOpen(!IS_ANDROID_APP && !isLibraryConfigured());
     }
@@ -669,6 +672,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const clockRef = useRef<BeatClock>(new Clock(90));
   const playerRef = useRef<Player>(new Player());
   const [playing, setPlaying] = useState(false);
+  /** 暂停位置（绝对 tick）：Space / 播放按钮共用；任何非暂停的停止都会清掉它。
+   *  用 state 而非 ref，按钮才能据它显示「继续」。 */
+  const [pausedTick, setPausedTick] = useState<number | null>(null);
+  /** 定位（跳小节 / 跳首尾）时把谱面视口一起带过去；seq 保证连按同一个键也是一次新请求 */
+  const scrollRequestSeq = useRef(0);
+  const [scrollRequest, setScrollRequest] = useState<ScrollRequest | null>(null);
+  /** 会丢内容的动作改成内联二次确认，不另开弹窗 */
+  const [newConfirm, setNewConfirm] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(false);
 
   // ─────────── 音频对齐（M9/M11）：真实音频 + TempoMap 驱动指示条 ───────────
   const [stems, setStems] = useState<{ name: string; buffer: AudioBuffer; on: boolean }[]>([]);
@@ -690,7 +702,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 恒定 BPM 三参数：BPM / 音频网格相位 / 谱面原点（拍） */
   const [tempoDraft, setTempoDraft] = useState({ ...DEFAULT_TEMPO_DRAFT });
   /**
-   * 当前已对准的谱面拍（「对准这里」/ 绑定锚点时记下）。
+   * 当前已对准的谱面拍（「对准这里」/ 绑定对齐点时记下）。
    * ÷2 / ×2 缩放速度时**以它为轴**——这个点的时刻保持不变，
    * 前后所有音围绕它拉伸。没有它，缩放只能以谱面第 0 拍为轴，
    * 你对准的人声位置就会被挪走（实测差 10 秒）。
@@ -699,7 +711,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [playSource, setPlaySource] = useState<'synth' | 'audio'>('synth');
   /**
    * 节拍器只在**合成音**的播放场景出现（规则见 metronome.ts 的纯函数）。
-   * 记谱页一直放合成音 → 一直有；播放页 / 动态谱生成页选「伴奏」时收起来。
+   * 记谱页一直放合成音 → 一直有；播放页 / 伴奏对轨页选「伴奏」时收起来。
    */
   const metronomeAvailable = metronomeAvailableIn(mode, playSource);
   /**
@@ -709,8 +721,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const [playIntro, setPlayIntro] = useState(true);
   // 音频对齐面板常驻可见（用户要求）——不再有开合状态
   /**
-   * 锚点配对模式：波形上选中的音频拍（null = 未在配对）。
-   * 配对中点谱面音符 → 绑成锚点，原点自动重算。
+   * 对齐点配对模式：波形上选中的音频拍（null = 未在配对）。
+   * 配对中点谱面音符 → 绑成对齐点，原点自动重算。
    */
   const [anchors, setAnchors] = useState<{ scoreBeat: number; audioBeat: number }[]>([]);
   /** 波形上被选为绑定起始点的位置（秒） */
@@ -718,14 +730,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 起始点吸附到的音频拍（整拍）；关掉吸附时为 null，按精确时刻换算 */
   const [waveBeat, setWaveBeat] = useState<number | null>(null);
   /**
-   * 点波形时是否吸附到最近的节奏线（默认开）。
+   * 点波形时是否吸附到最近的网格线（默认开）。
    * 网格本身还没标准时（BPM / 相位都是猜的）吸附会把你按在错的拍上——
    * 这时关掉它，回到「人耳点的位置就是准绳」。
    */
   const [waveSnap, setWaveSnap] = useState(true);
   /**
    * 绑定成功的弹窗（toast）：几秒后自动收起，点一下也能关。
-   * key 用时间戳——连续绑两个锚点时强制重新挂动画、重置计时
+   * key 用时间戳——连续绑两个对齐点时强制重新挂动画、重置计时
    */
   /**
    * 通用提示浮层（src/v2/ui/toast.tsx）：绑定成功、保存进度、打包、导出、
@@ -831,6 +843,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     playerRef.current.stop();
     clockRef.current.pause();
     clockRef.current.seek(0);
+    // 停止 ≠ 暂停：旧暂停点一律作废；togglePlay 会在暂停时重新写入
+    setPausedTick(null);
     setPlaying(false);
   }, []);
   useEffect(() => {
@@ -1061,7 +1075,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [active, stems, tempoDraft, anchors, tempoOverride, playSource]);
 
   /**
-   * 清除本谱的音频对齐（载入的伴奏 + 锚点 + 速度标定 + 播放源）。
+   * 清除本谱的音频对齐（载入的伴奏 + 对齐点 + 速度标定 + 播放源）。
    * 音频文件本体不删：键是「文件名:字节数」，多首谱共享同一份，
    * 这里的清除只断开本谱的引用（下次再载入同名文件秒回，不用重新解码落盘）。
    */
@@ -1199,7 +1213,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   // 曲库存储的启动探测放在**恢复流程内部**（见 restore effect 里的 await initStore()），
   // 不再在这里「水合完再补一拍恢复」——那一拍会落在用户操作之后：
-  // 把刚载入的伴奏 / 刚对好的标定与锚点又冲掉一次（exe 读盘慢，必踩），
+  // 把刚载入的伴奏 / 刚对好的标定与对齐点又冲掉一次（exe 读盘慢，必踩），
   // 还会把分轨重复解码一遍（表现为载入音频后长时间卡住才见波形）。
 
   const adopt = useCallback(
@@ -1413,7 +1427,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /**
    * 对轨界面的「打包」：当前这首 → 一个 .wspack 压缩包
    * （谱面 + 伴奏分轨 + 对轨标定）。伴奏本体从 IndexedDB 取（按存储键），
-   * 标定用**此刻**的三参数与锚点——刚配好的还没落存档也要能打包走。
+   * 标定用**此刻**的三参数与对齐点——刚配好的还没落存档也要能打包走。
    */
   const packCurrent = useCallback(async () => {
     const cur = snap.score;
@@ -1613,7 +1627,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   autoApplyRef.current = applyAutoEstimate;
 
   const audioTempo = useMemo<TempoMap | null>(() => {
-    // ≥2 个锚点 → 分段线性变速曲线（前奏长度不一致就靠它拉伸对齐）
+    // ≥2 个对齐点 → 分段线性变速曲线（前奏长度不一致就靠它拉伸对齐）
     if (anchors.length >= 2) {
       try {
         let ticks = 0;
@@ -1625,7 +1639,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           totalBeats: ticks / TICKS_PER_BEAT,
         });
       } catch {
-        // 锚点钉反了等：退回下面的常量路线，错误信息已在绑定时报过
+        // 对齐点钉反了等：退回下面的常量路线，错误信息已在绑定时报过
       }
     }
     if (tempoOverride) return tempoOverride;
@@ -1638,7 +1652,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const audioReady = stems.length > 0 && audioTempo !== null;
 
   /**
-   * 两点实测速度：两个锚点之间，谱面走了 Δ拍、音频用了 Δ秒 → 真实 BPM。
+   * 两点实测速度：两个对齐点之间，谱面走了 Δ拍、音频用了 Δ秒 → 真实 BPM。
    * 起点钉对了却还在飘，看这个数跟面板里填的差多少就知道差多少速度。
    */
   const impliedBpm = useMemo(() => {
@@ -1653,19 +1667,19 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [anchors, audioGrid]);
 
   /**
-   * 把音频速度整体乘 k（÷2 / ×2 / 用两点实测值），**以已绑定的锚点为轴**。
+   * 把音频速度整体乘 k（÷2 / ×2 / 用两点实测值），**以已绑定的对齐点为轴**。
    *
    * 「谱面跑得太快」最常见的一因是估成倍速：细网格是粗网格的超集，相位聚拢度
    * 天然偏快，谱面与音频又没匹配上（自动对齐没成），没人来纠正，只能靠人判断。
    *
-   * 缩放时锚点与原点必须**按同一条不变量**换算：映射是
+   * 缩放时对齐点与原点必须**按同一条不变量**换算：映射是
    * `t(拍) = 相位 + (原点 + 拍) × 60/BPM`。要让某个谱面拍 pivot 的时刻不变，
    * 需要 `原点' = k × 原点 + (k − 1) × pivot`——
-   * 只把原点乘 k 等于以「谱面第 0 拍」为轴，锚点在第 19 拍时映射会整体挪掉十几秒。
+   * 只把原点乘 k 等于以「谱面第 0 拍」为轴，对齐点在第 19 拍时映射会整体挪掉十几秒。
    */
   const rescaleTempo = useCallback(
     (k: number, note: string) => {
-      // 轴 = 你最后一次对准的那个谱面拍（对准这里 / 绑定锚点时记下的）
+      // 轴 = 你最后一次对准的那个谱面拍（对准这里 / 绑定对齐点时记下的）
       const pivot = pivotBeat;
       setTempoDraft((d) => ({
         ...d,
@@ -1673,9 +1687,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         bpm: Math.round(d.bpm * k * 100) / 100,
         originBeat: Math.round((k * d.originBeat + (k - 1) * pivot) * 100) / 100,
       }));
-      // 锚点存的是「当前网格的拍号」，单位随 BPM 变，必须同步乘 k
+      // 对齐点存的是「当前网格的拍号」，单位随 BPM 变，必须同步乘 k
       setAnchors((list) => list.map((a) => ({ ...a, audioBeat: a.audioBeat * k })));
-      setTempoOverride(null); // 有曲线就按新锚点重建（曲线里的时刻是从旧锚点算出来的）
+      setTempoOverride(null); // 有曲线就按新对齐点重建（曲线里的时刻是从旧对齐点算出来的）
       setAudioMsg(note);
     },
     [anchors, pivotBeat, audioGrid],
@@ -1710,7 +1724,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return { span, remaining, ratio: span / remaining };
   }, [audioTempo, stems, scoreBeats]);
 
-  /** 两个锚点之间的谱面跨度（拍）：跨度越小，点击误差被放大得越厉害 */
+  /** 两个对齐点之间的谱面跨度（拍）：跨度越小，点击误差被放大得越厉害 */
   const anchorSpan = useMemo(() => {
     if (anchors.length < 2) return 0;
     const bs = anchors.map((a) => a.scoreBeat);
@@ -1721,18 +1735,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 对准这里：波形上点的这一刻 = 某颗谱面音符响起的时刻。
    * 参照音符：谱面里**选中的那颗**；没选就是第一颗音。
    * 两种语义（按当前对齐状态分流）：
-   *   恒定映射（无曲线）→ 单锚点语义：钉住一处，整谱反推。
-   *   变速曲线（≥2 锚点）→ **微调语义**：在选中音的拍位上加一个锚点，曲线在该处钉准。
-   *     ——绝不能清锚点：那是把 17:8 这种实测速率差打回单一 BPM，
+   *   恒定映射（无曲线）→ 单对齐点语义：钉住一处，整谱反推。
+   *   变速曲线（≥2 对齐点）→ **微调语义**：在选中音的拍位上加一个对齐点，曲线在该处钉准。
+   *     ——绝不能清对齐点：那是把 17:8 这种实测速率差打回单一 BPM，
    *     对准点之后必然整体漂移（实测踩过：怎么对齐都「不对」就是它）。
-   * 波形默认吸附到节奏线；网格本身还不准（BPM / 相位都是猜的）时先取消
-   * 「吸附节奏线」，人耳点的位置才是准绳。
+   * 波形默认吸附到网格线；网格本身还不准（BPM / 相位都是猜的）时先取消
+   * 「吸附网格线」，人耳点的位置才是准绳。
    */
   const alignHere = useCallback(() => {
     if (wavePos === null || !stems.length) return;
     const onsets = scoreNoteOnsets(score);
     if (onsets.length < 6) {
-      setAudioMsg('谱面音符太少（<6），请展开「高级参数」用锚点对齐。');
+      setAudioMsg('谱面音符太少（<6），请在右侧「手动输入与诊断」设置对齐点。');
       return;
     }
     // 参照音符：谱面里选中的那颗；没选就是第一颗音（此处自行计算，
@@ -1744,7 +1758,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const clickedBeat =
       Math.round(secToBeat(audioGrid, wavePos) * 100) / 100;
     if (anchors.length >= 2) {
-      // 微调语义：加锚点而不是清场。（commitAnchor 声明在本函数之后，内联同款逻辑）
+      // 微调语义：加对齐点而不是清场。（commitAnchor 声明在本函数之后，内联同款逻辑）
       setPivotBeat(refBeat);
       setAnchors((list) => [
         ...list.filter((x) => x.scoreBeat !== refBeat),
@@ -1753,7 +1767,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setTempoOverride(null);
       setAudioMsg(
         `已微调：谱面第 ${refBeat} 拍 = 音频第 ${clickedBeat} 拍，` +
-          '变速曲线在此处重新钉准（之前的锚点全部保留）。',
+          '变速曲线在此处重新钉准（之前的对齐点全部保留）。',
       );
       return;
     }
@@ -1765,7 +1779,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     setAudioMsg(
       `已对准：谱面第 ${refBeat} 拍 = 音频 ${wavePos.toFixed(2)}s（原点 = 音频第 ${origin} 拍）。` +
         (usedSelection ? '' : '（没选音符，默认对了谱面第一颗音）') +
-        '这颗音之前的部分自动反推；之后跟不跟得住看速度档。锚点已清空。',
+        '这颗音之前的部分自动反推；之后跟不跟得住看速度档。对齐点已清空。',
     );
   }, [wavePos, stems, snap, tempoDraft, score, anchors]);
 
@@ -1773,7 +1787,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (impliedBpm === null) return;
     rescaleTempo(
       impliedBpm / tempoDraft.bpm,
-      `已按两点实测把音频 BPM 改成 ${impliedBpm}（锚点位置不变，走速同比缩放）`,
+      `已按两点实测把音频 BPM 改成 ${impliedBpm}（对齐点位置不变，走速同比缩放）`,
     );
   }, [impliedBpm, tempoDraft.bpm, rescaleTempo]);
 
@@ -2078,7 +2092,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /**
    * 网格起点微调（« ‹ › » 四个按钮）：整条网格**连同挂在它上面的对齐**一起平移。
    *
-   * 为什么不用重建锚点：锚点存的是「网格拍号」，相位一变它们的绝对时刻自然跟着变
+   * 为什么不用重建对齐点：对齐点存的是「网格拍号」，相位一变它们的绝对时刻自然跟着变
    * ——这正是想要的效果（打拍的第一下常有几十毫秒手抖，整条一起挪就正过来了）。
    * 只有换**网格间距**（BPM）时才需要按时刻不变重建，见 applyTaps / rescaleTempo。
    */
@@ -2122,7 +2136,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   /**
    * 采纳打拍结果。换网格必须保时刻：旧网格第 k 拍的秒数 t = 旧起点 + k×旧拍长，
-   * 新网格拍号 = (t − 新起点)/新拍长——已钉的锚点 / 原点按同一公式换算，
+   * 新网格拍号 = (t − 新起点)/新拍长——已钉的对齐点 / 原点按同一公式换算，
    * 换完速度后已对齐的部分依然对齐，不用重绑。
    */
   const applyTaps = useCallback(() => {
@@ -2145,7 +2159,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     setAudioMsg(
       `速度已按你的打拍定为 ≈${Math.round(tapBpm * 10) / 10} 拍/分，网格线应该正好压在鼓点上了。` +
         '下一步对准开头：波形点人声开口处 → 谱面选中那颗音 → 点「对准这里」。' +
-        (anchors.length ? '已绑的锚点已按新速度自动换算，不用重绑。' : ''),
+        (anchors.length ? '已绑的对齐点已按新速度自动换算，不用重绑。' : ''),
     );
   }, [tapBpm, taps, tempoDraft, anchors.length]);
 
@@ -2256,6 +2270,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (t !== null) return t;
     return clockRef.current.currentBeat * TICKS_PER_BEAT;
   }, []);
+
+  /** 播放 / 暂停的唯一入口：Space 与所有「播放」按钮共用，避免两处语义漂移。
+   *  暂停记下绝对 tick；续播把它直接作为起播点传给 startPlay，不走光标起播。 */
+  const togglePlay = useCallback(() => {
+    if (playing) {
+      const at = getPlayTick() ?? 0;
+      stopPlay();
+      setPausedTick(at);
+      clockRef.current.seek(at / TICKS_PER_BEAT);
+      return;
+    }
+    startPlay(pausedTick ?? undefined);
+    setPausedTick(null);
+  }, [playing, getPlayTick, stopPlay, startPlay, pausedTick]);
 
   /**
    * 跟随模式的开关与改动 → 立刻按**当前播放位置**重新起。
@@ -2410,7 +2438,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   /**
    * 波形上定好的那个点 = 音频第几拍。
-   * 吸附开着时就是整拍（点在节奏线上）；关掉时按精确时刻换算，允许小数。
+   * 吸附开着时就是整拍（点在网格线上）；关掉时按精确时刻换算，允许小数。
    */
   const audioBeatOfWave = useMemo(() => {
     if (waveBeat !== null) return waveBeat;
@@ -2419,8 +2447,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   }, [waveBeat, wavePos, tempoDraft]);
 
   /**
-   * 落一个锚点：谱面某处（小节线 / 音符的拍位）↔ 音频那个节奏点。
-   * 恒定 BPM 下一个锚点定死原点；≥2 个锚点自动合成变速曲线（段间线性拉伸）。
+   * 落一个对齐点：谱面某处（小节线 / 音符的拍位）↔ 音频那个节奏点。
+   * 恒定 BPM 下一个对齐点定死原点；≥2 个对齐点自动合成变速曲线（段间线性拉伸）。
    */
   const commitAnchor = useCallback(
     (scoreBeat: number, audioBeat: number, what: string, extra = '') => {
@@ -2457,7 +2485,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 波形定点后，在谱面上点**小节线**即绑定（新流程）。
    *
    * 为什么不拿单颗音去对：音的拍位会被弱起 / 倚音 / 附点搅浑，而小节线是
-   * 干净的界点；且波形上那些节奏线一眼可辨，点线比在密集音符里挑一颗省事。
+   * 干净的界点；且波形上那些网格线一眼可辨，点线比在密集音符里挑一颗省事。
    * 音符仍可绑（老流程保留），两种都走 commitAnchor。
    */
   const bindPick = useCallback(
@@ -2514,11 +2542,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     setWaveBeat(Math.round(secToBeat(audioGrid, sec) * 100) / 100);
   }, [mode, audioReady, tempoDraft]);
 
-  /** 删除某条节奏线上的对齐点（浮层「删除此对齐点」）；对齐回退到其余锚点 / 自动标定 */
+  /** 删除某条网格线上的对齐点（浮层「删除此对齐点」）；对齐回退到其余对齐点 / 自动标定 */
   const deleteAnchorAt = useCallback(
     (audioBeat: number) => {
       setAnchors((list) => list.filter((a) => Math.abs(a.audioBeat - audioBeat) > 0.5));
-      setAudioMsg('已删除该对齐点；对齐回退到其余锚点或自动标定。');
+      setAudioMsg('已删除该对齐点；对齐回退到其余对齐点或自动标定。');
     },
     [],
   );
@@ -2557,7 +2585,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    *   点在缝隙里 → insert 模式，I 形光标，之后输入是插入
    *   拖拉跨了多个事件 → 建立区间选区（用于套时值档位）
    *
-   * 波形上已经定过点（对轨配对中）时，点在**小节线**上 = 绑定锚点，
+   * 波形上已经定过点（对轨配对中）时，点在**小节线**上 = 绑定对齐点，
    * 绑完照常选中这条线，不打断编辑。
    */
   const handlePick = useCallback(
@@ -2633,8 +2661,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   /**
    * 波形点击 = 设定试听起始点，并**立即从那里试听**（与谱面播放互斥）。
-   * 反复点反复听，找到「这条节奏线对应谱面哪一处的界」。
-   * 吸附开着时 sec 已经落在某条节奏线上，beat 就是那条线的拍号。
+   * 反复点反复听，找到「这条网格线对应谱面哪一处的界」。
+   * 吸附开着时 sec 已经落在某条网格线上，beat 就是那条线的拍号。
    */
   const seekWave = useCallback(
     (sec: number, beat: number) => {
@@ -2667,12 +2695,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /**
    * 面板上的「绑定」按钮：把波形起点绑到**当前选中的**谱面对象
    * （小节线优先——拍位干净；否则选中的音符）。
-   * vocal = 「人声起点对齐」：走的是同一个锚点机制，只是文案与提示不同。
+   * vocal = 「人声起点对齐」：走的是同一个对齐点机制，只是文案与提示不同。
    */
   const bindAnchor = useCallback(
     (vocal = false) => {
       if (wavePos === null || audioBeatOfWave === null) {
-        setAudioMsg('绑定：先在波形上点一条节奏线（会从那里试听）');
+        setAudioMsg('绑定：先在波形上点一条网格线（会从那里试听）');
         return;
       }
       const idx = snap.mode === 'over' ? snap.cursor - 1 : -1;
@@ -2828,7 +2856,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       repeatBar: () => {
         // 小节反复 %（𝄍）：只在光标紧跟小节线时有效——按一次重复上一小节
         // （插入 % 休止 + 收尾小节线），再按一次重复前两小节（中间线画双小节记号）。
-        // 光标前面是音符时没有可重复的锚点，按键无效
+        // 光标前面是音符时没有可重复的对齐点，按键无效
         const r = pressRepeatBar(score, snap.cursor);
         if (!r) {
           toastInfo('小节反复要在小节线之后按：先按 | 再按 𝄍（前面是音符没有可重复的小节）');
@@ -2927,6 +2955,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         }
         const id = padLeftId();
         if (id) setScore(extendSlurRight(score, id));
+      },
+      slurH: () => {
+        if (selectedTimedIds.length < 2) return;
+        commit({ ...snap, score: toggleSlurH(score, selectedTimedIds) });
       },
       duration: (ticks) => {
         if (selectedTimedIds.length >= 2) {
@@ -3272,6 +3304,86 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         void onSave();
         return;
       }
+      // ─────────── 导航键：所有画着谱面的页面统一生效 ───────────
+      // 记谱 / 对轨（两个页签）/ 播放三屏都有谱面；曲库与动态谱首页没有谱面，
+      // 安卓播放器用屏幕按钮、不参与键盘导航。源码视图不画谱面，弹窗与输入框
+      // 由上面的守卫让路。放在 canEditScore 门之前：跳小节 / 跳首尾只定位、不改谱。
+      const scoreShown = !androidPlayer && (mode === 'play' || mode === 'align' || (mode === 'score' && view === 'score'));
+      if (!scoreShown) return;
+
+      /** 当前定位点在「正在显示的声部谱」里的缝隙下标。播放页可能显示展开后的
+       *  反复谱，下标口径与原谱不同，不能直接拿 snap.cursor 当显示谱下标。 */
+      const shownCursor = (shown: Score): number => {
+        if (activePlayPick) {
+          const i = shown.events.findIndex((ev) => ev.id === activePlayPick.id);
+          if (i >= 0) return i + 1;
+        }
+        const at = Math.max(0, Math.min(snap.cursor - 1, score.events.length - 1));
+        const src = score.events[at];
+        if (src) {
+          const i = shown.events.findIndex((ev) => ev.id === src.id || ev.originId === src.id);
+          if (i >= 0) return i + 1;
+        }
+        return 0;
+      };
+      /** 定位键不是播放控制键：播放中先停，再移动定位点并带视口过去。
+       *  这样三屏行为一致，也不会被播放跟随的 rAF 把视口拉回去。 */
+      const settleNavigation = (): void => {
+        setPausedTick(null);
+        if (playing) stopPlay();
+      };
+      /** 跳到曲谱开头 / 末尾 */
+      const jumpEdge = (edge: 'start' | 'end') => {
+        settleNavigation();
+        setPlayPick(null); // 清掉手动起播点，之后跟着定位光标走
+        setSnap({ ...snap, cursor: edge === 'start' ? 0 : score.events.length, anchor: null, mode: 'insert' });
+        setScrollRequest({ edge, seq: ++scrollRequestSeq.current });
+      };
+      /** 跳前 / 后一小节：目标压在该小节第一个音上（over 模式） */
+      const jumpMeasure = (delta: -1 | 1) => {
+        if (mode === 'play') {
+          // 播放页按显示出来的那份谱找小节；复用「点谱面」的映射设起播点方块
+          const shown = partScore(fullViewScore, activePartId);
+          const target = measureJumpCursor(shown, shownCursor(shown), delta);
+          if (target === null) return;
+          settleNavigation();
+          handlePlayPick({ mode: 'over', index: target - 1, partId: activePartId, cursor: target });
+          setScrollRequest({ seq: ++scrollRequestSeq.current, eventId: shown.events[target - 1]?.id ?? null });
+          return;
+        }
+        const target = measureJumpCursor(score, snap.cursor, delta);
+        if (target === null) return;
+        settleNavigation();
+        setSnap({ ...snap, cursor: target, anchor: null, mode: 'over' });
+        setScrollRequest({ seq: ++scrollRequestSeq.current, eventId: score.events[target - 1]?.id ?? null });
+      };
+      // Space 是全局播放 / 暂停键：按钮聚焦时也归它，别让按钮抢走后变成「停止 / 从头播」。
+      // 打拍模式由独立 listener 处理空格，这里让路；长按不反复切换。
+      if (e.code === 'Space') {
+        if (tapping) return;
+        e.preventDefault();
+        if (e.repeat) return;
+        togglePlay();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'arrowleft' || k === 'arrowright') {
+          e.preventDefault();
+          const left = k === 'arrowleft';
+          if (e.shiftKey) jumpEdge(left ? 'start' : 'end');
+          else jumpMeasure(left ? -1 : 1);
+          return;
+        }
+        // 其余 Ctrl 组合键交给下面的编辑键分支
+      } else if (e.key === 'Home' || e.key === 'Enter' || e.key === 'End') {
+        // 同上：Enter 落在按钮 / 链接上时交给默认激活行为
+        if (e.key === 'Enter' && t && (t.tagName === 'BUTTON' || t.tagName === 'A')) return;
+        e.preventDefault();
+        jumpEdge(e.key === 'End' ? 'end' : 'start');
+        return;
+      }
+
       // 编辑键只认记谱屏；对轨屏切到「简谱编辑」页签后同样可编辑
       // （对着伴奏补前奏 / 间奏就是要在这一屏改）。其余屏一律不响应——
       // 播放 / 曲库 / 动态谱首页里按 1-7、退格，不能偷偷改那份看不见的谱子
@@ -3324,6 +3436,16 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
       const n = score.events.length;
       const cur = snap.cursor;
+
+      // # / b：与输入板「升音 / 降音」按钮同一套循环变音，作用对象也交给同一个
+      // padActions.accidental（选中的音 / 光标左侧最近的音；没有可改的音时按钮也是静默）。
+      // 中文输入法下的全角 ＃ / ｂ 一并认，免得切换输入法后按键「没反应」。
+      const editKey = e.key.toLowerCase();
+      if (editKey === '#' || editKey === '＃' || editKey === 'b' || editKey === 'ｂ') {
+        e.preventDefault();
+        padActions.accidental(editKey === '#' || editKey === '＃' ? 'sharp' : 'flat');
+        return;
+      }
 
       if (e.key >= '1' && e.key <= '7') {
         e.preventDefault();
@@ -3526,7 +3648,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo, cueTarget]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, view, androidPlayer, activePartId, activePlayPick, fullViewScore, handlePlayPick, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo, cueTarget, tapping, startPlay, stopPlay, getPlayTick, togglePlay, padActions]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {
@@ -3709,7 +3831,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       <header className="v2-head">
         <div className="v2-brand">
           {/*
-            返回首页：编辑页与曲库管理页都有——它们是从落地页点进来的，
+            返回首页：编辑页与曲库页都有——它们是从落地页点进来的，
             任何时候都能一步回去。
             play.html 的顶栏整行不显示（独立入口，播放页自带工具条），
             它的返回入口做在播放界面里，见 DiscoverScreen.homeHref 与播放工具条。
@@ -3732,7 +3854,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             )
           ) : null}
           <span className="v2-brand-name">
-            WindScore <span className="v2-brand-tag">{entry === 'align' ? '动态谱生成' : entry === 'editor' ? '简谱编辑' : '写谱器'}</span>
+            WindScore <span className="v2-brand-tag">{entry === 'align' ? '伴奏对轨' : entry === 'editor' ? '简谱编辑' : '写谱器'}</span>
           </span>
         </div>
         {/* 曲目信息只在谱面标题块 + 曲目信息面板出现，工具栏不再重复一遍 */}
@@ -3779,9 +3901,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             <>
               {entry === 'ocr' ? null : (
                 <>
-                  <button className="v2-btn" onClick={onNew}>
-                    新建
-                  </button>
+                  {newConfirm ? (
+                    <>
+                      <button className="v2-btn is-danger" title="未保存的改动会丢失" onClick={() => { setNewConfirm(false); onNew(); }}>
+                        放弃改动并新建
+                      </button>
+                      <button className="v2-btn" onClick={() => setNewConfirm(false)}>取消</button>
+                    </>
+                  ) : (
+                    <button className="v2-btn" onClick={() => { if (dirty) setNewConfirm(true); else onNew(); }}>
+                      新建
+                    </button>
+                  )}
                   <button className="v2-btn" onClick={onOpen}>
                     打开
                   </button>
@@ -3924,11 +4055,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             </span>
             <button
               className={`v2-btn ${playing ? 'is-on' : ''}`}
-              onClick={() => (playing ? stopPlay() : startPlay())}
+              onClick={togglePlay}
               disabled={timeline.length === 0}
-              title={playing ? '停止' : '播放'}
+              title={playing ? '暂停（Space）' : pausedTick !== null ? '从暂停处继续（Space）' : '播放（Space）'}
             >
-              {playing ? '⏹ 停止' : '▶ 播放'}
+              {playing ? '⏸ 暂停' : pausedTick !== null ? '▶ 继续' : '▶ 播放'}
             </button>
             <div className="v2-view-switch" title="跟着伴奏放（用对好的标定），或用合成音">
               <button
@@ -4246,6 +4377,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               onPick={handlePlayPick}
               onEnded={onPlayEnded}
               showCaret={false}
+              scrollRequest={scrollRequest}
               focusId={activePlayPick?.id ?? null}
               onLayout={rememberLayout}
               // 谱面标题右侧的齿轮 = 调与速度的统一入口（此前播放页没接这个回调，齿轮是死的）
@@ -4271,7 +4403,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         导出弹窗：导出的是 `viewScore`——播放界面开着「展开反复」时，
         PDF 与视频拿到的就是拉平后的线性谱，所见即所得。
       */}
-      {/* 曲库位置未配置时的引导窗：进演奏首页 / 曲库管理页时触发（见 setupOpen） */}
+      {/* 曲库位置未配置时的引导窗：进演奏首页 / 曲库页时触发（见 setupOpen） */}
       {setupOpen ? (
         <LibrarySetupDialog
           isExe={isTauri()}
@@ -4302,7 +4434,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             if (playing) stopPlay();
           }}
           // 导出（尤其视频）动辄几十秒：结果在外面也弹一层，关掉弹窗后仍看得见
-          onDone={(note, ok) => {
+          onDone={(note, ok, cancelled) => {
+            // 用户主动取消文件保存：中性提示，不要报红色「导出失败」
+            if (cancelled) { setMsg(note || '已取消保存'); return; }
             if (ok) toastOk('导出完成', note);
             else toastFail('导出失败', note);
           }}
@@ -4324,7 +4458,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       {helpOpen ? <HelpDialog dark={dark} initialTopic={mode === 'score' ? view === 'source' ? 'jps' : 'editing' : mode === 'align' ? 'alignment' : mode === 'library' ? 'library' : 'playback'} onClose={() => setHelpOpen(false)} /> : null}
 
       {/*
-        节拍器面板：播放页 / 记谱页 / 动态谱生成页共用一份（挂在最外层，
+        节拍器面板：播放页 / 记谱页 / 伴奏对轨页共用一份（挂在最外层，
         切屏不重开）。伴奏场景下按钮不出现，面板也会跟着关掉。
         开关已挪到播放条上（节拍器|⌄），面板只管配置。
       */}
@@ -4468,13 +4602,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               ) : null}
               <button
                 className={`v2-btn ${playing ? 'is-on' : ''}`}
-                onClick={() => (playing ? stopPlay() : startPlay())}
+                onClick={togglePlay}
                 disabled={timeline.length === 0}
-                title={playing ? '停止' : '播放'}
+                title={playing ? '暂停（Space）' : pausedTick !== null ? '从暂停处继续（Space）' : '播放（Space）'}
               >
-                {playing ? '⏹ 停止' : '▶ 播放'}
+                {playing ? '⏸ 暂停' : pausedTick !== null ? '▶ 继续' : '▶ 播放'}
               </button>
-              {/* 节拍器：记谱页与动态谱生成页也放得下（只在合成音场景出现） */}
+              {/* 节拍器：记谱页与伴奏对轨页也放得下（只在合成音场景出现） */}
               {metronomeAvailable ? (
                 <MetronomeButton
                   on={metronomeFollow}
@@ -4532,7 +4666,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </div>
             </div>
 
-            {/* 记谱法与源码在同一处切换；动态谱生成页不显示源码入口。 */}
+            {/* 记谱法与源码在同一处切换；伴奏对轨页不显示源码入口。 */}
             <div className="v2-view-switch" aria-label="曲谱视图">
               <button
                 className={view === 'score' && !staffViewOn ? 'v2-seg is-on' : 'v2-seg'}
@@ -4596,8 +4730,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                         : playing && playSource === 'audio' && audioReady
                           ? '边听边校：指示条跟伴奏错位？按 N 在此刻加对齐点'
                           : audioReady
-                            ? `${tempoEst && appliedTempoEst === tempoEst ? '已自动识别 · ' : ''}当前网格 ${Math.round(tempoDraft.bpm)} 拍/分 · 已绑定 ${anchors.length} 处 · 点节奏线对齐，拖节奏线整组平移`
-                            : '载入伴奏后自动测速 · 点节奏线 → 点谱面小节线完成对齐'}
+                            ? `${tempoEst && appliedTempoEst === tempoEst ? '已自动识别 · ' : ''}当前网格 ${Math.round(tempoDraft.bpm)} 拍/分 · 已绑定 ${anchors.length} 处 · 点网格线对齐，拖网格线整组平移`
+                            : '载入伴奏后自动测速 · 点网格线 → 点谱面小节线完成对齐'}
                   </span>
                   <label className="v2-grace-check v2-align-preview" title="点击波形试听时放几拍就自动停；拍长按当前网格速度计算">
                     试听
@@ -4657,7 +4791,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                   <span className="v2-wave-hover">
                     {waveHover
                       ? `第 ${waveHover.beat} 拍 · 小节 ${waveHover.bar} · ${waveHover.sec.toFixed(2)}s`
-                      : '滚轮缩放 · 拖空白平移 · 拖节奏线整组平移'}
+                      : '滚轮缩放 · 拖空白平移 · 拖网格线整组平移'}
                   </span>
                   <AudioWaveform
                     paused={exportOpen}
@@ -4721,13 +4855,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                   />
                   {/* 吸附：网格本身还没标准时（BPM / 相位都还是猜的）关掉它，
                       回到「人耳点的位置就是准绳」，不然会被按在错的拍上 */}
-                  <label className="v2-wave-snap" title="点波形时吸到最近的节奏线（画面上真画出来的那条）">
+                  <label className="v2-wave-snap" title="点波形时吸到最近的网格线（画面上真画出来的那条）">
                     <input
                       type="checkbox"
                       checked={waveSnap}
                       onChange={(e) => setWaveSnap(e.target.checked)}
                     />
-                    吸附节奏线
+                    吸附网格线
                   </label>
                 </div>
               ) : null}
@@ -4753,6 +4887,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 onCueDoubleClick={openCueById}
                 onLayout={rememberLayout}
                 showBreaks={mode === 'score'}
+                scrollRequest={scrollRequest}
                 focusId={overEvent?.id ?? null}
                 showCaret={lyricVerse === null && snap.mode === 'insert'}
                 playStyle={playStyle}
@@ -4778,7 +4913,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                   onDelete: (id, offset) => { setMsg(''); setScore(deleteLyricPosition(score, id, lyricVerse, offset)); return true; },
                   onExit: () => setLyricSelection(null),
                 } : undefined}
-                /* 波形上点过节奏线 = 配对中：光标变绑定样式 + 小节线画靶标，
+                /* 波形上点过网格线 = 配对中：光标变绑定样式 + 小节线画靶标，
                    点了小节线（绑定完成）就自动退出，光标恢复。
                    侧栏切到「简谱编辑」时不进入配对：那时点谱面是编辑 */
                 pairing={lyricVerse === null && mode === 'align' && alignTab === 'align' && wavePos !== null}
@@ -4801,6 +4936,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             </>
           ) : (
             <div className="v2-source">
+              {/* 源码视图也带状态栏：解析 / 导出失败时 msg 得看得见，不能只有绣在文字里的提示 */}
+              <div className="v2-status">
+                <span>源码视图</span>
+                {msg ? <span className="v2-msg" role="status">{msg}</span> : null}
+              </div>
               {sourceRecovery && <p className="v2-hint" role="status">正在修复原始源码；保存草稿会完整保留未识别内容。</p>}
               <textarea
                 ref={dslRef}
@@ -5114,7 +5254,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
           {/*
             音频对齐（M9/M11）：载入 stem + 标定 TempoMap，播放时指示条跟着真实音频走。
-            标定优先走「重新自动对齐」（浏览器端，beat.ts），锚点与手工微调做兜底。
+            标定优先走「重新自动对齐」（浏览器端，beat.ts），对齐点与手工微调做兜底。
             **常驻可见**（用户要求）：此前是 details 折叠块，收起嵌套的「高级参数」时
             toggle 会冒泡到父级，把整块一起收掉（实测踩到），而且对轨时还要先找到它。
             放在侧栏末尾：它属于「播放」而不属于「记谱」，不该跟音符属性混在一屏。
@@ -5128,7 +5268,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             {/* 对轨页直接进来时可能还没有谱面（没有上次会话）：先给一句去哪拿谱 */}
             {score.events.length === 0 ? (
               <p className="v2-hint">
-                还没有谱面。点左上角<b>「打开」</b>选一首 .jps，或回首页进入「曲库管理」，点击曲目的「对轨」。
+                还没有谱面。点左上角<b>「打开」</b>选一首 .jps，或回首页进入「曲库」，点击曲目的「对轨」。
               </p>
             ) : null}
             <div className="v2-field">
@@ -5136,15 +5276,22 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 <button className="v2-btn" onClick={() => audioFileRef.current?.click()}>
                   {stems.length ? '更换音频' : '载入音频'}
                 </button>
-                {/* 有伴奏或锚点才给清除：没有东西可清时按钮只会制造困惑 */}
+                {/* 有伴奏或对齐点才给清除：没有东西可清时按钮只会制造困惑 */}
                 {stems.length > 0 || anchors.length > 0 ? (
-                  <button
-                    className="v2-btn"
-                    title="去掉本谱已载入的伴奏与全部标定（对齐点 / 速度 / 播放源）；音频文件保留，重载同一文件秒回。伴奏与标定都会随曲库自动保存"
-                    onClick={clearAudioAlign}
-                  >
-                    清除
-                  </button>
+                  clearConfirm ? (
+                    <>
+                      <button className="v2-btn is-danger" onClick={() => { setClearConfirm(false); clearAudioAlign(); }}>确认清除伴奏与标定</button>
+                      <button className="v2-btn" onClick={() => setClearConfirm(false)}>取消</button>
+                    </>
+                  ) : (
+                    <button
+                      className="v2-btn"
+                      title="去掉本谱已载入的伴奏与全部标定（对齐点 / 速度 / 播放源）；音频文件保留，重载同一文件秒回。伴奏与标定都会随曲库自动保存"
+                      onClick={() => setClearConfirm(true)}
+                    >
+                      清除伴奏与标定
+                    </button>
+                  )
                 ) : null}
               </div>
               {stems.length > 0 ? (
@@ -5181,9 +5328,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 >
                   {tapping ? '打拍中…' : '打拍定速'}
                 </button>
-                {/* 网格微调：间距对但整条差一点；也可以直接在波形上拖任意一条节奏线 */}
+                {/* 网格微调：间距对但整条差一点；也可以直接在波形上拖任意一条网格线 */}
                 {stems.length > 0 ? (
-                  <span className="v2-title-token" title="网格起点在音频里的位置；拖波形上的节奏线也能整组平移">
+                  <span className="v2-title-token" title="网格起点在音频里的位置；拖波形上的网格线也能整组平移">
                     {fmtClock(tempoDraft.phaseSec)}
                   </span>
                 ) : null}
@@ -5214,7 +5361,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                     <strong>{c.warning ? '⚠ ' : ''}{c.text}</strong>
                   </p>
                 )) : <p className="v2-hint">请再绑定一个位置，建议相隔至少 8 拍。</p>}
-                {anchorChecks.length ? <p className="v2-hint">检查的是未经锚点拉伸的网格。拍数吻合不代表中间每拍都准确；跨反复或间奏时请分段绑定。</p> : null}
+                {anchorChecks.length ? <p className="v2-hint">检查的是未经对齐点拉伸的网格。拍数吻合不代表中间每拍都准确；跨反复或间奏时请分段绑定。</p> : null}
               </div>
             ) : null}
             <div className="v2-field">
@@ -5247,14 +5394,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </div>
             </div>
             <details className="v2-adv">
-              <summary>手动输入与诊断（锚点 / BPM / 微调）</summary>
+              <summary>手动输入与诊断（对齐点 / BPM / 微调）</summary>
             <div className="v2-field">
               <div className="v2-grace-bar">
                 {/* 单点对准：某个字总是差半拍时的精修——波形点的时刻 = 选中那颗音 */}
                 <button
                   className="v2-btn"
                   disabled={wavePos === null || !stems.length}
-                  title="让选中的音符正好落在波形上点的时刻。没绑变速曲线时：单点对准，整谱反推；已绑变速曲线时：在此处加锚点微调，已有对齐点保留"
+                  title="让选中的音符正好落在波形上点的时刻。没绑变速曲线时：单点对准，整谱反推；已绑变速曲线时：在此处加对齐点微调，已有对齐点保留"
                   onClick={alignHere}
                 >
                   {focusTimed ? '把选中的音对到这里' : '对准这里'}
@@ -5314,10 +5461,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                     className="v2-btn"
                     onClick={() => {
                       setAnchors([]);
-                      setAudioMsg('锚点已清空（对齐参数恢复为自动对齐 / 手工值）');
+                      setAudioMsg('对齐点已清空（对齐参数恢复为自动对齐 / 手工值）');
                     }}
                   >
-                    清除锚点
+                    清除对齐点
                   </button>
                 </div>
               ) : null}
@@ -5407,14 +5554,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 <button
                   className="v2-btn"
                   onClick={() => scaleTempo(0.5)}
-                  title="谱面跑得太快？多半是估成了倍速（细网格是粗网格的超集，聚拢度天然偏快）。点这个减半，绑定点保持不变"
+                  title="谱面跑得太快？多半是估成了倍速（细网格是粗网格的超集，聚拢度天然偏快）。点这个减半，对齐点保持不变"
                 >
                   ÷2
                 </button>
                 <button
                   className="v2-btn"
                   onClick={() => scaleTempo(2)}
-                  title="谱面跑得太慢就翻倍，绑定点保持不变"
+                  title="谱面跑得太慢就翻倍，对齐点保持不变"
                 >
                   ×2
                 </button>
@@ -5515,7 +5662,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   );
 }
 
-/** 比较原始音频网格；不能用已被锚点拉伸的 audioTempo 自证正确。 */
+/** 比较原始音频网格；不能用已被对齐点拉伸的 audioTempo 自证正确。 */
 function checkAnchorSpans(anchors: Anchor[], grid: TempoMap) {
   const sorted = [...anchors].sort((a, b) => a.scoreBeat - b.scoreBeat);
   return sorted.slice(1).map((b, i) => {
@@ -5734,7 +5881,7 @@ function eventLabel(e: Event): string {
 }
 
 /**
- * 节拍器按钮：播放页 / 记谱页 / 动态谱生成页共用一个。
+ * 节拍器按钮：播放页 / 记谱页 / 伴奏对轨页共用一个。
  *
  * 「什么时候出现」由 metronomeAvailable 决定（只在合成音场景）。
  * 左半是**开关**：按下开、再按关，开着时点亮；右半的 ⌄ 只负责

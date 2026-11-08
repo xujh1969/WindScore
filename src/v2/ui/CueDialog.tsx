@@ -26,6 +26,7 @@ import {
   shiftOctaveMany,
   toggleParen,
   toggleSlur,
+  toggleSlurH,
   pasteEvents,
   type TierCandidate,
 } from '../edit';
@@ -246,6 +247,10 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
       const id = padLeftId();
       if (id) setScoreInPlace(extendSlurRight(draft, id));
     },
+    slurH: () => {
+      if (selectedTimedIds.length < 2) return;
+      commit({ score: toggleSlurH(draft, selectedTimedIds) });
+    },
     duration: (ticks) => {
       if (selectedTimedIds.length >= 2) {
         // 多音同改时值：按组合档位凑不齐就提示（主编辑器走 pending 流程，这里直接均摊）
@@ -368,6 +373,19 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
     return () => window.clearTimeout(t);
   }, [msg]);
 
+  const empty = draft.events.length === 0;
+  // 打开时的草稿快照：只有真的改过才提示，避免「打开看一眼」也被拦
+  const initialDraftRef = useRef<string | null>(null);
+  const draftKey = JSON.stringify(draft.events);
+  if (initialDraftRef.current === null) initialDraftRef.current = draftKey;
+  const draftChanged = draftKey !== initialDraftRef.current;
+  const [closeConfirm, setCloseConfirm] = useState(false);
+  /** × / 遮罩 / ESC 三条关窗路径统一走这里，别静默丢掉没写入的草稿 */
+  const requestClose = () => {
+    if (draftChanged) { setCloseConfirm(true); return; }
+    onClose();
+  };
+
   // 草稿自己的键盘处理：Ctrl+V 粘贴主谱片段、Delete/Backspace 删音、
   // 方向键移动光标、Esc 关窗。主编辑器的全局键盘 handler 在本窗口打开时
   // 会让路（cueTarget 守卫），没有这里这段的话 Del/Backspace 会「没反应」。
@@ -376,13 +394,23 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'Escape') {
-        onClose();
+        if (draftChanged) setCloseConfirm(true);
+        else onClose();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         pasteFromMain();
         return;
+      }
+      // 小字谱输入板与主谱一致：# / b 走同一套循环变音
+      if (!e.ctrlKey && !e.metaKey) {
+        const cueKey = e.key.toLowerCase();
+        if (cueKey === '#' || cueKey === '＃' || cueKey === 'b' || cueKey === 'ｂ') {
+          e.preventDefault();
+          padActions.accidental(cueKey === '#' || cueKey === '＃' ? 'sharp' : 'flat');
+          return;
+        }
       }
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault();
@@ -405,17 +433,22 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [padActions, onClose, pasteFromMain]);
-
-  const empty = draft.events.length === 0;
+  }, [padActions, onClose, pasteFromMain, draftChanged]);
 
   return (
-    <div className="v2-exp-mask v2-cue-mask" onClick={onClose}>
+    <div className="v2-exp-mask v2-cue-mask" onPointerDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
       <div className="v2-exp v2-cue-dialog" role="dialog" aria-label="小字谱录入" onClick={(e) => e.stopPropagation()}>
         <div className="v2-exp-head">
           <span>小字谱 · 锚定 {anchorLabel}（播放时从这里同时奏响）</span>
-          <ExpClose onClose={onClose} />
+          <ExpClose onClose={requestClose} />
         </div>
+        {closeConfirm ? (
+          <div className="v2-inline-confirm">
+            <span>小字谱有还没写入的改动，关窗会丢掉。</span>
+            <button className="v2-btn is-danger" onClick={onClose}>放弃草稿</button>
+            <button className="v2-btn" onClick={() => setCloseConfirm(false)}>继续编辑</button>
+          </div>
+        ) : null}
         <div className="v2-cue-scroll">
           {empty ? <p className="v2-hint" style={{ margin: '0 0 6px' }}>用下面的输入板录入，或粘贴主谱里复制的片段；点谱面选中音符修改</p> : null}
           {/* 草稿谱实时渲染（可点击选中） */}

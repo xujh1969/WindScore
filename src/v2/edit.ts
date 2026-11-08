@@ -50,6 +50,39 @@ export function nextTimed(score: Score, from: number): number {
   return -1;
 }
 
+/**
+ * 小节跳转（Ctrl+← / Ctrl+→）：小节边界就是小节线事件，
+ * 目标落在该小节第一个音符 / 休止**上**（返回缝隙下标 = 事件下标 + 1，over 模式）。
+ * 已在最后一小节还往后 → 落到最后一个 timed 上；没有 timed 则返回 null（光标不动）。
+ */
+export function measureJumpCursor(score: Score, cursor: number, delta: -1 | 1): number | null {
+  const events = score.events;
+  const bars: number[] = [];
+  for (let i = 0; i < events.length; i += 1) {
+    if (events[i]!.kind === 'barline') bars.push(i);
+  }
+  const firstTimedAfter = (from: number): number | null => {
+    const j = nextTimed(score, from);
+    return j >= 0 ? j + 1 : null;
+  };
+  if (delta < 0) {
+    // 当前小节的左边界，再往左一根线就是前一小节的起点
+    let curBar = -1;
+    for (const b of bars) { if (b < cursor) curBar = b; else break; }
+    let prevBar = -1;
+    for (const b of bars) { if (b < curBar) prevBar = b; else break; }
+    return firstTimedAfter(prevBar + 1);
+  }
+  // 下一根小节线之后即下一小节；已经在最后一节时落到末尾的音上
+  let nextBar = -1;
+  for (const b of bars) { if (b >= cursor) { nextBar = b; break; } }
+  if (nextBar < 0) {
+    const j = prevTimed(score, events.length);
+    return j >= 0 ? j + 1 : null;
+  }
+  return firstTimedAfter(nextBar + 1);
+}
+
 const QUARTER = TICKS_PER_BEAT;
 
 function maxSeq(ids: string[], prefix: string): number {
@@ -2253,6 +2286,29 @@ export function toggleSlur(score: Score, ids: string[], opts?: { group?: string 
       return { ...e, ties: next };
     }),
   };
+}
+
+/**
+ * h 滑音连音线：与连音线按钮同一次建链 / 取消，额外把链首音标上 slideH。
+ * DSL 复用 `5H` 后缀（旧谱照常读回），弧线中央的 h 由排版 / 绘制层统一画，
+ * 链首音自己的单音技法因此被抑制，不会同时出现两个 h。
+ */
+export function toggleSlurH(score: Score, ids: string[]): Score {
+  const notes = ids
+    .map((id) => score.events.find((e) => e.id === id))
+    .filter((e): e is NoteEvent => !!e && e.kind === 'note');
+  if (notes.length < 2) return score;
+
+  const noteIds = new Set(notes.map((n) => n.id));
+  const hasSlur = notes.some((n) =>
+    (n.ties ?? []).some((t) => t.kind === 'slur' && noteIds.has(t.to)),
+  );
+  const next = toggleSlur(score, ids);
+  const head = notes[0].id;
+  const headEv = next.events.find((e) => e.id === head);
+  const hasH = headEv?.kind === 'note' && (headEv.techniques ?? []).includes('slideH');
+  const addH = !hasSlur; // 新建连线时标 h；取消连线时把 h 一并去掉
+  return hasH === addH ? next : toggleTechnique(next, head, 'slideH');
 }
 
 /** 新连线组 id：扫描现有 g 取未用的最小号（g 是内存态，不落盘） */

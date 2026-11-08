@@ -27,10 +27,14 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
   const [progress, setProgress] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /** 结果写在弹窗自己的状态栏里；列表里看得见的变化不另外弹 toast */
+  const [result, setResult] = useState<string | null>(null);
+
   const handleImport = async (files: FileList | null): Promise<void> => {
     if (!files || files.length === 0) return;
     const list = Array.from(files);
     setBusy(true);
+    setResult(null);
     let ok = 0;
     const bad: string[] = [];
     for (let i = 0; i < list.length; i += 1) {
@@ -50,14 +54,16 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
     onBanks(await listBanks());
     setBusy(false);
     setProgress(null);
-    onNotify(bad.length === 0 ? `已装入 ${ok} 个音色包` : `已装入 ${ok} 个；失败：${bad.join('、')}`);
+    setResult(bad.length === 0 ? `已装入 ${ok} 个音色包` : `已装入 ${ok} 个；失败：${bad.join('、')}`);
+    // 失败才需要打断用户，交给外层 toast
+    if (bad.length > 0) onNotify(`音色包导入失败：${bad.join('、')}`);
   };
 
   const handleRemove = async (name: string): Promise<void> => {
     await removeBank(name);
     onBanks(await listBanks());
     setConfirming(null);
-    onNotify(`已移除音色包「${name}」：包文件已删除，音色回落内置`);
+    setResult(`已移除音色包「${name}」：包文件已删除，音色回落内置`);
   };
 
   return (
@@ -83,7 +89,7 @@ export function BankManagerDialog({ banks, onBanks, onNotify, onClose }: Props) 
             {busy ? '导入中…' : '导入音色包…'}
           </button>
           <span className="v2-bank-toolbar-info">
-            {progress ?? (banks.length > 0
+            {progress ?? result ?? (banks.length > 0
               ? `已装 ${banks.length} 个包 · 共 ${(banks.reduce((acc, b) => acc + b.size, 0) / 1048576).toFixed(1)}MB`
               : '支持 .wsbank 音色包')}
           </span>

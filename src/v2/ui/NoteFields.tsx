@@ -257,7 +257,7 @@ export function TechniqueField({ score, setScore, note }: FieldProps) {
           </svg>
         </button>
         {Object.entries(TECHNIQUE_GLYPH)
-          .filter(([value]) => value !== 'breath')
+          .filter(([value]) => value !== 'breath' && value !== 'slideH')
           .map(([value, g]) => (
             <button
               key={value}

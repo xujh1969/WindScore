@@ -5,7 +5,7 @@ import type { AccidentalKind, TierCandidate } from '../edit';
 import { TICKS_PER_BEAT } from '../ticks';
 import { ACCIDENTAL_GLYPH } from '../paint';
 import { GroupGlyph } from './GroupGlyph';
-import { DurationGlyph, NotationGlyph, SlurGlyph } from './NotationGlyph';
+import { DurationGlyph, NotationGlyph, SlurGlyph, SlurHGlyph } from './NotationGlyph';
 import {
   AnnotationField,
   DynamicsField,
@@ -138,6 +138,8 @@ export interface PadActions {
   paren: (side: 'open' | 'close') => void;
   /** 选了多个音 = 建链 / 取消；单光标 = 向右多连一个音 */
   slur: () => void;
+  /** h 滑音连音线：与 slur 同一次建链 / 取消，额外在弧线中央正上方标 h（只在 ≥2 音选区可用） */
+  slurH: () => void;
   duration: (ticks: number) => void;
   /** 音值组合：ticks = 这几个音要凑成的总时值（弹出常用候选） */
   group: (ticks: number) => void;
@@ -516,7 +518,7 @@ export function PadBody({
           <span className="v2-field-label">此线之后的排版（虚线 / 散板按钮在下面一排）</span>
           <div className="v2-grid">
             <button className={`v2-btn ${!barline.breakAfter ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter(undefined)}>自动</button>
-            <button className={`v2-btn ${barline.breakAfter === 'line' ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter('line')}>换行</button>
+            <button className={`v2-btn ${barline.breakAfter === 'line' ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter('line')}>此线后换行</button>
             <button className={`v2-btn ${barline.breakAfter === 'page' ? 'is-on' : ''}`} onClick={() => barlineActions.setBreakAfter('page')}>分页</button>
           </div>
         </div>
@@ -542,11 +544,11 @@ export function PadBody({
           </select>
         </div>
         <div className="v2-grace-bar">
-          <span className="v2-field-label v2-inline-label">房子</span>
+          <span className="v2-field-label v2-inline-label">跳房子</span>
           {[1, 2, 3].map((n) => (
-            <button key={n} className={`v2-btn ${(barline.volta ?? []).includes(n) ? 'is-on' : ''}`} onClick={() => barlineActions.setVolta(n)} title={`房子 [${n}] 的左墙设在这根线，向右自动延伸到 :| 或下一间房`}>[{n}]</button>
+            <button key={n} className={`v2-btn ${(barline.volta ?? []).includes(n) ? 'is-on' : ''}`} onClick={() => barlineActions.setVolta(n)} title={`跳房子 [${n}] 的左墙设在这根线，向右自动延伸到 :| 或下一间房`}>[{n}]</button>
           ))}
-          <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「サ」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">サ</button>
+          <button className={`v2-btn ${barline.free ? 'is-on' : ''}`} onClick={() => barlineActions.toggleFree()} title="散板 / 自由拍子（GB/T 46845—2025 §6.3.11.7）：这根线之后拍号位置记「サ」，段内小节不做拍数校验；到下一根写拍号的线为止（再点一次取消）">散板</button>
           {barline.volta ? (
             <button className={`v2-btn ${barline.voltaOpen ? 'is-on' : ''}`} title="手动强制右端开放（通常自动判断，点一下可覆盖）" onClick={() => barlineActions.toggleVoltaOpen()}>右端开放</button>
           ) : null}
@@ -601,6 +603,18 @@ export function PadBody({
           >
             <SlurGlyph />
           </button>
+          {/* h 滑音连音线：紧挨连音线按钮，且只在选中了几个音符后出现 */}
+          {isRange ? (
+            <button
+              className={`v2-btn${note?.techniques?.includes('slideH') ? ' is-on' : ''}`}
+              onClick={() => actions.slurH()}
+              title="滑音连音线 ⌒：把选中的音符连成一条弧，并在弧线中央正上方标 h（再点一次取消连线和 h）"
+              aria-label="滑音"
+            >
+              <SlurHGlyph />
+              <span>滑音</span>
+            </button>
+          ) : null}
           {/* 升 / 降 8 度：多选时所有选中音一起移动，选区下同样有意义，所以常驻 */}
           <button
             className="v2-btn"
@@ -747,8 +761,8 @@ export function PadBody({
           <button
             className="v2-btn"
             onClick={() => actions.breakLine()}
-            title="换行 ↵（光标要落在小节线上；再按一次取消换行）"
-            aria-label="换行"
+            title="插入换行 ↵（光标要落在小节线上；再按一次取消换行）"
+            aria-label="插入换行"
           >
             ↵
           </button>

@@ -13,6 +13,8 @@ import { planJoin, sortByName } from '../src/ocr/adapter/joinPhotos';
 import { diagnoseJps } from '../src/ocr/adapter/scoreDiagnostics';
 import { panBounds } from '../src/ocr/ui/panBounds';
 import { pieceSelectState } from '../src/v2/ui/pieceLabel';
+import { edgeScrollTop, eventScrollTop } from '../src/v2/ui/scoreScroll';
+import { CARET_BLINK_MS, caretBlinkActive } from '../src/v2/ui/caretBlink';
 import { LIGHT_THEME, paintLayout, resetPaintMetrics } from '../src/v2/paint';
 import { BeatClock } from '../src/v2/clock';
 import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
@@ -91,6 +93,8 @@ import {
   cycleOctave,
   shiftOctave,
   toggleSlur,
+  toggleSlurH,
+  measureJumpCursor,
   toggleTongue,
   setTrillRange,
   setFingering,
@@ -6054,12 +6058,281 @@ console.log('\n[小节线换气 V 与音符 h 滑音]');
     padSrc.includes('气息与技法（标在小节线左上方）')
     && padSrc.includes('barlineActions.toggleBreath()')
     && padSrc.indexOf('气息与技法（标在小节线左上方）') < padSrc.indexOf('!canEditConductor'));
-  check('点音符后「气息与技法」出现文字为「h滑音」的按钮',
+  check('旧谱 5H 的字形定义与文字前缀逻辑保留（无连音线时仍画单音 h）',
     paintSrc2.includes("slideH: { mark: 'h', label: 'h滑音' }")
     && noteSrc.includes('g.label.startsWith(g.mark)')
     && appSrc.includes('toggleBreath: () => {'));
   check('五线谱同步：小节线 V 与音符 h 都按字母绘制',
     staffPaintSrc.includes("fillText('V'") && staffMarksSrc.includes("technique === 'slideH'"));
+}
+
+console.log('\n[h 滑音连音线]');
+{
+  const base = parseDsl('@format 3\n@beat 4/4\n\n1 2 3 4 ||\n').score!;
+  const notes = base.events.filter((e): e is NoteEvent => e.kind === 'note');
+  const ids = notes.slice(0, 3).map((e) => e.id);
+  check('未选中几个音符时 h 滑音按钮不改变谱面',
+    toggleSlurH(base, []) === base && toggleSlurH(base, [ids[0]!]) === base);
+
+  const on = toggleSlurH(base, ids);
+  const head = on.events.find((e) => e.id === ids[0]) as NoteEvent;
+  const mid = on.events.find((e) => e.id === ids[1]) as NoteEvent;
+  const slurEdges = on.events.reduce((n, e) => e.kind === 'note'
+    ? n + (e.ties ?? []).filter((t) => t.kind === 'slur').length : n, 0);
+  check('按下 h 滑音按钮先与连音线按钮一样连成一条链',
+    slurEdges === 2
+    && (head.ties ?? []).some((t) => t.kind === 'slur' && t.to === ids[1])
+    && (mid.ties ?? []).some((t) => t.kind === 'slur' && t.to === ids[2]));
+  check('h 只落在链首音，DSL 复用现有 5H 后缀（旧谱零迁移）',
+    (head.techniques ?? []).includes('slideH')
+    && !(mid.techniques ?? []).includes('slideH')
+    && serializeDsl(on).includes('1H'));
+  const reread = parseDsl(serializeDsl(on));
+  const backNotes = reread.score!.events.filter((e): e is NoteEvent => e.kind === 'note');
+  check('round-trip 后连音线与 h 标记都在',
+    reread.errors.length === 0
+    && (backNotes[0]?.techniques ?? []).includes('slideH')
+    && backNotes.some((n) => (n.ties ?? []).some((t) => t.kind === 'slur')),
+    reread.errors.join('; '));
+  const off2 = toggleSlurH(on, ids);
+  check('再点一次与连音线一致：取消连线并清掉 h',
+    off2.events.every((e) => e.kind !== 'note' || !(e.ties ?? []).some((t) => t.kind === 'slur'))
+    && !(off2.events.find((e) => e.id === ids[0]) as NoteEvent).techniques?.includes('slideH'));
+
+  const LH = layoutScore(on, { contentWidth: 1200, unit: 33.6 / TICKS_PER_BEAT });
+  const hArcs = LH.lines.flatMap((l) => l.arcs.filter((a) => a.h));
+  check('排版：只有这一条连音线带 h 标记', hArcs.length === 1 && hArcs[0]!.kind === 'slur');
+  const marksH: { text: string; x: number; y: number }[] = [];
+  const hPx = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+  const hTarget: Record<string, unknown> = {
+    font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, globalAlpha: 1,
+    measureText: (t: string) => ({ width: Array.from(t).length * hPx(hTarget.font as string) * 0.62 }),
+    fillText: (text: string, x: number, y: number) => { marksH.push({ text: String(text), x, y }); },
+  };
+  const hCtx = new Proxy(hTarget, {
+    get(t, k: string) { return k in t ? t[k] : () => undefined; },
+    set(t, k: string, v) { t[k] = v; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  resetPaintMetrics();
+  paintLayout(hCtx, LH, LIGHT_THEME);
+  resetPaintMetrics();
+  const hs = marksH.filter((m) => m.text === 'h');
+  check('绘制：h 只出现一次，且在弧线中央正上方（单音 h 被抑制）',
+    hs.length === 1 && !!hArcs[0]
+    && Math.abs(hs[0]!.x - (hArcs[0]!.x0 + hArcs[0]!.x1) / 2) < 1
+    && hs[0]!.y < LH.lines[0]!.y,
+    hs.map((m) => `(${m.x.toFixed(1)},${m.y.toFixed(1)})`).join(' '));
+
+  const manual = parseDsl('@format 3\n@beat 4/4\n\n(1 2H 3) 4 ||\n').score!;
+  const LM = layoutScore(manual, { contentWidth: 1200, unit: 33.6 / TICKS_PER_BEAT });
+  check('手动写 5H 且 h 在链内而非链首时，弧线仍只有一个 h 标记',
+    LM.lines.flatMap((l) => l.arcs.filter((a) => a.h)).length === 1);
+
+  const pad2 = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const glyph2 = readFileSync(join(process.cwd(), 'src/v2/ui/NotationGlyph.tsx'), 'utf8');
+  const note2 = readFileSync(join(process.cwd(), 'src/v2/ui/NoteFields.tsx'), 'utf8');
+  const app2 = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const cue2 = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  const layout2 = readFileSync(join(process.cwd(), 'src/v2/layout.ts'), 'utf8');
+  const paint3 = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const curves2 = readFileSync(join(process.cwd(), 'src/v2/staffCurves.ts'), 'utf8');
+  const sPaint2 = readFileSync(join(process.cwd(), 'src/v2/staffPaint.ts'), 'utf8');
+  const sMarks2 = readFileSync(join(process.cwd(), 'src/v2/staffMarks.ts'), 'utf8');
+  check('按钮：图标是弧线正上方 h，紧挨连音线右侧，只在 ≥2 音选区出现',
+    glyph2.includes('export function SlurHGlyph') && glyph2.includes('textAnchor="middle"')
+    && pad2.includes('<SlurHGlyph />') && pad2.includes('>滑音<') && pad2.includes('aria-label="滑音"')
+    && pad2.includes('{isRange ?')
+    && pad2.indexOf('<SlurGlyph />') < pad2.indexOf('<SlurHGlyph />')
+    && pad2.indexOf('<SlurHGlyph />') < pad2.indexOf('actions.octave(1)')
+    && app2.includes('toggleSlurH(score, selectedTimedIds)')
+    && cue2.includes('toggleSlurH(draft, selectedTimedIds)'));
+  check('# / b 与升 / 降半音按钮同一套循环变音，主谱与小字谱输入板一致',
+    app2.includes("padActions.accidental(editKey === '#'")
+    && app2.includes("editKey === '＃'")
+    && app2.includes('getPlayTick, togglePlay, padActions]);')
+    && cue2.includes('padActions.accidental(')
+    && pad2.includes("kind: 'sharp'") && pad2.includes("kind: 'flat'")
+    && !pad2.includes('>h滑音<')
+    && pad2.includes('aria-label="滑音"'));
+  check('「气息与技法」单元不再重复放单音 h 滑音按钮',
+    note2.includes("value !== 'slideH'"));
+  check('简谱与五线谱双路径：弧线中央画 h、链首单音 h 被抑制',
+    layout2.includes('{ h: true }') && paint3.includes('if (a.h)') && paint3.includes('hSlurSpans')
+    && curves2.includes('h?: boolean') && sPaint2.includes('if (c.h)')
+    && sMarks2.includes("technique === 'slideH'"));
+}
+
+console.log('\n[简谱编辑键盘快捷键]');
+{
+  const kb = parseDsl('@format 3\n@beat 4/4\n\n1 2 | 3 4 | 5 6 ||\n').score!;
+  const events = kb.events;
+  const isT = (e: typeof events[number]) => e.kind === 'note' || e.kind === 'rest';
+  const barIdx = events.map((e, i) => e.kind === 'barline' ? i : -1).filter((i) => i >= 0);
+  const firstAfter = (b: number) => {
+    for (let i = b + 1; i < events.length; i += 1) if (isT(events[i])) return i + 1;
+    return -1;
+  };
+  const m1 = firstAfter(-1);
+  const m2 = firstAfter(barIdx[0]);
+  const m3 = firstAfter(barIdx[1]);
+  check('Ctrl+→ 从当前小节跳到下一小节第一个音',
+    measureJumpCursor(kb, m1, 1) === m2 && measureJumpCursor(kb, m2, 1) === m3,
+    `${m1}→${m2}→${m3}`);
+  check('Ctrl+← 从当前小节跳到前一小节第一个音',
+    measureJumpCursor(kb, m3, -1) === m2 && measureJumpCursor(kb, m2, -1) === m1);
+  check('第一小节再往前停在曲谱开头，最后一小节再往后不越界',
+    measureJumpCursor(kb, m1, -1) === m1 && measureJumpCursor(kb, m3, 1) === null);
+  const noFinal = parseDsl('@format 3\n@beat 4/4\n\n1 2 | 3 4 | 5 6\n').score!;
+  check('无终止线的谱：最后一小节再往后落到末尾的音上',
+    measureJumpCursor(noFinal, noFinal.events.length, 1) === noFinal.events.length);
+  const appKb = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('Space 与播放按钮共用暂停 / 续播：记住绝对 tick，续播不从光标起播',
+    appKb.includes("if (e.code === 'Space')")
+    && appKb.includes('if (tapping) return;')
+    && appKb.includes('if (e.repeat) return;')
+    && appKb.includes('togglePlay();')
+    && appKb.includes('setPausedTick(at)')
+    && appKb.includes('startPlay(pausedTick ?? undefined)')
+    && appKb.includes('clockRef.current.seek(at / TICKS_PER_BEAT)')
+    && (appKb.match(/onClick=\{togglePlay\}/g) ?? []).length === 2
+    && appKb.includes("'⏸ 暂停'") && appKb.includes("'▶ 继续'")
+    && !appKb.includes('pauseTickRef')
+    && !appKb.includes('onClick={() => (playing ? stopPlay() : startPlay())}')
+    && !appKb.includes("if (t && (t.tagName === 'BUTTON' || t.tagName === 'A')) return;"));
+  check('停止一律作废旧暂停点，只有显式暂停重新写入',
+    appKb.includes('setPausedTick(null)')
+    && appKb.includes('setPausedTick(at)')
+    && appKb.indexOf('const stopPlay') < appKb.indexOf('setPausedTick(null)'));
+  check('Ctrl+←/→ 跳前后小节，Ctrl+Shift+←/→ 跳首尾',
+    appKb.includes("k === 'arrowleft' || k === 'arrowright'")
+    && appKb.includes('jumpMeasure(left ? -1 : 1)')
+    && appKb.includes("jumpEdge(left ? 'start' : 'end')"));
+  check('Home / Enter 回开头、End 跳末尾',
+    appKb.includes("e.key === 'Home' || e.key === 'Enter' || e.key === 'End'")
+    && appKb.includes("jumpEdge(e.key === 'End' ? 'end' : 'start')"));
+  check('导航键与 Space 在编辑门之前，所有画着谱面的页面统一生效',
+    appKb.indexOf('const scoreShown =') < appKb.indexOf('if (!canEditScore) return;')
+    && appKb.indexOf("if (e.code === 'Space')") < appKb.indexOf('if (!canEditScore) return;')
+    && appKb.includes("mode === 'play' || mode === 'align' || (mode === 'score' && view === 'score')")
+    && appKb.includes('!androidPlayer')
+    && appKb.includes("t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'")
+    && appKb.includes("} else if (k === 'l')")
+    && appKb.includes("case 'ArrowLeft':") && appKb.includes("case 'ArrowRight':"));
+  check('播放页按显示谱跳小节，复用起播点方块，展开反复也能映射',
+    appKb.includes('const shown = partScore(fullViewScore, activePartId)')
+    && appKb.includes('measureJumpCursor(shown, shownCursor(shown), delta)')
+    && appKb.includes('handlePlayPick({ mode:')
+    && appKb.includes('ev.originId === src.id')
+    && appKb.includes('setPlayPick(null)'));
+  check('定位键不改谱面：播放中先停，编辑键仍被 canEditScore 门挡住',
+    appKb.includes('if (playing) stopPlay();')
+    && appKb.includes('const settleNavigation = (): void =>')
+    && appKb.indexOf('if (!canEditScore) return;') < appKb.indexOf("if (k === 'z')"));
+  check('视口位置：首尾按可滚高度钳位，跳小节把目标行放到视口中部',
+    edgeScrollTop('start', 3000, 600) === 0
+    && edgeScrollTop('end', 3000, 600) === 2400
+    && edgeScrollTop('end', 400, 600) === 0
+    && eventScrollTop(1500, 3000, 600) === 1200
+    && eventScrollTop(100, 3000, 600) === 0
+    && eventScrollTop(2900, 3000, 600) === 2400);
+  const canvasKb = readFileSync(join(process.cwd(), 'src/v2/ui/ScoreCanvas.tsx'), 'utf8');
+  check('记谱 / 对轨 / 播放三块画布都接定位请求，视口滚到首尾或目标事件行',
+    (appKb.match(/scrollRequest=\{scrollRequest\}/g) ?? []).length === 2
+    && canvasKb.includes('scrollRequest?: ScrollRequest | null')
+    && canvasKb.includes('edgeScrollTop(req.edge, wrap.scrollHeight, wrap.clientHeight)')
+    && canvasKb.includes('playheadIdCandidates(req.eventId)')
+    && canvasKb.includes('eventScrollTop(y, wrap.scrollHeight, wrap.clientHeight)')
+    && canvasKb.includes('followRef.current = false;'));
+}
+
+console.log('\n[插入光标闪烁]');
+{
+  check('编辑态闪烁；收起插入符 / 播放 / 歌词编辑 / 减少动效 / 页面隐藏时常亮',
+    caretBlinkActive(true, false, false, false, false)
+    && caretBlinkActive(undefined, false, false, false, false)
+    && !caretBlinkActive(false, false, false, false, false)
+    && !caretBlinkActive(true, true, false, false, false)
+    && !caretBlinkActive(true, false, true, false, false)
+    && !caretBlinkActive(true, false, false, true, false)
+    && !caretBlinkActive(true, false, false, false, true));
+  check('闪烁节奏为半秒级，不快到刺眼也不慢到看不出',
+    CARET_BLINK_MS >= 400 && CARET_BLINK_MS <= 700);
+  const blinkCanvas = readFileSync(join(process.cwd(), 'src/v2/ui/ScoreCanvas.tsx'), 'utf8');
+  check('闪烁只切插入符可见性、不重排，停用后恢复常亮',
+    blinkCanvas.includes('caretBlinkRef.current')
+    && blinkCanvas.includes('caret: showCaret === false || !caretBlinkRef.current ? null :')
+    && blinkCanvas.includes('CARET_BLINK_MS')
+    && blinkCanvas.includes('prefers-reduced-motion')
+    && blinkCanvas.includes('paintRef.current(headRef.current)')
+    && blinkCanvas.includes('window.clearInterval(id)'));
+}
+
+console.log('\n[界面术语与 Hallmark 批次 1/3]');
+{
+  const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
+  const visible = [
+    'index.html', 'align.html', 'library.html', 'play.html',
+    'src/v2/ui/EditorApp.tsx', 'src/v2/ui/LibraryScreen.tsx',
+    'src/v2/ui/PadBody.tsx', 'src/v2/ui/AudioWaveform.tsx',
+    'docs/user-guide.md',
+  ].map((p) => [p, src(p)] as const);
+  const banned = ['曲库制作', '曲库管理', '曲库查询', '动态谱生成', '锚点', '节奏线', '绑定点'];
+  const leaks = banned.flatMap((w) => visible.filter(([, t]) => t.includes(w)).map(([p]) => `${p}:${w}`));
+  if (leaks.length) console.log('  术语残留：', leaks.join(' / '));
+  check('术语表落地：用户可见文案不再出现旧叫法', leaks.length === 0);
+  check('页面正式名与术语表一致，且术语表写清「网格线」与「对齐点」是两个对象',
+    src('index.html').includes('伴奏对轨') && src('index.html').includes('曲库')
+    && src('align.html').includes('<title>伴奏对轨 · WindScore</title>')
+    && src('library.html').includes('<title>曲库 · WindScore</title>')
+    && src('play.html').includes('<title>动态谱演奏 · WindScore</title>')
+    && src('docs/terminology.md').includes('网格线')
+    && src('docs/terminology.md').includes('对齐点'));
+  const pad = src('src/v2/ui/PadBody.tsx');
+  check('记谱概念：散板 / 跳房子 / 此线后换行 / 插入换行各有唯一叫法',
+    pad.includes('>散板</button>') && pad.includes('>跳房子</span>')
+    && pad.includes('此线后换行</button>') && pad.includes('插入换行 ↵'));
+  check('第 26 条：指引指向真实控件，不再指向不存在的页面 / 按钮',
+    src('src/v2/ui/EditorApp.tsx').includes('请在右侧「手动输入与诊断」设置对齐点。')
+    && src('src/v2/ui/LibrarySetupDialog.tsx').includes('点「选择文件夹…」指定曲库位置')
+    && src('src/v2/ui/LibraryScreen.tsx').includes('此页只读，请在电脑版曲库导入'));
+  check('导出取消不再报失败，输入越界给出可见调整提示',
+    src('src/v2/ui/ExportDialog.tsx').includes('cancelled?: boolean')
+    && src('src/v2/ui/EditorApp.tsx').includes("if (cancelled) { setMsg(note || '已取消保存'); return; }")
+    && src('src/v2/ui/ExportDialog.tsx').includes('已调整为第'));
+  check('小字谱草稿 / 新建 / 清除不会静默丢内容，关窗三条路径统一',
+    src('src/v2/ui/CueDialog.tsx').includes('draftChanged')
+    && src('src/v2/ui/CueDialog.tsx').includes('放弃草稿')
+    && src('src/v2/ui/EditorApp.tsx').includes('放弃改动并新建')
+    && src('src/v2/ui/EditorApp.tsx').includes('确认清除伴奏与标定')
+    && src('src/v2/ui/CueDialog.tsx').includes('onPointerDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}'));
+  check('错误页给下一步、源码视图有状态栏、音色包只在弹窗内反馈',
+    src('src/main.tsx').includes('ws-fatal-actions')
+    && src('src/main.tsx').includes('复制错误信息')
+    && src('src/v2/ui/EditorApp.tsx').includes('<span>源码视图</span>')
+    && src('src/v2/ui/BankManagerDialog.tsx').includes('progress ?? result'));
+  check('焦点环 / 按下态 / 减少动效 / 按钮不折行 / 全入口 noscript 兜底',
+    src('src/v2/ui/editor.css').includes(':focus-visible {')
+    && src('src/v2/ui/editor.css').includes('.v2-btn:active:not(:disabled)')
+    && src('src/v2/ui/editor.css').includes('prefers-reduced-motion: reduce')
+    && src('src/v2/ui/editor.css').includes('.v2-btn, .ocr-btn { white-space: nowrap; }')
+    && ['index.html', 'editor.html', 'align.html', 'library.html', 'play.html', 'help.html', 'android.html', 'musicxml.html', 'ocr.html']
+      .every((p) => src(p).includes('data-ws-noscript')));
+  check('导出页脚、移调档位与音色作用域文案按实际行为对齐',
+    src('src/v2/ui/ExportDialog.tsx').includes('不画页脚页码')
+    && src('docs/user-guide.md').includes('可选 ±1 个八度')
+    && src('src/v2/ui/PlayTimbreDialog.tsx').includes('只影响本播放界面、不改谱面文件；'));
+  const helpIds = src('src/v2/ui/HelpCenter.tsx').match(/const ids = \[([^\]]+)\]/)?.[1] ?? '';
+  check('帮助中心分类 id 与手册「##」章节一一对应，播放页 / 源码视图不会跳错分类',
+    (helpIds.match(/'[^']+'/g) ?? []).length === (src('docs/user-guide.md').match(/^## /gm) ?? []).length
+    && helpIds.includes("'android'")
+    && src('src/v2/ui/EditorApp.tsx').includes("view === 'source' ? 'jps' : 'editing'"));
+  check('两份文档同步最新语义：暂停续播、闪烁光标、变音快捷键与滑音按钮',
+    ['README.md', 'docs/user-guide.md'].every((p) => {
+      const t = src(p);
+      return t.includes('▶ 继续') && t.includes('Ctrl+Shift+←') && t.includes('#')
+        && t.includes('滑音') && t.includes('闪烁');
+    }));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

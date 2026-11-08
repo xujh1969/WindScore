@@ -92,6 +92,12 @@ export function buildStaffMarks(score: Score, staff: StaffLayout): StaffMark[] {
       if ((s.kind === 'note' || s.kind === 'rest') && !s.hidden) locations.set(s.eventId, { row, glyph: s });
     }
     const order = new Map(part.events.map((e, i) => [e.id, i]));
+    // 带 h 的连音线：h 由弧线中央统一画，链内（含链首 / 链尾）任一音的
+    // 单音 slideH 都抑制，避免重复两个 h，也避免手动写 5H 时标记被静默吞掉。
+    const slurNoteIds = new Set<string>();
+    for (const ev of part.events) if (ev.kind === 'note') for (const t of ev.ties ?? []) {
+      if (t.kind === 'slur') { slurNoteIds.add(ev.id); slurNoteIds.add(t.to); }
+    }
     const textMark = (eventId: string, row: number, x: number, text: string, color: MarkBox['color'], above: boolean, gray?: boolean, dynamic = false) => {
       const fontSize = sp * (dynamic ? 2 : 1.65);
       const width = Math.min(staff.width - 2 * sp, Math.max(sp, [...text].reduce((n, ch) => n + (/[^\x00-\xff]/.test(ch) ? 1 : .65), 0) * fontSize));
@@ -124,6 +130,8 @@ export function buildStaffMarks(score: Score, staff: StaffLayout): StaffMark[] {
         else if (o.kind === 'turn') place({ ...base, kind: 'shape', shape: 'turn', color: 'tech' }, true);
       }
       for (const technique of e.techniques ?? []) {
+        // h 滑音连音线：h 由弧线中央统一绘制，音符上方不再重复标
+        if (technique === 'slideH' && slurNoteIds.has(e.id)) continue;
         if (seen.has(technique)) continue;
         seen.add(technique);
         const t = TECHNIQUE_GLYPH[technique];

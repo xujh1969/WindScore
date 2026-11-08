@@ -15,6 +15,8 @@ export interface StaffCurve {
   y1: number;
   controlY0: number;
   controlY1: number;
+  /** h 滑音连音线：弧线中央外侧标小写 h */
+  h?: boolean;
 }
 
 /** 当前弧形是弦线加抛物线，求外层弧高使其包住内层；共用端点处间距收拢。 */
@@ -144,8 +146,13 @@ export function buildStaffCurves(score: Score, staff: StaffLayout): StaffCurve[]
         });
         const best = candidates.reduce((a, b) => a.cost <= b.cost ? a : b);
         chosenDir = best.dir;
+        // h 滑音连音线：链内任一音带 slideH 就在弧线中央标 h，
+        // 只在链首所在行的那段弧标，跨行续段不重复。
+        const lo = order.get(range.from)!, hi = order.get(range.to)!;
+        const hasH = range.kind === 'slur' && row === a.row && part.events.some((ev, i) =>
+          i >= lo && i <= hi && ev.kind === 'note' && (ev.techniques ?? []).includes('slideH'));
         const curve = { line: row, kind: range.kind, x0, x1, y0: best.y0, y1: best.y1,
-          controlY0: best.controlY0, controlY1: best.controlY1 };
+          controlY0: best.controlY0, controlY1: best.controlY1, ...(hasH ? { h: true } : {}) };
         curves.push(curve);
         placed.push({ curve, from: order.get(range.from)!, to: order.get(range.to)! });
       }

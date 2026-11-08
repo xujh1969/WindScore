@@ -5,7 +5,9 @@ import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
 import './help.css';
 
-const ids = ['quick-start', 'ocr', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'playback', 'staff', 'export', 'jps', 'faq'];
+// 顺序必须与 docs/user-guide.md 的「## 」章节一一对应；增删章节时同步此处，
+// 否则按页传入的 initialTopic（如播放页 'playback'、源码视图 'jps'）会跳到别的分类。
+const ids = ['quick-start', 'ocr', 'editing', 'shortcuts', 'structure', 'ensemble', 'lyrics', 'alignment', 'library', 'android', 'playback', 'staff', 'export', 'jps', 'faq'];
 const topics = guide.split('\n## ').slice(1).map((part, i) => {
   const end = part.indexOf('\n');
   return { id: ids[i], title: part.slice(0, end).trim(), body: part.slice(end).trim() };
@@ -75,7 +77,7 @@ export function HelpCenter({ initialTopic = 'quick-start', onClose, onSelect, to
     <header className="ws-help-head"><div><strong>WindScore</strong><span>使用帮助</span></div><div className="ws-help-actions">{tools}{onClose ? <ExpClose onClose={onClose} title="关闭帮助" /> : null}</div></header>
     <div className="ws-help-body">
       <aside className="ws-help-nav">
-        <label className="ws-help-search"><span>搜索帮助</span><input autoFocus={!!onClose} type="search" placeholder="试试：歌词、锚点、反复" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+        <label className="ws-help-search"><span>搜索帮助</span><input autoFocus={!!onClose} type="search" placeholder="试试：歌词、对齐点、反复" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
         <p className="ws-help-count" role="status">{q ? `找到 ${matches.length} 个相关分类` : '按制作流程查阅'}</p>
         <nav aria-label="帮助分类">{matches.map((item) => <button key={item.id} aria-current={item.id === topic?.id ? 'page' : undefined} onClick={() => choose(item.id)}>{item.title}</button>)}</nav>
         <p className="ws-help-local">本机帮助 · 可离线阅读</p>

@@ -63,7 +63,7 @@ interface Props {
   /** 全局消息（导入 / 打包的结果就显示在这）：编辑器的底栏这一屏看不到，得自己带一条 */
   msg?: string;
   /**
-   * 只读（play.html 的「曲库查询」）：不导入 / 不打包 / 不重命名 / 不删除，
+   * 只读（play.html 的曲库）：不导入 / 不打包 / 不重命名 / 不删除，
    * 只能搜、只能点开播放。查询页不该有编辑权——误触一次就是数据没了。
    */
   readOnly?: boolean;
@@ -222,12 +222,12 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
     <div className="v2-lib-screen">
       <header className="v2-lib-head">
         <span className="v2-lib-title">
-        {readOnly ? '曲库查询' : '曲库'}
+        {readOnly ? '曲库（只读）' : '曲库'}
         <span className="v2-lib-count">{items.length} 首</span>
       </span>
         {readOnly && onBackHome ? (
-          <button className="v2-btn" onClick={onBackHome} title="回到动态谱首页">
-            ← 动态谱
+          <button className="v2-btn" onClick={onBackHome} title="回到动态谱演奏">
+            ← 动态谱演奏
           </button>
         ) : null}
       <input
@@ -286,7 +286,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
           // 安卓 App：没有文件夹模式，曲库固定存本机（IndexedDB），照常可用
           <span
             className="v2-lib-store"
-            title="曲库存在本机 App 内。卸载 App 会清空——重要曲子请用「打包」导出 .wspack 备份"
+            title="曲库存在本机 App 内。卸载 App 会清空——重要曲子请在电脑版曲库用「打包」导出 .wspack 备份"
           >
             📱 曲库存本机 App 内
           </span>
@@ -378,7 +378,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
           <div className="v2-lib-empty">
             <p className="v2-hint">
               {readOnly
-                ? '本机曲库还是空的。去「曲库制作」导入一个 .wspack（谱面 + 伴奏 + 标定），或在对轨界面配好伴奏后点「打包」。'
+                ? '本机曲库还是空的。此页只读，请在电脑版曲库导入 .wspack（谱面 + 伴奏 + 标定）或 .jps 谱面。'
                 : '曲库还是空的。导入一个 .wspack（谱面 + 伴奏 + 标定就都有了），或只导入 .jps 谱面。'}
             </p>
             {readOnly ? null : (
@@ -512,7 +512,7 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
 
       <p className="v2-hint v2-lib-foot-note">
         {readOnly
-          ? '这里是查询页：曲库只读，不能导入 / 打包 / 删除。要改内容请去「曲库制作」。'
+          ? '这里是只读曲库：不能导入 / 打包 / 删除。要改内容请在电脑版曲库操作。'
           : '谱面、伴奏、标定都存本机浏览器里（清缓存会丢）。要长期留存或分享给别人，用「打包」导出 .wspack——对方在曲库界面「导入打包」即可完整还原。'}
       </p>
     </div>

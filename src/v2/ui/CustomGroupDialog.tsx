@@ -116,7 +116,7 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
   };
 
   return (
-    <div className="v2-exp-mask" onClick={onClose}>
+    <div className="v2-exp-mask" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
         className="v2-exp v2-custom-group"
         role="dialog"

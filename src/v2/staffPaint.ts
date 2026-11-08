@@ -83,6 +83,19 @@ export function paintStaffLayout(
     ctx.moveTo(c.x0, c.y0);
     ctx.bezierCurveTo(c.x0 + dx, c.controlY0, c.x1 - dx, c.controlY1, c.x1, c.y1);
     ctx.stroke();
+    if (c.h) {
+      // 贝塞尔 t=0.5 的 y：弧线中央。h 画在弧的**外侧**（远离音符的一侧），
+      // 弧朝下时放下方、弧朝上时放上方，避免压住符头。
+      const yMid = (c.y0 + 3 * c.controlY0 + 3 * c.controlY1 + c.y1) / 8;
+      const downward = yMid > (c.y0 + c.y1) / 2;
+      ctx.save();
+      ctx.font = `${Math.max(10, staff.sp * 1.05)}px sans-serif`;
+      ctx.fillStyle = theme.tech;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = downward ? 'top' : 'bottom';
+      ctx.fillText('h', (c.x0 + c.x1) / 2, yMid + (downward ? 1 : -1) * staff.sp * 0.25);
+      ctx.restore();
+    }
   }
   paintStaffMarks(ctx, o.lineRange ? { ...staff, marks: staff.marks.filter(m => visibleLine(m.line)) } : staff, theme);
   if (o.playStyle === 'ball' && o.ball) drawPlayBall(ctx, o.ball, theme);

@@ -45,6 +45,27 @@ function withDots(base, dots) {
   if (dots === 0) return base;
   return Math.round(base * (dots === 1 ? 1.5 : 1.75));
 }
+function decodeDslDuration(ticks, dot) {
+  if (!(ticks > 0)) return null;
+  const factor = dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75;
+  const maxDashes = Math.floor(ticks / TICKS_PER_BEAT);
+  for (let d = 0; d <= maxDashes; d += 1) {
+    const base = (ticks - d * TICKS_PER_BEAT) / factor;
+    if (base <= 0 || base > TICKS_PER_BEAT || !Number.isInteger(base)) continue;
+    if (TICK_DIVISIONS[base] === void 0) continue;
+    return { dot, dashes: d, base };
+  }
+  return null;
+}
+function normalizeDslDuration(ticks, dot) {
+  const exact = decodeDslDuration(ticks, dot);
+  if (exact) return exact;
+  for (const d of [0, 1, 2]) {
+    const shape = decodeDslDuration(ticks, d);
+    if (shape) return shape;
+  }
+  return null;
+}
 var LEGAL_TICKS = (() => {
   const set = /* @__PURE__ */ new Set();
   for (const b of BASE_DURATIONS) {
@@ -1450,23 +1471,22 @@ function parseSingle(text2, modern = false) {
 }
 function renderDuration(ticks, dot) {
   const dots = dot ?? 0;
-  const factor = dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75;
-  const maxDashes = Math.floor(ticks / TICKS_PER_BEAT);
-  for (let d = 0; d <= maxDashes; d++) {
-    const rest = ticks - d * TICKS_PER_BEAT;
-    const base = rest / factor;
-    if (base <= 0 || base > TICKS_PER_BEAT) continue;
-    if (!Number.isInteger(base)) continue;
-    const div = TICK_DIVISIONS[base];
-    if (div === void 0) continue;
-    let s = dots === 1 ? "." : dots === 2 ? ".." : "";
-    if (div !== 1) s += `/${div}`;
-    return s + "-".repeat(d);
-  }
-  throw new Error(`tick ${ticks}\uFF08\u9644\u70B9\u6570 ${dots}\uFF09\u6CA1\u6709\u5BF9\u5E94\u7684\u5199\u6CD5\uFF0C\u65E0\u6CD5\u65E0\u635F\u8FD8\u539F`);
+  const shape = decodeDslDuration(ticks, dots);
+  if (!shape) throw new Error(`tick ${ticks}\uFF08\u9644\u70B9\u6570 ${dots}\uFF09\u6CA1\u6709\u5BF9\u5E94\u7684\u5199\u6CD5\uFF0C\u65E0\u6CD5\u65E0\u635F\u8FD8\u539F`);
+  const div = TICK_DIVISIONS[shape.base];
+  let s = dots === 1 ? "." : dots === 2 ? ".." : "";
+  if (div !== 1) s += `/${div}`;
+  return s + "-".repeat(shape.dashes);
 }
 function renderTimed(ev, tieOut, modern = false, explicitDuration = false) {
-  const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? "/1" : "");
+  let duration = "";
+  try {
+    const writableDot = normalizeDslDuration(ev.ticks, ev.dot ?? 0)?.dot ?? (ev.dot ?? 0);
+    duration = renderDuration(ev.ticks, writableDot);
+  } catch (err) {
+    console.warn("[serializeDsl] \u65F6\u503C\u65E0\u5BF9\u5E94\u5199\u6CD5\uFF0C\u9000\u56DE\u65E0\u65F6\u503C\u8BB0\u53F7", ev.ticks, ev.dot, err);
+  }
+  duration = duration || (explicitDuration ? "/1" : "");
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n2) => "/".repeat(Math.log2(Number(n2)))) : duration;
   if (ev.kind === "rest") {
     if (ev.repeatBar) return "%";

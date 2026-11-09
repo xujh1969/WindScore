@@ -71,6 +71,65 @@ export function withDots(base: number, dots: 0 | 1 | 2): number {
 }
 
 /**
+ * DSL 时值形状：ticks = withDots(base, dot) + dashes × 一拍。
+ * base 必须落在 TICK_DIVISIONS 里（≤ 一拍），否则没有除法记号可写。
+ */
+export interface DslDurationShape {
+  /** 能把这段 tick 写回 DSL 的附点数 */
+  dot: 0 | 1 | 2;
+  /** 整拍增时线条数 */
+  dashes: number;
+  /** 剥掉增时线、去掉附点系数后的基础时值 */
+  base: number;
+}
+
+/**
+ * 与 serializeDsl 的 renderDuration 完全同构地反解时值。
+ *
+ * 关键口径：**附点系数只作用于「剥掉增时线后的基础时值」**。早先 cycleDot /
+ * setDot 把整段 ticks（含增时线）乘 1.5/1.75，长音 `5-` 连点两次附点就造出
+ * tick 23520 + dot 2 这种没有写法的状态，序列化直接抛错白屏（OCR 谱实测）。
+ * 序列化与编辑入口必须共用这一个反解，不能再各写一套。
+ */
+export function decodeDslDuration(ticks: number, dot: 0 | 1 | 2): DslDurationShape | null {
+  if (!(ticks > 0)) return null;
+  const factor = dot === 0 ? 1 : dot === 1 ? 1.5 : 1.75;
+  const maxDashes = Math.floor(ticks / TICKS_PER_BEAT);
+  for (let d = 0; d <= maxDashes; d += 1) {
+    const base = (ticks - d * TICKS_PER_BEAT) / factor;
+    if (base <= 0 || base > TICKS_PER_BEAT || !Number.isInteger(base)) continue;
+    if (TICK_DIVISIONS[base] === undefined) continue;
+    return { dot, dashes: d, base };
+  }
+  return null;
+}
+
+/**
+ * 坏状态自愈：ticks 与 dot 矛盾时（旧文件 / 早期编辑入口留下的），换一个能写回的
+ * 附点数重新解释同一段时值。总时值不变，只是附点数被纠正；仍无解返回 null。
+ */
+export function normalizeDslDuration(ticks: number, dot: 0 | 1 | 2): DslDurationShape | null {
+  const exact = decodeDslDuration(ticks, dot);
+  if (exact) return exact;
+  for (const d of [0, 1, 2] as const) {
+    const shape = decodeDslDuration(ticks, d);
+    if (shape) return shape;
+  }
+  return null;
+}
+
+/** 按 DSL 语义切换附点：增时线与基础时值不动，只换附点系数；坏状态先自愈。 */
+export function retickDots(
+  ticks: number,
+  fromDot: 0 | 1 | 2,
+  toDot: 0 | 1 | 2,
+): { ticks: number; dot: 0 | 1 | 2 } | null {
+  const shape = normalizeDslDuration(ticks, fromDot);
+  if (!shape) return null;
+  return { ticks: withDots(shape.base, toDot) + shape.dashes * TICKS_PER_BEAT, dot: toDot };
+}
+
+/**
  * 合法 tick 集合（不变量 I4 的判据）：
  * 各基础时值（含复附点）+ 连音成员（3/5/6/7 连音）。
  */

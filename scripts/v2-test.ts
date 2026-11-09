@@ -1811,6 +1811,78 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   // 语法上点在增时线之前：1-.. 不是合法写法（正确写法 1..-）
   check('1-.. 不合语法（点必须写在增时线前）', parseDsl('@beat 4/4\n\n1-.. 4 ||\n').errors.length > 0);
 
+{
+  // OCR 识别谱里常见「数字 + 多条增时线」的长音。用户实测：连点两下附点后页面报
+  // Uncaught Error: tick 23520（附点数 2）没有对应的写法，无法无损还原。
+  // 旧 cycleDot 把含增时线的整段 ticks 乘附点系数：5-（2 拍）→ 3 拍/1 点 → 3.5 拍/2 点，
+  // 后者没有任何除法记号可写。正确语义是保留增时线，只给基础时值加点。
+  console.log('\n[OCR 长音附点：附点系数只作用于基础时值]');
+  const long = parseDsl('@beat 4/4\n\n5- 3 4 ||\n').score!;
+  const longId = long.events[0].id;
+  let cur = long;
+  const wanted: [0 | 1 | 2, number][] = [
+    [1, TICKS_PER_BEAT * 5 / 2],
+    [2, TICKS_PER_BEAT * 11 / 4],
+    [0, TICKS_PER_BEAT * 2],
+  ];
+  wanted.forEach(([dot, ticks], i) => {
+    cur = cycleDot(cur, longId);
+    const ev = cur.events.find((e) => e.id === longId) as NoteEvent;
+    let text = '';
+    let err = '';
+    try { text = serializeDsl(cur); } catch (e) { err = String(e); }
+    const rt = err ? null : parseDsl(text);
+    const back = rt?.score?.events.find((e) => e.id === longId) as NoteEvent | undefined;
+    check(`5- 第 ${i + 1} 次点附点：dot=${dot} 不抛错且 round-trip 无损`,
+      !err && (ev.dot ?? 0) === dot && ev.ticks === ticks && !!rt && rt.errors.length === 0
+        && back?.ticks === ticks && (back?.dot ?? 0) === dot,
+      err || `${ev.ticks}/${ev.dot} → ${text.split('\n').pop()?.trim()}`);
+  });
+  check('5- 双附点写回 5..-（增时线不丢）',
+    serializeDsl(cycleDot(cycleDot(long, longId), longId)).includes('5..-'));
+
+  // 带除法 + 三条增时线的 OCR 长音（3.5 拍）：加点后仍是 /2--- 形状
+  const frac = parseDsl('@beat 4/4\n\n5/2--- 5/2 ||\n').score!;
+  const f1 = cycleDot(frac, frac.events[0].id);
+  const fev = f1.events[0] as NoteEvent;
+  check('5/2--- 加点 → 5./2---（3.75 拍）',
+    fev.ticks === TICKS_PER_BEAT * 15 / 4 && fev.dot === 1 && serializeDsl(f1).includes('5./2---'),
+    `${fev.ticks}/${fev.dot}`);
+
+  // 坏状态自愈：旧版本留在内存 / 旧文件里的 tick 23520 + dot 2 直接序列化不应抛错，
+  // 回读后状态干净（总时值不变，附点数被纠正）。
+  const badTicks = TICKS_PER_BEAT * 7 / 2;
+  const bad = {
+    ...long,
+    events: long.events.map((e) => e.id === longId ? { ...e, ticks: badTicks, dot: 2 as const } : e),
+  };
+  let badText = '';
+  let badErr = '';
+  try { badText = serializeDsl(bad); } catch (e) { badErr = String(e); }
+  const badRt = badErr ? null : parseDsl(badText);
+  const badEv = badRt?.score?.events.find((e) => e.id === longId) as NoteEvent | undefined;
+  check('tick 23520 + dot 2 的坏状态序列化不抛错',
+    !badErr && !!badRt && badRt.errors.length === 0, badErr || badText.split('\n').pop()?.trim());
+  check('坏状态自愈为 5/2---（时值不变、dot 归零）',
+    badEv?.ticks === badTicks && (badEv?.dot ?? 0) === 0 && badText.includes('5/2---'),
+    `${badEv?.ticks}/${badEv?.dot} ${badText.split('\n').pop()?.trim()}`);
+
+  // 另两个写入口也不能再产出不可写回的状态
+  const dot2 = setDot(long, longId, 2);
+  const dot2ev = dot2.events[0] as NoteEvent;
+  check('setDot 给 5- 设复附点 → 5..-',
+    dot2ev.ticks === TICKS_PER_BEAT * 11 / 4 && dot2ev.dot === 2 && parseDsl(serializeDsl(dot2)).errors.length === 0,
+    `${dot2ev.ticks}/${dot2ev.dot}`);
+  const dottedLong = {
+    ...long,
+    events: long.events.map((e) => e.id === longId ? { ...e, dot: 2 as const } : e),
+  };
+  const t2 = setTicks(dottedLong, longId, TICKS_PER_BEAT * 2);
+  const t2ev = t2.events[0] as NoteEvent;
+  check('setTicks 长音档 + 复附点仍可序列化',
+    parseDsl(serializeDsl(t2)).errors.length === 0, `${t2ev.ticks}/${t2ev.dot}`);
+}
+
   // 拍内组守恒（用户实测踩到）：两音各半拍共用 1 拍，给一个音加附点，
   // 另一个必须自动缩成 1/4 拍，否则这拍悄悄变长
   const grp = parseDsl('@beat 4/4\n\n<1/2 2/2> 3 4 ||\n').score!;
@@ -5826,7 +5898,11 @@ console.log('\n[X 无音高音符与休止符附点]');
   check('cycleDot 对 0 生效（0. -> 0..）', c1rest.dot === 2 && c1rest.ticks === Math.round(TICKS_PER_BEAT * 7 / 4));
   const c2 = cycleDot(c1, xs[0]!.id);
   const c2x = c2.events.find((e) => e.id === xs[0]!.id) as RestEvent;
-  check('cycleDot 对 X 生效（X- -> X-.）', c2x.x === true && c2x.dot === 1 && c2x.ticks === Math.round(TICKS_PER_BEAT * 3));
+  // X-（2 拍）加附点：附点只加在基础时值上 → X.-（2.5 拍）。旧语义算成 3 拍 / dot=1
+  // 其实没有 DSL 写法可回读（连点两次就得到 23520/2 并抛错白屏），这里改成正确写法。
+  check('cycleDot 对 X 生效（X- -> X.-，附点只加在基础时值）', c2x.x === true && c2x.dot === 1 && c2x.ticks === Math.round(TICKS_PER_BEAT * 5 / 2));
+  const c2back = serializeDsl(c2);
+  check('X- 加点后可无损回读', parseDsl(c2back).errors.length === 0 && /(^|\s)X\.-(\s|\||$)/.test(c2back), c2back.split('\n').pop()?.trim());
   // 播放：X 产出打击声条目（midi null + perc），休止静默
   const exp = expandScore(s);
   check('展开无结构错误', !!exp.score && exp.errors.length === 0, exp.errors.join(' / '));

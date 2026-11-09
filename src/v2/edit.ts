@@ -11,7 +11,10 @@ import { distribute } from './reseat';
 import { normalizeKey } from './timeline';
 import { beatsPerMeasure, groupTicks, groupTierBeats, meterAt, validMeter } from './meter';
 import {
+  decodeDslDuration,
   isLegalTick,
+  normalizeDslDuration,
+  retickDots,
   TICKS_PER_BEAT,
   tupletBeamCount,
   withDots,
@@ -1438,12 +1441,13 @@ export function cycleDot(score: Score, id: string): Score {
     ...score,
     events: score.events.map((e) => {
       if (e.id !== id || (e.kind !== 'note' && e.kind !== 'rest')) return e;
-      const next = (((e.dot ?? 0) + 1) % 3) as 0 | 1 | 2;
-      // 去掉旧附点再按新附点数还原：base = ticks / 旧系数
       const prev = e.dot ?? 0;
-      const prevFactor = prev === 0 ? 1 : prev === 1 ? 1.5 : 1.75;
-      const base = e.ticks / prevFactor;
-      return { ...e, dot: next, ticks: withDots(base, next) };
+      const next = ((prev + 1) % 3) as 0 | 1 | 2;
+      // 附点系数只作用于「剥掉增时线后的基础时值」。旧算法把整段 ticks（含增时线）
+      // 乘 1.5/1.75，长音 5- 连点两次会造出 tick 23520 + dot 2 这种没有 DSL 写法的
+      // 状态，serializeDsl 随即抛错白屏（OCR 谱实测）。统一走与序列化同构的反解。
+      const ret = retickDots(e.ticks, prev, next);
+      return ret ? { ...e, dot: ret.dot, ticks: ret.ticks } : e;
     }),
   };
 }
@@ -1914,7 +1918,13 @@ export function setTicks(score: Score, id: string, ticks: number): Score {
   const gid = (ev as { groupId?: string }).groupId;
   const base = gid ? ungroup(score, gid) : score;
   // 附点是独立开关：换档位不掉点。2.. 选八分档，得到的是附点八分
-  const target = withDots(ticks, dot);
+  let target = withDots(ticks, dot);
+  // 目标档位本身含增时线时（如 2 拍档 + 复附点），整段乘附点系数会造出
+  // 没有除法记号可写的 tick/dot 组合——改用「保留增时线」的 DSL 形状重算。
+  if (!decodeDslDuration(target, dot)) {
+    const shape = decodeDslDuration(ticks, 0);
+    if (shape) target = withDots(shape.base, dot) + shape.dashes * TICKS_PER_BEAT;
+  }
   return {
     ...base,
     events: base.events.map((e) => (e.id === id ? { ...e, ticks: target } : e)),
@@ -2175,9 +2185,17 @@ export function setDot(score: Score, id: string, dots: 0 | 1 | 2): Score {
   if (!ev || (ev.kind !== 'note' && ev.kind !== 'rest')) return score;
   const prev = ev.dot ?? 0;
   // 基准时值：带点的按点数还原；不带点的先归一到「加点前基准」
-  const base =
+  const canonical =
     prev > 0 ? ev.ticks / (prev === 1 ? 1.5 : 1.75) : (canonicalDurationBase(ev.ticks) ?? ev.ticks);
-  const target = withDots(base, dots);
+  let target = withDots(canonical, dots);
+  // canonicalDurationBase 可能给出 2 拍 / 4 拍这类没有除法记号的基准
+  //（5- 设复附点会算出 23520/2，序列化反推不出写法直接白屏）。写回前校验，
+  // 不合法就按「保留增时线」的 DSL 形状重算，附点仍加在基础时值上。
+  if (!decodeDslDuration(target, dots)) {
+    const shape = normalizeDslDuration(ev.ticks, prev);
+    if (!shape) return score;
+    target = withDots(shape.base, dots) + shape.dashes * TICKS_PER_BEAT;
+  }
 
   // 拍内组守恒（I1）：本音加点占掉多少，同组其余成员按守恒重分——
   // 两音 1 拍组里给一个音加附点（0.5 → 0.75 拍），另一个自动变 1/4 拍，

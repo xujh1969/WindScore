@@ -21,7 +21,9 @@
  */
 
 import {
+  decodeDslDuration,
   DIVISION_TICKS,
+  normalizeDslDuration,
   TICK_DIVISIONS,
   TICKS_PER_BEAT,
   withDots,
@@ -1178,23 +1180,15 @@ function parseSingle(text: string, modern = false): ParseResult {
 /** 时长还原：tick + 附点数 → 附点/除法/增时线写法 */
 function renderDuration(ticks: number, dot: 0 | 1 | 2): string {
   const dots = dot ?? 0;
-  const factor = dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75;
-  // 先剥整拍增时线、再套附点系数：附点系数作用在「去掉增时线后的基础时值」上，
-  // 顺序反了会得出 1..- 的 base=3840（5/4 拍）这类没有除法记号的非法值。
-  // 增时线数从少到多试，保证还原出的是最短写法（如 3 拍优先 1-. 而不是……唯一的解也取最少横线）。
-  const maxDashes = Math.floor(ticks / TICKS_PER_BEAT);
-  for (let d = 0; d <= maxDashes; d++) {
-    const rest = ticks - d * TICKS_PER_BEAT;
-    const base = rest / factor;
-    if (base <= 0 || base > TICKS_PER_BEAT) continue;
-    if (!Number.isInteger(base)) continue;
-    const div = TICK_DIVISIONS[base];
-    if (div === undefined) continue;
-    let s = dots === 1 ? '.' : dots === 2 ? '..' : '';
-    if (div !== 1) s += `/${div}`;
-    return s + '-'.repeat(d);
-  }
-  throw new Error(`tick ${ticks}（附点数 ${dots}）没有对应的写法，无法无损还原`);
+  // 反解统一走 ticks.ts 的 decodeDslDuration（与 parse 侧的 withDots 口径同构）：
+  // 先剥整拍增时线、再套附点系数，增时线数从少到多试保证还原出最短写法。
+  // 编辑入口（cycleDot / setDot / setTicks）也用同一个反解，不能各写一套。
+  const shape = decodeDslDuration(ticks, dots);
+  if (!shape) throw new Error(`tick ${ticks}（附点数 ${dots}）没有对应的写法，无法无损还原`);
+  const div = TICK_DIVISIONS[shape.base];
+  let s = dots === 1 ? '.' : dots === 2 ? '..' : '';
+  if (div !== 1) s += `/${div}`;
+  return s + '-'.repeat(shape.dashes);
 }
 
 /**
@@ -1220,7 +1214,17 @@ export function renderNoteToken(
 
 function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDuration = false): string {
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
-  const duration = renderDuration(ev.ticks, ev.dot ?? 0) || (explicitDuration ? '/1' : '');
+  let duration = '';
+  try {
+    // ticks 与 dot 矛盾时（旧文件 / 早期编辑入口留下的坏状态），按能写回的附点数
+    // 重新解释同一段时值；绝不让一次序列化抛错把整页编辑界面炸掉。
+    const writableDot = normalizeDslDuration(ev.ticks, ev.dot ?? 0)?.dot ?? (ev.dot ?? 0);
+    duration = renderDuration(ev.ticks, writableDot);
+  } catch (err) {
+    // 连 tick 本身都不在合法粒度上：退回裸记号，至少让谱面能打开、能继续编辑
+    console.warn('[serializeDsl] 时值无对应写法，退回无时值记号', ev.ticks, ev.dot, err);
+  }
+  duration = duration || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
   if (ev.kind === 'rest') {
     if (ev.repeatBar) return '%';

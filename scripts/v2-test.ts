@@ -7,7 +7,7 @@
  *   M0-4  四首 .jps 谱面 DSL round-trip 无 diff
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { planJoin, sortByName } from '../src/ocr/adapter/joinPhotos';
 import { diagnoseJps } from '../src/ocr/adapter/scoreDiagnostics';
@@ -16,11 +16,24 @@ import { pieceSelectState } from '../src/v2/ui/pieceLabel';
 import { edgeScrollTop, eventScrollTop } from '../src/v2/ui/scoreScroll';
 import { CARET_BLINK_MS, caretBlinkActive } from '../src/v2/ui/caretBlink';
 import { LIGHT_THEME, paintLayout, resetPaintMetrics } from '../src/v2/paint';
+import {
+  notationHeaderInfoSize,
+  notationHeaderRowHeight,
+  notationHeaderSubSize,
+  notationLyricFontSize,
+} from '../src/v2/notationFont';
 import { BeatClock } from '../src/v2/clock';
 import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
 import { expandUnisons } from '../src/v2/unison';
 import type { BarlineEvent, RestEvent } from '../src/v2/types';
-import { DEFAULT_FONT_SIZE, TICKS_PER_BEAT } from '../src/v2/types';
+import {
+  DEFAULT_FONT_SIZE,
+  TICKS_PER_BEAT,
+  measureNumberEnds,
+  measureNumberMode,
+  measureNumberVisibleAt,
+  resolveMeasureNumberMode,
+} from '../src/v2/types';
 import {
   caretAt,
   clusterSpan,
@@ -437,6 +450,77 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     const clear = L.lines[0].y - 50 - (L.title!.subY + 7);
     check(`${f} 标题与首行净空 ≥ 24px`, clear >= 24, `clear=${Math.round(clear)}`);
   }
+}
+
+{
+  console.log('\n[谱头文字：字号、行距与字体统一]');
+  const fontSrc = readFileSync(join(process.cwd(), 'src/v2/notationFont.ts'), 'utf8');
+  const cssSrc = readFileSync(join(process.cwd(), 'src/v2/notation-fonts.css'), 'utf8');
+  const paintSrc = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const layoutSrc = readFileSync(join(process.cwd(), 'src/v2/layout.ts'), 'utf8');
+  const sizes = [21, DEFAULT_FONT_SIZE, 42, 60];
+  check('谱头说明字号比歌词小，大字谱下封顶',
+    sizes.every(f => notationHeaderSubSize(f) < notationLyricFontSize(f)
+      && notationHeaderInfoSize(f) < notationHeaderSubSize(f)
+      && notationHeaderSubSize(f) <= 15 && notationHeaderInfoSize(f) <= 13),
+    sizes.map(f => `${f}:${notationHeaderSubSize(f).toFixed(1)}/${notationHeaderInfoSize(f).toFixed(1)}`).join(' '));
+  check('右列行距始终大于说明字高（多行说明不叠字）',
+    sizes.every(f => notationHeaderRowHeight(f) >= notationHeaderInfoSize(f) * 1.35),
+    sizes.map(f => `${f}:${notationHeaderRowHeight(f)}`).join(' '));
+  check('排版层右列行距与绘制层说明字号同源',
+    layoutSrc.includes('const rowH = notationHeaderRowHeight(fontSize);')
+    && !layoutSrc.includes('const rowH = 18;'));
+  check('标题与谱头说明共用同一字体，绘制层不再引用标题专用字体',
+    paintSrc.includes('M.titleFont = `400 28px ${NOTATION_TEXT_FAMILY}`')
+    && paintSrc.includes('M.titleSubFont = `400 ${notationHeaderSubSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`')
+    && paintSrc.includes('M.titleInfoFont = `400 ${notationHeaderInfoSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`')
+    && !paintSrc.includes('NOTATION_TITLE_FAMILY'));
+  check('标题专用字体已从注册、启动加载、SVG 嵌入与资源中移除',
+    !fontSrc.includes('NOTATION_TITLE_FAMILY')
+    && !fontSrc.includes('notation-title.woff2')
+    && !fontSrc.includes('曲谱标题')
+    && !cssSrc.includes('notation-title.woff2')
+    && !existsSync(join(process.cwd(), 'public/fonts/notation-title.woff2'))
+    && (fontSrc.match(/document\.fonts\.load\(/g) ?? []).length === 2
+    && (fontSrc.match(/\['WindScore Notation /g) ?? []).length === 2);
+
+  // 真绘制一遍：@sub 居中说明 + 三条 @note 右列说明，逐行核对字号、字体与行距
+  const hdr = parseDsl('@title 青花瓷\n@sub 作词：方文山 作曲：周杰伦 编曲：钟兴民\n@note 推荐音色：大师竹笛\n@note 推荐设置：3D指法\n@note 制谱：程序员老许\n@beat 4/4\n\n1 2 3 4 ||\n');
+  const HL = layoutScore(hdr.score!, { contentWidth: 1200 });
+  type HCall = { text: string; y: number; font: string };
+  const hCalls: HCall[] = [];
+  const hTarget: Record<string, unknown> = {
+    font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, globalAlpha: 1,
+    measureText: (t: string) => ({ width: Array.from(t).length * 12 }),
+    fillText: (text: string, _x: number, y: number) => {
+      hCalls.push({ text: String(text), y, font: hTarget.font as string });
+    },
+  };
+  const hCtx = new Proxy(hTarget, {
+    get(t, k: string) { return k in t ? t[k] : () => undefined; },
+    set(t, k: string, v) { t[k] = v; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  resetPaintMetrics();
+  paintLayout(hCtx, HL, LIGHT_THEME);
+  const pxOfH = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 0);
+  const titleCall = hCalls.find(c => c.text === '青花瓷');
+  const subCall = hCalls.find(c => c.text.includes('作词：方文山'));
+  const rightCalls = ['推荐音色', '推荐设置', '制谱'].map(k => hCalls.find(c => c.text.startsWith(k)));
+  check('谱头三区按新字号绘制，标题与说明同族',
+    !!titleCall && !!subCall && rightCalls.every(Boolean)
+    && pxOfH(titleCall!.font) === 28
+    && Math.abs(pxOfH(subCall!.font) - notationHeaderSubSize(HL.glyph.fontSize)) < 1e-6
+    && rightCalls.every(c => Math.abs(pxOfH(c!.font) - notationHeaderInfoSize(HL.glyph.fontSize)) < 1e-6)
+    && [titleCall!, subCall!, ...rightCalls.map(c => c!)].every(c => c.font.includes('WindScore Notation Text')),
+    `title=${titleCall?.font} sub=${subCall?.font} right=${rightCalls[0]?.font}`);
+  const ys = rightCalls.map(c => c!.y).sort((a, b) => a - b);
+  check('右列三行按行距排开，间距大于说明字高',
+    ys.length === 3
+    && ys[2] - ys[1] >= notationHeaderInfoSize(HL.glyph.fontSize)
+    && Math.abs(ys[2] - ys[1] - HL.title!.rowH) < 1e-6
+    && Math.abs(ys[1] - ys[0] - HL.title!.rowH) < 1e-6,
+    `ys=${ys.join(',')} rowH=${HL.title?.rowH}`);
 }
 
 {
@@ -4439,6 +4523,162 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
   check('关闭可回读', parseDsl(offText).score!.meta.showMeasureNumbers === false);
   const onText = serializeDsl(parseDsl('@beat 4/4\n\n1 1 1 1 | 2 2 2 2 ||\n').score!);
   check('默认显示时不写这一行', !onText.includes('@measureNo'));
+
+  // 三态下拉：全部显示 / 行首行尾 / 全部隐藏（写进 DSL，旧 off/on 继续认）
+  const endsScore = parseDsl('@beat 4/4\n@measureNo line-ends\n\n1 1 1 1 | 2 2 2 2 ||\n').score!;
+  check('@measureNo line-ends 解析成三态',
+    endsScore.meta.measureNumbers === 'line-ends' && measureNumberMode(endsScore.meta) === 'line-ends');
+  const endsText = serializeDsl(endsScore);
+  check('行首行尾写进文件并可回读', endsText.includes('@measureNo line-ends')
+    && measureNumberMode(parseDsl(endsText).score!.meta) === 'line-ends',
+    endsText.split('\n').slice(0, 3).join(' / '));
+  check('旧 off 映射成 none', measureNumberMode(off.meta) === 'none');
+  check('旧布尔内存态兼容', measureNumberMode({ showMeasureNumbers: false }) === 'none'
+    && measureNumberMode({}) === 'all');
+  check('新字段优先于旧布尔',
+    measureNumberMode({ showMeasureNumbers: false, measureNumbers: 'line-ends' }) === 'line-ends');
+  check('非法 DSL 值报错',
+    parseDsl('@beat 4/4\n@measureNo 随便\n\n1 1 1 1 |\n').errors.length > 0);
+  check('绘制参数归一', resolveMeasureNumberMode(false) === 'none'
+    && resolveMeasureNumberMode(true, 'line-ends') === 'line-ends'
+    && resolveMeasureNumberMode('all', 'none') === 'all'
+    && resolveMeasureNumberMode(undefined, 'line-ends') === 'line-ends');
+  check('setMeta 只收合法模式',
+    setMeta(s, { measureNumbers: 'line-ends' }).meta.measureNumbers === 'line-ends'
+    && setMeta(s, { measureNumbers: '乱写' as never }) === s);
+
+  // 「行首行尾」判定：每行只留最前 / 最后两根带号小节线，隐藏线 |* 不占名额
+  const fakeItems = [
+    { kind: 'barline', measure: 1, hidden: true },
+    { kind: 'barline', measure: 2 },
+    { kind: 'barline', measure: 3 },
+  ] as unknown as PlacedItem[];
+  const fakeEnds = measureNumberEnds('line-ends', fakeItems, (it) => it.kind === 'barline' && !it.hidden)!;
+  check('隐藏小节线不占行首名额', fakeEnds.first === 1 && fakeEnds.last === 2);
+  check('全部显示不筛选 / 全部隐藏全不标',
+    measureNumberEnds('all', fakeItems) === null
+    && measureNumberVisibleAt(fakeEnds, 0) === false
+    && measureNumberVisibleAt(measureNumberEnds('none', fakeItems)!, 1) === false);
+
+  // 真实绘制三遍，用 fillText 差值验证画布上真的只标了期望的那几个号。
+  // 谱面要够宽：每行至少 3 根小节线，否则「首尾」恰好覆盖整行，看不出差别
+  const wide = parseDsl('@beat 4/4\n\n'
+    + Array.from({ length: 16 }, () => '1 1 1 1 |').join(' ') + ' 5 5 5 5 ||\n').score!;
+  const WL = layoutScore(wide, { contentWidth: 1400 });
+  const wideNums = WL.lines.flatMap((ln) => ln.items
+    .filter((i) => i.kind === 'barline' && !i.hidden && i.measure !== undefined)
+    .map((i) => String(i.measure!)));
+  check('绘制用例前提：多行且至少一行 ≥3 根小节线',
+    WL.lines.length > 1
+    && WL.lines.some((ln) => ln.items.filter((i) => i.kind === 'barline' && i.measure !== undefined).length >= 3),
+    `lines=${WL.lines.length} bars=${WL.lines.map((ln) => ln.items.filter((i) => i.kind === 'barline').length).join('/')}`);
+  const measureTexts = (mode: 'all' | 'line-ends' | 'none'): string[] => {
+    const out: string[] = [];
+    const px = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+    const stack: Record<string, unknown>[] = [];
+    const target: Record<string, unknown> = {
+      font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+      lineWidth: 1, globalAlpha: 1,
+      measureText: (x: string) => ({ width: Array.from(x).length * px(target.font as string) * 0.62 }),
+      fillText: (x: string) => { out.push(String(x)); },
+      // 真桩要实现 save/restore，否则小节号切走的小字号会污染后续绘制
+      save: () => {
+        stack.push({
+          font: target.font, textAlign: target.textAlign, textBaseline: target.textBaseline,
+          fillStyle: target.fillStyle, strokeStyle: target.strokeStyle,
+          lineWidth: target.lineWidth, globalAlpha: target.globalAlpha,
+        });
+      },
+      restore: () => { const s = stack.pop(); if (s) Object.assign(target, s); },
+    };
+    const c = new Proxy(target, {
+      get(t, k: string) { return k in t ? t[k] : () => undefined; },
+      set(t, k: string, v) { t[k] = v; return true; },
+    }) as unknown as CanvasRenderingContext2D;
+    paintLayout(c, WL, LIGHT_THEME, { showMeasureNumbers: mode });
+    resetPaintMetrics();
+    return out;
+  };
+  const extraTexts = (a: string[], base: string[]): string[] => {
+    const left = new Map<string, number>();
+    for (const x of base) left.set(x, (left.get(x) ?? 0) + 1);
+    const out: string[] = [];
+    for (const x of a) {
+      const n = left.get(x) ?? 0;
+      if (n > 0) left.set(x, n - 1);
+      else out.push(x);
+    }
+    // 小节号与音符数字可能同值：多重集差值只保证「多出来的值」，顺序会被错配打乱
+    return out.sort();
+  };
+  const baseTexts = measureTexts('none');
+  const allAdded = extraTexts(measureTexts('all'), baseTexts);
+  const endsAdded = extraTexts(measureTexts('line-ends'), baseTexts);
+  // 独立手写期望：每行第一根 / 最后一根可见带号小节线
+  const expectedEnds: string[] = [];
+  for (const ln of WL.lines) {
+    const bars = ln.items.filter((i) => i.kind === 'barline' && !i.hidden && i.measure !== undefined);
+    if (bars.length) expectedEnds.push(String(bars[0]!.measure));
+    if (bars.length > 1) expectedEnds.push(String(bars[bars.length - 1]!.measure));
+  }
+  check('全部显示：每根小节线都标',
+    JSON.stringify(allAdded) === JSON.stringify([...wideNums].sort()),
+    `got=${allAdded.join(',')} want=${[...wideNums].sort().join(',')}`);
+  check('行首行尾：每行只标首 / 尾两根',
+    JSON.stringify(endsAdded) === JSON.stringify(expectedEnds.sort()),
+    `got=${endsAdded.join(',')} want=${expectedEnds.join(',')}`);
+  check('行首行尾确实少于全部显示', endsAdded.length > 0 && endsAdded.length < allAdded.length,
+    `ends=${endsAdded.length} all=${allAdded.length}`);
+  const canvasSrc = readFileSync(join(process.cwd(), 'src/v2/ui/ScoreCanvas.tsx'), 'utf8');
+  const staffSrc = readFileSync(join(process.cwd(), 'src/v2/staff.ts'), 'utf8');
+  check('画布与五线谱排版都从谱面读三态',
+    canvasSrc.includes('measureNumberMode(score.meta)')
+    && staffSrc.includes('measureNumberMode: measureNumberMode(score.meta)'));
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('曲目信息里小节号是三态下拉，不再是复选框',
+    editorSrc.includes("options={['全部显示', '行首行尾显示', '全部隐藏']}")
+    && editorSrc.includes("values={['all', 'line-ends', 'none']}")
+    && !editorSrc.includes('checked={score.meta.showMeasureNumbers !== false}'));
+
+  // 播放页（动态谱演奏 / 曲库播放共用工具条）：行距与小节号观看偏好
+  const playBarSrc = editorSrc.slice(
+    editorSrc.indexOf("{mode === 'play' ? ("),
+    editorSrc.indexOf('className="v2-play-stage"'),
+  );
+  check('播放工具条不再显示被截断的曲名与伴奏提示',
+    playBarSrc.length > 0
+    && !playBarSrc.includes('v2-play-title')
+    && !playBarSrc.includes('v2-play-note')
+    && playBarSrc.includes('v2-play-spacer'));
+  check('播放工具条只留一个版式设置入口，四项控件收进弹窗',
+    playBarSrc.includes('版式设置')
+    && playBarSrc.includes('setPlayLayoutOpen(true)')
+    && !playBarSrc.includes('v2-play-adj')
+    && !playBarSrc.includes('v2-play-select'));
+  const layoutDlgSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PlayLayoutDialog.tsx'), 'utf8');
+  check('版式设置弹窗收纳字号 / 字间距 / 行距 / 小节号',
+    layoutDlgSrc.includes('字号') && layoutDlgSrc.includes('字间距')
+    && layoutDlgSrc.includes('行距') && layoutDlgSrc.includes('小节号')
+    && (layoutDlgSrc.match(/v2-play-layout-row/g) ?? []).length === 4);
+  check('版式设置弹窗按规范右上角 × + Esc 关闭，并挂在播放页',
+    layoutDlgSrc.includes('useEscapeClose') && layoutDlgSrc.includes('<ExpClose onClose={p.onClose} />')
+    && editorSrc.includes("mode === 'play' && playLayoutOpen")
+    && editorSrc.includes('onMeasureNumbers={setPlayMeasureNumbers}'));
+  check('播放画布、安卓画布与导出都接上观看偏好',
+    editorSrc.includes('lineGap={effLineGap}')
+    && editorSrc.includes('measureNumbers={effMeasureNumbers}')
+    && editorSrc.includes('measureNumbers: playMeasureNumbers')
+    && editorSrc.includes('measureNumbers={mode === \'play\' ? effMeasureNumbers : undefined}'));
+  check('画布把小节号偏好同时用于简谱/五线谱绘制与五线谱排版',
+    canvasSrc.includes('const mnMode = measureNumbers ?? measureNumberMode(score.meta)')
+    && (canvasSrc.match(/showMeasureNumbers: mnMode/g) ?? []).length === 2
+    && canvasSrc.includes('buildStaffLayout(layoutInput, layout, staffPitchMode)')
+    && canvasSrc.includes('lineGap, measureNumbers, responsive'));
+  const paintSrc2 = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const staffPaintSrc = readFileSync(join(process.cwd(), 'src/v2/staffPaint.ts'), 'utf8');
+  check('小节号字号再退一档：简谱 9px@21 / 五线谱 sp×1.0',
+    paintSrc2.includes('const f = 9 * M.k')
+    && staffPaintSrc.includes('Math.max(7, Math.round(sp))'));
 }
 
 {
@@ -6231,9 +6471,33 @@ console.log('\n[简谱编辑键盘快捷键]');
   check('播放页按显示谱跳小节，复用起播点方块，展开反复也能映射',
     appKb.includes('const shown = partScore(fullViewScore, activePartId)')
     && appKb.includes('measureJumpCursor(shown, shownCursor(shown), delta)')
-    && appKb.includes('handlePlayPick({ mode:')
+    && appKb.includes('setPlayPickAt({ mode:')
     && appKb.includes('ev.originId === src.id')
     && appKb.includes('setPlayPick(null)'));
+  // 安卓进度条拖动仍保留「播放中就地续播」，所以只截取点音符那段来断言
+  const androidPickSrc = appKb.slice(appKb.indexOf('onPick={pick => {'), appKb.indexOf('onEnded={onAndroidScoreEnded}'));
+  check('播放中点音符 = 暂停，续播点对准被点音符；安卓不再立即起播',
+    appKb.includes('const keepResume = pauseOnPlay && (playing || pausedTick !== null)')
+    && appKb.includes('setPausedTick(tick)')
+    && appKb.includes('clockRef.current.seek(tick / TICKS_PER_BEAT)')
+    && appKb.includes('onPick={handlePlayPick}')
+    && appKb.includes('setPlayPickAt({ ...pick, partId }, false)')
+    && appKb.includes('从选中的音符继续（Space）')
+    && androidPickSrc.length > 0
+    && !androidPickSrc.includes('startPlay(')
+    && androidPickSrc.includes('setPlayPickAt('));
+  check('记谱页 / 伴奏对轨页点音符同样暂停续播，编辑行为不丢',
+    appKb.includes('const handleEditorPick = (a: ScorePick, b: ScorePick | null)')
+    && appKb.includes('onPick={handleEditorPick}')
+    && appKb.includes('handlePick(a, b)')
+    && appKb.includes("if (!playing || b || a.mode !== 'over' || wavePos !== null) return;")
+    && appKb.includes('expansion.firstIndex.get(ev.id)')
+    && appKb.includes('previewNote(toMidi(')
+    && appKb.includes('bindPick(a.index)')
+    && appKb.includes('setPausedTick(tick)'));
+  check('键盘跳小节仍只定位、不制造继续态',
+    appKb.includes("setPlayPickAt({ mode: 'over', index: target - 1, partId: activePartId, cursor: target }, false)")
+    && appKb.includes('const settleNavigation = (): void =>'));
   check('定位键不改谱面：播放中先停，编辑键仍被 canEditScore 门挡住',
     appKb.includes('if (playing) stopPlay();')
     && appKb.includes('const settleNavigation = (): void =>')

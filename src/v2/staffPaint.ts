@@ -6,6 +6,7 @@
  * 配色沿用 paint.ts 的 PaintTheme，视觉与简谱视图保持一致。
  */
 
+import { measureNumberEnds, measureNumberVisibleAt, resolveMeasureNumberMode } from './types';
 import type { PaintOptions, PaintTheme } from './paint';
 import { drawPlayBall, paintScoreTitle } from './paint';
 import { accidentalGlyph } from './pitch';
@@ -172,18 +173,23 @@ function drawStaffLine(
   }
 
   /**
-   * 小节号：写在谱表上方那条专属带里（排版层按开关留好位置，见 staffSpacing）。
-   * 以前 `showMeasureNumbers` 传进五线谱却没人读，曲谱设置里开关对它无效。
+   * 小节号：写在谱表上方那条专属带里（排版层按模式留好位置，见 staffSpacing）。
    * 数字跟着小节线的墨迹中心——与简谱同一口径（谱面开头那根边界线不编号）。
+   * 'line-ends' 时只标本行最前 / 最后两根小节线，与简谱共用判定工具。
    */
-  if (staff.showMeasureNumbers && o.showMeasureNumbers !== false && line.measureY !== undefined) {
+  const mnMode = resolveMeasureNumberMode(o.showMeasureNumbers, staff.measureNumberMode);
+  const mnEnds = measureNumberEnds(mnMode, line.symbols, (s) => s.kind === 'barline');
+  if (mnMode !== 'none' && line.measureY !== undefined) {
     ctx.save();
-    ctx.font = `600 ${Math.round(sp * 1.25)}px ${FAM}`;
+    // 与简谱同步再退一档（用户 2026-11-09）；下限 7px 防止小谱糊成点
+    ctx.font = `600 ${Math.max(7, Math.round(sp))}px ${FAM}`;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const s of line.symbols) {
+    for (let si = 0; si < line.symbols.length; si += 1) {
+      const s = line.symbols[si]!;
       if (s.kind !== 'barline' || s.measure === undefined) continue;
+      if (!measureNumberVisibleAt(mnEnds, si)) continue;
       ctx.fillText(String(s.measure), s.x, line.measureY);
     }
     ctx.restore();

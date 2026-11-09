@@ -48,6 +48,7 @@ import type {
   Tie,
   TimedEvent,
 } from './types';
+import { measureNumberMode, parseMeasureNumberMode } from './types';
 
 /**
  * 记号式：变音/八度 音级 八度 附点 /除法 增时线 ~延音线 演奏法（! = > @ t）
@@ -449,10 +450,15 @@ function parseSingle(text: string, modern = false): ParseResult {
           break;
         }
         case 'measureno': {
-          // 小节号：只有 off 会写进文件（缺省是显示）
-          if (/^(off|0|false|no)$/i.test(v)) meta.showMeasureNumbers = false;
-          else if (/^(on|1|true|yes)$/i.test(v)) meta.showMeasureNumbers = true;
-          else errors.push(`小节号开关解析失败（应为 on / off）：${v}`);
+          // 三态：all / line-ends / none，旧 on/off/1/0/true/false/yes/no 继续认
+          const mode = parseMeasureNumberMode(v);
+          if (!mode) {
+            errors.push(`小节号模式解析失败（应为 all / line-ends / off）：${v}`);
+            break;
+          }
+          meta.measureNumbers = mode;
+          // 旧布尔字段同步写一份：老调用方仍按「开 / 关」读到正确语义
+          meta.showMeasureNumbers = mode !== 'none';
           break;
         }
         default:
@@ -1348,7 +1354,10 @@ function serializeSingle(score: Score): string {
   if (score.meta.fontSize !== undefined) head.push(`@size ${score.meta.fontSize}`);
   if (score.meta.letterSpacing !== undefined) head.push(`@space ${score.meta.letterSpacing}`);
   if (score.meta.lineGap !== undefined) head.push(`@lineGap ${score.meta.lineGap}`);
-  if (score.meta.showMeasureNumbers === false) head.push('@measureNo off');
+  // 小节号：缺省 all 不写（老文件字节不变）；全隐藏沿用旧写法 off 以兼容旧版本
+  const mn = measureNumberMode(score.meta);
+  if (mn === 'none') head.push('@measureNo off');
+  else if (mn === 'line-ends') head.push('@measureNo line-ends');
 
   const byId = new Map<string, Event>(score.events.map((e) => [e.id, e]));
   const nextOf = new Map<string, Event>();

@@ -10,7 +10,9 @@
 
 0.4.68曾使用Noto Serif数字和宋体类歌词；逐字形比较表明这两项并非最接近参考。参考数字更接近粗黑体与窄1。新离线数字由OFL Arimo700与Roboto700窄1组成，统一advance和墨高。字体形态比较的Dice仅用于选择方向，不等于整页相似度：新组合平均约0.891，旧Noto Serif约0.853。参考原标题更接近宋体，歌词更接近微软雅黑常规体。
 
-Windows优先系统宋体标题、微软雅黑歌词；其他设备使用离线Noto Serif SC标题与Noto Sans SC歌词。未复制分发商业系统字体。字体加载后实际测量“祈福那是”的平均墨高，补偿不同字库的字号，避免相同CSS字号但可见高度不同。来源、四份OFL及研究记录见public/fonts/README.md和artifacts/jpw-layout-analysis/font-research-notes.md。
+Windows优先系统宋体标题、微软雅黑歌词；其他设备使用离线Noto Serif SC标题与Noto Sans SC歌词。未复制分发商业系统字体。字体加载后实际测量“祈福那是”的平均墨高，补偿不同字库的字号，避免相同CSS字号但可见高度不同。来源、OFL及研究记录见public/fonts/README.md和artifacts/jpw-layout-analysis/font-research-notes.md。
+
+后续修订（2026-11-09）：标题不再单独使用宋体类字体，改为与谱头说明、歌词共用 `WindScore Notation Text`，只靠字号分层；`notation-title.woff2` 及其 OFL 已从打包与 SVG 嵌入中移除。谱头说明字号同时缩小并封顶，右列行距与字号同源，避免大字谱下多行说明叠字。此处保留的是当时的校准结论，当前资源清单以 `public/fonts/README.md` 为准。
 
 ## 以H为单位的校准目标
 

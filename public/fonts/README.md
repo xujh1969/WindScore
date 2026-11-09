@@ -20,24 +20,23 @@ original font used in the JPW reference image.
   load, a 100px canvas measurement of the actual selected text face replaces this
   default ratio, so local Microsoft YaHei and the bundled fallback keep the same
   visible lyric height. Node or tests without Canvas retain the bundled ratio.
-- `notation-title.woff2` (5,514,808 bytes): Noto Serif SC, static weight 400. Latin, Chinese
-  punctuation, Bopomofo, CJK radicals, CJK Extension A, unified and compatibility
-  ideographs retained. Characters outside the font's coverage use system fallback.
+
+The title, header notes, lyrics and all other score text share `WindScore
+Notation Text`; only their sizes differ. The previously bundled `notation-title.woff2`
+(Noto Serif SC, 5,514,808 bytes) was removed: keeping a separate title face cost a
+second multi-megabyte font in browser/Android/desktop packages and in every
+embedded-font SVG export. No SimSun or other commercial system font is bundled.
 
 All bundled faces are distributed under SIL Open Font License 1.1. Copyright and full license
-texts are in `OFL-Arimo.txt`, `OFL-Roboto.txt`, `OFL-NotoSansSC.txt` and
-`OFL-NotoSerifSC.txt` beside the font files.
+texts are in `OFL-Arimo.txt`, `OFL-Roboto.txt` and `OFL-NotoSansSC.txt` beside the font files.
 The modified/subset faces use the internal family names `WindScore Notation
-Digits` and `WindScore Notation Text`. The title resource retains its previous
-internal text-face name and is registered under the CSS alias `WindScore Notation
-Title`. Its stack prefers locally installed SimSun; no SimSun file is bundled.
+Digits` and `WindScore Notation Text`.
 
 Official upstream sources retrieved on 2026-11-08/09:
 
 - https://github.com/google/fonts/tree/main/ofl/arimo
 - https://github.com/google/fonts/tree/main/ofl/roboto
 - https://github.com/notofonts/noto-cjk/tree/main/Sans/SubsetOTF/SC
-- https://github.com/google/fonts/tree/main/ofl/notoserifsc
 
 The Noto Sans SC 2.002 static source was read from the existing local installation
 (`C:/Windows/Fonts/Noto Sans SC (TrueType).otf`); its embedded copyright is

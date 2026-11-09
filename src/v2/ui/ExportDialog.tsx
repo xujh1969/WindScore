@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_FONT_SIZE, type Score } from '../types';
+import { DEFAULT_FONT_SIZE, measureNumberMode, type MeasureNumberMode, type MeasureNumberSetting, type Score } from '../types';
 import { layoutScore, type LayoutOptions, type LayoutResult } from '../layout';
 import { exportTheme, paintExportPage, prepareExportLayout, type ExportNotation, type PageGeometry } from '../export/render';
 import type { AudioStem } from '../audio';
@@ -31,6 +31,8 @@ export interface ExportDialogProps extends ExportNotation {
   score: Score;
   visibleLayout?: LayoutResult;
   visibleOptions?: LayoutOptions;
+  /** 播放页当前的小节号观看偏好；不给 = 跟随谱面 @measureNo */
+  measureNumbers?: MeasureNumberMode;
   initialPartId?: string;
   /** 是否允许导出视频（默认 true，所有入口都有；声音自动分流：配好伴奏录伴奏，没配录合成音） */
   allowVideo?: boolean;
@@ -83,7 +85,7 @@ function zoomedGeo(geo: PageGeometry, z: number): PageGeometry {
   };
 }
 
-export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, initialPartId = '', notation = 'jianpu', staffPitchMode = 'concert', allowVideo = true, dark, onClose, onBegin, onDone, video: fullVideo }: ExportDialogProps) {
+export function ExportDialog({ songName, score: fullScore, visibleLayout, visibleOptions, measureNumbers, initialPartId = '', notation = 'jianpu', staffPitchMode = 'concert', allowVideo = true, dark, onClose, onBegin, onDone, video: fullVideo }: ExportDialogProps) {
   const notationOptions = useMemo(() => ({ notation, staffPitchMode }), [notation, staffPitchMode]);
   const [partId, setPartId] = useState(initialPartId);
   const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
@@ -111,7 +113,12 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     return prepareExportLayout(score, base, notationOptions);
   }, [score, partId, initialPartId, visibleLayout, visibleOptions, notation, staffPitchMode, notationOptions]);
   const [showTitle, setShowTitle] = useState(true);
-  const [showBars, setShowBars] = useState(fullScore.meta.showMeasureNumbers !== false);
+  const scoreBarMode = measureNumbers ?? measureNumberMode(fullScore.meta);
+  const [showBars, setShowBars] = useState(scoreBarMode !== 'none');
+  /** 导出沿用谱面的小节号模式（含「行首行尾」）；这里的勾选只作总开关 */
+  const barsSetting: MeasureNumberSetting = showBars
+    ? (scoreBarMode === 'none' ? 'all' : scoreBarMode)
+    : 'none';
   const [pdfPage, setPdfPage] = useState(0);
   const pdfCanvas = useRef<HTMLCanvasElement>(null);
 
@@ -215,9 +222,9 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       // 缩放必须走 geo：paintExportPage 内部会 setTransform 重置矩阵，
       // 在外面 pre-scale 会被抹掉（放大后内容不变大的根源）。
       // 整套几何等比缩，页面比、页边距全部一致
-      paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], zoomedGeo(plan.geo, z), { showMeasureNumbers: showBars });
+      paintExportPage(ctx, plan.layout, exportTheme(false), plan.plans[pageIndex], zoomedGeo(plan.geo, z), { showMeasureNumbers: barsSetting });
     }
-  }, [preview.pdfPlan, pageIndex, tab, showBars, pdfZoom]);
+  }, [preview.pdfPlan, pageIndex, tab, barsSetting, pdfZoom]);
 
   const run = async (task: () => Promise<string>): Promise<void> => {
     setBusy(true);
@@ -252,7 +259,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
         dpi,
         layout: pdfLayout,
         showTitle,
-        showMeasureNumbers: showBars,
+        showMeasureNumbers: barsSetting,
         dark: false,
         onProgress: (r, n) => {
           setProgress(r);
@@ -270,7 +277,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
       name: exportName,
       format: imageFormat,
       dark: videoDark,
-      showMeasureNumbers: showBars,
+      showMeasureNumbers: barsSetting,
       layout: plan.layout,
       geo: plan.geo,
     });
@@ -317,7 +324,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
           : {}),
         playStyle: video.playStyle,
         activePartId: partId || video.activePartId,
-        showMeasureNumbers: showBars,
+        showMeasureNumbers: barsSetting,
         showTitle,
         onProgress: setProgress,
         onStatus: setNote,

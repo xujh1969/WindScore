@@ -5,7 +5,7 @@
  * 画面按「第 i 帧 = 第 i/fps 秒」逐帧编码，所以快 5-20 倍，也不用守着页面。
  */
 
-import type { Score } from "../types";
+import type { MeasureNumberSetting, Score } from "../types";
 import type { AudioStem } from "../audio";
 import { buildBallTrack, sampleBallTrail } from '../ball';
 import { secToTick, tickToSec, type TempoMap } from "../tempo";
@@ -71,7 +71,7 @@ export interface VideoExportOptions extends ExportNotation {
     compoundMedium?: boolean;
   };
   showTitle?: boolean;
-  showMeasureNumbers?: boolean;
+  showMeasureNumbers?: MeasureNumberSetting;
   onProgress?: (ratio: number) => void;
   onStatus?: (status: string) => void;
   cancelled?: () => boolean;

@@ -285,6 +285,14 @@ export function setMeta(score: Score, patch: Partial<ScoreMeta>): Score {
   ) {
     return score;
   }
+  // 小节号模式：只收三个合法值，脏值不让进谱面
+  if (
+    'measureNumbers' in patch &&
+    patch.measureNumbers !== undefined &&
+    !['all', 'line-ends', 'none'].includes(patch.measureNumbers)
+  ) {
+    return score;
+  }
   if ('key' in patch) {
     // 调号直接决定 toMidi 的基准音，认不出来的写法必须拒绝而不是放行
     const k = normalizeKey(next.key);

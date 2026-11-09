@@ -22,7 +22,8 @@ import { resolveStaffClef } from './staffClef';
 import { lyricTextWidth, lyricTextOffset, projectLyricLines, type LyricLine } from './lyricLines';
 import { staffContentRight } from './staffBounds';
 import { TICKS_PER_BEAT } from './ticks';
-import type { Accidental, BeatGroup, JumpMark, Score } from './types';
+import type { Accidental, BeatGroup, JumpMark, MeasureNumberMode, Score } from './types';
+import { measureNumberMode } from './types';
 
 /** 符干长度：一个八度 = 7 个半格 */
 export const STEM_OCT = 7;
@@ -152,10 +153,10 @@ export interface StaffLayout {
   /** 拍号（如 "4/4"），画在第一行行首 */
   beat: string;
   /**
-   * 是否画小节号（取自 `meta.showMeasureNumbers`，默认开）。
-   * 排版层就要知道——它决定要不要给小节号那条带留行距，绘制层再按此画。
+   * 小节号显示模式（取自 `meta`，默认 all）。排版层就要知道——
+   * 只要不是 none 就得给小节号那条带留行距，绘制层再按模式筛线。
    */
-  showMeasureNumbers: boolean;
+  measureNumberMode: MeasureNumberMode;
 }
 
 /** 谱表第 step 格的 y：整体以**行中线**为谱表中心线对称 */
@@ -574,7 +575,7 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
     glyph: layout.glyph,
     title: layout.title,
     beat: score.meta.beat,
-    showMeasureNumbers: score.meta.showMeasureNumbers !== false,
+    measureNumberMode: measureNumberMode(score.meta),
   };
   for (const part of parts) {
     const rows = lines.filter(line => (line.partId ?? parts[0].id) === part.id);

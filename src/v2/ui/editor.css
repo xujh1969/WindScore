@@ -2015,8 +2015,7 @@ details.v2-side-block[open] > summary::before {
   overflow-x: auto;
 }
 
-.v2-play-bar > .v2-btn,
-.v2-play-bar > .v2-play-adj { flex-shrink: 0; }
+.v2-play-bar > .v2-btn { flex-shrink: 0; }
 .v2-play-bar .v2-seg { padding-inline: 10px; white-space: nowrap; }
 .v2-play-bar > .v2-play-title { min-width: 0; flex: 0 1 auto; }
 /* 显示设置成组：与播放控制之间一条细线，工具条不再二十个控件同权重 */
@@ -2028,7 +2027,30 @@ details.v2-side-block[open] > summary::before {
   padding-left: 12px;
   border-left: 1px solid var(--border);
 }
-.v2-play-group > .v2-play-adj { flex-shrink: 0; }
+/* 组内的「版式设置」按钮别被工具条的横向挤压吃掉 */
+.v2-play-group > .v2-btn { flex-shrink: 0; }
+/* AB 循环：A、循环图标、B，紧挨播放按钮；图标点亮 = 开启循环 */
+.v2-ab-group {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding-left: 10px; border-left: 1px solid var(--border);
+}
+.v2-ab-btn {
+  width: 30px; height: 28px; padding: 0; flex-shrink: 0; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text); font-size: 13px; font-weight: 700;
+}
+.v2-ab-btn:disabled { opacity: .45; cursor: not-allowed; }
+.v2-ab-btn.is-on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.v2-ab-loop {
+  display: grid; place-items: center; width: 30px; height: 28px; padding: 0; flex-shrink: 0;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--muted); cursor: pointer;
+}
+.v2-ab-loop svg { width: 18px; height: 18px; display: block; }
+/* 灰暗 = 关闭，点亮 = 开启循环 */
+.v2-ab-loop:not(.is-on) { opacity: .68; }
+.v2-ab-loop.is-on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); opacity: 1; }
+.v2-ab-loop:hover { opacity: 1; border-color: var(--accent); }
 .v2-staff-choice { display: flex; }
 .v2-staff-choice.is-on {
   background: color-mix(in srgb, var(--accent) 14%, var(--surface));
@@ -2056,29 +2078,40 @@ details.v2-side-block[open] > summary::before {
   overflow-wrap: anywhere;
 }
 
-/* 播放页的字号 / 字距滑杆组：紧凑、灰色小字，一眼知道是「观看偏好」 */
-.v2-play-adj {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 播放页「版式设置」弹窗：字号 / 字间距 / 行距 / 小节号集中在这里，
+   工具条只留一个入口（用户 2026-11-09：顶部控件太多）。
+   带 .v2-exp 前缀提高特异性——.v2-exp / .v2-exp-row 的定义在文件更后面 */
+.v2-exp.v2-play-layout-dialog {
+  width: min(420px, 100%);
 }
 
-.v2-play-adj > span {
-  color: var(--muted);
-  font-size: var(--fs-ui);
+.v2-exp.v2-play-layout-dialog .v2-play-layout-row > span:first-child {
+  flex: 0 0 58px;
 }
 
-.v2-play-adj input[type='range'] {
-  width: 51px;
+.v2-exp.v2-play-layout-dialog .v2-play-layout-row input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.v2-play-adj output {
-  min-width: 40px;
+.v2-exp.v2-play-layout-dialog .v2-play-layout-row output {
+  min-width: 44px;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 11px;
-  /* 数值紧贴左侧滑杆；min-width 只为右侧 ⟲ 不随位数跳动 */
-  text-align: left;
+  font-size: var(--fs-ui);
+  text-align: right;
+}
+
+.v2-exp.v2-play-layout-dialog .v2-play-layout-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-ui);
+  cursor: pointer;
 }
 
 .v2-play-reset {
@@ -2255,13 +2288,9 @@ details.v2-side-block[open] > summary::before {
   text-overflow: ellipsis;
 }
 
-.v2-play-note {
-  font-size: var(--fs-ui);
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* 吃掉工具条上的富余宽度，把「导出」顶到最右 */
+/* 播放工具条：弹性空位，把「导出」顶到最右。
+   以前这里放伴奏状态长提示，窄工具条里只能被截断，看不全也没意义（用户 2026-11-09 取消） */
+.v2-play-spacer {
   flex: 1 1 auto;
   min-width: 0;
 }

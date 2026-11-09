@@ -9,7 +9,7 @@
  */
 
 import type { LayoutResult } from '../layout';
-import type { Score } from '../types';
+import type { MeasureNumberSetting, Score } from '../types';
 import { isTauri, saveBytesAsFile, type SaveResult } from '../io';
 import { logPdfExport } from './pdfDiagnostic';
 import { A4_PT, buildPdf, type PdfImagePage, type PagePlan } from './pdf';
@@ -119,7 +119,7 @@ export interface PdfExportOptions extends ExportNotation {
   /** 版面缩放：谱面 21px 字号在纸面上变成 21 × scale */
   scale?: number;
   showTitle?: boolean;
-  showMeasureNumbers?: boolean;
+  showMeasureNumbers?: MeasureNumberSetting;
   dark?: boolean;
   quality?: number;
   onProgress?: (ratio: number, note: string) => void;

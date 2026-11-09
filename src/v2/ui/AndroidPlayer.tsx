@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AndroidDialog, AndroidIcon } from './AndroidComponents';
+import { AbLoopControls } from './AbLoopControls';
 import { METRONOME_PATTERNS } from '../metronome';
 import type { PlayStyle } from '../paint';
 import type { StaffPitchMode } from '../pitch';
@@ -90,6 +91,9 @@ interface Props {
   metronomeBpm: number;
   /** 合成音音色：行值文案与打开弹窗（仅合成音场景显示，undefined = 整个入口不出现） */
   timbreLabel: string; onOpenTimbre?: () => void;
+  /** AB 循环：与 PC 播放工具条共用控件、状态和播放内核 */
+  abA: boolean; abB: boolean; abEnabled: boolean; hasSelection: boolean;
+  onAbA: () => void; onAbB: () => void; onAbToggle: (on: boolean) => void;
   message?: string;
 }
 function time(value: number) { const seconds = Math.max(0, Math.floor(value)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
@@ -149,6 +153,9 @@ export function AndroidPlayer(p: Props) {
     <header className="an-player-top" aria-hidden={!visible}><button className="an-icon-button" aria-label="返回曲库" onClick={p.onBack}><AndroidIcon name="back"/></button><div><h1>{p.title}</h1>{p.parts.length > 1 ? <span className="an-player-part" title="分谱选择只改变显示，声音仍播放全部声部。">{p.selectedPart === 'total' ? '当前显示：总谱（全部声部）' : `当前分谱：${p.parts.find(part => part.id === p.selectedPart)?.name ?? '未命名声部'}`}</span> : <span>{p.notation === 'staff' ? '五线谱' : '简谱'}{p.expanded && p.canExpand ? ' · 已展开反复' : ''}</span>}</div><span className="an-player-source">{p.restoring ? '载入中' : p.source === 'audio' ? '伴奏' : '合成音'}</span></header>
     <div ref={stage} className="an-player-stage" onDoubleClick={p.onResetFont}>{p.renderScore()}</div>
     <footer className="an-player-controls" aria-hidden={!visible}>
+      <AbLoopControls variant="android" aSet={p.abA} bSet={p.abB} enabled={p.abEnabled}
+        hasSelection={p.hasSelection} ready={p.abA && p.abB}
+        onSetA={p.onAbA} onSetB={p.onAbB} onToggle={p.onAbToggle} />
       <div className="an-progress"><input aria-label="播放进度" type="range" min="0" max={Math.max(0.01, p.duration)} step="0.1" value={Math.min(seconds, p.duration)} onChange={e => { const v = Number(e.target.value); setSeconds(v); p.onSeek(v); wake(); }}/><div><span>{time(seconds)}</span><span>{time(p.duration)}</span></div></div>
       <div className="an-transport"><button className="an-transport-side" onClick={p.onReplay} aria-label="从头重放" disabled={p.busy || p.restoring}><AndroidIcon name="replay"/><span>重放</span></button><button className="an-play-button" aria-label={p.playing ? '暂停' : '播放'} onClick={p.onToggle} disabled={p.busy || p.restoring || p.duration <= 0}><AndroidIcon name={p.playing ? 'pause' : 'play'} filled={!p.playing}/></button><button className="an-transport-side" onClick={() => setSettings(true)} aria-label="播放设置"><AndroidIcon name="settings"/><span>设置</span></button></div>
     </footer>

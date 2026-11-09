@@ -14,6 +14,7 @@
  *   - PNG 编码后重新解码并逐行复查，避免编码阶段丢失中间内容。
  */
 
+import type { MeasureNumberSetting } from '../types';
 import { saveBytesAsFile, type SaveResult } from '../io';
 import { exportTheme, paintExportImageBand, regionHasInk, type PageGeometry, type ExportLayoutResult } from './render';
 import { safeFileName } from './tasks';
@@ -60,7 +61,7 @@ export async function exportScoreImageToFile(opts: {
   name: string;
   format: 'png' | 'svg';
   dark: boolean;
-  showMeasureNumbers: boolean;
+  showMeasureNumbers: MeasureNumberSetting;
   layout: ExportLayoutResult;
   geo: PageGeometry;
 }): Promise<SaveResult> {

@@ -362,6 +362,18 @@ function normalizeKey(key) {
 }
 
 // src/v2/types.ts
+var MEASURE_NUMBER_MODES = ["all", "line-ends", "none"];
+function measureNumberMode(meta) {
+  if (meta.measureNumbers && MEASURE_NUMBER_MODES.includes(meta.measureNumbers)) return meta.measureNumbers;
+  return meta.showMeasureNumbers === false ? "none" : "all";
+}
+function parseMeasureNumberMode(v) {
+  const s = v.trim().toLowerCase();
+  if (/^(off|0|false|no|none|hide)$/.test(s)) return "none";
+  if (/^(on|1|true|yes|all|full)$/.test(s)) return "all";
+  if (/^(line-ends|lineends|ends|start-end|first-last)$/.test(s)) return "line-ends";
+  return null;
+}
 var DEFAULT_FONT_SIZE = 24;
 var DEFAULT_LETTER_SPACING = -10;
 function isTimed(e) {
@@ -881,9 +893,13 @@ function parseSingle(text2, modern = false) {
           break;
         }
         case "measureno": {
-          if (/^(off|0|false|no)$/i.test(v)) meta.showMeasureNumbers = false;
-          else if (/^(on|1|true|yes)$/i.test(v)) meta.showMeasureNumbers = true;
-          else errors.push(`\u5C0F\u8282\u53F7\u5F00\u5173\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A on / off\uFF09\uFF1A${v}`);
+          const mode = parseMeasureNumberMode(v);
+          if (!mode) {
+            errors.push(`\u5C0F\u8282\u53F7\u6A21\u5F0F\u89E3\u6790\u5931\u8D25\uFF08\u5E94\u4E3A all / line-ends / off\uFF09\uFF1A${v}`);
+            break;
+          }
+          meta.measureNumbers = mode;
+          meta.showMeasureNumbers = mode !== "none";
           break;
         }
         default:
@@ -1573,7 +1589,9 @@ function serializeSingle(score2) {
   if (score2.meta.fontSize !== void 0) head.push(`@size ${score2.meta.fontSize}`);
   if (score2.meta.letterSpacing !== void 0) head.push(`@space ${score2.meta.letterSpacing}`);
   if (score2.meta.lineGap !== void 0) head.push(`@lineGap ${score2.meta.lineGap}`);
-  if (score2.meta.showMeasureNumbers === false) head.push("@measureNo off");
+  const mn = measureNumberMode(score2.meta);
+  if (mn === "none") head.push("@measureNo off");
+  else if (mn === "line-ends") head.push("@measureNo line-ends");
   const byId = new Map(score2.events.map((e) => [e.id, e]));
   const nextOf = /* @__PURE__ */ new Map();
   score2.events.forEach((e, i) => {
@@ -1905,6 +1923,12 @@ function notationDigitInkHeight(fontSize = 21) {
 var cachedTextInkRatio = 0.88875;
 function notationLyricFontSize(noteSize = 21) {
   return notationDigitInkHeight(noteSize) * 1.024 / cachedTextInkRatio;
+}
+function notationHeaderInfoSize(noteSize = 21) {
+  return Math.min(notationLyricFontSize(noteSize) * 0.7, 13);
+}
+function notationHeaderRowHeight(noteSize = 21) {
+  return Math.max(18, Math.ceil(notationHeaderInfoSize(noteSize) * 1.35));
 }
 
 // src/v2/ensembleLayout.ts
@@ -2353,7 +2377,7 @@ function layoutScore(score2, opts) {
     const y = padTop + 16;
     const subY = y + notationDigitInkHeight(fontSize) * 3.714;
     const colY = subY - 6;
-    const rowH = 18;
+    const rowH = notationHeaderRowHeight(fontSize);
     const tempoY = subY + notationDigitInkHeight(fontSize) * 1.9;
     const rightLines = (meta.notes ?? []).slice(0, 4);
     return {

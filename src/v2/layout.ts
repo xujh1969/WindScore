@@ -15,7 +15,7 @@ import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotT
 import { layoutEnsemble } from './ensembleLayout';
 import { meterBeatOptions, meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, lyricTextOffset, type LyricLine } from './lyricLines';
-import { notationDigitWidth, notationDigitInkHeight, notationLyricFontSize } from './notationFont';
+import { notationDigitWidth, notationDigitInkHeight, notationHeaderRowHeight, notationLyricFontSize } from './notationFont';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf, positionDashes, type SpacingUnit } from './spacing';
 import type {
   Accidental,
@@ -734,12 +734,12 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       ? null
       : (() => {
           // 谱头三区的纵向节奏：标题基线 → 说明行 → 左右两列。
-          // rowH 是右列的行距；左列速度行不跟它走——拍号叠写比一行字高，
-          // 速度行由 tempoY 单独给出（见下）
+          // rowH 是右列的行距，与绘制层的右列字号同源（字号封顶后恒为 18）；
+          // 左列速度行不跟它走——拍号叠写比一行字高，速度行由 tempoY 单独给出（见下）
           const y = padTop + 16;
           const subY = y + notationDigitInkHeight(fontSize) * 3.714;
           const colY = subY - 6;
-          const rowH = 18;
+          const rowH = notationHeaderRowHeight(fontSize);
           const tempoY = subY + notationDigitInkHeight(fontSize) * 1.9;
           const rightLines = (meta.notes ?? []).slice(0, 4);
           return {

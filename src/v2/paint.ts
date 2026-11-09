@@ -8,7 +8,7 @@
 import { playbackX } from './spacing';
 import { playheadIdCandidates } from './timeline';
 import { paintLyricLines, paintLyricText } from './lyricLines';
-import { NOTATION_DIGIT_FAMILY, NOTATION_TEXT_FAMILY, NOTATION_TITLE_FAMILY, notationDigitInkHeight, notationLyricFontSize } from './notationFont';
+import { NOTATION_DIGIT_FAMILY, NOTATION_TEXT_FAMILY, notationDigitInkHeight, notationHeaderInfoSize, notationHeaderSubSize, notationLyricFontSize } from './notationFont';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
 import { shortInstrumentLabel } from './instrumentSamples';
 import {
@@ -23,7 +23,8 @@ import {
   type PlacedCue,
   type PlacedItem,
 } from './layout';
-import type { Accidental, GraceNote } from './types';
+import type { Accidental, GraceNote, MeasureNumberMode, MeasureNumberSetting } from './types';
+import { measureNumberEnds, measureNumberVisibleAt, resolveMeasureNumberMode } from './types';
 
 /** 数据值 → 谱面字形（属性面板的按钮也用这一份，避免两处各写一套）。
  *  重升用 ×（GB/T 46845—2025 §6.2.5.1 形态；canvas 上由 drawDoubleSharp 手绘粗 ×），
@@ -233,16 +234,16 @@ const M = {
   graceFont: '600 12px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
   /** 变音记号 ♯ ♭ ♮：比数字小一号，才像标记而不像主体 */
   accFont: '600 13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 谱面标题：比谱面字号大一档，层级靠字重而非花活 */
-  titleFont: '700 28px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 标题下的居中说明行（@sub） */
-  titleSubFont: '15px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱面标题：与谱头说明同一字体，只用字号拉开层级 */
+  titleFont: '400 28px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
+  /** 标题下的居中说明行（@sub）：小一号，不抢标题 */
+  titleSubFont: '400 15px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
   /** 谱头左列：调号（1=C），加粗像印刷谱 */
   titleKeyFont: '700 17px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
   /** 谱头左列：拍号叠写的分子 / 分母 */
   titleBeatFont: '700 15px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 谱头左列速度与右列说明行 */
-  titleInfoFont: '13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱头左列速度与右列说明行：比 @sub 再小一号，多行不叠字 */
+  titleInfoFont: '400 13px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
 };
 
 /** 仅供测试：把模块级度量复位到 21px 基准。
@@ -288,9 +289,11 @@ function applyMetrics(g: GlyphMetrics): void {
   M.markTop = g.markTop;
   M.tupletDrop = g.tupletDrop;
   M.markBottom = g.markBottom;
-  M.titleFont = `400 28px ${NOTATION_TITLE_FAMILY}`;
-  M.titleSubFont = `400 ${notationLyricFontSize(g.fontSize) * 1.024}px ${NOTATION_TEXT_FAMILY}`;
-  M.titleInfoFont = `400 ${notationLyricFontSize(g.fontSize) * .9}px ${NOTATION_TEXT_FAMILY}`;
+  // 标题与谱头说明同族同字重，只靠字号分层：不单独打包标题字体，
+  // SVG 导出也只嵌一套中文字库；说明字号封顶，避免大字谱里右列说明叠字。
+  M.titleFont = `400 28px ${NOTATION_TEXT_FAMILY}`;
+  M.titleSubFont = `400 ${notationHeaderSubSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`;
+  M.titleInfoFont = `400 ${notationHeaderInfoSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`;
   M.titleKeyFont = `700 ${g.fontSize}px ${NOTATION_DIGIT_FAMILY}`;
   M.titleBeatFont = `700 ${g.fontSize * .7}px ${NOTATION_DIGIT_FAMILY}`;
 }
@@ -464,8 +467,11 @@ export interface PaintOptions {
   ball?:
     | { x: number; y: number; r: number; hot: number; alpha?: number; trail: { x: number; y: number }[] }
     | null;
-  /** 小节线下方是否画小节号（曲目信息面板的开关，缺省显示） */
-  showMeasureNumbers?: boolean;
+  /**
+   * 小节号显示：布尔是旧链路的总开关，三态模式决定「全部 / 行首行尾 / 隐藏」。
+   * 缺省 all（与老版本一致）。
+   */
+  showMeasureNumbers?: MeasureNumberSetting;
   /** 编辑时显示强制换行/分页标记。 */
   showBreaks?: boolean;
   /** 导出时隐藏曲目信息设置按钮。 */
@@ -581,7 +587,7 @@ export function paintLayout(
       focusId: opts.focusId ?? null,
       cue: opts.cue ?? null,
       playStyle: opts.playStyle ?? 'head',
-      showMeasureNumbers: opts.showMeasureNumbers ?? true,
+      measureNumberMode: resolveMeasureNumberMode(opts.showMeasureNumbers),
       showBreaks: opts.showBreaks ?? false,
       pairing: opts.pairing ?? false,
       pairingHoverId: opts.pairingHoverId ?? null,
@@ -910,8 +916,8 @@ interface LinePaint {
   cue: { eventId: string; beatsLeft: number; pulse: number } | null;
   /** 播放指示方式：head = 跟着音符跳的色块 + 竖线；band = 从行首生长的高亮条；ball = 跳跃光球 */
   playStyle: PlayStyle;
-  /** 小节号开关（缺省显示） */
-  showMeasureNumbers: boolean;
+  /** 小节号显示模式（all / line-ends / none） */
+  measureNumberMode: MeasureNumberMode;
   showBreaks: boolean;
   /** 对轨配对中：小节线画成绑定靶标 */
   pairing: boolean;
@@ -1002,6 +1008,13 @@ function paintLine(
   const { selectedIds, caret, playhead, focusId } = o;
   const y = line.y;
   const barY = y + M.barYOffset;
+  // 小节号三态：'line-ends' 只标本行最前 / 最后两根小节线。
+  // 隐藏小节线 |* 占位却不画，不能占掉行首那个名额
+  const measureEnds = measureNumberEnds(
+    o.measureNumberMode,
+    line.items,
+    (it) => it.kind === 'barline' && !it.hidden,
+  );
   // h 滑音连音线：h 由弧线中央统一绘制，覆盖范围内的音符不再重复标 h
   const hSlurSpans = line.arcs.filter((a) => a.h).map((a) => [a.x0, a.x1] as const);
   let headItem = playhead ? line.items.find((it) => it.eventId === playhead.eventId) : undefined;
@@ -1258,12 +1271,12 @@ function paintLine(
     // 横向贴着线走，不会压到音符的力度记号。
     // 每 5 的倍数小节按 GB/T 46845—2025 §5.9.1 画**方框**强调（印刷谱的
     // 翻谱定位点），其余小节保持朴素小字——每颗都画框会太吵
-    if (it.measure && o.showMeasureNumbers) {
+    if (it.measure && measureNumberVisibleAt(measureEnds, bi)) {
       ctx.save();
       // 小节号用音符的**字体族**（用户 2026-11-06：monospace 小字不协调），
-      // 但字号只取音符的约一半（11px@21 基准，随谱面字号缩放）——
-      // 与音符同字号太抢眼，辅助信息要退后
-      const f = 11 * M.k;
+      // 字号退到音符的一半以下（用户 2026-11-09 要求再小一些：9px@21 基准）——
+      // 辅助信息要退后，不能跟音符抢视线
+      const f = 9 * M.k;
       ctx.font = `600 ${f}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
       ctx.textAlign = 'center';
       const label = String(it.measure);

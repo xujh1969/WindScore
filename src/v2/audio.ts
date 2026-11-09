@@ -8,6 +8,7 @@
  */
 
 import { tickToSec, secToTick, type TempoMap } from './tempo';
+import { loopSecMapped, loopTickLinear, type AbRange } from './abLoop';
 import { TICKS_PER_BEAT } from './ticks';
 import { pianoSpec, renderNote } from './timbre';
 import { clickSample } from './metronome';
@@ -42,6 +43,8 @@ export interface AudioStartOptions {
   synth?: boolean;
   /** 整体升降调（半音）：伴奏走离线变调 buffer，合成声部在这里按频率偏移，两层保持同调 */
   semitones?: number;
+  /** AB 循环区间：给了就在同一 AudioContext 内按周期回绕，不重建上下文、不留接缝 */
+  loop?: AbRange | null;
   onEnded?: () => void;
 }
 
@@ -100,6 +103,17 @@ export class Player {
   /** 无音高音符（X）的打击声缓存：与节拍器同一记木鱼音源，按采样率各存一份 */
   private percBuf: AudioBuffer | null = null;
   private percBufRate = 0;
+  /** AB 循环：null = 普通播放，下面这些字段一律不参与计算（旧路径逐字不变）。 */
+  private loop: AbRange | null = null;
+  private loopFirst = 0;
+  /** 当前周期起点在 AudioContext 时钟上的时刻 */
+  private cycleAt = 0;
+  /** 当前周期起点对应的 tick（首轮 = 实际起播点，之后每轮 = loop.from） */
+  private anchorTick = 0;
+  /** 当前周期起点对应的音频秒（变速曲线 / 伴奏用；恒定合成音不用） */
+  private cycleStartSec = 0;
+  /** 伴奏到 B 点重起 stem 时要用的原始规格 */
+  private loopStems: AudioStem[] = [];
 
   /** 播放中热切某条 stem 的音量（30ms 平滑，不会「啪」地一声） */
   setStemGain(index: number, value: number): void {
@@ -123,6 +137,15 @@ export class Player {
   /** 当前音频位置（秒）：伴奏模式 / 合成音变速曲线模式有值；恒定合成音为 null（走线性时钟） */
   get currentSec(): number | null {
     if (!this.ctx) return null;
+    // 循环：每轮到 B 就按周期长度回绕，指示条与安卓进度条都不会越过区间
+    if (this.loop && this.tempo) {
+      return loopSecMapped(
+        Math.max(0, this.ctx.currentTime - this.cycleAt),
+        this.cycleStartSec,
+        tickToSec(this.tempo, this.loop.from),
+        tickToSec(this.tempo, this.loop.to),
+      );
+    }
     if (this.audioMode) return Math.max(0, this.ctx.currentTime - this.when) + this.startSec;
     if (this.tempo) return Math.max(0, this.ctx.currentTime - this.startedAt) + this.startSec;
     return null;
@@ -131,6 +154,14 @@ export class Player {
   /** 两种模式都以实际发声的 AudioContext 为时钟，保留任意起播 tick。 */
   get currentTick(): number | null {
     if (!this.ctx) return null;
+    // 循环：恒定速度走 tick 域回绕；变速 / 伴奏走秒域回绕后反查
+    if (this.loop) {
+      if (this.tempo) return secToTick(this.tempo, this.currentSec!);
+      return loopTickLinear(
+        Math.max(0, this.ctx.currentTime - this.cycleAt),
+        this.anchorTick, this.loop.from, this.loop.to, this.ticksPerSec,
+      );
+    }
     const sec = this.currentSec;
     if (sec !== null && this.tempo) return secToTick(this.tempo, sec);
     if (!this.audioMode) return this.fromTick + Math.max(0, this.ctx.currentTime - this.startedAt) * this.ticksPerSec;
@@ -146,7 +177,7 @@ export class Player {
    * 变速只改变发声时刻，排程循环的「按 tick 排」结构不变——曲线在 tick 域
    * 单调递增，`at > until` 的提前截断依然正确。
    */
-  start(timeline: TimelineEntry[], bpmOrMap: number | TempoMap, fromTick = 0, semitones = 0): number {
+  start(timeline: TimelineEntry[], bpmOrMap: number | TempoMap, fromTick = 0, semitones = 0, loop: AbRange | null = null): number {
     this.stop();
     if (timeline.length === 0) return 0;
     claimAudio(this);
@@ -170,6 +201,13 @@ export class Player {
       this.when = this.startedAt;
       this.startSec = tickToSec(map, fromTick);
     }
+    // AB 循环：首轮锚定实际起播点，之后每轮锚定 A。排程窗口直接翻到下一轮，
+    // 始终用同一个 AudioContext —— 不 stop/重建，循环接缝里没有静音空档。
+    this.loop = loop && loop.to > loop.from && loop.to > fromTick ? { ...loop } : null;
+    this.loopFirst = first;
+    this.cycleAt = this.startedAt;
+    this.anchorTick = fromTick;
+    this.cycleStartSec = map ? tickToSec(map, fromTick) : 0;
 
     const lead = (performance.now() - calledAt) / 1000 + START_LEAD;
     this.timer = window.setInterval(() => {
@@ -177,11 +215,20 @@ export class Player {
       const until = this.ctx.currentTime + SCHEDULE_AHEAD;
       const at = (tick: number): number =>
         map
-          ? this.startedAt + tickToSec(map, tick) - this.startSec
-          : this.startedAt + (tick - this.fromTick) / this.ticksPerSec;
+          ? this.cycleAt + tickToSec(map, tick) - this.cycleStartSec
+          : this.cycleAt + (tick - this.anchorTick) / this.ticksPerSec;
       for (; this.index < this.timeline.length; ) {
         const e = this.timeline[this.index]!;
-        const from = Math.max(e.startTick, this.fromTick);
+        if (this.loop && e.startTick >= this.loop.to) {
+          const nextAt = at(this.loop.to);
+          if (nextAt > until) break;
+          this.cycleAt = nextAt;
+          this.anchorTick = this.loop.from;
+          this.cycleStartSec = map ? tickToSec(map, this.loop.from) : 0;
+          this.index = this.loopFirst;
+          continue;
+        }
+        const from = Math.max(e.startTick, this.anchorTick);
         const at0 = at(from);
         if (at0 > until) break;
         const endAt = at(e.endTick);
@@ -192,9 +239,12 @@ export class Player {
         }
         this.index += 1;
       }
-      const lastEnd = timelineTicks(this.timeline);
-      const finishAt = at(lastEnd);
-      if (this.index >= this.timeline.length && this.ctx.currentTime > finishAt + 0.3) this.stop();
+      // 循环模式永不自然收尾；普通模式维持原来的「播完 + 0.3s 停」
+      if (!this.loop) {
+        const lastEnd = timelineTicks(this.timeline);
+        const finishAt = at(lastEnd);
+        if (this.index >= this.timeline.length && this.ctx.currentTime > finishAt + 0.3) this.stop();
+      }
     }, TIMER_MS);
     return lead;
   }
@@ -208,7 +258,7 @@ export class Player {
    */
   startAudio(opts: AudioStartOptions): number {
     this.stop();
-    const { timeline, tempo, fromTick, stems, synth, semitones, onEnded } = opts;
+    const { timeline, tempo, fromTick, stems, synth, semitones, onEnded, loop } = opts;
     if (timeline.length === 0 || stems.length === 0) return 0;
     const startSec = Math.max(0, tickToSec(tempo, fromTick));
     const duration = Math.max(...stems.map(s => s.buffer.duration));
@@ -231,6 +281,13 @@ export class Player {
     this.when = ctx.currentTime + START_LEAD;
     const lead = (performance.now() - calledAt) / 1000 + START_LEAD;
 
+    this.loop = loop && loop.to > loop.from && loop.to > fromTick ? { ...loop } : null;
+    this.loopFirst = this.index;
+    this.loopStems = stems;
+    this.cycleAt = this.when;
+    this.anchorTick = fromTick;
+    this.cycleStartSec = startSec;
+
     this.sources = [];
     this.stemGains = [];
     for (const stem of stems) {
@@ -245,7 +302,8 @@ export class Player {
     }
     const offset = Math.max(0, startSec);
     for (const src of this.sources) src.start(this.when, offset);
-    this.audioEndSec = this.when + Math.max(0.1, duration - offset);
+    // 循环时音频不自然结束：到 B 由 scheduleSynth 重开 stem，endedCb 不会触发
+    this.audioEndSec = this.loop ? Infinity : this.when + Math.max(0.1, duration - offset);
 
     this.timer = window.setInterval(() => this.scheduleSynth(synth ?? false), TIMER_MS);
     return lead;
@@ -255,11 +313,20 @@ export class Player {
   private scheduleSynth(withSynth: boolean): void {
     if (!this.ctx || !this.tempo) return;
     const until = this.ctx.currentTime + SCHEDULE_AHEAD;
-    const at = (tick: number): number => this.when + tickToSec(this.tempo!, tick) - this.startSec;
+    const at = (tick: number): number => this.cycleAt + tickToSec(this.tempo!, tick) - this.cycleStartSec;
     if (withSynth) {
       for (; this.index < this.timeline.length; ) {
         const e = this.timeline[this.index]!;
-        const from = Math.max(e.startTick, this.fromTick);
+        if (this.loop && e.startTick >= this.loop.to) {
+          const nextAt = at(this.loop.to);
+          if (nextAt > until) break;
+          this.cycleAt = nextAt;
+          this.anchorTick = this.loop.from;
+          this.cycleStartSec = tickToSec(this.tempo!, this.loop.from);
+          this.index = this.loopFirst;
+          continue;
+        }
+        const from = Math.max(e.startTick, this.anchorTick);
         const t0 = at(from);
         if (t0 > until) break;
         const t1 = at(e.endTick);
@@ -272,11 +339,46 @@ export class Player {
         this.index += 1;
       }
     }
+    // 到 B：把伴奏源切回 A 对应的音频位置，同一个 ctx 继续放
+    if (this.loop) {
+      const loopEndAt = at(this.loop.to);
+      if (this.ctx.currentTime >= loopEndAt) this.restartAudioCycle(loopEndAt);
+    }
     if (this.ctx.currentTime > this.audioEndSec + 0.3) {
       const cb = this.endedCb;
       this.stop();
       cb?.();
     }
+  }
+
+  /** 伴奏到 B 重起一轮：停旧 stem、从 A 重开新源，播放状态与 AudioContext 都不重置。 */
+  private restartAudioCycle(nextAt: number): void {
+    const ctx = this.ctx;
+    const tempo = this.tempo;
+    if (!ctx || !tempo || !this.loop) return;
+    for (const s of this.sources) {
+      try { s.stop(); } catch { /* 还没 start 过的源调用 stop 会抛，忽略 */ }
+    }
+    this.sources = [];
+    this.stemGains = [];
+    const startSec = Math.max(0, tickToSec(tempo, this.loop.from));
+    this.cycleAt = nextAt;
+    this.anchorTick = this.loop.from;
+    this.cycleStartSec = startSec;
+    this.when = nextAt;
+    this.startSec = startSec;
+    for (const stem of this.loopStems) {
+      const src = ctx.createBufferSource();
+      src.buffer = stem.buffer;
+      const g = ctx.createGain();
+      g.gain.value = Math.max(0, Math.min(1, stem.gain));
+      src.connect(g);
+      g.connect(ctx.destination);
+      this.sources.push(src);
+      this.stemGains.push(g);
+      src.start(nextAt, startSec);
+    }
+    this.index = this.loopFirst;
   }
 
   stop(): void {
@@ -301,6 +403,12 @@ export class Player {
       void ctx.close();
     }
     this.index = 0;
+    this.loop = null;
+    this.loopFirst = 0;
+    this.loopStems = [];
+    this.cycleAt = 0;
+    this.anchorTick = 0;
+    this.cycleStartSec = 0;
     this.audioMode = false;
     this.tempo = null;
     this.semitones = 0;

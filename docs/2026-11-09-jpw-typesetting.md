@@ -6,7 +6,7 @@
 
 简谱逐行计算上、下占用；前奏不预留全曲的歌词高度，局部渐变不撑高全曲。行带支持非对称上下空间；命中区域、小节播放底色、PDF分页、PNG逐行检查同步更新。高八度+延长记号有防裁切回归。总谱维持共享时间格/统一声部行高，五线谱维持自己的墨迹避让，仅同步字体、歌词标点和正确的字体度量。
 
-字体离线打包，来源和OFL见 public/fonts/README.md。SVG嵌入约7.4MB的字体数据，因此文件比旧SVG大；PDF/PNG仍为位图，不依赖接收设备字体。SVG补齐绘制器setLineDash，避免普通小节线绘制时报错。
+字体离线打包，来源和OFL见 public/fonts/README.md。SVG嵌入字体数据，因此文件比旧SVG大；PDF/PNG仍为位图，不依赖接收设备字体。SVG补齐绘制器setLineDash，避免普通小节线绘制时报错。后续修订（2026-11-09）：标题专用字体已移除，SVG 只嵌入数字与文本两套字体，打包与导出体积相应减小。
 
 验证入口：`npm run test:jpw`、`npm run test:android`、`npm run build`、Gradle assembleDebug、Tauri build。`scripts/jpw-layout-preview.html` 与 `tests/jpw-layout-sample.jps` 提供可重现的桌面/390px校准节选；录入样本用于版式观察，不是完整校订曲谱。
 

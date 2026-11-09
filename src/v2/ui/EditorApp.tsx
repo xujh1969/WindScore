@@ -108,7 +108,7 @@ import { detectVocalEntry, scoreNoteOnsets, type TempoEstimate } from '../beat';
 import { analyzeBeats, rhythmSource } from '../beatClient';
 import { AudioPreview } from '../audio';
 import AudioWaveform from './AudioWaveform';
-import { DEFAULT_FONT_SIZE, DEFAULT_LETTER_SPACING, isTimed } from '../types';
+import { DEFAULT_FONT_SIZE, DEFAULT_LETTER_SPACING, isTimed, measureNumberMode, type MeasureNumberMode } from '../types';
 import { useExp } from '../experimental';
 import { STAFF_INSTRUMENTS, type StaffPitchMode, type StaffInstrument, type StaffClefSetting, type StaffClef } from '../pitch';
 import { resolveStaffClef, suggestStaffClef } from '../staffClef';
@@ -139,6 +139,9 @@ import {
 } from '../metronome';
 import { MetronomePanel } from './MetronomePanel';
 import { PlayTimbreDialog } from './PlayTimbreDialog';
+import { PlayLayoutDialog } from './PlayLayoutDialog';
+import { AbLoopControls } from './AbLoopControls';
+import { abRangeOf, abSoundingEnd, type AbPoint } from '../abLoop';
 import { AndroidTimbreDialog } from './AndroidTimbreDialog';
 import { applyTimbre, readTimbreMap, writeTimbre, type PlayTimbre } from './playTimbre';
 import { CustomGroupDialog } from './CustomGroupDialog';
@@ -265,22 +268,28 @@ const BUILTIN: { name: string; text: string }[] = [
 ];
 const BUILTIN_NAMES = BUILTIN.map((s) => s.name);
 
-/** 播放页观看偏好的本地存取（字号 / 字距 / 行距；null = 跟随谱面） */
-function readPlayViewPref(): { font: number | null; gap: number | null; lineGap: number | null } {
+/** 播放页观看偏好的本地存取（字号 / 字距 / 行距 / 小节号；null = 跟随谱面） */
+function readPlayViewPref(): {
+  font: number | null; gap: number | null; lineGap: number | null;
+  measureNumbers: MeasureNumberMode | null;
+} {
   try {
     const v = JSON.parse(localStorage.getItem('ws-playview') ?? 'null') as {
       font?: number | null;
       gap?: number | null;
       lineGap?: number | null;
+      measureNumbers?: MeasureNumberMode | null;
     } | null;
-    if (!v) return { font: null, gap: null, lineGap: null };
+    if (!v) return { font: null, gap: null, lineGap: null, measureNumbers: null };
     return {
       font: typeof v.font === 'number' ? v.font : null,
       gap: typeof v.gap === 'number' ? v.gap : null,
       lineGap: typeof v.lineGap === 'number' ? v.lineGap : null,
+      measureNumbers: v.measureNumbers === 'all' || v.measureNumbers === 'line-ends' || v.measureNumbers === 'none'
+        ? v.measureNumbers : null,
     };
   } catch {
-    return { font: null, gap: null, lineGap: null };
+    return { font: null, gap: null, lineGap: null, measureNumbers: null };
   }
 }
 const playViewPref = readPlayViewPref();
@@ -546,6 +555,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const anViewKey = androidPlayer && androidItem ? `ws-an-view:${androidItem.name}` : null;
   const anView: {
     font?: number | null; gap?: number | null; lineGap?: number | null;
+    measureNumbers?: MeasureNumberMode | null;
     style?: 'head' | 'band' | 'ball'; notation?: 'staff' | 'jianpu'; pitch?: StaffPitchMode;
   } = (() => {
     if (!anViewKey) return {};
@@ -586,29 +596,38 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return localStorage.getItem('ws-staff-pitch-mode') === 'transposed' ? 'transposed' : 'concert';
   });
   const [staffSettingsOpen, setStaffSettingsOpen] = useState(false);
+  /** 播放页「版式设置」弹窗：字号 / 字距 / 行距 / 小节号都收在里头 */
+  const [playLayoutOpen, setPlayLayoutOpen] = useState(false);
   useEffect(() => { localStorage.setItem('ws-staff-pitch-mode', staffPitchMode); }, [staffPitchMode]);
   /** 对轨页「音轨分离工具下载」的说明弹窗 */
   const [tramaOpen, setTramaOpen] = useState(false);
   /**
-   * 播放页的观看偏好：字号 / 字距（覆盖谱面自带设置；null = 跟随谱面）。
+   * 播放页的观看偏好：字号 / 字距 / 行距 / 小节号（覆盖谱面自带设置；null = 跟随谱面）。
    * PC 播放页存全局 ws-playview；安卓端按**曲目单独记**（定义见上 anView）。
    */
   const [playFont, setPlayFont] = useState<number | null>(() => androidPlayer ? (typeof anView.font === 'number' ? anView.font : null) : playViewPref.font);
   const [playGap, setPlayGap] = useState<number | null>(() => androidPlayer ? (typeof anView.gap === 'number' ? anView.gap : null) : playViewPref.gap);
   const [playLineGap, setPlayLineGap] = useState<number | null>(() => androidPlayer ? (typeof anView.lineGap === 'number' ? anView.lineGap : null) : playViewPref.lineGap);
+  /** 小节号显示模式：null = 跟随谱面（@measureNo），三态值 = 本次观看覆盖 */
+  const [playMeasureNumbers, setPlayMeasureNumbers] = useState<MeasureNumberMode | null>(() => {
+    const v = androidPlayer ? anView.measureNumbers : playViewPref.measureNumbers;
+    return v === 'all' || v === 'line-ends' || v === 'none' ? v : null;
+  });
   useEffect(() => {
-    if (!androidPlayer) localStorage.setItem('ws-playview', JSON.stringify({ font: playFont, gap: playGap, lineGap: playLineGap }));
-  }, [playFont, playGap, playLineGap]);
+    if (!androidPlayer) localStorage.setItem('ws-playview', JSON.stringify({
+      font: playFont, gap: playGap, lineGap: playLineGap, measureNumbers: playMeasureNumbers,
+    }));
+  }, [playFont, playGap, playLineGap, playMeasureNumbers]);
   // 安卓：每首曲子的观看偏好单独落盘，下次打开同一首自动重现
   useEffect(() => {
     if (!anViewKey) return;
     try {
       localStorage.setItem(anViewKey, JSON.stringify({
-        font: playFont, gap: playGap, lineGap: playLineGap,
+        font: playFont, gap: playGap, lineGap: playLineGap, measureNumbers: playMeasureNumbers,
         style: playStyle, notation: staffViewOn ? 'staff' : 'jianpu', pitch: staffPitchMode,
       }));
     } catch { /* 隐私模式等存不了就算了 */ }
-  }, [anViewKey, playFont, playGap, playLineGap, playStyle, staffViewOn, staffPitchMode]);
+  }, [anViewKey, playFont, playGap, playLineGap, playMeasureNumbers, playStyle, staffViewOn, staffPitchMode]);
   /** 工具栏正中的谱面校验明细是否展开 */
   const [checkOpen, setCheckOpen] = useState(false);
   /**
@@ -1590,10 +1609,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const pieceSelect = pieceSelectState(score.meta.title, loadedTitle, active, BUILTIN_NAMES);
   const lyricVerse = lyricSelection?.partId === activePartId && lyricSelection.verse < lyricTrackNames(score).length ? lyricSelection.verse : null;
   const canEditConductor = !documentScore.part || activePartId === documentScore.part.id;
-  /** 播放页生效的字号 / 字距：观看偏好优先，没设过就跟随谱面自带设置（缺省 24 / -10） */
+  /** 播放页生效的观看设置：偏好优先，没设过就跟随谱面自带设置（缺省 24 / -10 / 全部显示） */
   const effFont = playFont ?? (score.meta.fontSize ?? DEFAULT_FONT_SIZE);
   const effGap = playGap ?? (score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING);
   const effLineGap = playLineGap ?? (score.meta.lineGap ?? 0);
+  const effMeasureNumbers = playMeasureNumbers ?? measureNumberMode(score.meta);
+  /** 工具条「版式设置」按钮上有自定义偏好时打一个点，跟「音色 •」同口径 */
+  const anyLayoutOverride = playFont !== null || playGap !== null || playLineGap !== null || playMeasureNumbers !== null;
   /** 有未保存的改动 */
   const serialized = useMemo(() => (documentScore.format === 3 || scoreParts(documentScore).some((p) => p.events.length) || documentScore.part ? serializeDsl(documentScore) : ''), [documentScore]);
   const dirty = snap.rev !== savedRev || (view === 'source' && draft !== (savedSource ?? serialized));
@@ -1869,8 +1891,24 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 对得上（指示条落点才准）；用户手动选过之后就一直按用户选的来。
    */
   const [expandViewPick, setExpandViewPick] = useState<boolean | null>(null);
-  const [playPick, setPlayPick] = useState<{ id: string; tick: number; score: Score; viewChoice: boolean | null } | null>(null);
+  const [playPick, setPlayPick] = useState<{ id: string; tick: number; endTick: number; score: Score; viewChoice: boolean | null } | null>(null);
   const activePlayPick = mode === 'play' && playPick?.score === playScore && playPick.viewChoice === expandViewPick ? playPick : null;
+  /** AB 循环：A / B 存绝对 tick（展开反复后事件 id 会重复），只有勾了循环才形成区间。 */
+  const [abA, setAbA] = useState<AbPoint | null>(null);
+  const [abB, setAbB] = useState<AbPoint | null>(null);
+  const [abEnabled, setAbEnabled] = useState(false);
+  // 换曲 / 重新载入：旧 tick 对新谱没有意义，循环点与勾选一起作废
+  useEffect(() => { setAbA(null); setAbB(null); setAbEnabled(false); }, [restoreToken]);
+  const abRange = useMemo(
+    () => mode === 'play' ? abRangeOf(abA, abB, abEnabled, timelineTicks(timeline)) : null,
+    [mode, abA, abB, abEnabled, timeline],
+  );
+  /** 选中的音符 → AB 点；终点取播放时间线里那条发声条目的 endTick（含增时线 / 延音链）。 */
+  const selectedAbPoint = (): AbPoint | null => {
+    const pick = activePlayPick;
+    if (!pick) return null;
+    return { start: pick.tick, end: abSoundingEnd(timeline, pick.tick, pick.endTick), eventId: pick.id };
+  };
   const [exportOpen, setExportOpen] = useState(false);
   const visibleLayout = useRef<{ layout: LayoutResult; options: LayoutOptions } | null>(null);
   const rememberLayout = useCallback((layout: LayoutResult, options: LayoutOptions) => { visibleLayout.current = { layout, options }; }, []);
@@ -1956,7 +1994,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     // 没拉齐的音色渲染时静默回落钢琴合成——不阻塞、不报错、不破坏手势窗口
     await preloadInstrumentSamples(timeline.map((e) => e.patch));
     const bpm = score.meta.bpm;
-    const from = fromOverride ?? playFromTick;
+    // 勾了循环且 A/B 齐备：播放一律从 A 起（暂停续播仍由 fromOverride 指定）；
+    // 没勾循环时完全走原来的光标 / 方块起播逻辑
+    const from = fromOverride ?? (abRange ? abRange.from : playFromTick);
     // 音频模式：stem + TempoMap 齐备且用户选了「伴奏音频」。
     // **记谱页除外**：那里只放合成 MIDI——编辑时听的是「谱面写对了没有」，
     // 伴奏是对轨后的成品，混进来只会干扰；想跟伴奏去播放页，那边有开关。
@@ -1996,8 +2036,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       // 从头播时把起播点推到音频 0 秒（secToTick 反查，通常为负 tick = 谱面起点之前），
       // 前奏就会照常放完再进谱面；关掉则老样子——从谱面起点直接开始
       // 仅未点选音符、从谱面零拍起播时带前奏；选中首拍内的音也必须尊重其起点。
+      // 循环段落不插前奏：每轮都要精确从 A 起，前奏的负 tick 会把周期起点推走
       const introTick =
-        playIntro && !activePlayPick && snap.mode !== 'over' && from === 0
+        playIntro && !abRange && !activePlayPick && snap.mode !== 'over' && from === 0
           ? Math.min(0, secToTick(playTempo, 0))
           : from;
       const audioLead = playerRef.current.startAudio({
@@ -2007,6 +2048,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         stems: useStems.map((s) => ({ buffer: s.buffer, gain: s.on ? 1 : 0 })),
         synth: false,
         semitones: transpose,
+        loop: abRange,
         onEnded: () => { if (androidPlayer) { androidResumeTick.current = null; clockRef.current.pause(); clockRef.current.seek(0); } setPlaying(false); },
       });
       setPlaying(true);
@@ -2020,15 +2062,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     // 指示条读 player.currentTick（tempo 驱动），时钟仅在停止后兜底显示。
     const playSynthTempo = synthTempo ? (speed === 1 ? synthTempo : scaleTempoMap(synthTempo, speed)) : null;
     const lead = playSynthTempo
-      ? playerRef.current.start(timeline, playSynthTempo, from, transpose)
-      : playerRef.current.start(timeline, bpm * speed, from, transpose);
+      ? playerRef.current.start(timeline, playSynthTempo, from, transpose, abRange)
+      : playerRef.current.start(timeline, bpm * speed, from, transpose, abRange);
     clockRef.current.setBpm(bpm * speed);
     clockRef.current.seek(from / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
     // 起播对齐走 effect（那里读 lead）；这里只把 lead 带过去
     metronomeLeadRef.current = lead;
-  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed, synthTempo]);
+  }, [timeline, score, playFromTick, playSource, audioReady, audioTempo, stems, mode, documentScore, expansion.errors, playIntro, activePlayPick, snap.mode, transpose, speed, synthTempo, abRange]);
 
   // 播放停止 → 节拍器跟着停
   useEffect(() => {
@@ -2284,6 +2326,31 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     startPlay(pausedTick ?? undefined);
     setPausedTick(null);
   }, [playing, getPlayTick, stopPlay, startPlay, pausedTick]);
+
+  /** AB 循环：播放中改设置就按新语义重起一次（rAF 等 React 提交完新状态再起）。 */
+  const restartAbPlay = (from: number): void => {
+    if (!playing) return;
+    stopPlay();
+    requestAnimationFrame(() => { void startPlayRef.current(from); });
+  };
+  const nextAbFrom = (a: AbPoint | null, b: AbPoint | null): number =>
+    abRangeOf(a, b, true, timelineTicks(timeline))?.from ?? 0;
+  /** 再点同一个按钮 = 把循环点重设到当前选中的音符，不做取消 */
+  const setAbPoint = (which: 'A' | 'B'): void => {
+    const pt = selectedAbPoint();
+    if (!pt) { setMsg('请先在谱面中点选一个音符，再设置循环点'); return; }
+    const a = which === 'A' ? pt : abA;
+    const b = which === 'B' ? pt : abB;
+    if (which === 'A') setAbA(pt); else setAbB(pt);
+    if (playing && abEnabled && a && b) restartAbPlay(nextAbFrom(a, b));
+  };
+  /** 循环图标点亮 = A→B 循环；灰暗 = 完全按传统的光标 / 方块 / 暂停续播逻辑 */
+  const toggleAbLoop = (on: boolean): void => {
+    const at = getPlayTick() ?? 0;
+    const next = abRangeOf(abA, abB, on, timelineTicks(timeline));
+    setAbEnabled(on);
+    if (playing) restartAbPlay(next?.from ?? at);
+  };
 
   /**
    * 跟随模式的开关与改动 → 立刻按**当前播放位置**重新起。
@@ -2634,6 +2701,28 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     },
     [bindPick, wavePos, activePartId, score, effectivePatchAt, previewOctave],
   );
+
+  /**
+   * 记谱页 / 伴奏对轨页的谱面点击：选中、单音试听、绑定对齐点全部照旧，
+   * 只在播放中叠加「暂停 + 续播点对准这颗音」——与演奏页同一语义。
+   * 这里画布画的是原谱，所以下标要先经 expansion.firstIndex 映射回展开谱再算
+   * 绝对 tick；带反复的谱才不会跳错位置。OCR 内嵌的编辑器同样走这条路。
+   * 对轨配对中（wavePos 非空）或拖选时只做原本的事，不打断绑定流程。
+   */
+  const handleEditorPick = (a: ScorePick, b: ScorePick | null): void => {
+    handlePick(a, b);
+    if (!playing || b || a.mode !== 'over' || wavePos !== null) return;
+    const ev = score.events[a.index];
+    if (!ev || !isTimed(ev)) return;
+    const partId = a.partId ?? activePartId;
+    const expanded = partScore(playScore, partId);
+    const idx = expansion.firstIndex.get(ev.id) ?? expanded.events.findIndex(e => e.id === ev.id || e.originId === ev.id);
+    if (idx < 0) return;
+    const tick = tickAtEvent(expanded, idx);
+    stopPlay();
+    setPausedTick(tick);
+    clockRef.current.seek(tick / TICKS_PER_BEAT);
+  };
 
   /** 双击画布上的小字谱 → 直接打开它的编辑弹窗。
    *  OCR 产物的 @小谱 是「小节范围」文本锚（没有 anchorId），旧流程按 anchorId 查 existing
@@ -3074,7 +3163,13 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     () => (expandView ? buildTimeline(playScore, { ids: 'own', mergeTies: false }) : notationTimeline),
     [playScore, notationTimeline, expandView],
   );
-  const handlePlayPick = (pick: ScorePick): void => {
+  /**
+   * 播放页点音符：把起播点挪到这颗音。
+   * 播放中（或已经暂停）点 = **暂停**，按钮变「▶ 继续」、视觉时钟停在这颗音；
+   * 再按继续时 togglePlay 把 pausedTick 交给 startPlay，就从这里起播。
+   * 定位键（Ctrl+←/→ 跳小节）复用同一套换算，但只移动定位点、不制造继续态。
+   */
+  const setPlayPickAt = (pick: ScorePick, pauseOnPlay: boolean): void => {
     if (pick.mode !== 'over') return;
     const partId = pick.partId ?? activePartId;
     const shown = partScore(fullViewScore, partId);
@@ -3084,10 +3179,21 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
     if (index < 0) return;
     const sourceIndex = partScore(documentScore, partId).events.findIndex(e => e.id === (event.originId ?? event.id));
+    const tick = tickAtEvent(expanded, index);
+    // 这颗音的时值终点：AB 循环的 B 点要播到增时线 / 延音链走完
+    const endTick = tickAtEvent(expanded, index + 1);
+    const keepResume = pauseOnPlay && (playing || pausedTick !== null);
     stopPlay();
-    setPlayPick({ id: event.id, tick: tickAtEvent(expanded, index), score: playScore, viewChoice: expandViewPick });
+    // stopPlay 会作废旧暂停点并把时钟拨回 0；这里写回「被点音符」的绝对 tick，
+    // 续播时它压过 playFromTick / 光标起播，前奏也不会抢这个起点
+    if (keepResume) {
+      setPausedTick(tick);
+      clockRef.current.seek(tick / TICKS_PER_BEAT);
+    }
+    setPlayPick({ id: event.id, tick, endTick, score: playScore, viewChoice: expandViewPick });
     setSnap(s => ({ ...s, partId, cursor: Math.max(0, sourceIndex + 1), anchor: null, mode: 'over' }));
   };
+  const handlePlayPick = (pick: ScorePick): void => { setPlayPickAt(pick, true); };
   const selectPart = (id: string) => {
     setPlayPick(null);
     setLyricSelection(null);
@@ -3347,7 +3453,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           const target = measureJumpCursor(shown, shownCursor(shown), delta);
           if (target === null) return;
           settleNavigation();
-          handlePlayPick({ mode: 'over', index: target - 1, partId: activePartId, cursor: target });
+          // 定位键只移动起播点：不把「停」升级成「暂停 / 继续」
+          setPlayPickAt({ mode: 'over', index: target - 1, partId: activePartId, cursor: target }, false);
           setScrollRequest({ seq: ++scrollRequestSeq.current, eventId: shown.events[target - 1]?.id ?? null });
           return;
         }
@@ -3735,15 +3842,6 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   const notes = score.events.filter((e) => e.kind === 'note').length;
 
-  /**
-   * 伴奏还在从本地恢复（读 IndexedDB + 解码要一会儿）。
-   * 没有这个中间态，从曲库点进播放会先闪一句「这首还没有伴奏」——
-   * 明明存着，只是还没读完。
-   */
-  const restoringAudio = restoring;
-  /** 存档声称有伴奏、本机却拿不到（缓存被清 / 换了浏览器）——要说清是哪一种 */
-  const audioLost = !androidPreview && !restoring && stems.length === 0 && !!loadAlign(active)?.audio?.length;
-
   /*
    * 模式开关。抽出来是为了在下面的条件渲染之外求值——
    * 「编辑器只在非曲库模式渲染」那支里 mode 会被收窄成 'score' | 'align'，
@@ -3796,9 +3894,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       metronomeBpm={Math.round(score.meta.bpm * speed * 100) / 100}
       timbreLabel={playTimbre ? `已设 ${Object.keys(playTimbre.parts ?? {}).length} 个声部` : '跟随谱面'}
       onOpenTimbre={() => setAnTimbreOpen(true)}
+      abA={!!abA} abB={!!abB} abEnabled={abEnabled} hasSelection={!!activePlayPick}
+      onAbA={() => setAbPoint('A')} onAbB={() => setAbPoint('B')}
+      onAbToggle={toggleAbLoop}
       message={msg.includes('失败') ? msg : undefined}
       renderScore={() => <ScoreCanvas score={viewScore} dark={dark} activePartId={androidViewPart === 'total' ? activePartId : androidViewPart}
-        unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} responsive
+        unit={EDITOR_UNIT} fontSize={effFont} letterSpacing={effGap} lineGap={effLineGap} measureNumbers={effMeasureNumbers} responsive
         selectedIds={EMPTY_SELECTED} cursor={0} timeline={displayTimeline} playStyle={playStyle}
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
         getPlayTick={getPlayTick} showCaret={false} focusId={activePlayPick?.id ?? null}
@@ -3810,9 +3911,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           const expanded = partScore(playScore, partId);
           const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
           if (index < 0) return;
-          const tick = tickAtEvent(expanded, index); const resume = playing;
-          handlePlayPick(pick); androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
-          if (resume) startPlay(tick);
+          const tick = tickAtEvent(expanded, index);
+          // 播放中点音符 = 暂停并把续播点对准这颗音，等用户点播放键再继续；
+          // 与 PC 播放页一致，不再自己立刻起播
+          setPlayPickAt({ ...pick, partId }, false);
+          androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
         }}
         onEnded={onAndroidScoreEnded}
       />}
@@ -4045,22 +4148,28 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                   ← 返回动态谱
                 </button>
             )}
-            <span className="v2-play-title" title={score.meta.title || active}>
-              {score.meta.title || active}
-              {expandView && canExpandView ? (
-                <span className="v2-play-tag" title="反复与跳转已按顺序铺开，导出也用这份">
-                  已展开反复
-                </span>
-              ) : null}
-            </span>
+            {/* 曲名在窄工具条里只能被截断，看不全也没意义（用户 2026-11-09 取消）。
+                只留下能看全的「已展开反复」短标签 */}
+            {expandView && canExpandView ? (
+              <span className="v2-play-tag" title="反复与跳转已按顺序铺开，导出也用这份">
+                已展开反复
+              </span>
+            ) : null}
             <button
               className={`v2-btn ${playing ? 'is-on' : ''}`}
               onClick={togglePlay}
               disabled={timeline.length === 0}
-              title={playing ? '暂停（Space）' : pausedTick !== null ? '从暂停处继续（Space）' : '播放（Space）'}
+              title={playing ? '暂停（Space）' : pausedTick !== null ? (activePlayPick ? '从选中的音符继续（Space）' : '从暂停处继续（Space）') : '播放（Space）'}
             >
               {playing ? '⏸ 暂停' : pausedTick !== null ? '▶ 继续' : '▶ 播放'}
             </button>
+            {/* AB 循环：只在动态谱播放页出现（安卓走 AndroidPlayer 里的同一组件） */}
+            {mode === 'play' ? (
+              <AbLoopControls variant="pc" aSet={!!abA} bSet={!!abB} enabled={abEnabled}
+                hasSelection={!!activePlayPick} ready={!!abA && !!abB}
+                onSetA={() => setAbPoint('A')} onSetB={() => setAbPoint('B')}
+                onToggle={toggleAbLoop} />
+            ) : null}
             <div className="v2-view-switch" title="跟着伴奏放（用对好的标定），或用合成音">
               <button
                 className={playSource === 'audio' ? 'v2-seg is-on' : 'v2-seg'}
@@ -4109,41 +4218,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             ) : null}
             {/* 播放控制与显示设置分组：一条工具条里不再二十个控件同权重 */}
             <div className="v2-play-group">
-            {/* 字号 / 字距：观看偏好，只影响播放界面的显示，谱面文件不变；⟲ 恢复跟随谱面 */}
-            <div className="v2-play-adj" title="字号（只影响播放界面，谱面本身不变）">
-              <span>字号</span>
-              <input
-                type="range"
-                min={14}
-                max={42}
-                step={1}
-                value={effFont}
-                onChange={(e) => setPlayFont(Number(e.target.value))}
-              />
-              <output>{effFont}px</output>
-              {playFont !== null ? (
-                <button className="v2-play-reset" onClick={() => setPlayFont(null)} title="恢复跟随谱面设置">
-                  ⟲
-                </button>
-              ) : null}
-            </div>
-            <div className="v2-play-adj" title="字间距（观看偏好）">
-              <span>字距</span>
-              <input
-                type="range"
-                min={-20}
-                max={24}
-                step={1}
-                value={effGap}
-                onChange={(e) => setPlayGap(Number(e.target.value))}
-              />
-              <output>{effGap}px</output>
-              {playGap !== null ? (
-                <button className="v2-play-reset" onClick={() => setPlayGap(null)} title="恢复跟随谱面设置">
-                  ⟲
-                </button>
-              ) : null}
-            </div>
+            {/* 版式设置：字号 / 字间距 / 行距 / 小节号都收进弹窗，
+                工具条只留一个入口（用户 2026-11-09：顶部控件太多） */}
+            <button
+              className={`v2-btn ${anyLayoutOverride ? 'is-on' : ''}`}
+              onClick={() => setPlayLayoutOpen(true)}
+              title="版式设置：字号、字间距、行距、小节号显示"
+            >
+              版式设置{anyLayoutOverride ? ' •' : ''}
+            </button>
             {/* 展开反复：显示拉平后的线性谱（导出的 PDF / 视频也跟着用这份） */}
             <div
               className="v2-view-switch"
@@ -4197,22 +4280,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </button>
             </div>
             </div>
-            {restoringAudio || !audioReady || playSource !== 'audio' ? <span className="v2-play-note">
-              {restoringAudio
-                ? '正在从本地恢复伴奏…'
-                : audioReady
-                  ? playSource === 'audio'
-                    ? ''
-                    : '合成音：想跟伴奏就切回「伴奏」'
-                  : audioLost
-                    ? entry === 'play'
-                      ? '伴奏文件不在本机缓存里了——到主程序的对轨界面重新载入'
-                      : '伴奏文件不在本机缓存里了——到对轨界面重新载入，或重新导入那个 .wspack'
-                    : entry === 'play'
-                      ? '这首还没有伴奏——在主程序对轨界面载入伴奏并打包即可'
-                      : '这首还没有伴奏——去曲库导入打包，或在对轨界面载入伴奏'}
-              {expandView && canExpandView ? '（显示的是拉平后的线性谱）' : ''}
-            </span> : null}
+            {/* 伴奏状态长提示在窄工具条里同样只能被截断，看不全也没意义
+                （用户 2026-11-09 取消）。留一个弹性空位把「导出」顶到最右 */}
+            <span className="v2-play-spacer" aria-hidden="true" />
             {/* 导出放在工具条最右：这一排里只有它会离开当前界面 */}
             <button
               className="v2-btn v2-play-export"
@@ -4365,6 +4435,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               unit={EDITOR_UNIT}
               fontSize={effFont}
               letterSpacing={effGap}
+              lineGap={effLineGap}
+              measureNumbers={effMeasureNumbers}
               selectedIds={EMPTY_SELECTED}
               cursor={0}
               timeline={displayTimeline}
@@ -4422,6 +4494,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           staffPitchMode={staffPitchMode}
           songName={score.meta.title || active}
           score={mode === 'play' ? fullViewScore : documentScore}
+          // 播放页导出的小节号跟随当前观看偏好，与画布所见一致
+          measureNumbers={mode === 'play' ? effMeasureNumbers : undefined}
           visibleLayout={mode === 'play' || view === 'score' ? visibleLayout.current?.layout : undefined}
           visibleOptions={visibleLayout.current?.options}
           initialPartId={!totalView && documentScore.part ? activePartId : ''}
@@ -4456,6 +4530,27 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       ) : null}
 
       {helpOpen ? <HelpDialog dark={dark} initialTopic={mode === 'score' ? view === 'source' ? 'jps' : 'editing' : mode === 'align' ? 'alignment' : mode === 'library' ? 'library' : 'playback'} onClose={() => setHelpOpen(false)} /> : null}
+
+      {/* 播放页「版式设置」：四项观看偏好收在弹窗里，工具条只留一个入口按钮 */}
+      {mode === 'play' && playLayoutOpen ? (
+        <PlayLayoutDialog
+          font={effFont}
+          gap={effGap}
+          lineGap={effLineGap}
+          measureNumbers={effMeasureNumbers}
+          overridden={{
+            font: playFont !== null,
+            gap: playGap !== null,
+            lineGap: playLineGap !== null,
+            measureNumbers: playMeasureNumbers !== null,
+          }}
+          onFont={setPlayFont}
+          onGap={setPlayGap}
+          onLineGap={setPlayLineGap}
+          onMeasureNumbers={setPlayMeasureNumbers}
+          onClose={() => setPlayLayoutOpen(false)}
+        />
+      ) : null}
 
       {/*
         节拍器面板：播放页 / 记谱页 / 伴奏对轨页共用一份（挂在最外层，
@@ -4883,7 +4978,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 clock={clockRef.current}
                 getPlayTick={getPlayTick}
                 onEnded={onPlayEnded}
-                onPick={handlePick}
+                onPick={handleEditorPick}
                 onCueDoubleClick={openCueById}
                 onLayout={rememberLayout}
                 showBreaks={mode === 'score'}
@@ -5136,15 +5231,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
                 max={48}
                 onCommit={(v) => setScore(setMeta(score, { lineGap: Number(v) }))}
               />
-              {/* 小节号：写在小节线下方的小字，随文件保存（@measureNo off 关掉） */}
-              <label className="v2-grace-check" title="在小节线下方用小字标出小节号">
-                <input
-                  type="checkbox"
-                  checked={score.meta.showMeasureNumbers !== false}
-                  onChange={(e) => setScore(setMeta(score, { showMeasureNumbers: e.target.checked }))}
-                />
-                显示小节号
-              </label>
+              {/* 小节号三态：全部 / 行首行尾 / 隐藏，随文件保存（@measureNo）。
+                  行首行尾 = 每行只在最前和最后两根小节线处标号 */}
+              <MetaSelect
+                label="小节号"
+                value={measureNumberMode(score.meta)}
+                options={['全部显示', '行首行尾显示', '全部隐藏']}
+                values={['all', 'line-ends', 'none']}
+                onCommit={(v) => setScore(setMeta(score, { measureNumbers: v as MeasureNumberMode }))}
+              />
               {/* 一键清掉手写「换行」标记（分页保留）：OCR 识别按原谱行写死换行，断行不合意时用 */}
               <button
                 className="v2-meta-btn"

@@ -20,7 +20,7 @@ import { withStaffRows } from '../staffSpacing';
 import type { StaffPitchMode, StaffClef } from '../pitch';
 import { TICKS_PER_BEAT, PX_PER_BEAT_DEFAULT } from '../ticks';
 import { activeHeadsAt, activeMainAt, playheadIdCandidates, timelineTicks, type TimelineEntry } from '../timeline';
-import { DEFAULT_FONT_SIZE, type Score, type LyricLink } from '../types';
+import { DEFAULT_FONT_SIZE, measureNumberMode, type MeasureNumberMode, type Score, type LyricLink } from '../types';
 import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
 import { lyricTrackNames } from '../lyrics';
@@ -45,6 +45,8 @@ interface Props {
   letterSpacing?: number;
   /** 行间距覆盖（px，行高增量）：同上 */
   lineGap?: number;
+  /** 小节号显示模式覆盖（播放页观看偏好），不给 = 跟随谱面 */
+  measureNumbers?: MeasureNumberMode;
   /** 安卓阅读按屏宽重排，窄屏简化谱头并保留谱号空间。 */
   responsive?: boolean;
   /** 行宽撑满（justify）：尊重「换行」标记为行界，行内两端对齐铺满画布宽（OCR 对照页用）。
@@ -114,6 +116,7 @@ export function ScoreCanvas({
   fontSize,
   letterSpacing,
   lineGap,
+  measureNumbers,
   responsive = false,
   fitRows = false,
   headerless = false,
@@ -256,6 +259,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const theme = dark ? DARK_THEME : LIGHT_THEME;
+    // 播放页的小节号观看偏好优先于谱面设置；五线谱排版留带也按同一模式算
+    const mnMode = measureNumbers ?? measureNumberMode(score.meta);
 
     // .v2-scroll 用 scrollbar-gutter: stable 预留滚动条槽，clientWidth 不再随
     // 纵向滚动条显隐改变。排版与绘制共用实际可见宽度，保留完整的右侧页边距。
@@ -328,7 +333,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           playStyle: currentStyle,
           ball: currentStyle === 'ball' && !cachedBall ? ballRef.current : null,
           showTitleEdit: !!onEditTitle,
-          showMeasureNumbers: score.meta.showMeasureNumbers !== false,
+          showMeasureNumbers: mnMode,
         });
         return;
       }
@@ -345,7 +350,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         focusId,
         playStyle: currentStyle,
         ball: currentStyle === 'ball' && !cachedBall ? ballRef.current : null,
-        showMeasureNumbers: score.meta.showMeasureNumbers !== false,
+        showMeasureNumbers: mnMode,
         showBreaks,
         height: h,
         ...(pairingRef.current
@@ -376,6 +381,9 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           staffKeySpace: 104 * (fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE) / 21,
         } : {}) };
       const displayScore = responsive && boxWidth() < 560 ? { ...score, meta: { ...score.meta, sub: '', notes: [] } } : score;
+      // 五线谱排版按小节号模式决定要不要留那条带，所以观看偏好要灌进排版输入
+      // （只改这份临时副本，原谱 / 谱面文件不变）
+      const layoutInput = { ...displayScore, meta: { ...displayScore.meta, measureNumbers: mnMode } };
       // OCR 对照页紧凑排版：原谱一行 = 预览一个系统块。先按超宽画布探测每个
       // 「换行」组的自然宽度，最宽一行放不进栏宽就**先收紧拍距**（字号不动，
       // 间距变小——用户 2026-11-06：间距尽可能小、字体尽量别太小）；拍距触底
@@ -404,14 +412,14 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
         }
         if (effUnit !== baseUnit || effFont !== baseFont) effOptions = { ...options, unit: effUnit, fontSize: effFont };
       }
-      let layout = layoutScore(displayScore, effOptions);
+      let layout = layoutScore(layoutInput, effOptions);
       if (responsive && layout.title) layout = { ...layout, title: { ...layout.title, leftX: 20, rightX: boxWidth() - 20 } };
       staffErrorRef.current = '';
       staffRef.current = null;
       staffBallPositionsRef.current = undefined;
       if (notation === 'staff') {
         try {
-          staffRef.current = buildStaffLayout(displayScore, layout, staffPitchMode);
+          staffRef.current = buildStaffLayout(layoutInput, layout, staffPitchMode);
           layout = withStaffRows(layout, staffRef.current);
           const staff = staffRef.current;
           const k = staff.glyph.fontSize / 21;
@@ -456,7 +464,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     };
     // showCaret 也必须进依赖：否则光标在方块态切到插入态时，
     // 若其余输入没变（cursor / focusId 恰好相同），画布不会重绘
-  }, [score, dark, unit, fontSize, letterSpacing, lineGap, responsive, fitRows, headerless, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
+  }, [score, dark, unit, fontSize, letterSpacing, lineGap, measureNumbers, responsive, fitRows, headerless, selectedIds, cursor, focusId, showCaret, showBreaks, notation, staffPitchMode, activePartId, onLayout]);
 
   /**
    * 插入点闪烁：只切「画不画那根 I 形竖线」，不重排。每次光标移动 / 主题切换

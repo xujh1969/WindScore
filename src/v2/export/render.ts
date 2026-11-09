@@ -11,7 +11,7 @@
 
 import { layoutScore, type LayoutResult } from '../layout';
 import { DARK_THEME, LIGHT_THEME, paintLayout, type PaintTheme } from '../paint';
-import { DEFAULT_FONT_SIZE, type Score } from '../types';
+import { DEFAULT_FONT_SIZE, type MeasureNumberSetting, type Score } from '../types';
 import type { BallDraw } from '../ball';
 import { buildStaffLayout, type StaffLayout } from '../staff';
 import { paintStaffLayout } from '../staffPaint';
@@ -217,7 +217,7 @@ function inkRatio(data: Uint8ClampedArray, bg: [number, number, number]): number
 export interface PagePaintOptions {
   /** 页脚文字；不给就不画（导出视频时不要页脚） */
   footer?: string;
-  showMeasureNumbers?: boolean;
+  showMeasureNumbers?: MeasureNumberSetting;
   /**
    * 页面原点的纵向位移（像素）：多页拼接成一张图时，第 n 页偏移 n ×（页高 + 间隔）。
    * 必须在这里实现而不能靠调用方 translate——本函数内部的 setTransform 是绝对矩阵，
@@ -321,7 +321,7 @@ export function paintExportImageBand(
   layout: ExportLayoutResult,
   theme: PaintTheme,
   geo: PageGeometry,
-  opts: { bandTop: number; bandW: number; bandH: number; showMeasureNumbers?: boolean },
+  opts: { bandTop: number; bandW: number; bandH: number; showMeasureNumbers?: MeasureNumberSetting },
 ): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = theme.bg;
@@ -407,7 +407,7 @@ export function paintVideoFrame(
     /** 播放指示样式，与界面上「光标 / 高亮条 / 光球」的设置一致 */
     playStyle?: 'head' | 'band' | 'ball';
     ball?: BallDraw | null;
-    showMeasureNumbers?: boolean;
+    showMeasureNumbers?: MeasureNumberSetting;
     progress?: number;
     /** Cached-frame repair rectangle, in score coordinates. */
     redraw?: { left: number; right: number; top: number; bottom: number };

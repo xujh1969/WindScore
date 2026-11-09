@@ -353,10 +353,88 @@ export interface ScoreMeta {
    */
   lineGap?: number;
   /**
-   * 小节线下方是否画小节号（`@measureNo off` 关掉）。缺省 true——
-   * 只有用户明确关掉时才写进文件，老文件保持原样
+   * 小节号显示模式（曲目信息里的三态下拉，DSL 写 `@measureNo`）。
+   * all = 每根小节线都标；line-ends = 每行只标最前和最后两根小节线；none = 全隐藏。
+   * 优先于旧的 showMeasureNumbers，老谱只有布尔开关时按 none / all 解释。
+   */
+  measureNumbers?: MeasureNumberMode;
+  /**
+   * 旧版布尔开关（`@measureNo off`）：false = 全部隐藏。保留只为读旧文件、
+   * 兼容旧调用方；新代码一律走 measureNumberMode() 归一。
    */
   showMeasureNumbers?: boolean;
+}
+
+/** 小节号显示三态（曲目信息下拉框） */
+export type MeasureNumberMode = 'all' | 'line-ends' | 'none';
+/** 绘制 / 导出参数：旧的布尔总开关，或直接给三态模式 */
+export type MeasureNumberSetting = boolean | MeasureNumberMode;
+
+const MEASURE_NUMBER_MODES: readonly MeasureNumberMode[] = ['all', 'line-ends', 'none'];
+
+/** 谱面元数据 → 小节号模式：新三态字段优先，旧布尔只认 false（= 全隐藏）。 */
+export function measureNumberMode(
+  meta: Pick<ScoreMeta, 'measureNumbers' | 'showMeasureNumbers'>,
+): MeasureNumberMode {
+  if (meta.measureNumbers && MEASURE_NUMBER_MODES.includes(meta.measureNumbers)) return meta.measureNumbers;
+  return meta.showMeasureNumbers === false ? 'none' : 'all';
+}
+
+/**
+ * 绘制参数归一：true / undefined = 沿用谱面模式，false = 强制全隐藏，
+ * 字符串 = 直接指定模式。旧调用方只传 boolean 也不会失效。
+ */
+export function resolveMeasureNumberMode(
+  value: MeasureNumberSetting | undefined,
+  fallback: MeasureNumberMode = 'all',
+): MeasureNumberMode {
+  if (value === undefined || value === true) return fallback;
+  if (value === false) return 'none';
+  return MEASURE_NUMBER_MODES.includes(value) ? value : fallback;
+}
+
+/** DSL `@measureNo` 取值 → 模式（旧 on/off/1/0/true/false/yes/no 继续认） */
+export function parseMeasureNumberMode(v: string): MeasureNumberMode | null {
+  const s = v.trim().toLowerCase();
+  if (/^(off|0|false|no|none|hide)$/.test(s)) return 'none';
+  if (/^(on|1|true|yes|all|full)$/.test(s)) return 'all';
+  if (/^(line-ends|lineends|ends|start-end|first-last)$/.test(s)) return 'line-ends';
+  return null;
+}
+
+/**
+ * 「行首行尾」模式下本行允许标注的小节线下标（首 / 尾两根）。
+ * all 返回 null = 全部可标，none 返回 {-1, -1} = 一根都不标。
+ * isVisible 用来排除隐藏小节线 |* ——它占位不画，不能占掉行首那个名额。
+ */
+export function measureNumberEnds<T extends object>(
+  mode: MeasureNumberMode,
+  items: readonly T[],
+  isVisible: (item: T) => boolean = () => true,
+): { first: number; last: number } | null {
+  if (mode === 'all') return null;
+  let first = -1;
+  let last = -1;
+  if (mode === 'line-ends') {
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i];
+      // 条目是简谱 PlacedItem / 五线谱 StaffSymbol 的联合类型，
+      // 只有小节线成员带 measure；这里只按「有没有编号」筛选
+      if (!it || (it as { measure?: number }).measure === undefined || !isVisible(it)) continue;
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  return { first, last };
+}
+
+/** 结合 measureNumberEnds 的结果判定某个下标该不该画小节号。 */
+export function measureNumberVisibleAt(
+  ends: { first: number; last: number } | null,
+  index: number,
+): boolean {
+  if (ends === null) return true;
+  return index === ends.first || index === ends.last;
 }
 
 /** 新建谱面的默认字号（px）——用户 2026-10-23 定：24 */

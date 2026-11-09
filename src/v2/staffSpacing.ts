@@ -58,7 +58,7 @@ export function spaceStaffLines(staff: StaffLayout): void {
      * 只在开关打开时留——关掉就别白占行距。数字中心离谱表顶线 0.9sp，
      * 上下各留约 0.7sp，不压第一线上的音。
      */
-    if (staff.showMeasureNumbers && line.symbols.some(s => s.kind === 'barline' && s.measure)) {
+    if (staff.measureNumberMode !== 'none' && line.symbols.some(s => s.kind === 'barline' && s.measure)) {
       line.measureY = top - 0.9 * sp;
       top = line.measureY - 0.7 * sp;
     }

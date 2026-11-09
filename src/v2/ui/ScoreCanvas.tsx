@@ -24,6 +24,8 @@ import { DEFAULT_FONT_SIZE, type Score, type LyricLink } from '../types';
 import { partScore } from '../parts';
 import { LyricCell } from './LyricCell';
 import { lyricTrackNames } from '../lyrics';
+import { noteDigitCenter } from '../layout';
+import { NOTATION_TEXT_FAMILY, notationLyricFontSize, notationDigitInkHeight } from '../notationFont';
 import { hitStaffClef } from '../staffSystems';
 import { edgeScrollTop, eventScrollTop, type ScrollRequest } from './scoreScroll';
 import { CARET_BLINK_MS, caretBlinkActive } from './caretBlink';
@@ -925,6 +927,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           const indices = new Map(notes.map((e, i) => [e.id, i]));
           const name = lyricTrackNames(current)[lyricEdit.verse];
           const k = lyricLayout.glyph.fontSize / 21;
+          const lyricSize = notationLyricFontSize(lyricLayout.glyph.fontSize);
+          const verseStep = notationDigitInkHeight(lyricLayout.glyph.fontSize) * 1.68;
           return lyricLayout.lines.filter((line) => !line.partId || line.partId === lyricEdit.partId).flatMap((line) => line.items.filter((it) => it.kind === 'note').map((it) => {
             const index = indices.get(it.eventId) ?? -1;
             const note = notes[index];
@@ -933,8 +937,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
             const staffRow = notation === 'staff' ? staffRef.current?.lines.find(row => row.symbols.some(s => s.kind === 'note' && s.eventId === it.eventId)) : undefined;
             const staffNote = staffRow?.symbols.find(s => s.kind === 'note' && s.eventId === it.eventId);
             const y = staffRow ? (staffRow.lyricY ?? staffRow.y + 5.4 * staffRef.current!.sp) + lyricEdit.verse * 3 * staffRef.current!.sp
-              : line.y + ((line.hairpins?.length ? 64 : 44) + (lyricEdit.verse + 1) * 24) * k;
-            return <LyricCell key={it.eventId} value={note.lyrics?.[lyricEdit.verse] ?? ''} label={`${name} · 第 ${index + 1} 个音`} style={{ left: staffNote ? staffNote.x - 8 * k : it.x + 4 * k + shift, top: y - 15 * k, width: Math.max(22 * k, it.w - shift - 8 * k), height: 30 * k, fontSize: 16 * k }}
+              : line.y + (line.lyricYOff ?? 34 * k) + lyricEdit.verse * verseStep;
+            return <LyricCell key={it.eventId} value={note.lyrics?.[lyricEdit.verse] ?? ''} label={`${name} · 第 ${index + 1} 个音`} style={{ left: staffNote ? staffNote.x - 8 * k : noteDigitCenter(it, lyricLayout.glyph) - lyricSize / 2, top: y - 15 * k, width: Math.max(22 * k, it.w - shift - 8 * k), height: 30 * k, fontSize: staffNote ? 16 * k : lyricSize, fontFamily: NOTATION_TEXT_FAMILY, fontWeight: 400 }}
               connection={note.lyricLinks?.[lyricEdit.verse]} onActivate={() => lyricEdit.onActivate(it.eventId)} onLink={(link, word) => lyricEdit.onLink(it.eventId, link, word)}
               register={(input) => { if (input) lyricInputs.current.set(it.eventId, input); else lyricInputs.current.delete(it.eventId); }}
               onCommit={(word) => lyricEdit.onCommit(it.eventId, word)} onInsertGap={() => lyricEdit.onInsertGap(it.eventId)} onDelete={(offset) => index + offset >= 0 && lyricEdit.onDelete(it.eventId, offset)} onExit={lyricEdit.onExit}

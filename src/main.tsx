@@ -5,6 +5,8 @@ import { HelpPage } from './v2/ui/HelpCenter';
 import { AndroidApp } from './v2/ui/AndroidApp';
 import { MusicXmlImport } from './v2/ui/MusicXmlImport';
 import './v2/ui/editor.css';
+import './v2/notation-fonts.css';
+import { ensureNotationFonts } from './v2/notationFont';
 
 // OCR 页懒加载：onnxruntime-web / pdfjs-dist 只被这条动态分支引用，
 // 独立成异步 chunk，其他页面的主包完全不碰它们
@@ -76,7 +78,7 @@ const entry = document.body.dataset.entry ?? 'app';
 
 const el = document.getElementById('root');
 if (!el) throw new Error('#root not found');
-createRoot(el).render(
+void ensureNotationFonts().then(() => createRoot(el).render(
   <StrictMode>
     {entry === 'android' ? (
       <AndroidApp />
@@ -92,4 +94,4 @@ createRoot(el).render(
       <EditorApp entry={entry as Entry} />
     )}
   </StrictMode>,
-);
+));

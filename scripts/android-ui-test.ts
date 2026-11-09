@@ -41,6 +41,7 @@ define('getComputedStyle', dom.window.getComputedStyle.bind(dom.window));
 define('requestAnimationFrame', dom.window.requestAnimationFrame.bind(dom.window));
 define('cancelAnimationFrame', dom.window.cancelAnimationFrame.bind(dom.window));
 define('IS_REACT_ACT_ENVIRONMENT', true);
+define('__WS_VERSION__', 'test');
 define('matchMedia', () => ({ // jsdom 未实现 matchMedia，手写桩
   matches: false, media: '', onchange: null,
   addEventListener: (): void => {}, removeEventListener: (): void => {},
@@ -238,4 +239,4 @@ async function act(fn: () => void | Promise<void>): Promise<void> {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-main().catch((e) => { console.error(`XX 测试执行失败：${e instanceof Error ? e.stack : e}`); process.exit(1); });
+main().then(() => { dom.window.close(); process.exit(0); }).catch((e) => { console.error(`XX 测试执行失败：${e instanceof Error ? e.stack : e}`); process.exit(1); });

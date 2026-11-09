@@ -113,7 +113,7 @@ export function withStaffRows(layout: LayoutResult, staff: StaffLayout): LayoutR
   const lines = layout.lines.map((line, i) => {
     const dy = staff.lines[i].y - line.y;
     for (const it of line.items) offsets.set(it.eventId, dy);
-    return { ...line, y: staff.lines[i].y };
+    return { ...line, height: undefined, above: undefined, y: staff.lines[i].y };
   });
   return { ...layout, lines, height: staff.height,
     hitIndex: layout.hitIndex.map(hit => ({ ...hit, y: hit.y + (offsets.get(hit.eventId) ?? 0) })),

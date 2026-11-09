@@ -1,0 +1,23 @@
+@font-face {
+  font-family: 'WindScore Notation Digits';
+  src: url('/fonts/notation-digits.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'WindScore Notation Title';
+  src: url('/fonts/notation-title.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'WindScore Notation Text';
+  src: url('/fonts/notation-text.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}

@@ -51,7 +51,9 @@ export function balancedBreaks(units: SpacingUnit[], available: number, compress
       if (min > budget && to > from) break;
       const last = to === units.length - 1;
       const ratio = ideal / budget;
-      const ragged = (last || units[to].forced) && ratio < 0.6;
+      // 全曲末行可自然收尾；强制换行前若溢出多行，仍须均衡这些行，
+      // 否则会留下单小节并被后续两端对齐拉成巨大的空洞。
+      const ragged = last && ratio < 0.6;
       const stretch = Math.max(0, 1 / ratio - 1);
       const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch)
         + compressionPenalty * Math.pow(Math.max(0, ratio - 1), 2)

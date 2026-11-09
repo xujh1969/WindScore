@@ -18,6 +18,7 @@ import { saveBytesAsFile, type SaveResult } from '../io';
 import { exportTheme, paintExportImageBand, regionHasInk, type PageGeometry, type ExportLayoutResult } from './render';
 import { safeFileName } from './tasks';
 import { SvgCanvas } from './svg';
+import { embeddedNotationFontCss } from '../notationFont';
 
 declare const __WS_VERSION__: string;
 
@@ -40,8 +41,9 @@ function verifyImageRows(source: CanvasImageSource, width: number, height: numbe
     probe.width = width;
     for (const [i, row] of layout.lines.entries()) {
       if (!row.items.some(it => (it.kind === 'note' || it.kind === 'rest') && !it.hidden)) continue;
-      const top = Math.max(0, Math.floor(geo.marginTop + (row.y - layout.lineHeight / 2 - 6) * geo.scale));
-      const bottom = Math.min(height, Math.ceil(geo.marginTop + (row.y + layout.lineHeight / 2 + 6) * geo.scale));
+      const above = row.above ?? layout.lineHeight / 2;
+      const top = Math.max(0, Math.floor(geo.marginTop + (row.y - above - 6) * geo.scale));
+      const bottom = Math.min(height, Math.ceil(geo.marginTop + (row.y + (row.height ?? layout.lineHeight) - above + 6) * geo.scale));
       if (bottom <= top) throw new Error(`第 ${i + 1} 行超出图片范围 ${DIAG}`);
       probe.height = bottom - top;
       const ctx = probe.getContext('2d', { willReadFrequently: true });
@@ -80,7 +82,7 @@ export async function exportScoreImageToFile(opts: {
       bandH: height,
       showMeasureNumbers: opts.showMeasureNumbers,
     });
-    bytes = new TextEncoder().encode(ctx.toSvg(width, height, opts.name));
+    bytes = new TextEncoder().encode(ctx.toSvg(width, height, opts.name, await embeddedNotationFontCss()));
   } else {
     if (width > 16384 || height > 16384 || width * height > 64_000_000) {
       throw new Error('图片尺寸超出 PNG 画布上限；请降低 dpi 或导出分页 PDF');

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>JPW 排版对照</title>
+<style>body{margin:24px;background:#e9e7e2;font:16px system-ui;color:#222}h1{font-size:20px}nav{margin:12px 0}button{padding:8px 16px;margin-right:8px}#paper{background:white;max-width:1100px}canvas{display:block;width:100%;height:auto}details{margin-top:24px}details img{max-width:100%}#status{padding:12px 0}</style>
+<h1>WindScore · JPW 排版对照节选</h1><p>用于检查字体、拍组、两段歌词与标点。节选录入用于视觉校准，不作为完整校订曲谱。</p>
+<nav><button id="desktop">纸面宽度</button><button id="mobile">手机宽度</button><button id="png">保存 PNG</button><button id="svg">保存 SVG</button><button id="pdf">保存 PDF</button></nav><div id="status">字体准备中</div><div id="paper"><canvas id="score"></canvas></div><details><summary>查看 JPW 原图</summary><img src="/JPW.jpg" alt="JPW参考原图"></details>
+<script type="module">
+import '/src/v2/notation-fonts.css';
+import {ensureNotationFonts,notationDigitInkHeight,notationLyricFontSize} from '/src/v2/notationFont.ts';
+import {parseDsl} from '/src/v2/dsl.ts';
+import {layoutScore} from '/src/v2/layout.ts';
+import {paintLayout,LIGHT_THEME} from '/src/v2/paint.ts';
+import {exportScoreImageToFile} from '/src/v2/export/image.ts';
+import {exportScorePdfToFile} from '/src/v2/export/tasks.ts';
+const actual=new URLSearchParams(location.search).has('actual');
+if(actual){document.querySelector('h1').textContent='WindScore · 同曲 JPW 风格对照';document.querySelector('p').textContent='使用桌面 JPS 的测试副本：仅移除首尾补拍0，并设置字号24、字距-14；原文件保留。按数字墨高21px归一，便于与JPW原图比较。';}
+const score=parseDsl(await (await fetch(actual?'/artifacts/jpw-layout-analysis/actual-jpw-style.jps':'/tests/jpw-layout-sample.jps')).text()).score;
+await ensureNotationFonts();
+let layout,renderScale=2;
+function draw(mobile=false){
+ renderScale=actual&&!mobile?21/notationDigitInkHeight(24):2;
+ layout=layoutScore(score,{contentWidth:mobile?390:actual?1279/renderScale:1000,fitWidth:mobile,showTitle:true,padding:mobile?16:actual?120/renderScale:40,rightPadding:actual&&!mobile?123/renderScale:undefined,unit:33.6/6720});
+ const canvas=document.querySelector('canvas');canvas.width=Math.ceil(layout.width*renderScale);canvas.height=Math.ceil(layout.height*renderScale);
+ const ctx=canvas.getContext('2d');ctx.scale(renderScale,renderScale);paintLayout(ctx,layout,LIGHT_THEME,{showMeasureNumbers:false,showTitleEdit:false});
+ document.querySelector('#paper').style.width=(actual&&!mobile?1279:layout.width)+'px';
+ document.querySelector('#status').textContent=`已就绪 · ${layout.lines.length} 行 · 数字墨高 ${notationDigitInkHeight(layout.glyph.fontSize).toFixed(2)} · 歌词字号 ${notationLyricFontSize(layout.glyph.fontSize).toFixed(2)} · 标点附字，不占下一音符`;
+}
+draw();document.querySelector('#desktop').onclick=()=>draw();document.querySelector('#mobile').onclick=()=>draw(true);
+for(const format of ['png','svg'])document.querySelector('#'+format).onclick=async()=>{document.querySelector('#status').textContent='正在导出 '+format;try{await exportScoreImageToFile({name:'JPW排版对照',format,dark:false,showMeasureNumbers:false,layout,geo:{pageW:layout.width,pageH:layout.height,marginX:0,marginTop:0,marginBottom:0,scale:renderScale}});document.querySelector('#status').textContent='已保存 '+format;}catch(e){document.querySelector('#status').textContent='导出失败 '+e;}};
+document.querySelector('#pdf').onclick=async()=>{document.querySelector('#status').textContent='正在导出 PDF';try{await exportScorePdfToFile({name:'JPW排版对照',score,dark:false,showMeasureNumbers:false,showTitle:true,layout});document.querySelector('#status').textContent='已保存 PDF';}catch(e){document.querySelector('#status').textContent='导出失败 '+e;}};
+</script></html>

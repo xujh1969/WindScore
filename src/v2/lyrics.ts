@@ -76,9 +76,35 @@ export function setLyricWord(score: Score, eventId: string, verse: number, word:
   }) };
 }
 
-/** 中文逐字，其他连续文字作为一个词；粘贴的空格占一个歌词位置。 */
+/** 中文逐字，标点随前字（开引号/括号随后字）；显式空格仍占一个位置。 */
 export function lyricInputTokens(text: string): string[] {
-  return (text.match(/\p{Script=Han}|[^\p{Script=Han}\s，。！？、；：]+|[ \t]/gu) ?? []).map((word) => /^[ \t]$/.test(word) ? '' : word);
+  const tokens: string[] = [];
+  let prefix = '';
+  let previous = -1;
+  const quotes = new Set<string>();
+  const pieces = text.match(/\p{Script=Han}|[ \t]|[^\p{Script=Han}\s\p{P}]+(?:['’\-‐‑][^\p{Script=Han}\s\p{P}]+)*|\p{P}/gu) ?? [];
+  for (const piece of pieces) {
+    if (/^[ \t]$/.test(piece)) { tokens.push(''); continue; }
+    if (/^\p{P}$/u.test(piece)) {
+      let opening = /^[\p{Ps}\p{Pi}]$/u.test(piece);
+      if (piece === '"' || piece === "'") {
+        opening = !quotes.has(piece);
+        if (opening) quotes.add(piece); else quotes.delete(piece);
+      }
+      if (opening || previous < 0) prefix += piece;
+      else tokens[previous] += piece;
+    } else {
+      tokens.push(prefix + piece);
+      prefix = '';
+      previous = tokens.length - 1;
+    }
+  }
+  // 单独修改标点或尚未输入后字时保留文字，不把输入悄悄清空。
+  if (prefix) {
+    if (previous < 0) tokens.push(prefix);
+    else tokens[previous] += prefix;
+  }
+  return tokens;
 }
 
 interface LyricSlot { word: string; link: LyricLink | null; }

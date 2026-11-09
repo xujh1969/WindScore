@@ -2,10 +2,30 @@
 import type { Event } from './types';
 
 export interface LyricLine { x0: number; x1: number; verse: number; kind: 'extend' | 'hyphen'; }
-interface LyricAnchor { id: string; x: number; widths: number[]; leftAligned?: boolean; }
+interface LyricAnchor { id: string; x: number; widths: number[]; leftAligned?: boolean; offsets?: number[]; }
 interface LyricRow { left: number; right: number; notes: LyricAnchor[]; }
 export function lyricTextWidth(text: string, fontSize: number): number {
   return Array.from(text).reduce((sum, ch) => sum + (/[^\x00-\xff]|[MWmw@%]/.test(ch) ? 1 : /[A-Z]/.test(ch) ? .8 : .65) * fontSize, 0);
+}
+
+/** 标点参与避让，但正文（如“你，”中的“你”）仍对准所唱的音。 */
+export function lyricPunctuation(text: string): { prefix: string; body: string; suffix: string } {
+  const prefix = /^["'“‘「『（(【《〈\[]+/.exec(text)?.[0] ?? '';
+  const rest = text.slice(prefix.length);
+  const suffix = /["'，。！？、；：,.!?;:…—”’」』）)】》〉\]]+$/.exec(rest)?.[0] ?? '';
+  const body = rest.slice(0, rest.length - suffix.length);
+  return body ? { prefix, body, suffix } : { prefix: '', body: text, suffix: '' };
+}
+
+export function lyricTextOffset(text: string, size: number): number {
+  const { prefix, suffix } = lyricPunctuation(text);
+  return (lyricTextWidth(suffix, size) - lyricTextWidth(prefix, size)) / 2;
+}
+
+export function paintLyricText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+  const { prefix, suffix } = lyricPunctuation(text);
+  // 不用 maxWidth 压缩汉字；布局层已为正文与标点预留宽度。
+  ctx.fillText(text, x + (ctx.measureText(suffix).width - ctx.measureText(prefix).width) / 2, y);
 }
 
 export function projectLyricLines(events: Event[], rows: LyricRow[], fontSize: number): LyricLine[][] {
@@ -14,8 +34,8 @@ export function projectLyricLines(events: Event[], rows: LyricRow[], fontSize: n
   type Position = NonNullable<ReturnType<typeof positions.get>>;
   const verses = Math.max(0, ...events.map(e => e.kind === 'note' ? e.lyricLinks?.length ?? 0 : 0));
   const connect = (a: Position, b: Position, verse: number, kind: LyricLine['kind'], fromWord: boolean) => {
-    const start = a.x + (fromWord ? (a.widths[verse] ?? 0) * (a.leftAligned ? 1 : .5) + .18 * fontSize : a.leftAligned ? .5 * fontSize : 0);
-    const end = b.x + (kind === 'extend' ? (b.leftAligned ? .85 : .35) * fontSize : -(b.leftAligned ? 0 : (b.widths[verse] ?? 0) / 2) - .18 * fontSize);
+    const start = a.x + (a.offsets?.[verse] ?? 0) + (fromWord ? (a.widths[verse] ?? 0) * (a.leftAligned ? 1 : .5) + .18 * fontSize : a.leftAligned ? .5 * fontSize : 0);
+    const end = b.x + (b.offsets?.[verse] ?? 0) + (kind === 'extend' ? (b.leftAligned ? .85 : .35) * fontSize : -(b.leftAligned ? 0 : (b.widths[verse] ?? 0) / 2) - .18 * fontSize);
     for (let row = a.row; row <= b.row; row++) {
       const x0 = row === a.row ? start : rows[row].left;
       const x1 = row === b.row ? end : rows[row].right;

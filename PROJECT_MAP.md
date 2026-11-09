@@ -32,11 +32,12 @@
 - `types.ts`：谱面、音符、休止符、小节线、跳转标记和拍内组的数据模型；每拍 6720 ticks（=2^6×3×5×7，能精确表达 5/6/7 连音）。
 - `dsl.ts`：`.jps` 文本的解析与序列化，是谱面文件格式的唯一入口。
 - `io.ts.fromText` 同时保留原文与解析错误；桌面/网页编辑器对错误谱面进入源码修复，保存和会话恢复不丢弃未知记号。曲库中的损坏条目可进入修复；Android 仍只播放，不引入编辑功能。
-- `lyrics.ts`：歌词行增删改名/关联、逐音附着与文本行序列化，中文词句逐字插入、补空位顺延（容量不足保留原谱）；`ui/TrackDialog.tsx` 创建演奏声部或关联歌词行，`ui/LyricCell.tsx` 与 `ScoreCanvas` 在谱面提供输入法完成选字后分格的输入。`PartInfo.lyricNames` 保存行名，文字仍在 `NoteEvent.lyrics` 中，歌词不进入播放时间线。歌词基础字号 16、段间距 24 同步用于画布输入框、布局、绘制和导出。
+- `lyrics.ts`：歌词行增删改名/关联、逐音附着与文本行序列化，中文词句逐字插入、补空位顺延（容量不足保留原谱）；`ui/TrackDialog.tsx` 创建演奏声部或关联歌词行，`ui/LyricCell.tsx` 与 `ScoreCanvas` 在谱面提供输入法完成选字后分格的输入。`PartInfo.lyricNames` 保存行名，文字仍在 `NoteEvent.lyrics` 中，歌词不进入播放时间线。简谱歌词字号由 `notationLyricFontSize` 按真实字形墨高校准，段距为数字墨高的1.68倍；画布输入框、布局、绘制和导出共用口径，五线谱保留自身谱表比例。
 - `ticks.ts`、`validate.ts`：时值换算和谱面结构/不变量检查。
 - `edit.ts`：编辑操作集中为纯函数，UI 通过这些函数改谱。
 - `layout.ts`：从 Score 派生排版、字形度量、命中区域和拾取结果。
 - `paint.ts`：Canvas 绘制 layout；不要在绘制或命中逻辑中另造字形尺寸。
+- `notationFont.ts` / `notation-fonts.css` / `public/fonts/`：离线印刷数字与中文字体、统一数字度量；所有应用入口首次挂载前等待字体就绪，SVG 嵌入字体。简谱 `LayoutLine.height/above` 记录逐行上下占用，分页与命中使用实际行带；五线谱与总谱继续使用各自的行距体系。歌词标点保留在原字符串内，正文对音、标点附字并参与避让，不增加文件格式字段。
 - `timeline.ts`、`tempo.ts`、`clock.ts`：把事件转为演奏时间线，处理调号、转调、恒速/变速映射和播放时钟。
 - `expand.ts`：把反复结构派生成线性谱，供播放与导出使用；编辑仍针对原谱。
 - `audio.ts`、`beat.ts`、`mp3.ts`：合成/伴奏播放、音频 BPM 与入口估算、WAV 转 MP3。

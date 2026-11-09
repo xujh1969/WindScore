@@ -1819,7 +1819,7 @@ function balancedBreaks(units, available, compressionPenalty = 45) {
       if (min > budget && to > from) break;
       const last = to === units.length - 1;
       const ratio = ideal / budget;
-      const ragged = (last || units[to].forced) && ratio < 0.6;
+      const ragged = last && ratio < 0.6;
       const stretch = Math.max(0, 1 / ratio - 1);
       const rowCost = 1 + (ragged ? 3 * Math.pow(1 - ratio, 2) : 12 * stretch * stretch) + compressionPenalty * Math.pow(Math.max(0, ratio - 1), 2) + (last ? 0 : units[to].penalty ?? 0);
       if (rowCost + cost[to + 1] < cost[from]) {
@@ -1895,6 +1895,18 @@ function addPlaybackAnchors(lines, glyph) {
   }
 }
 
+// src/v2/notationFont.ts
+function notationDigitWidth(fontSize = 21) {
+  return fontSize * 1139 / 2048;
+}
+function notationDigitInkHeight(fontSize = 21) {
+  return fontSize * 1450 / 2048;
+}
+var cachedTextInkRatio = 0.88875;
+function notationLyricFontSize(noteSize = 21) {
+  return notationDigitInkHeight(noteSize) * 1.024 / cachedTextInkRatio;
+}
+
 // src/v2/ensembleLayout.ts
 function layoutEnsemble(score2, opts, layoutSingle) {
   const all = scoreParts(score2);
@@ -1954,7 +1966,7 @@ function layoutEnsemble(score2, opts, layoutSingle) {
       const step = ticks[ti + 1] === void 0 ? 0 : ticks[ti + 1] - tick;
       const ink = Math.max(0, ...here.filter((e) => e.item.kind === "note" || e.item.kind === "rest").map((e) => {
         const item = e.item;
-        const lyric = Math.max(0, ...(item.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
+        const lyric = Math.max(0, ...(item.lyrics ?? []).map((word) => Array.from(word).length * notationLyricFontSize(measured[0].glyph.fontSize)));
         return Math.max(measured[0].glyph.nominalWidth + inkPad + (item.dot ? 7 * k : 0), lyric + 3 * k) + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));
       inkAt.set(tick, ink);
@@ -2126,13 +2138,24 @@ function layoutEnsemble(score2, opts, layoutSingle) {
 function lyricTextWidth(text2, fontSize) {
   return Array.from(text2).reduce((sum, ch) => sum + (/[^\x00-\xff]|[MWmw@%]/.test(ch) ? 1 : /[A-Z]/.test(ch) ? 0.8 : 0.65) * fontSize, 0);
 }
+function lyricPunctuation(text2) {
+  const prefix = /^["'“‘「『（(【《〈\[]+/.exec(text2)?.[0] ?? "";
+  const rest = text2.slice(prefix.length);
+  const suffix = /["'，。！？、；：,.!?;:…—”’」』）)】》〉\]]+$/.exec(rest)?.[0] ?? "";
+  const body = rest.slice(0, rest.length - suffix.length);
+  return body ? { prefix, body, suffix } : { prefix: "", body: text2, suffix: "" };
+}
+function lyricTextOffset(text2, size) {
+  const { prefix, suffix } = lyricPunctuation(text2);
+  return (lyricTextWidth(suffix, size) - lyricTextWidth(prefix, size)) / 2;
+}
 function projectLyricLines(events, rows, fontSize) {
   const result = rows.map(() => []);
   const positions = new Map(rows.flatMap((row, ri) => row.notes.map((n) => [n.id, { ...n, row: ri }])));
   const verses = Math.max(0, ...events.map((e) => e.kind === "note" ? e.lyricLinks?.length ?? 0 : 0));
   const connect = (a, b, verse, kind, fromWord) => {
-    const start = a.x + (fromWord ? (a.widths[verse] ?? 0) * (a.leftAligned ? 1 : 0.5) + 0.18 * fontSize : a.leftAligned ? 0.5 * fontSize : 0);
-    const end = b.x + (kind === "extend" ? (b.leftAligned ? 0.85 : 0.35) * fontSize : -(b.leftAligned ? 0 : (b.widths[verse] ?? 0) / 2) - 0.18 * fontSize);
+    const start = a.x + (a.offsets?.[verse] ?? 0) + (fromWord ? (a.widths[verse] ?? 0) * (a.leftAligned ? 1 : 0.5) + 0.18 * fontSize : a.leftAligned ? 0.5 * fontSize : 0);
+    const end = b.x + (b.offsets?.[verse] ?? 0) + (kind === "extend" ? (b.leftAligned ? 0.85 : 0.35) * fontSize : -(b.leftAligned ? 0 : (b.widths[verse] ?? 0) / 2) - 0.18 * fontSize);
     for (let row = a.row; row <= b.row; row++) {
       const x0 = row === a.row ? start : rows[row].left;
       const x1 = row === b.row ? end : rows[row].right;
@@ -2177,25 +2200,28 @@ function estimateWidth(text2, fontPx) {
   for (const ch of text2) w += (ch.codePointAt(0) ?? 0) > 11904 ? fontPx : fontPx * 0.55;
   return w;
 }
+var BASE_INK_HEIGHT = notationDigitInkHeight(21);
 var GLYPH = {
   pad: 5,
   after: 5,
-  nominalWidth: 13,
-  dotR: 2.2,
+  nominalWidth: notationDigitWidth(21),
+  dotR: BASE_INK_HEIGHT * 0.115,
   dotGap: 7,
-  dashW: 10,
+  dashW: BASE_INK_HEIGHT * 0.667,
+  dashLine: BASE_INK_HEIGHT * 0.142,
   dashGap: 15,
   graceW: 13,
   graceGap: 3,
   glyphRight: 22,
   accW: 9,
-  octaveStep: 7,
-  octaveBase: 17,
+  octaveStep: BASE_INK_HEIGHT * 0.35,
+  octaveBase: BASE_INK_HEIGHT * 0.813,
   octaveClear: 5,
-  beamLine: 1.1,
-  beamTop: 10,
-  beamStep: 3,
-  barHalf: 21,
+  beamLine: BASE_INK_HEIGHT * 0.07,
+  beamTop: BASE_INK_HEIGHT * 0.74,
+  beamStep: BASE_INK_HEIGHT * 0.2,
+  barHalf: BASE_INK_HEIGHT * 1.05,
+  barLine: BASE_INK_HEIGHT * 0.081,
   arcBase: 24,
   arcTieBase: 19,
   selHalfH: 12,
@@ -2218,6 +2244,7 @@ function deriveGlyph(fontSize) {
     dotR: s(GLYPH.dotR),
     dotGap: s(GLYPH.dotGap),
     dashW: s(GLYPH.dashW),
+    dashLine: s(GLYPH.dashLine),
     dashGap: s(GLYPH.dashGap),
     graceW: s(GLYPH.graceW),
     graceGap: s(GLYPH.graceGap),
@@ -2230,6 +2257,7 @@ function deriveGlyph(fontSize) {
     beamTop: s(GLYPH.beamTop),
     beamStep: s(GLYPH.beamStep),
     barHalf: s(GLYPH.barHalf),
+    barLine: s(GLYPH.barLine),
     arcBase: s(GLYPH.arcBase),
     arcTieBase: s(GLYPH.arcTieBase),
     selHalfH: s(GLYPH.selHalfH),
@@ -2286,6 +2314,8 @@ function layoutScore(score2, opts) {
   const fontSize = opts.fontSize ?? score2.meta.fontSize ?? DEFAULT_FONT_SIZE;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
+  const lyricFont = notationLyricFontSize(fontSize);
+  const lyricStep = notationDigitInkHeight(fontSize) * 1.68;
   const spacing = opts.letterSpacing ?? score2.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
   const gap = letterGapOf(spacing);
   const gapDelta = gap - letterGapOf(0);
@@ -2303,13 +2333,14 @@ function layoutScore(score2, opts) {
   const hasHighDots = notes.some((e) => e.octave > 0);
   const hasLowDots = notes.some((e) => e.octave < 0);
   const hasCue = (score2.cues ?? []).some((c) => c.events?.length);
-  const lyricAnchor = hasHairpin ? 64 : hasDynamic ? 42 : 30;
+  const plainLyricOffset = notationDigitInkHeight(fontSize) * 2.343;
+  const lyricAnchor = hasHairpin ? 74 : hasDynamic ? 54 : plainLyricOffset / k;
   const upNeed = Math.max(24, hasHighDots ? 24 : 21, hasMarkAbove ? 38 : 0, hasTuplet ? 30 : 0, hasVolta ? 37 : 0, hasOctava ? 50 : 0, hasCue ? CUE_UP_NEED : 0);
   const downNeed = Math.max(
     hasLowDots ? 26 : 21,
     hasDynamic ? 40 : 0,
     hasHairpin ? 56 : 0,
-    verses > 0 ? lyricAnchor + verses * 24 + 5 : 0
+    verses > 0 ? lyricAnchor + ((verses - 1) * lyricStep + lyricFont * 0.6) / k : 0
   );
   const lineGap = opts.lineGap ?? score2.meta.lineGap ?? 0;
   const lineHeight = opts.lineHeight ?? (opts.staffPitchMode ? glyph.lineHeight + (hasHairpin ? 24 * k : 0) + (hasOctava ? 16 * k : 0) + lineGap * k : (2 * Math.max(upNeed, downNeed) + 8 + lineGap) * k);
@@ -2320,10 +2351,10 @@ function layoutScore(score2, opts) {
   const meta = score2.meta;
   const title = opts.showTitle === false ? null : (() => {
     const y = padTop + 16;
-    const subY = y + 28;
-    const colY = subY + 10;
+    const subY = y + notationDigitInkHeight(fontSize) * 3.714;
+    const colY = subY - 6;
     const rowH = 18;
-    const tempoY = colY + 32;
+    const tempoY = subY + notationDigitInkHeight(fontSize) * 1.9;
     const rightLines = (meta.notes ?? []).slice(0, 4);
     return {
       title: meta.title,
@@ -2412,7 +2443,12 @@ function layoutScore(score2, opts) {
   };
   const accWidthOf = (ev) => ev.kind === "note" ? (staffInk?.get(ev.id)?.accW ?? (ev.accidental ? glyph.accW * (ev.accidental === "x" || ev.accidental === "bb" ? 1.7 : 1) : 0)) + (ev.keyChange ? opts.fitWidth ? Math.min(opts.staffKeySpace ?? 0, maxX * 0.35) : opts.staffKeySpace ?? 0 : 0) : 0;
   const arpWidthOf = (ev) => ev.kind === "note" && ev.arpeggio ? 9 * k : 0;
-  const widths = score2.events.map((ev) => {
+  const nextEvent = new Map(score2.events.map((ev, i) => [ev.id, score2.events[i + 1]]));
+  const groupContinues = (ev, next) => {
+    const gid = groupOfEvent.get(ev.id);
+    return !!gid && !!next && groupOfEvent.get(next.id) === gid;
+  };
+  const widths = score2.events.map((ev, index) => {
     let w = 0;
     let min = 0;
     if (ev.kind === "note" || ev.kind === "rest") {
@@ -2420,13 +2456,19 @@ function layoutScore(score2, opts) {
       const dashes = dashCountOf(ev.ticks, ev.dot ?? 0);
       const dots = ev.dot ? 5 * k + (ev.dot - 1) * glyph.dotGap + glyph.dotR : 0;
       const extension = dashes ? 5 * k + dashes * (glyph.dashW + 3 * k) : 0;
-      const lyric = Math.max(0, ...(note?.lyrics ?? []).map((word) => Array.from(word).length * 16 * k));
+      const next = score2.events[index + 1];
+      const lyric = Math.max(0, ...(note?.lyrics ?? []).map((word, verse) => {
+        const right = lyricTextWidth(word, lyricFont) / 2 + lyricTextOffset(word, lyricFont);
+        const following = next?.kind === "note" ? next.lyrics?.[verse] ?? "" : "";
+        const left = following ? lyricTextWidth(following, lyricFont) / 2 - lyricTextOffset(following, lyricFont) : lyricFont / 2;
+        return Math.max(lyricTextWidth(word, lyricFont), right + left);
+      }));
       const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
       const pad = Math.min(3 * k, cell - glyph.nominalWidth);
-      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + 3 * k, mark + 3 * k) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
+      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + 0.35 * k, mark + 3 * k) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
       w = Math.max(
         min,
-        cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev)
+        (ev.ticks < TICKS_PER_BEAT && !opts.staffPitchMode ? glyph.nominalWidth + (cell - glyph.nominalWidth) * (groupContinues(ev, next) ? 0.8 : 1.2) : cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) + (!opts.staffPitchMode && dashes ? 15 * k : 0)) + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev)
       );
     } else if (isBarrier(ev)) w = barlineWidthOf(ev, k, gapDelta);
     else if (ev.kind === "directive") {
@@ -2435,6 +2477,7 @@ function layoutScore(score2, opts) {
     return { ev, w: opts.positions?.get(ev.id)?.w ?? w, min: min || w };
   });
   const denseEndings = /* @__PURE__ */ new Set();
+  const paperCanTighten = score2.events.some((e) => e.kind === "barline" && !!e.breakAfter);
   const measureUnit = (from, to) => {
     const slice = widths.slice(from, to);
     const ideal = slice.reduce((sum, it) => sum + it.w, 0);
@@ -2442,11 +2485,11 @@ function layoutScore(score2, opts) {
     const previous = score2.events[from - 1];
     const tail = score2.events[to - 1];
     return {
-      // 自动换行严格按「整小节自然宽」折行，不允许把小节压扁塞进去：
-      // 压缩会把目标净空隙吃掉，也会让被压缩的行右缘短一截（两端对齐破功）。
+      // 显式纸面换行可在字形安全宽度内温和收紧（最多6%），避免略超宽就拆开整句。
+      // 窄屏阅读沿用完整安全范围；字形自身与歌词标点不缩放。
       ideal,
-      min: opts.fitWidth ? slice.reduce((sum, it) => sum + it.min, 0) : ideal,
-      weight: Math.pow(Math.max(1, notes2), 1.5),
+      min: opts.fitWidth || paperCanTighten ? Math.max(slice.reduce((sum, it) => sum + it.min, 0), opts.fitWidth ? 0 : ideal * 0.94) : ideal,
+      weight: Math.sqrt(Math.max(1, notes2)),
       lead: previous?.kind === "barline" && previous.beatAfter ? METER_LEAD * k : 0,
       forced: !opts.fitWidth && tail?.kind === "barline" && !!tail.breakAfter,
       penalty: tail?.kind === "barline" ? (slurCrossedBars.has(to - 1) ? 2 : 0) + (denseEndings.has(to) ? 1.5 : 0) : opts.fitWidth ? 0.1 : 0
@@ -2578,6 +2621,9 @@ function layoutScore(score2, opts) {
   };
   let anyTimed = false;
   let naturalMax = 0;
+  const firstTimedIndex = score2.events.findIndex((e) => e.kind === "note" || e.kind === "rest");
+  let lastTimedIndex = score2.events.length - 1;
+  while (lastTimedIndex >= 0 && score2.events[lastTimedIndex].kind !== "note" && score2.events[lastTimedIndex].kind !== "rest") lastTimedIndex--;
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
     const to = li + 1 < starts.length ? starts[li + 1] : widths.length;
@@ -2604,8 +2650,8 @@ function layoutScore(score2, opts) {
     const units = cuts.slice(0, -1).map((a, i) => measureUnit(a, cuts[i + 1]));
     const natural = units.reduce((sum, u) => sum + u.ideal, 0);
     const lastBar2 = widths[to - 1];
-    const edge = lastBar2?.ev.kind === "barline" ? (lastBar2.w - barlineWidthOf(lastBar2.ev, k, gapDelta)) / 2 : 0;
-    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
+    const edge = lastBar2?.ev.kind === "barline" && !opts.fitWidth ? lastBar2.w / 2 : 0;
+    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural - edge);
     const isLastRow = li + 1 === starts.length;
     const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === void 0;
     const fitted = fitSpacing(units, maxX - lead + edge, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
@@ -2613,11 +2659,13 @@ function layoutScore(score2, opts) {
     if (!opts.positions) units.forEach((u, ui) => {
       const members = widths.slice(cuts[ui], cuts[ui + 1]);
       const timed = members.filter((it) => it.ev.kind === "note" || it.ev.kind === "rest");
+      const stretchWeight = (it) => !opts.staffPitchMode && groupContinues(it.ev, nextEvent.get(it.ev.id)) ? 0.3 : 1;
+      const totalStretch = timed.reduce((sum, it) => sum + stretchWeight(it), 0);
       const slack = timed.reduce((sum, it) => sum + it.w - it.min, 0);
       const delta = fitted[ui] - u.ideal;
       members.forEach((it, index) => {
         const flexible = it.ev.kind === "note" || it.ev.kind === "rest";
-        const share = delta >= 0 ? timed.length ? flexible ? 1 / timed.length : 0 : index === members.length - 1 ? 1 : 0 : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
+        const share = delta >= 0 ? timed.length ? flexible ? stretchWeight(it) / totalStretch : 0 : index === members.length - 1 ? 1 : 0 : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
         advances.set(cuts[ui] + index, it.w + delta * share);
       });
     });
@@ -2732,16 +2780,16 @@ function layoutScore(score2, opts) {
     {
       let acc = 0;
       let open = false;
+      let measureStartIndex = -1;
       let barX = padding + lead;
       const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       let measurePartial = false;
-      let firstPartial = false;
-      let seenFirst = false;
       let expectedOpts = beatOptionsOf(meterAt(score2, from));
       let freeMode = false;
       for (const it of items) {
         if (it.kind === "note" || it.kind === "rest") {
+          if (!open) measureStartIndex = it.eventIndex;
           acc += it.ticks ?? 0;
           open = true;
         } else if (it.kind === "barline") {
@@ -2753,7 +2801,7 @@ function layoutScore(score2, opts) {
               const underAll = expList.every((o) => beats < o);
               if (!underAll) {
                 badges.push({ x: barX, text: `${trimNum(beats)}/${label} \u2717`, level: "error" });
-              } else if (!(it.final && firstPartial)) {
+              } else if (measureStartIndex !== firstTimedIndex && lastTimedIndex >= it.eventIndex) {
                 badges.push({ x: barX, text: `${trimNum(beats)}/${label} \u26A0`, level: "warn" });
               }
             }
@@ -2762,10 +2810,6 @@ function layoutScore(score2, opts) {
           open = false;
           complete = true;
           measurePartial = !!it.partial;
-          if (!seenFirst) {
-            seenFirst = true;
-            firstPartial = !!it.partial;
-          }
           barX = it.x;
           if (it.beatAfter) {
             expectedOpts = beatOptionsOf(it.beatAfter);
@@ -2861,17 +2905,11 @@ function layoutScore(score2, opts) {
       const span = x1 - x0;
       if (span < 10) return;
       const tight = !chain2.some(hasMarks);
-      let nodes = chain2.length;
       let beats = 0;
       if (kind === "slur" && chain2.length > 1) {
-        const lo = Math.min(...chain2.map((i) => i.eventIndex));
-        const hi = Math.max(...chain2.map((i) => i.eventIndex));
         for (const m of chain2) {
           const ev = byId.get(m.eventId);
           if (ev && "ticks" in ev) beats += ev.ticks;
-        }
-        for (let i = lo + 1; i < hi; i += 1) {
-          if (score2.events[i]?.kind === "barline") nodes += 1;
         }
       }
       arcs.push({
@@ -2882,7 +2920,7 @@ function layoutScore(score2, opts) {
         lift: kind === "slur" ? Math.min(tight ? 9 : 12, 7 + span * 0.04) : tight ? 5 : 11,
         kind,
         octaveUp: chain2.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
-        flat: kind === "slur" && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
+        flat: kind === "slur" && (beats > 3 * TICKS_PER_BEAT || span > 160 * k),
         // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
         tight,
         // 链首带 slideH → 弧线中央标 h。只在本行段含该音时为真，
@@ -2948,7 +2986,7 @@ function layoutScore(score2, opts) {
     const lineEvents = score2.events.slice(from, to);
     const lineHasHairpin = lineEvents.some((e) => e.kind === "note" && (e.hairpin || e.hairpinTo));
     const lineHasDynamic = lineEvents.some((e) => e.kind === "note" && e.dynamic);
-    const lyricYOff = (lineHasHairpin ? 64 : lineHasDynamic ? 42 : 30) * k;
+    const lyricYOff = lineHasHairpin ? 74 * k : lineHasDynamic ? 54 * k : plainLyricOffset;
     lines.push({
       index: li,
       y,
@@ -3061,19 +3099,79 @@ function layoutScore(score2, opts) {
       }
     }
   }
+  let rowsBottom = padTop + titleHeight;
+  if (!opts.lineHeight && !opts.positions && !opts.staffPitchMode) {
+    const boxesByEvent = /* @__PURE__ */ new Map();
+    for (const box of hitIndex) {
+      const boxes = boxesByEvent.get(box.eventId) ?? [];
+      boxes.push(box);
+      boxesByEvent.set(box.eventId, boxes);
+    }
+    for (const line of lines) {
+      const rowNotes = line.items.filter((it) => it.kind === "note");
+      const rowVerses = Math.max(0, ...rowNotes.map((it) => Math.max(
+        ...(it.lyrics ?? []).map((word, i) => word ? i + 1 : 0),
+        ...(byId.get(it.eventId)?.kind === "note" ? byId.get(it.eventId).lyricLinks ?? [] : []).map((link, i) => link ? i + 1 : 0),
+        0
+      )));
+      const hairpin = !!line.hairpins?.length || rowNotes.some((it) => it.hairpin);
+      const dynamic = rowNotes.some((it) => it.dynamic);
+      const lowBottom = Math.max(21, ...rowNotes.map((it) => (it.octave ?? 0) < 0 ? 19 - (it.octave ?? 0) * 7 : 0));
+      line.lyricYOff = Math.max(hairpin ? 74 * k : dynamic ? 54 * k : plainLyricOffset, lowBottom * k + lyricFont * 0.65);
+      const up = Math.max(
+        24,
+        hasCue ? CUE_UP_NEED : 0,
+        ...line.arcs.map((a) => 38 + a.octaveUp * 7),
+        line.tuplets.length ? 38 : 0,
+        line.voltas.length ? 44 : 0,
+        line.items.some((it) => it.kind === "jump" || it.breath || it.bpmAfter || it.patchAfter || it.unisonAfter || it.splitAfter) ? 54 : 0,
+        ...rowNotes.map((it) => it.custom || it.tongue || it.fermata || it.staccato || it.techniques?.length || it.keyChange || it.octava || it.octavaCont ? 54 + Math.max(0, it.octave ?? 0) * 7 : 17 + Math.max(0, it.octave ?? 0) * 7)
+      );
+      const down = Math.max(
+        21,
+        hairpin ? 56 : dynamic ? 40 : 0,
+        ...rowNotes.map((it) => (it.octave ?? 0) < 0 ? 19 + -(it.octave ?? 0) * 7 : 0),
+        rowVerses ? line.lyricYOff / k + ((rowVerses - 1) * lyricStep + lyricFont * 0.6) / k : 0
+      );
+      const rowGap = Math.max(4, 12 + lineGap);
+      line.above = (up + rowGap / 2) * k;
+      line.height = (up + down + rowGap) * k;
+      if (line.index === 0 && title && !hasCue && !line.voltas.length && !rowNotes.some((it) => it.tongue || it.fermata || it.custom || it.techniques?.length || it.octava)) {
+        const titleBottom = Math.max(
+          title.tempoY + lyricFont * 0.6,
+          title.rightLines.length ? title.colY + 4 + (title.rightLines.length - 1) * title.rowH + lyricFont * 0.6 : 0
+        );
+        const baseline = Math.max(title.y + notationDigitInkHeight(fontSize) * 9.17, titleBottom + notationDigitInkHeight(fontSize) * 2.2 + 4 * k);
+        const oldAbove = line.above;
+        line.above = Math.min(oldAbove, baseline - titleBottom - 4 * k);
+        line.height += line.above - oldAbove;
+        rowsBottom = baseline - line.above;
+        title.height = baseline - padTop - oldAbove;
+      }
+      const oldY = line.y;
+      line.y = rowsBottom + line.above;
+      for (const it of line.items) for (const box of boxesByEvent.get(it.eventId) ?? []) {
+        if (box.h === lineHeight) {
+          box.y = rowsBottom;
+          box.h = line.height;
+        } else box.y += line.y - oldY;
+      }
+      rowsBottom += line.height;
+    }
+  } else rowsBottom += lines.length * lineHeight;
   addPlaybackAnchors(lines, glyph);
   const lyricLines = projectLyricLines(score2.events, lines.map((line) => ({
     left: line.items[0]?.x ?? padding,
     right: Math.max(padding, ...line.items.map((it) => it.x + it.w)),
     notes: line.items.filter((it) => it.kind === "note").map((it) => {
-      const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
       return {
         id: it.eventId,
         x: noteDigitCenter(it, glyph),
-        widths: (it.lyrics ?? []).map((word) => Math.min(lyricTextWidth(word, 16 * k), Math.max(16 * k, it.w - shift - 8 * k)))
+        widths: (it.lyrics ?? []).map((word) => lyricTextWidth(word, lyricFont)),
+        offsets: (it.lyrics ?? []).map((word) => lyricTextOffset(word, lyricFont))
       };
     })
-  })), 16 * k);
+  })), lyricFont);
   lines.forEach((line, i) => {
     if (lyricLines[i].length) line.lyricLines = lyricLines[i];
   });
@@ -3086,7 +3184,7 @@ function layoutScore(score2, opts) {
     hitIndex,
     title,
     width: opts.contentWidth,
-    height: padTop + titleHeight + lines.length * lineHeight + padBottom,
+    height: rowsBottom + padBottom,
     naturalWidth: naturalMax,
     ...cues.length ? { cues } : {}
   };
@@ -3167,7 +3265,7 @@ function placeCueStaves(score2, ctx) {
       }));
       const ck = cueFont / 21;
       const k = ctx.fontSize / 21;
-      const bandHalf = Math.min(ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
+      const bandHalf = Math.min(row.line.above ?? ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
       const hasLowDots = cue.events.some((e) => e.kind === "note" && e.octave !== void 0 && e.octave < 0);
       const looseY = row.line.y - bandHalf + 22 * ck + 4 - (hasLowDots ? 2 * k : 0);
       const leftEdge = Math.min(row.x0, mapped[0]?.x ?? row.x0);

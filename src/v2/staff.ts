@@ -19,7 +19,7 @@ import { buildStaffMarks, type StaffMark } from './staffMarks';
 import { accidentalGlyph, instrumentOf, keyAlter, keyFifths, keyTonic, legacyPitch, writtenKey, writtenPitch, type SpelledPitch, type StaffPitchMode, type StaffClef } from './pitch';
 import { scoreParts } from './parts';
 import { resolveStaffClef } from './staffClef';
-import { lyricTextWidth, projectLyricLines, type LyricLine } from './lyricLines';
+import { lyricTextWidth, lyricTextOffset, projectLyricLines, type LyricLine } from './lyricLines';
 import { staffContentRight } from './staffBounds';
 import { TICKS_PER_BEAT } from './ticks';
 import type { Accidental, BeatGroup, JumpMark, Score } from './types';
@@ -585,7 +585,8 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
       notes: line.symbols.flatMap(s => {
         if (s.kind !== 'note') return [];
         const event = source.get(s.eventId);
-        return [{ id: s.eventId, x: s.x, widths: event?.kind === 'note' ? (event.lyrics ?? []).map(word => lyricTextWidth(word, sp * 2)) : [] }];
+        return [{ id: s.eventId, x: s.x, widths: event?.kind === 'note' ? (event.lyrics ?? []).map(word => lyricTextWidth(word, sp * 2)) : [],
+          offsets: event?.kind === 'note' ? (event.lyrics ?? []).map(word => lyricTextOffset(word, sp * 2)) : [] }];
       }),
     })), sp * 2);
     rows.forEach((line, i) => { if (projected[i].length) line.lyricLines = projected[i]; });

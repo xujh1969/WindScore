@@ -143,8 +143,9 @@ function verifyPdfRows(canvas: HTMLCanvasElement, layout: ExportLayoutResult, pl
   for (let i = plan.from; i < plan.to; i++) {
     const row = layout.lines[i];
     if (!row.items.some(it => (it.kind === 'note' || it.kind === 'rest') && !it.hidden)) continue;
-    const top = Math.max(0, geo.marginTop + (row.y - plan.offset - layout.lineHeight / 2 - 6) * geo.scale);
-    const bottom = Math.min(canvas.height - geo.marginBottom, geo.marginTop + (row.y - plan.offset + layout.lineHeight / 2 + 6) * geo.scale);
+    const above = row.above ?? layout.lineHeight / 2;
+    const top = Math.max(0, geo.marginTop + (row.y - plan.offset - above - 6) * geo.scale);
+    const bottom = Math.min(canvas.height - geo.marginBottom, geo.marginTop + (row.y - plan.offset + (row.height ?? layout.lineHeight) - above + 6) * geo.scale);
     if (bottom <= top || !regionHasInk(canvas, geo.marginX, top, canvas.width - 2 * geo.marginX, bottom - top, bg, true)) {
       throw new Error(`第 ${i + 1} 行谱面未通过内容校验，已阻止生成空白 PDF`);
     }

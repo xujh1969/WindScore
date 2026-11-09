@@ -5,6 +5,7 @@ import type { Score } from './types';
 import { DEFAULT_LETTER_SPACING } from './types';
 import { PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT } from './ticks';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf } from './spacing';
+import { notationLyricFontSize } from './notationFont';
 
 type Position = { x: number; w: number; line: number; dashXs?: number[] };
 type Entry = { item: PlacedItem; tick: number; measure: number; lead: number };
@@ -88,7 +89,7 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       const step = ticks[ti + 1] === undefined ? 0 : ticks[ti + 1] - tick;
       const ink = Math.max(0, ...here.filter((e) => e.item.kind === 'note' || e.item.kind === 'rest').map((e) => {
         const item = e.item;
-        const lyric = Math.max(0, ...(item.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
+        const lyric = Math.max(0, ...(item.lyrics ?? []).map(word => Array.from(word).length * notationLyricFontSize(measured[0].glyph.fontSize)));
         return Math.max(measured[0].glyph.nominalWidth + inkPad + (item.dot ? 7 * k : 0), lyric + 3 * k)
           + (opts.staffPitchMode ? lead : e.lead) + (item.staffAfterInk ?? (item.graceAfter?.length ?? 0) * measured[0].glyph.graceW);
       }));

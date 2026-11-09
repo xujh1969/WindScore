@@ -445,7 +445,7 @@ console.log('[导出 · 离线混音]');
 
 console.log('\n[视频 · 横向长条（strip）]');
 {
-  const { score } = parseDsl('@title 条\n@key 1=C\n@beat 4/4\n@bpm 96\n\n1 2 3 4 | 5 6 7 1^ | 2 3 4 5 | 6 6 5 4 ||');
+  const { score } = parseDsl('@format 3\n@title 条\n@key 1=C\n@beat 4/4\n@bpm 96\n\n1 2 3 4 | 5 6 7 1^ | 换行 2 3 4 5 | 6 6 5 4 ||');
   const layout = layoutScore(score, { contentWidth: 600 });
   const strip = buildStrip(layout);
   check('单声部长条行数不变（每行横向接续）', strip.layout.lines.length === layout.lines.length);

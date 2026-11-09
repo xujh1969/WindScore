@@ -10,7 +10,8 @@ import type { PaintOptions, PaintTheme } from './paint';
 import { drawPlayBall, paintScoreTitle } from './paint';
 import { accidentalGlyph } from './pitch';
 import { playbackX } from './spacing';
-import { paintLyricLines } from './lyricLines';
+import { paintLyricLines, paintLyricText } from './lyricLines';
+import { NOTATION_TEXT_FAMILY } from './notationFont';
 import { paintStaffGrace } from './staffGracePaint';
 import { paintStaffMarks } from './staffMarks';
 import { TICKS_PER_BEAT } from './ticks';
@@ -301,10 +302,10 @@ function drawStaffLine(
 
   // 歌词
   if (line.lyrics.length) {
-    ctx.font = `600 ${Math.round(sp * 2)}px ${FAM}`;
+    ctx.font = `400 ${Math.round(sp * 2)}px ${NOTATION_TEXT_FAMILY}`;
     ctx.fillStyle = theme.ink;
     for (const l of line.lyrics) {
-      ctx.fillText(l.text, l.x, (line.lyricY ?? bottom + 3.4 * sp) + l.verse * sp * 3);
+      paintLyricText(ctx, l.text, l.x, (line.lyricY ?? bottom + 3.4 * sp) + l.verse * sp * 3);
     }
   }
   ctx.strokeStyle = theme.ink;

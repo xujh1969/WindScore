@@ -11,18 +11,20 @@ export class SvgCanvas {
   lineCap = 'butt';
   lineJoin = 'miter';
   globalAlpha = 1;
+  private lineDash: number[] = [];
   private transform = '';
   private elements: string[] = [];
   private path: string[] = [];
   private point: [number, number] | null = null;
-  private stack: Array<{ fillStyle: string; strokeStyle: string; font: string; textAlign: string; textBaseline: string; lineWidth: number; lineCap: string; lineJoin: string; globalAlpha: number; transform: string }> = [];
+  private stack: Array<{ fillStyle: string; strokeStyle: string; font: string; textAlign: string; textBaseline: string; lineWidth: number; lineCap: string; lineJoin: string; globalAlpha: number; transform: string; lineDash: number[] }> = [];
   private measure = document.createElement('canvas').getContext('2d')!;
 
   save(): void {
-    const { fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform } = this;
-    this.stack.push({ fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform });
+    const { fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform, lineDash } = this;
+    this.stack.push({ fillStyle, strokeStyle, font, textAlign, textBaseline, lineWidth, lineCap, lineJoin, globalAlpha, transform, lineDash: [...lineDash] });
   }
   restore(): void { const state = this.stack.pop(); if (state) Object.assign(this, state); }
+  setLineDash(segments: number[]): void { this.lineDash = [...segments]; }
   translate(x: number, y: number): void { this.transform += ` translate(${x} ${y})`; }
   scale(x: number, y: number): void { this.transform += ` scale(${x} ${y})`; }
   /** 绝对矩阵（SVG matrix 与 canvas setTransform 同序）；paintExportPage 依赖它定位页面 */
@@ -82,11 +84,11 @@ export class SvgCanvas {
   /** Path2D cannot expose its geometry; notation painters supply the original SVG data. */
   drawSvgPath(d: string, fill: boolean, stroke: boolean): void {
     if (fill) this.emit(`<path d="${escapeXml(d)}" fill="${escapeXml(this.fillStyle)}"/>`);
-    if (stroke) this.emit(`<path d="${escapeXml(d)}" fill="none" stroke="${escapeXml(this.strokeStyle)}" stroke-width="${this.lineWidth}" stroke-linecap="${this.lineCap}" stroke-linejoin="${this.lineJoin}"/>`);
+    if (stroke) this.emit(`<path d="${escapeXml(d)}" fill="none" stroke="${escapeXml(this.strokeStyle)}" stroke-width="${this.lineWidth}" stroke-linecap="${this.lineCap}" stroke-linejoin="${this.lineJoin}"${this.lineDash.length ? ` stroke-dasharray="${this.lineDash.join(' ')}"` : ''}/>`);
   }
   fill(): void { this.drawSvgPath(this.path.join(' '), true, false); }
   stroke(): void { this.drawSvgPath(this.path.join(' '), false, true); }
-  toSvg(width: number, height: number, title: string): string {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><title>${escapeXml(title)}</title>${this.elements.join('')}</svg>`;
+  toSvg(width: number, height: number, title: string, fontCss = ''): string {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><title>${escapeXml(title)}</title>${fontCss ? `<defs><style>${fontCss}</style></defs>` : ''}${this.elements.join('')}</svg>`;
   }
 }

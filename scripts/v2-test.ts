@@ -380,7 +380,7 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   const lv2 = layout.lines.flatMap((l) => l.beams).filter((b) => b.level === 2).length;
   check(`${f} 内容不溢出可用宽度`, right <= 1001, `right=${right.toFixed(0)}`);
   // 小节拍数校验徽标（✗ 超出 / ⚠ 未满）：示例曲库里的谱必须全部干净——
-  // 弱起小节要用 |{partial} 标记，普通 | 结尾的不满小节在这里现形（生日快乐 0.2.109 实测踩到）
+  // 首尾不足拍自动豁免，普通中间小节仍需满拍。
   const beatBadges = layout.lines.flatMap((l) => l.badges);
   check(`${f} 无小节拍数校验徽标`, beatBadges.length === 0,
     beatBadges.map((b) => b.text).join('; ') || '干净');
@@ -425,7 +425,8 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('右列说明缺省为空', t.rightLines.length === 0);
   check('showTitle:false 时无标题块', noTitle.title === null);
   check('标题块把谱面整体下移', withTitle.lines[0].y > noTitle.lines[0].y);
-  check('标题块计入总高', withTitle.height - noTitle.height === t.height);
+  check('标题块计入总高', Math.abs(withTitle.height - noTitle.height - t.height) < 1e-8,
+    `${withTitle.height} - ${noTitle.height} / ${t.height}`);
   check('标题水平居中', withTitle.title!.centerX === 500);
 
   // 净空守卫：标题副行与首行谱面的标记层（吐音 / 换气，中线上方 50px）不能贴在一起。
@@ -1455,8 +1456,8 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   check('散序列化写回', serializeDsl(free.score!).includes('散'), serializeDsl(free.score!));
   // 散板段里拍数不满不报警（对照：无散板时同样内容报 ⚠）
   const mkLayout = (body: string) => layoutScore(parseDsl(`@beat 4/4\n\n${body}\n`).score!, { contentWidth: 1400 }).lines.flatMap((l) => l.badges);
-  const plainBadges = mkLayout('1 2 3 4 | 5 6 ||');
-  const freeBadges = mkLayout('1 2 3 4 | 散 | 5 6 ||');
+  const plainBadges = mkLayout('1 2 3 4 | 5 6 | 1 2 3 4 ||');
+  const freeBadges = mkLayout('1 2 3 4 | 散 | 5 6 | 1 2 3 4 ||');
   check('无散板时不满小节报 ⚠', plainBadges.some((b) => b.level === 'warn'), JSON.stringify(plainBadges));
   check('散板段里不满小节豁免', freeBadges.length === 0, JSON.stringify(freeBadges));
   // 「拍N/M」声明新拍号 = 退出散板，恢复校验
@@ -1502,7 +1503,7 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 }
 
 {
-  // 小节未满也要警告（⚠），不只超满（✗）。规则随拍号：2/4、3/4 同样适用。
+  // 首尾小节允许不足拍，中间小节仍警告；超拍不因首尾位置而豁免。
   console.log('\n[小节未满警告]');
   const badge = (body: string) =>
     layoutScore(parseDsl(`@beat 4/4\n\n${body}\n`).score!, { contentWidth: 1200 }).lines
@@ -1513,12 +1514,20 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
       .flatMap((l) => l.badges)
       .map((b) => b.level);
 
-  check('4/4 未满 3 拍 → ⚠', badge('2. 1/2 1 ||').join(',') === 'warn', badge('2. 1/2 1 ||').join(','));
+  check('4/4 单个不足拍小节不警告', badge('2. 1/2 1 ||').length === 0);
+  check('4/4 中间未满 3 拍 → ⚠', badge('1 1 1 1 | 2. 1/2 1 | 1 1 1 1 ||').join(',') === 'warn');
   check('4/4 满拍无徽标', badge('1 1 1 1 ||').length === 0);
   check('4/4 超满 → ✗', badge('1 1 1 1 1 ||').join(',') === 'error');
-  check('2/4 未满 1 拍 → ⚠', badgeWith('@beat 2/4', '1 ||').join(',') === 'warn');
+  check('2/4 单个不足拍小节不警告', badgeWith('@beat 2/4', '1 ||').length === 0);
+  check('2/4 首尾各 1 拍无需弱起标记', badgeWith('@beat 2/4', '1 | 2 3 | 4 ||').length === 0);
+  check('2/4 中间未满 1 拍 → ⚠', badgeWith('@beat 2/4', '1 | 2 | 3 ||').join(',') === 'warn');
+  check('普通小节线收尾也允许末小节不足拍', badgeWith('@beat 2/4', '| 1 | 2 3 | 4 |').length === 0);
+  check('跨行首尾不足拍不误报，中间不足拍仍提示', badgeWith('@beat 2/4', '1 | 换行 2 | 换行 3 ||').join(',') === 'warn');
+  check('首尾超拍仍报错', badgeWith('@beat 2/4', '1 2 3 | 4 5 | 6 7 1 ||').join(',') === 'error,error');
+  check('首尾只有休止符也按实际小节豁免', badgeWith('@beat 2/4', '0 | 1 2 | 0 ||').length === 0);
+  check('交替拍号首尾不足也豁免，中间夹在两个拍数之间仍报错', badgeWith('@beat 6/8|9/8', '1 | 1 2 3 4 | 2 ||').join(',') === 'error');
   check('2/4 满拍无徽标', badgeWith('@beat 2/4', '1 1 ||').length === 0);
-  check('3/4 未满 2 拍 → ⚠', badgeWith('@beat 3/4', '1 1 ||').join(',') === 'warn');
+  check('3/4 首尾不足拍不警告', badgeWith('@beat 3/4', '1 1 | 2 2 2 | 3 ||').length === 0);
   check('3/4 满拍无徽标', badgeWith('@beat 3/4', '1 1 1 ||').length === 0);
 
   // 例外：弱起小节本身不满；弱起曲的最后小节与弱起互补，也允许不满
@@ -1526,7 +1535,7 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   check('弱起小节不警告', anacrusis.length === 0, anacrusis.join(','));
   const anacrusisShort = badgeWith('@beat 4/4', '|{partial} 5 5 | 1 1 1 1 | 1 ||');
   check('弱起曲结尾不满不警告', anacrusisShort.length === 0, anacrusisShort.join(','));
-  check('非弱起曲结尾不满照常警告', badge('2. 1/2 1 ||').length === 1);
+  check('未写弱起标记的曲尾不满也不警告', badge('1 1 1 1 | 2. 1/2 1 ||').length === 0);
   // 弱起线收在弱起小节**结尾**（先写音再收线，更顺手的书写顺序）同样豁免
   const anacrusisTail = badgeWith('@beat 4/4', '5 5 |{partial} 1 1 1 1 ||');
   check('弱起线收尾写法不警告', anacrusisTail.length === 0, anacrusisTail.join(','));
@@ -1543,10 +1552,10 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
     { contentWidth: 800 },
   );
   const PAD = 40;
-  /** 格子右缘：两端对齐的行都伸展到同一条线，用它判「对齐」 */
+  /** 可见小节线中心应对齐纸面右缘，行末半个占位格不算墨迹。 */
   const right = (ln: (typeof j.lines)[number]) => {
     const last = ln.items[ln.items.length - 1];
-    return last.x + last.w;
+    return last.x + (last.kind === 'barline' ? last.w / 2 : last.w);
   };
   /**
    * 墨迹右缘：**溢出**要用它判，不能看格子。
@@ -2946,7 +2955,7 @@ const blank = (): Score => ({
       `点顶 ${dotTop.toFixed(1)} vs 线 ${beamY.toFixed(1)}`,
     );
   }
-  check('无减时线时低音点回到常规位置', lowDotOffset(0) === 17, String(lowDotOffset(0)));
+  check('无减时线时低音点回到当前字体的常规位置', Math.abs(lowDotOffset(0) - GLYPH.octaveBase) < 1e-6, String(lowDotOffset(0)));
 }
 
 {
@@ -5816,7 +5825,7 @@ console.log('\n[齐唱（同/分）与小字谱（@小谱）]');
   const g0 = cueGapOfDsl('');
   const g1 = cueGapOfDsl(cueLyric1);
   const g2 = cueGapOfDsl(cueLyric1 + cueLyric2);
-  check('歌词确实把行高撑大（间距用例前提）', g2.lineHeight > g1.lineHeight && g1.lineHeight > g0.lineHeight,
+  check('两段歌词扩大行带，一段歌词可使用小字谱已预留的空间', g2.lineHeight > g1.lineHeight && g1.lineHeight >= g0.lineHeight,
     JSON.stringify([g0.lineHeight, g1.lineHeight, g2.lineHeight]));
   check('1/2 段歌词不把小字谱推远', Math.abs(g1.gap - g0.gap) < 0.01 && Math.abs(g2.gap - g0.gap) < 0.01,
     JSON.stringify([g0.gap, g1.gap, g2.gap]));

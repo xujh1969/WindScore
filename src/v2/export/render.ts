@@ -130,14 +130,16 @@ export function planScorePages(
     pages.push({ from, to: layout.lines.length, offset });
     return pages;
   }
-  if (!layout.lines.some((line) => line.pageBreakBefore)) return planPages(lineY, layout.lineHeight, bands.first, bands.rest, firstOffset);
+  if (!layout.lines.some((line) => line.pageBreakBefore || line.height !== undefined)) return planPages(lineY, layout.lineHeight, bands.first, bands.rest, firstOffset);
   const pages: PagePlan[] = [];
   let from = 0;
   let offset = firstOffset;
   let band = bands.first;
   for (let i = 0; i < layout.lines.length; i++) {
-    const top = lineY[i] - layout.lineHeight / 2;
-    const bottom = lineY[i] + layout.lineHeight / 2;
+    const line = layout.lines[i];
+    const above = line.above ?? layout.lineHeight / 2;
+    const top = lineY[i] - above - 6;
+    const bottom = lineY[i] + (line.height ?? layout.lineHeight) - above + 6;
     if (i > from && (bottom - offset > band.bottom || layout.lines[i].pageBreakBefore)) {
       pages.push({ from, to: i, offset });
       from = i;

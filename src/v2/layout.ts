@@ -14,7 +14,8 @@ import type { StaffPitchMode } from './pitch';
 import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotTicks } from './ticks';
 import { layoutEnsemble } from './ensembleLayout';
 import { meterBeatOptions, meterAt } from './meter';
-import { projectLyricLines, lyricTextWidth, type LyricLine } from './lyricLines';
+import { projectLyricLines, lyricTextWidth, lyricTextOffset, type LyricLine } from './lyricLines';
+import { notationDigitWidth, notationDigitInkHeight, notationLyricFontSize } from './notationFont';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf, positionDashes, type SpacingUnit } from './spacing';
 import type {
   Accidental,
@@ -226,8 +227,11 @@ export interface LayoutLine {
   lyricLines?: LyricLine[];
   index: number;
   y: number;
-  /** 本行歌词锚（px，已按字号缩放）：歌词首段画在 y + lyricYOff + 24k。
-   *  基线与歌词之间没有力度/渐变层时贴紧（30k），有则退到它们下面。缺省 44k（旧口径）。 */
+  /** 本行行带高度；未提供时使用 LayoutResult.lineHeight（总谱/五线谱）。 */
+  height?: number;
+  /** 音符中心到行带上沿的距离；歌词通常只增加下方空间。 */
+  above?: number;
+  /** 第一段歌词中心相对音符的偏移，已按字号缩放。段距另计。 */
   lyricYOff?: number;
   items: PlacedItem[];
   /**
@@ -432,6 +436,7 @@ export interface GlyphMetrics {
   dotR: number;
   dotGap: number;
   dashW: number;
+  dashLine: number;
   dashGap: number;
   /** 每颗倚音占的横向宽度（小音符窄一些） */
   graceW: number;
@@ -448,6 +453,7 @@ export interface GlyphMetrics {
   beamTop: number;
   beamStep: number;
   barHalf: number;
+  barLine: number;
   arcBase: number;
   arcTieBase: number;
   selHalfH: number;
@@ -465,25 +471,28 @@ export interface GlyphMetrics {
 }
 
 /** 基准度量：21px 字号下的全部尺寸 */
+const BASE_INK_HEIGHT = notationDigitInkHeight(21);
 export const GLYPH: GlyphMetrics = {
   pad: 5,
   after: 5,
-  nominalWidth: 13,
-  dotR: 2.2,
+  nominalWidth: notationDigitWidth(21),
+  dotR: BASE_INK_HEIGHT * .115,
   dotGap: 7,
-  dashW: 10,
+  dashW: BASE_INK_HEIGHT * .667,
+  dashLine: BASE_INK_HEIGHT * .142,
   dashGap: 15,
   graceW: 13,
   graceGap: 3,
   glyphRight: 22,
   accW: 9,
-  octaveStep: 7,
-  octaveBase: 17,
+  octaveStep: BASE_INK_HEIGHT * .35,
+  octaveBase: BASE_INK_HEIGHT * .813,
   octaveClear: 5,
-  beamLine: 1.1,
-  beamTop: 10,
-  beamStep: 3,
-  barHalf: 21,
+  beamLine: BASE_INK_HEIGHT * .07,
+  beamTop: BASE_INK_HEIGHT * .74,
+  beamStep: BASE_INK_HEIGHT * .20,
+  barHalf: BASE_INK_HEIGHT * 1.05,
+  barLine: BASE_INK_HEIGHT * .081,
   arcBase: 24,
   arcTieBase: 19,
   selHalfH: 12,
@@ -517,6 +526,7 @@ export function deriveGlyph(fontSize: number): GlyphMetrics {
     dotR: s(GLYPH.dotR),
     dotGap: s(GLYPH.dotGap),
     dashW: s(GLYPH.dashW),
+    dashLine: s(GLYPH.dashLine),
     dashGap: s(GLYPH.dashGap),
     graceW: s(GLYPH.graceW),
     graceGap: s(GLYPH.graceGap),
@@ -529,6 +539,7 @@ export function deriveGlyph(fontSize: number): GlyphMetrics {
     beamTop: s(GLYPH.beamTop),
     beamStep: s(GLYPH.beamStep),
     barHalf: s(GLYPH.barHalf),
+    barLine: s(GLYPH.barLine),
     arcBase: s(GLYPH.arcBase),
     arcTieBase: s(GLYPH.arcTieBase),
     selHalfH: s(GLYPH.selHalfH),
@@ -659,6 +670,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   const fontSize = opts.fontSize ?? score.meta.fontSize ?? DEFAULT_FONT_SIZE;
   const glyph = deriveGlyph(fontSize);
   const k = glyph.fontSize / 21;
+  const lyricFont = notationLyricFontSize(fontSize);
+  const lyricStep = notationDigitInkHeight(fontSize) * 1.68;
   /** 字间距档位（@space -20…20）：不是 px 增量，而是「目标净空隙」的档位 */
   const spacing = opts.letterSpacing ?? score.meta.letterSpacing ?? DEFAULT_LETTER_SPACING;
   /** 目标净空隙（px）：0→10、-20→3、20→20；绝对 px，不随字号缩放 */
@@ -693,13 +706,14 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   // 小字谱画在行带顶部：给所有行统一加高度（行带均匀是导出分页 / 播放切行的前提）
   const hasCue = (score.cues ?? []).some((c) => c.events?.length);
   // 歌词锚：基线→歌词之间有力度/渐变层时退到它们下面（42），没有就贴紧（30）
-  const lyricAnchor = hasHairpin ? 64 : hasDynamic ? 42 : 30;
+  const plainLyricOffset = notationDigitInkHeight(fontSize) * 2.343;
+  const lyricAnchor = hasHairpin ? 74 : hasDynamic ? 54 : plainLyricOffset / k;
   const upNeed = Math.max(24, hasHighDots ? 24 : 21, hasMarkAbove ? 38 : 0, hasTuplet ? 30 : 0, hasVolta ? 37 : 0, hasOctava ? 50 : 0, hasCue ? CUE_UP_NEED : 0);
   const downNeed = Math.max(
     hasLowDots ? 26 : 21,
     hasDynamic ? 40 : 0,
     hasHairpin ? 56 : 0,
-    verses > 0 ? lyricAnchor + verses * 24 + 5 : 0,
+    verses > 0 ? lyricAnchor + ((verses - 1) * lyricStep + lyricFont * .6) / k : 0,
   );
   // 行间距增量（@lineGap）：在默认行高上等比增加，0 = 内容感知的紧凑行距
   const lineGap = opts.lineGap ?? score.meta.lineGap ?? 0;
@@ -723,10 +737,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           // rowH 是右列的行距；左列速度行不跟它走——拍号叠写比一行字高，
           // 速度行由 tempoY 单独给出（见下）
           const y = padTop + 16;
-          const subY = y + 28;
-          const colY = subY + 10;
+          const subY = y + notationDigitInkHeight(fontSize) * 3.714;
+          const colY = subY - 6;
           const rowH = 18;
-          const tempoY = colY + 32;
+          const tempoY = subY + notationDigitInkHeight(fontSize) * 1.9;
           const rightLines = (meta.notes ?? []).slice(0, 4);
           return {
             title: meta.title,
@@ -832,7 +846,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   /** 琶音波状竖线占的左侧宽度（GB/T 46845—2025 §7.7），画在变音记号更左边 */
   const arpWidthOf = (ev: Event): number => (ev.kind === 'note' && ev.arpeggio ? 9 * k : 0);
 
-  const widths: { ev: Event; w: number; min: number }[] = score.events.map((ev) => {
+  // 组内空隙保持紧凑，组尾的空隙优先吸收两端对齐余量。
+  const nextEvent = new Map(score.events.map((ev, i) => [ev.id, score.events[i + 1]]));
+  const groupContinues = (ev: Event, next?: Event): boolean => {
+    const gid = groupOfEvent.get(ev.id);
+    return !!gid && !!next && groupOfEvent.get(next.id) === gid;
+  };
+  const widths: { ev: Event; w: number; min: number }[] = score.events.map((ev, index) => {
     let w = 0;
     let min = 0;
     if (ev.kind === 'note' || ev.kind === 'rest') {
@@ -841,17 +861,25 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const dashes = dashCountOf(ev.ticks, ev.dot ?? 0);
       const dots = ev.dot ? 5 * k + (ev.dot - 1) * glyph.dotGap + glyph.dotR : 0;
       const extension = dashes ? 5 * k + dashes * (glyph.dashW + 3 * k) : 0;
-      const lyric = Math.max(0, ...(note?.lyrics ?? []).map(word => Array.from(word).length * 16 * k));
+      const next = score.events[index + 1];
+      const lyric = Math.max(0, ...(note?.lyrics ?? []).map((word, verse) => {
+        const right = lyricTextWidth(word, lyricFont) / 2 + lyricTextOffset(word, lyricFont);
+        const following = next?.kind === 'note' ? next.lyrics?.[verse] ?? '' : '';
+        const left = following ? lyricTextWidth(following, lyricFont) / 2 - lyricTextOffset(following, lyricFont) : lyricFont / 2;
+        return Math.max(lyricTextWidth(word, lyricFont), right + left);
+      }));
       const mark = note?.mark ? Array.from(note.mark).length * 11 * k : 0;
       // 字形安全留白不能大于用户设定的目标净空隙，否则最紧档会被固定的 3*k 撑回 3.14px
       const pad = Math.min(3 * k, cell - glyph.nominalWidth);
-      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + 3 * k, mark + 3 * k)
+      min = Math.max(glyph.nominalWidth + Math.max(dots, extension) + pad, lyric + .35 * k, mark + 3 * k)
         + accWidthOf(ev) + arpWidthOf(ev) + graceWidthOf(ev) + (!staffInk && note?.graceBefore?.length ? glyph.graceGap : 0);
       // 格宽 = 数字宽度 + 用户要的净空隙 + 长音按 √时值 额外让出的增时线空间。
       // 基准不再是「一拍 33.6px 的记谱网格」（那样 @space 0 会留下 30px 空隙）；
       // min 仍兜住字形 / 增时线 / 歌词，保证收紧也不重叠。
       w = Math.max(min,
-        cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) +
+        (ev.ticks < TICKS_PER_BEAT && !opts.staffPitchMode
+          ? glyph.nominalWidth + (cell - glyph.nominalWidth) * (groupContinues(ev, next) ? .8 : 1.2)
+          : cell * Math.max(1, Math.sqrt(ev.ticks / TICKS_PER_BEAT)) + (!opts.staffPitchMode && dashes ? 15 * k : 0)) +
         accWidthOf(ev) +
         arpWidthOf(ev) +
         graceWidthOf(ev));
@@ -867,6 +895,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   });
 
   const denseEndings = new Set<number>();
+  const paperCanTighten = score.events.some(e => e.kind === 'barline' && !!e.breakAfter);
   const measureUnit = (from: number, to: number): SpacingUnit => {
     const slice = widths.slice(from, to);
     const ideal = slice.reduce((sum, it) => sum + it.w, 0);
@@ -874,10 +903,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const previous = score.events[from - 1];
     const tail = score.events[to - 1];
     return {
-      // 自动换行严格按「整小节自然宽」折行，不允许把小节压扁塞进去：
-      // 压缩会把目标净空隙吃掉，也会让被压缩的行右缘短一截（两端对齐破功）。
-      ideal, min: opts.fitWidth ? slice.reduce((sum, it) => sum + it.min, 0) : ideal,
-      weight: Math.pow(Math.max(1, notes), 1.5),
+      // 显式纸面换行可在字形安全宽度内温和收紧（最多6%），避免略超宽就拆开整句。
+      // 窄屏阅读沿用完整安全范围；字形自身与歌词标点不缩放。
+      ideal, min: opts.fitWidth || paperCanTighten
+        ? Math.max(slice.reduce((sum, it) => sum + it.min, 0), opts.fitWidth ? 0 : ideal * .94) : ideal,
+      weight: Math.sqrt(Math.max(1, notes)),
       lead: previous?.kind === 'barline' && previous.beatAfter ? METER_LEAD * k : 0,
       forced: !opts.fitWidth && tail?.kind === 'barline' && !!tail.breakAfter,
       penalty: tail?.kind === 'barline' ? (slurCrossedBars.has(to - 1) ? 2 : 0) + (denseEndings.has(to) ? 1.5 : 0) : opts.fitWidth ? .1 : 0,
@@ -1035,6 +1065,9 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
   let anyTimed = false;
   // 各行自然宽度的最大值（含行首让位、左右内边距与行末小节线外扩），见 LayoutResult.naturalWidth
   let naturalMax = 0;
+  const firstTimedIndex = score.events.findIndex(e => e.kind === 'note' || e.kind === 'rest');
+  let lastTimedIndex = score.events.length - 1;
+  while (lastTimedIndex >= 0 && score.events[lastTimedIndex].kind !== 'note' && score.events[lastTimedIndex].kind !== 'rest') lastTimedIndex--;
 
   for (let li = 0; li < starts.length; li += 1) {
     const from = starts[li];
@@ -1086,10 +1119,10 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const lastBar = widths[to - 1];
     // 行末小节线的墨迹（竖线居中）要落在右锚线上，格子按占位公式探出半格；
     // 基准必须与 barlineWidthOf 同源，否则负字间距下右缘会多探出 5px
-    const edge = lastBar?.ev.kind === 'barline' ? (lastBar.w - barlineWidthOf(lastBar.ev as BarlineEvent, k, gapDelta)) / 2 : 0;
+    const edge = lastBar?.ev.kind === 'barline' && !opts.fitWidth ? lastBar.w / 2 : 0;
     // 行内容消耗的是 maxX 口径（contentWidth − 2×padding），换算回 contentWidth 要补双倍 padding，
     // 少补会让临界行在贴紧宽度下被折行（chorus_02 实测 16 行变 20 行）
-    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural + edge);
+    naturalMax = Math.max(naturalMax, 2 * padding + lead + natural - edge);
     const isLastRow = li + 1 === starts.length;
     const fullRow = !isLastRow && opts.justify !== false && opts.justifyMax === undefined;
     const fitted = fitSpacing(units, maxX - lead + edge, true, fullRow ? Number.POSITIVE_INFINITY : opts.justifyMax);
@@ -1097,18 +1130,17 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     if (!opts.positions) units.forEach((u, ui) => {
       const members = widths.slice(cuts[ui], cuts[ui + 1]);
       const timed = members.filter(it => it.ev.kind === 'note' || it.ev.kind === 'rest');
+      const stretchWeight = (it: typeof members[number]) => !opts.staffPitchMode && groupContinues(it.ev, nextEvent.get(it.ev.id)) ? .3 : 1;
+      const totalStretch = timed.reduce((sum, it) => sum + stretchWeight(it), 0);
       const slack = timed.reduce((sum, it) => sum + it.w - it.min, 0);
       const delta = fitted[ui] - u.ideal;
-      // 两端对齐的余量由**小节内每个音符格均分**：只堆到小节末尾时，宽页面
-      // 上每个小节右侧会留一大块空白（用户 2026-11-06 实测），音符必须摊开
-      // 占满整小节。@space 标定的净空隙是自然宽（未拉伸的行）的口径，被拉伸
-      // 的行按均分后的格宽等比放大空隙，这才是两端对齐该有的效果。
+      // 余量分布到全小节，拍间比拍内更易拉伸，保留节奏组轮廓。
       // 小节内没有音符（纯小节线/记号）时余量给末项，保证总宽仍等于 fitted。
       // 压缩（fitWidth 窄屏）仍按可压缩量分摊，避免单格被压穿。
       members.forEach((it, index) => {
         const flexible = it.ev.kind === 'note' || it.ev.kind === 'rest';
         const share = delta >= 0
-          ? (timed.length ? (flexible ? 1 / timed.length : 0)
+          ? (timed.length ? (flexible ? stretchWeight(it) / totalStretch : 0)
             : (index === members.length - 1 ? 1 : 0))
           : flexible ? (it.w - it.min) / Math.max(1e-9, slack) : 0;
         advances.set(cuts[ui] + index, it.w + delta * share);
@@ -1244,8 +1276,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     // 小节拍数校验徽标（§7.2）：挂在每条小节线上。
     // 只校验完整落在本行的小节：万一某个小节比整行还宽被迫劈开，
     // 前半段不能当成"少拍"来报假警告。
-    // 未满与超出都报（未满 ⚠ 超出 ✗）——但两种情况例外：
-    //   弱起小节本身就不满；弱起曲的最后一个小节与弱起互补，也允许不满。
+    // 首尾小节允许不足拍，不要求显式弱起标记；中间不足拍仍报 ⚠，超出报 ✗。
     //   弱起线的两种写法都豁免：|{partial} 放在小节**开头**（measurePartial，
     //   豁免本小节）或**结尾**（it.partial，豁免刚结束的这小节）——后者是
     //   更顺手的书写顺序（先写弱起的音、再收线），此前只认前者会误报。
@@ -1253,20 +1284,19 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     {
       let acc = 0;
       let open = false;
+      let measureStartIndex = -1;
       let barX = padding + lead;
       const startsNewMeasure = from === 0 || isBarrier(widths[from - 1].ev);
       let complete = startsNewMeasure;
       /** 本小节是否以弱起线开头 */
       let measurePartial = false;
-      /** 全曲第一小节是否弱起：弱起曲的结尾小节允许不满 */
-      let firstPartial = false;
-      let seenFirst = false;
       let expectedOpts = beatOptionsOf(meterAt(score, from));
       // 散板（GB/T 46845—2025 §6.3.11.7）：散板段里的小节不做拍数校验
       // （自由拍子不满 / 超满是常态），直到某根线写「拍N/M」声明新拍号
       let freeMode = false;
       for (const it of items) {
         if (it.kind === 'note' || it.kind === 'rest') {
+          if (!open) measureStartIndex = it.eventIndex;
           acc += it.ticks ?? 0;
           open = true;
         } else if (it.kind === 'barline') {
@@ -1281,8 +1311,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
               if (!underAll) {
                 // 超过所有备选拍号，或夹在两段之间（哪段都不对）→ ✗
                 badges.push({ x: barX, text: `${trimNum(beats)}/${label} ✗`, level: 'error' });
-              } else if (!(it.final && firstPartial)) {
-                // 比所有备选都少 → ⚠（弱起曲与弱起互补的结尾小节豁免）
+              } else if (measureStartIndex !== firstTimedIndex && lastTimedIndex >= it.eventIndex) {
+                // 比所有备选都少 → ⚠；按全曲事件位置判断首尾，不受断行或终止线样式影响。
                 badges.push({ x: barX, text: `${trimNum(beats)}/${label} ⚠`, level: 'warn' });
               }
             }
@@ -1291,10 +1321,6 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
           open = false;
           complete = true;
           measurePartial = !!it.partial;
-          if (!seenFirst) {
-            seenFirst = true;
-            firstPartial = !!it.partial;
-          }
           barX = it.x;
           if (it.beatAfter) {
             expectedOpts = beatOptionsOf(it.beatAfter);
@@ -1462,17 +1488,11 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       // 个数判据漏掉长音符：`(1--- 1---)` 只有 2 个音却横跨 8 拍，
       // 大弧会拱得很高；按拍数算，长音符自然落入平线（实测用户要求）。
       // 小节线不计时值，但跨越它说明连线横穿了小节，一并计入元素数
-      let nodes = chain.length;
       let beats = 0;
       if (kind === 'slur' && chain.length > 1) {
-        const lo = Math.min(...chain.map((i) => i.eventIndex));
-        const hi = Math.max(...chain.map((i) => i.eventIndex));
         for (const m of chain) {
           const ev = byId.get(m.eventId);
           if (ev && 'ticks' in ev) beats += (ev as { ticks: number }).ticks;
-        }
-        for (let i = lo + 1; i < hi; i += 1) {
-          if (score.events[i]?.kind === 'barline') nodes += 1;
         }
       }
       arcs.push({
@@ -1483,7 +1503,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         lift: kind === 'slur' ? Math.min(tight ? 9 : 12, 7 + span * 0.04) : tight ? 5 : 11,
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
-        flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || nodes > 3),
+        flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || span > 160 * k),
         // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
         tight,
         // 链首带 slideH → 弧线中央标 h。只在本行段含该音时为真，
@@ -1573,7 +1593,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     const lineEvents = score.events.slice(from, to);
     const lineHasHairpin = lineEvents.some((e) => e.kind === 'note' && (e.hairpin || e.hairpinTo));
     const lineHasDynamic = lineEvents.some((e) => e.kind === 'note' && e.dynamic);
-    const lyricYOff = (lineHasHairpin ? 64 : lineHasDynamic ? 42 : 30) * k;
+    const lyricYOff = lineHasHairpin ? 74 * k : lineHasDynamic ? 54 * k : plainLyricOffset;
     lines.push({
       index: li,
       y,
@@ -1735,18 +1755,68 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     }
   }
 
+  // 简谱逐行计算行带；显式行高、总谱预定位与五线谱维持原有统一行高。
+  let rowsBottom = padTop + titleHeight;
+  if (!opts.lineHeight && !opts.positions && !opts.staffPitchMode) {
+    const boxesByEvent = new Map<string, HitBox[]>();
+    for (const box of hitIndex) {
+      const boxes = boxesByEvent.get(box.eventId) ?? [];
+      boxes.push(box);
+      boxesByEvent.set(box.eventId, boxes);
+    }
+    for (const line of lines) {
+      const rowNotes = line.items.filter(it => it.kind === 'note');
+      const rowVerses = Math.max(0, ...rowNotes.map(it => Math.max(
+        ...(it.lyrics ?? []).map((word, i) => word ? i + 1 : 0),
+        ...(byId.get(it.eventId)?.kind === 'note' ? (byId.get(it.eventId) as NoteEvent).lyricLinks ?? [] : []).map((link, i) => link ? i + 1 : 0), 0)));
+      const hairpin = !!line.hairpins?.length || rowNotes.some(it => it.hairpin);
+      const dynamic = rowNotes.some(it => it.dynamic);
+      const lowBottom = Math.max(21, ...rowNotes.map(it => (it.octave ?? 0) < 0 ? 19 - (it.octave ?? 0) * 7 : 0));
+      line.lyricYOff = Math.max(hairpin ? 74 * k : dynamic ? 54 * k : plainLyricOffset, lowBottom * k + lyricFont * .65);
+      const up = Math.max(24, hasCue ? CUE_UP_NEED : 0,
+        ...line.arcs.map(a => 38 + a.octaveUp * 7),
+        line.tuplets.length ? 38 : 0,
+        line.voltas.length ? 44 : 0,
+        line.items.some(it => it.kind === 'jump' || it.breath || it.bpmAfter || it.patchAfter || it.unisonAfter || it.splitAfter) ? 54 : 0,
+        ...rowNotes.map(it => (it.custom || it.tongue || it.fermata || it.staccato || it.techniques?.length || it.keyChange || it.octava || it.octavaCont)
+          ? 54 + Math.max(0, it.octave ?? 0) * 7 : 17 + Math.max(0, it.octave ?? 0) * 7));
+      const down = Math.max(21, hairpin ? 56 : dynamic ? 40 : 0,
+        ...rowNotes.map(it => (it.octave ?? 0) < 0 ? 19 + -(it.octave ?? 0) * 7 : 0),
+        rowVerses ? line.lyricYOff / k + ((rowVerses - 1) * lyricStep + lyricFont * .6) / k : 0);
+      const rowGap = Math.max(4, 12 + lineGap);
+      line.above = (up + rowGap / 2) * k;
+      line.height = (up + down + rowGap) * k;
+      if (line.index === 0 && title && !hasCue && !line.voltas.length && !rowNotes.some(it => it.tongue || it.fermata || it.custom || it.techniques?.length || it.octava)) {
+        const titleBottom = Math.max(title.tempoY + lyricFont * .6,
+          title.rightLines.length ? title.colY + 4 + (title.rightLines.length - 1) * title.rowH + lyricFont * .6 : 0);
+        const baseline = Math.max(title.y + notationDigitInkHeight(fontSize) * 9.17, titleBottom + notationDigitInkHeight(fontSize) * 2.2 + 4 * k);
+        const oldAbove = line.above;
+        line.above = Math.min(oldAbove, baseline - titleBottom - 4 * k);
+        line.height += line.above - oldAbove;
+        rowsBottom = baseline - line.above;
+        title.height = baseline - padTop - oldAbove;
+      }
+      const oldY = line.y;
+      line.y = rowsBottom + line.above;
+      for (const it of line.items) for (const box of boxesByEvent.get(it.eventId) ?? []) {
+        if (box.h === lineHeight) { box.y = rowsBottom; box.h = line.height; }
+        else box.y += line.y - oldY;
+      }
+      rowsBottom += line.height;
+    }
+  } else rowsBottom += lines.length * lineHeight;
   addPlaybackAnchors(lines, glyph);
   const lyricLines = projectLyricLines(score.events, lines.map(line => ({
     left: line.items[0]?.x ?? padding,
     right: Math.max(padding, ...line.items.map(it => it.x + it.w)),
     notes: line.items.filter(it => it.kind === 'note').map(it => {
-      const shift = (it.graceInk ?? 0) + (it.accW ?? 0);
       // 与 paint 画歌词、drawGlyph 画数字、五线谱 staff.ts 共用同一个数字字形中心，
       // 且歌词是居中排版（不是左对齐），延长线 / 连字符的起止才跟文字对得上。
       return { id: it.eventId, x: noteDigitCenter(it, glyph),
-        widths: (it.lyrics ?? []).map(word => Math.min(lyricTextWidth(word, 16 * k), Math.max(16 * k, it.w - shift - 8 * k))) };
+        widths: (it.lyrics ?? []).map(word => lyricTextWidth(word, lyricFont)),
+        offsets: (it.lyrics ?? []).map(word => lyricTextOffset(word, lyricFont)) };
     }),
-  })), 16 * k);
+  })), lyricFont);
   lines.forEach((line, i) => { if (lyricLines[i].length) line.lyricLines = lyricLines[i]; });
   const cues = placeCueStaves(score, { lines, lineHeight, unit, fontSize });
   return {
@@ -1757,7 +1827,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     hitIndex,
     title,
     width: opts.contentWidth,
-    height: padTop + titleHeight + lines.length * lineHeight + padBottom,
+    height: rowsBottom + padBottom,
     naturalWidth: naturalMax,
     ...(cues.length ? { cues } : {}),
   };
@@ -1874,7 +1944,7 @@ export function placeCueStaves(
       // 上半行带只按「小字谱自身需要的净空」算：下伸（歌词 / 力度 / 渐变 / @lineGap）
       // 撑高行带时不参与定位；行带比它还矮时（五线谱模式、显式 lineHeight、负 @lineGap）
       // 退回真正的行带顶，墨顶才不会越过行带、压住上一行内容。
-      const bandHalf = Math.min(ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
+      const bandHalf = Math.min(row.line.above ?? ctx.lineHeight / 2, (CUE_UP_NEED + 4) * k);
       // 行带顶 + 小字谱自身上伸（≈21ck）再留 4px：墨顶刚好落在行带内，
       // 也不挤主谱的上方标记。带低八度点的小字谱下伸深，再抬高 2k 留净空——
       // 位置只由上方净空决定，不随锚音符标记有无、也不随歌词行数跳动。

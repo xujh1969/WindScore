@@ -55,6 +55,8 @@ export function buildStrip(layout: ExportLayoutResult): Strip {
         ...line,
         index,
         y: line.y - top + (staff ? 0 : lineHeight / 2),
+        height: undefined,
+        above: undefined,
         items: line.items.map((it) => ({ ...it, x: it.x + dx,
           ...(it.dashXs ? { dashXs: it.dashXs.map(x => x + dx) } : {}),
           ...(it.playXs ? { playXs: it.playXs.map(p => ({ ...p, x: p.x + dx })) } : {}),

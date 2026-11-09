@@ -1,7 +1,7 @@
 {
   "name": "windscore",
   "private": true,
-  "version": "0.4.67",
+  "version": "0.4.69",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "build:android": "tsc --noEmit && vite build --mode android && node scripts/check-android-assets.mjs dist-android",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test:jpw": "esbuild scripts/jpw-layout-test.ts --bundle --platform=node --format=esm --outfile=.tmp-jpw-test.mjs --log-level=error && node .tmp-jpw-test.mjs && esbuild scripts/lyric-punctuation-test.ts --bundle --platform=node --format=esm --outfile=.tmp-lyric-punctuation-test.mjs --log-level=error && node .tmp-lyric-punctuation-test.mjs",
     "test:pdf-reliability": "esbuild scripts/pdf-reliability-test.ts --bundle --platform=node --format=esm --outfile=.tmp-pdf-reliability-test.mjs --log-level=error && node .tmp-pdf-reliability-test.mjs",
     "test:xml": "esbuild scripts/musicxml-test.ts --bundle --platform=node --format=esm --outfile=.tmp-xml-test.mjs --log-level=error && node .tmp-xml-test.mjs",
     "tauri": "tauri",

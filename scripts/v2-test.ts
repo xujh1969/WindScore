@@ -197,6 +197,7 @@ import {
 } from '../src/v2/timeline';
 import { accidentalGlyph } from '../src/v2/pitch';
 import {
+  arcYForMarks,
   beamOffset,
   DOT_R,
   lowDotOffset,
@@ -6758,6 +6759,92 @@ console.log('\n[界面术语与 Hallmark 批次 1/3]');
       return t.includes('▶ 继续') && t.includes('Ctrl+Shift+←') && t.includes('#')
         && t.includes('滑音') && t.includes('闪烁');
     }));
+}
+
+console.log('\n[连音线贴着气息技法字母让位]');
+{
+  const base = -12.8;   // 贴音符的弦线高度（相对行基线）
+  const top = -25.8;    // 吐音 T 这类字母的墨顶
+  const lift = 11.7;
+  check('没有字母命中时弧线保持贴音符高度',
+    arcYForMarks(base, 0, 100, lift, false, [], 3) === base
+    && arcYForMarks(base, 0, 100, lift, false, [{ x0: 180, x1: 190, top }], 3) === base);
+  const mid = arcYForMarks(base, 0, 100, lift, false, [{ x0: 50, x1: 50, top }], 3);
+  check('字母在弧中央：弧线正好压在字母墨顶上方 3px',
+    Math.abs(mid - 4 * lift * .5 * .5 - (top - 3)) < 1e-6, `ay=${mid.toFixed(2)}`);
+  check('贴着字母时弧线不再被整条抬到旧的跳转记号行', mid > -40, `ay=${mid.toFixed(2)}`);
+  const edge = arcYForMarks(base, 0, 100, lift, false, [{ x0: 5, x1: 5, top }], 3);
+  check('字母靠近端点时只抬到字母墨顶',
+    Math.abs(edge - (top - 3 + 4 * lift * .05 * .95)) < 1e-6 && edge < -25, `ay=${edge.toFixed(2)}`);
+  const flatY = arcYForMarks(base, 0, 100, 6, true, [{ x0: 50, x1: 50, top }], 3);
+  check('平线连线：平线段贴着字母墨顶', Math.abs(flatY - 6 - (top - 3)) < 1e-6);
+  const wide = arcYForMarks(base, 0, 100, lift, false, [{ x0: 20, x1: 80, top }], 3);
+  check('宽字母串按两端最小上抬量约束（tr~~ 这类长串边缘也不被压）',
+    Math.abs(wide - (top - 3 + 4 * lift * .2 * .8)) < 1e-6 && wide < mid - 1);
+  check('多个字母串取最严格约束',
+    arcYForMarks(base, 0, 100, lift, false,
+      [{ x0: 50, x1: 50, top }, { x0: 20, x1: 20, top }], 3) < mid - 1);
+
+  type Pt = { x: number; y: number };
+  const drawArcs = (dsl: string) => {
+    const parsed = parseDsl(dsl);
+    const L = layoutScore(parsed.score!, { contentWidth: 1200 });
+    const paths: Pt[][] = [];
+    const texts: { text: string; x: number; y: number }[] = [];
+    let cur: Pt[] = [];
+    const px = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+    const target: Record<string, unknown> = {
+      font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+      lineWidth: 1, globalAlpha: 1,
+      measureText: (t: string) => ({ width: Array.from(t).length * px(target.font as string) * 0.62 }),
+      fillText: (text: string, x: number, y: number) => { texts.push({ text: String(text), x, y }); },
+      beginPath: () => { cur = []; },
+      moveTo: (x: number, y: number) => { cur.push({ x, y }); },
+      lineTo: (x: number, y: number) => { cur.push({ x, y }); },
+      fill: () => { if (cur.length >= 40) paths.push(cur.slice()); },
+    };
+    const ctx = new Proxy(target, {
+      get(t, k: string) { return k in t ? t[k] : () => undefined; },
+      set(t, k: string, v) { t[k] = v; return true; },
+    }) as unknown as CanvasRenderingContext2D;
+    resetPaintMetrics();
+    paintLayout(ctx, L, LIGHT_THEME);
+    resetPaintMetrics();
+    return { L, paths, texts, errors: parsed.errors };
+  };
+  const pickPath = (paths: Pt[][], lo: number, hi: number): Pt[] => paths.find((p) =>
+    p.length >= 40 && Math.min(...p.map((q) => q.x)) <= lo + 3
+    && Math.max(...p.map((q) => q.x)) >= hi - 3) ?? [];
+  const withMark = drawArcs('@beat 4/4\n\n(5 6t 7) ||\n');
+  const plain = drawArcs('@beat 4/4\n\n(5 6 7) ||\n');
+  const arc1 = withMark.L.lines.flatMap((l) => l.arcs).find((a) => a.kind === 'slur');
+  const arc0 = plain.L.lines.flatMap((l) => l.arcs).find((a) => a.kind === 'slur');
+  const a1 = arc1 ? pickPath(withMark.paths, arc1.x0, arc1.x1) : [];
+  const a0 = arc0 ? pickPath(plain.paths, arc0.x0, arc0.x1) : [];
+  check('真实绘制：两份谱各画出一条连音线，且带字母的谱解析无错',
+    withMark.errors.length === 0 && !!arc1 && !!arc0 && a1.length >= 40 && a0.length >= 40,
+    `errors=${withMark.errors.join('/')} pts=${a1.length}/${a0.length}`);
+  const T = withMark.texts.find((m) => m.text === 'T');
+  check('吐音 T 画在音符上方', !!T && T.y < withMark.L.lines[0]!.y);
+  if (T && a1.length >= 40 && a0.length >= 40) {
+    const k = withMark.L.glyph.fontSize / 21;
+    const near = a1.filter((p) => Math.abs(p.x - T.x) < 2);
+    const at = near.reduce((s, p) => s + p.y, 0) / Math.max(1, near.length);
+    const markTop = T.y - 4.2 * k; // middle 基线、12px 字母 → 半高 4.2k
+    check('弧线贴着字母（墨顶上方约 3px，不再高出一层）',
+      near.length > 0 && at < markTop - 1 * k && at > markTop - 9 * k,
+      `弧线=${at.toFixed(1)} 字母墨顶=${markTop.toFixed(1)}`);
+    // 两份谱的行基线不同（有字母的行高更大），必须各自相对行基线比较
+    const low = Math.max(...a1.map((p) => p.y)) - withMark.L.lines[0]!.y;
+    const lowPlain = Math.max(...a0.map((p) => p.y)) - plain.L.lines[0]!.y;
+    check('弧线两端仍贴音符，没有整条抬到行带外',
+      low > -34 * k && Math.abs(low - lowPlain) < 14 * k,
+      `有字母=${low.toFixed(1)} 无字母=${lowPlain.toFixed(1)}`);
+  }
+  const paintSrc = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  check('旧的整体抬到跳转记号行的写法已移除',
+    !paintSrc.includes('y - M.markTop - 12 * M.k')
+    && paintSrc.includes('arcYForMarks(ay, a.x0, a.x1, lift, flat, markTops, 3 * M.k)'));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

@@ -372,6 +372,50 @@ function fillTaperedCurve(ctx: CanvasRenderingContext2D, segs: CurveSeg[], peakW
   ctx.fill();
 }
 
+/** 弧线覆盖范围内的一个字母串：x0/x1 = 整串横向占用，top = 字母墨顶的绝对 y（越小越高） */
+export interface SlurMarkTop { x0: number; x1: number; top: number }
+
+/** 弧线在参数 t 处相对弦线 ay 的上抬量（≥0）：二次贝塞尔 ay − 4·lift·t(1−t)。 */
+function arcRiseAt(t: number, lift: number, flat: boolean): number {
+  const tc = Math.min(1, Math.max(0, t));
+  // 平线连线（冂 形）中段恒抬 lift，两端按端弧长度近似线性收拢
+  return flat ? lift * Math.min(1, Math.min(tc, 1 - tc) * 4) : 4 * lift * tc * (1 - tc);
+}
+
+/**
+ * 连音线为「气息与技法」字母让位：只把弧线经过字母处的弦线抬到
+ * 「字母墨顶 − clearance」，弧线因此贴着字母走，两端仍贴音符。
+ *
+ * 旧口径按跳转记号行 markTop（44k）把整条弧抬到 y−56k——而吐音 T /
+ * 换气 V / 颤音 tr 这些字母实际画在 y−26k 附近，弧线会飘出行带、
+ * 落到上一行里（用户实测）。没有字母命中时原样返回 ay：
+ * 有连线但本行没有字母的段落不该被抬高。
+ */
+export function arcYForMarks(
+  ay: number,
+  x0: number,
+  x1: number,
+  lift: number,
+  flat: boolean,
+  marks: readonly SlurMarkTop[],
+  clearance: number,
+): number {
+  if (!marks.length || x1 <= x0) return ay;
+  let out = ay;
+  for (const m of marks) {
+    const lo = Math.max(x0, m.x0), hi = Math.min(x1, m.x1);
+    if (hi < lo) continue;
+    // 弧线在字母串两端抬得最少（抛物线与平线端弧都是中段最高），
+    // 按端点的最小上抬量约束，整串（含 tr~~ 这类长串）都不会被弧线压到
+    const rise = Math.min(
+      arcRiseAt((lo - x0) / (x1 - x0), lift, flat),
+      arcRiseAt((hi - x0) / (x1 - x0), lift, flat),
+    );
+    out = Math.min(out, m.top - clearance + rise);
+  }
+  return out;
+}
+
 /**
  * 括号字符字体：与数字**同锚点、同排**绘制，但括号字形天然比数字高
  * （上下都伸出），按墨迹测量把字号缩到括号墨迹高度与数字一致——
@@ -1582,6 +1626,8 @@ function paintLine(
     ctx.fillRect(Math.round(px), barY - M.barHalf, 2, M.barHalf * 2);
   }
 
+  // 本行实际画出的字母串墨顶：连音线据此贴着字母让位（见下方弧线段）
+  const markTops: SlurMarkTop[] = [];
   // 吐音 T/K、换气 V（淡黄）与技法记号（红色）同行排列，互不重叠：
   // 整串在音符上方居中，逐个按自身宽度推进。
   ctx.font = M.markFont;
@@ -1641,13 +1687,19 @@ function paintLine(
       const dotTop = y - M.octaveBase - ((it.octave ?? 1) - 1) * M.octaveStep - M.dotR;
       baseY = Math.min(baseY, dotTop - markGap - markHalf);
     }
+    // 字母串墨顶（middle 基线）：延长音 ⌒ 再抬高 3px 画，墨顶同步上移。
+    // 弧线按这个实测高度贴着让位，不再按旧的跳转记号行整体抬升。
+    const markTopY = baseY - markHalf - (run.some((r) => r.dot) ? 3 : 0);
+    const markCenter = noteDigitCenter(it, M.glyph);
     const widths = run.map((r) =>
       r.path ? 16 * M.k * TECHNIQUE_PATH_SCALE[r.path] : ctx.measureText(r.mark).width,
     );
     const total = widths.reduce((a, b) => a + b, 0) + 3 * (run.length - 1);
+    // 让位按整串的横向占用算：只按中心会让 tr~~ 这类长串的边缘被弧线压到
+    if (run.length) markTops.push({ x0: markCenter - total / 2, x1: markCenter + total / 2, top: markTopY });
     // 记号串以数字字形中心对齐（与 drawGlyph 的 gx + gw/2 同口径），
     // 单个技法（如 h 滑音）正好落在音符正上方
-    let mx = noteDigitCenter(it, M.glyph) - total / 2;
+    let mx = markCenter - total / 2;
     // 颤音波线（GB/T 46845—2025 §7.5.3）的终点：
     //   选区套用的颤音（后面有 trillEnd 音）→ 波浪拉到那个音的尾部；
     //   单音带增时线 → 波浪与延音线等长（数字右侧到格尾的增时线区段长）；
@@ -1674,6 +1726,7 @@ function paintLine(
       const avoidNote = prevItem && prevItem.kind !== 'barline' && prevItem.kind !== 'jump';
       const floorX = avoidNote ? prevRight + 2 + vw / 2 : -Infinity;
       const vx = Math.max(Math.min(target, runEdge), floorX);
+      markTops.push({ x0: vx - vw / 2, x1: vx + vw / 2, top: markTopY });
       ctx.fillStyle = theme.tongue;
       ctx.fillText('V', vx, baseY);
     }
@@ -1839,9 +1892,10 @@ function paintLine(
   ctx.strokeStyle = theme.ink;
   paintLyricLines(ctx, line.lyricLines, verse => lyricY + verse * lyricStep, lyricFont);
 
-  // 连线（上方弧线）。带技法记号：抬高 5px 给记号行让位；
-  // 没带（layout 标记 tight）：反过来下压 5px，弧线贴着音符画——
-  // 位置不再一刀切（用户实测要求）。
+  // 连线（上方弧线）。链上有气息 / 技法字母（layout 的 tight=false）时，
+  // 按字母**实际墨顶**贴着让位：弧线经过字母处压在字母上方 3k，两端仍贴音符；
+  // 没有字母的弧线保持贴音符的高度。旧口径按跳转记号行 markTop 把整条弧
+  // 抬到 y−56k，比字母高出一整层、甚至飘出行带（用户实测：抬高太多）。
   // 线宽不再是常数：中段 1.5px 与原线宽一致，两端逐渐变细到尖灭
   //（弧形不变，只是描边换成了变宽度填充——乐谱连线的标准画法）
   ctx.fillStyle = theme.curve;
@@ -1852,7 +1906,7 @@ function paintLine(
     const flat = !!(a.openStart || a.openEnd || (a.flat && span > 13 * h));
     const lift = a.kind === 'tie' ? .35 * h : flat ? .35 * h : Math.min(.9 * h, .5 * h + Math.max(0, span - 4 * h) * .06);
     let ay = y + M.inkTop - (flat ? .45 : a.kind === 'tie' ? .25 : .3) * h - octaveLift;
-    if (a.tight === false) ay = Math.min(ay, y - M.markTop - 12 * M.k);
+    if (a.tight === false) ay = arcYForMarks(ay, a.x0, a.x1, lift, flat, markTops, 3 * M.k);
     let segs: CurveSeg[];
     if (flat) {
       // 长连线：两端小弧 + 中间平线（冂 形）——大弧在长跨度上拱得太高，

@@ -181,8 +181,9 @@ export interface PlacedArc {
   openEnd?: boolean;
   /**
    * 贴近模式：弧线覆盖的音符**都没有**气息技法符号（吐音 / 技法 / 断音 /
-   * 延长音 / 自定义记号）时为 true——绘制层据此省掉为记号行预留的抬升，
-   * 弧线贴着音符画；只要有一个音带符号，整条弧仍抬在记号行之上。
+   * 延长音 / 自定义记号）时为 true——绘制层据此让弧线贴着音符画；
+   * false 时绘制层按本行实际画出的字母墨顶贴着让位（弧线只在经过字母处
+   * 抬到字母上方，两端仍贴音符），不再按旧的记号行整体抬升。
    */
   tight?: boolean;
   /** h 滑音连音线：弧线中央正上方标一个小写 h（链首音带 slideH 技法） */
@@ -1431,7 +1432,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
 
     /**
      * 音符上方是否画了「气息与技法」记号（吐音 T/K、技法、断音 ·、
-     * 延长音 ⌒、自定义记号）——连音线要不要抬高让位就看这个。
+     * 延长音 ⌒、自定义记号）——连音线要不要进入「贴字母让位」就看这个。
+     * 具体抬多少由绘制层按字母实测墨顶算，排版层只给开关。
      */
     const hasMarks = (m: PlacedItem): boolean =>
       !!m.tongue || !!(m.techniques?.length) || !!m.custom || !!m.staccato || !!m.fermata;
@@ -1452,7 +1454,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       // 短弧画成平线（长音拱弧会太高），但**只有断口那一端是平的**：
       // 前一段（链首在本行）留左端弧、右端断开；后一段（链尾在本行）左端断开、
       // 留右端弧——两端弧都留会看成一条独立弧线，两端都平又看不出延续（用户实测）。
-      // 高度与整条平线连线同口径（7 + 跨度×0.04，上限随技法记号让位），接缝才齐平
+      // 高度与整条平线连线同口径（7 + 跨度×0.04，上限随字母让位），接缝才齐平
       arcs.push({
         x0,
         x1,
@@ -1504,7 +1506,8 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
         kind,
         octaveUp: chain.reduce((m, i) => Math.max(m, i.octave ?? 0), 0),
         flat: kind === 'slur' && (beats > 3 * TICKS_PER_BEAT || span > 160 * k),
-        // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号才抬到记号行之上
+        // 整条链上没有任何气息技法符号 → 弧线贴近音符画；有符号时绘制层
+        // 按字母实际墨顶贴着让位（不再整条抬到记号行之上）
         tight,
         // 链首带 slideH → 弧线中央标 h。只在本行段含该音时为真，
         // 跨行续段不会重复标；断行 stub 弧不走 pushArc，也不标。

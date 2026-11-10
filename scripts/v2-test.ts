@@ -94,6 +94,9 @@ import {
   setDot,
   setKeyChange,
   addGrace,
+  appendGraceBefore,
+  popGraceBefore,
+  MAX_GRACE_NOTES,
   removeGrace,
   moveGrace,
   setGrace,
@@ -1961,6 +1964,79 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   check('搬迁后 round-trip 一致', parseDsl(serializeDsl(t4)).errors.length === 0);
   check('空组搬迁 = 不动', moveGrace(s, id, 'before', 'after') === s);
   check('同一侧搬迁 = 不动', moveGrace(t, id, 'before', 'before') === t);
+}
+
+{
+  // 输入板 Ctrl+音级键 = 逐颗加前倚音；Ctrl+删除 = 只从右往左删倚音
+  console.log('\n[输入板 Ctrl 快速录入前倚音]');
+  const s = parseDsl('@beat 4/4\n\n5 5 5 5 ||\n').score!;
+  const id = s.events[0].id;
+  const g = (d: number, oct = 0): GraceNote => ({ degree: d as GraceNote['degree'], octave: oct });
+
+  let t = s;
+  for (const [d, oct] of [[2, 0], [3, 1], [2, -1]] as const) {
+    const next = appendGraceBefore(t, id, g(d, oct));
+    check(`Ctrl+${d}${oct > 0 ? '^' : oct < 0 ? 'v' : ''} 追加一颗前倚音`, !!next,
+      next ? String((next.events[0] as NoteEvent).graceBefore?.length) : 'null');
+    if (next) t = next;
+  }
+  check('Ctrl+2、3^、2v 得到 3 颗且顺序 = 录入顺序',
+    JSON.stringify((t.events[0] as NoteEvent).graceBefore) === JSON.stringify([g(2), g(3, 1), g(2, -1)]),
+    JSON.stringify((t.events[0] as NoteEvent).graceBefore));
+  check('序列化为 {23^2v}5（复倚音连写）', serializeDsl(t).includes('{23^2v}5'),
+    serializeDsl(t).split('\n').pop()?.trim());
+  check('Ctrl 录入不改主音音级 / 时值',
+    (t.events[0] as NoteEvent).degree === 5 &&
+    (t.events[0] as NoteEvent).ticks === (s.events[0] as NoteEvent).ticks);
+  check('上限与属性面板三格录入一致（3 颗）', MAX_GRACE_NOTES === 3);
+  check('已有 3 颗时第 4 颗被拒且谱面不变', appendGraceBefore(t, id, g(7)) === null);
+
+  const p1 = popGraceBefore(t, id);
+  check('Ctrl+删除先删最右（靠主音）那颗', !!p1 &&
+    JSON.stringify((p1!.events[0] as NoteEvent).graceBefore) === JSON.stringify([g(2), g(3, 1)]),
+    p1 ? JSON.stringify((p1.events[0] as NoteEvent).graceBefore) : 'null');
+  const p2 = p1 ? popGraceBefore(p1, id) : null;
+  const p3 = p2 ? popGraceBefore(p2, id) : null;
+  check('连按三次 Ctrl+删除按右→左删光', !!p2 && !!p3 && !(p3!.events[0] as NoteEvent).graceBefore,
+    p3 ? JSON.stringify((p3.events[0] as NoteEvent).graceBefore) : 'null');
+  check('删光后主音与其它记号仍在（不误删音符）', !!p3 &&
+    p3!.events.length === s.events.length && (p3!.events[0] as NoteEvent).degree === 5);
+  check('没有倚音时 Ctrl+删除返回 null（绝不退化成删主音）',
+    !!p3 && popGraceBefore(p3!, id) === null);
+
+  const restScore = parseDsl('@beat 4/4\n\n0 5 5 5 ||\n').score!;
+  const barId = s.events.find((e) => e.kind === 'barline')!.id;
+  check('目标是休止符 / 小节线 / 没有目标时不改谱面',
+    appendGraceBefore(restScore, restScore.events[0].id, g(2)) === null &&
+    appendGraceBefore(s, barId, g(2)) === null &&
+    appendGraceBefore(s, null, g(2)) === null &&
+    popGraceBefore(s, barId) === null && popGraceBefore(s, null) === null);
+
+  // 双路径不变量：主谱与小字谱输入板都委托同一组纯函数，按钮把 Ctrl 透传下来
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const editorSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  const cueSrc = readFileSync(join(process.cwd(), 'src/v2/ui/CueDialog.tsx'), 'utf8');
+  check('音级键与常驻删除键都透传 Ctrl/Cmd',
+    padSrc.includes('actions.note(d, row.oct, e.ctrlKey || e.metaKey)') &&
+    padSrc.includes('actions.del(e.ctrlKey || e.metaKey)'));
+  check('主谱与小字谱输入板都走同一组倚音纯函数',
+    editorSrc.includes('appendGraceBefore(score,') && cueSrc.includes('appendGraceBefore(draft,') &&
+    editorSrc.includes('popGraceBefore(score,') && cueSrc.includes('popGraceBefore(draft,'));
+
+  // 只认「按住 Ctrl 点右侧栏音符按钮」，键盘 Ctrl+数字与 0/X 一律不参与
+  const noteFieldsSrc = readFileSync(join(process.cwd(), 'src/v2/ui/NoteFields.tsx'), 'utf8');
+  const cssSrc2 = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  check('右侧栏倚音区域显示「按Ctrl+音符按钮来输入倚音」',
+    noteFieldsSrc.includes('按Ctrl+音符按钮来输入倚音') && cssSrc2.includes('.v2-grace-tip'));
+  check('键盘 Ctrl+数字显式不接管（浏览器快捷键，主谱与小字谱都守门）',
+    editorSrc.includes("if (k >= '0' && k <= '9') return;") &&
+    editorSrc.includes('浏览器自己的指令') &&
+    cueSrc.includes('/^[0-9]$/.test(e.key)'));
+  check('0 / X 按住 Ctrl 不录入任何记号',
+    (padSrc.match(/if \(e\.ctrlKey \|\| e\.metaKey\) return;/g) ?? []).length >= 3 &&
+    !/onClick=\{\(\) => actions\.(rest|x)\(\)\}/.test(padSrc));
+  const xScore = parseDsl('@beat 4/4\n\nX 5 5 5 ||\n').score!;
+  check('X 记号在数据层也不接受倚音', appendGraceBefore(xScore, xScore.events[0].id, g(2)) === null);
 }
 
 {

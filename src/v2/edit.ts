@@ -989,6 +989,9 @@ export function setKeyChange(score: Score, id: string, key?: string): Score {
 
 // ───────────────────────── 倚音 ─────────────────────────
 
+/** 倚音最多 3 颗：属性面板三格录入与输入板 Ctrl 快速录入共用同一个上限 */
+export const MAX_GRACE_NOTES = 3;
+
 /** 倚音挂在主音的哪个位置 */
 export type GracePos = 'before' | 'after';
 
@@ -1085,6 +1088,33 @@ export function removeGrace(score: Score, id: string, pos: GracePos, index: numb
   if (index < 0 || index >= list.length) return score;
   list.splice(index, 1);
   return setGrace(score, id, pos, list);
+}
+
+/**
+ * 输入板 Ctrl+音级键：给选中音（或光标左侧音）追加一颗前倚音。
+ *
+ * 返回 null 表示这次按键不该改谱面（目标不是音符 / 已经有 3 颗），调用方据此
+ * 给提示，**绝不能**让它退化成普通的插入或替换音级。前倚音靠主音那颗排在
+ * 数组末尾，所以「追加到末尾」= 写在最右边，与谱面从左到右的录入顺序一致。
+ */
+export function appendGraceBefore(score: Score, id: string | null, g: GraceNote): Score | null {
+  if (!id) return null;
+  const note = score.events.find((e) => e.id === id);
+  if (!note || note.kind !== 'note' || (note.graceBefore?.length ?? 0) >= MAX_GRACE_NOTES) return null;
+  return addGrace(score, id, 'before', g);
+}
+
+/**
+ * 输入板 Ctrl+删除：只从右往左逐颗删前倚音，主音与其它记号一律不动。
+ * 没有倚音 / 目标不是音符时返回 null —— 这是「Ctrl 删除不误删音符」的保证。
+ */
+export function popGraceBefore(score: Score, id: string | null): Score | null {
+  if (!id) return null;
+  const note = score.events.find((e) => e.id === id);
+  if (!note || note.kind !== 'note') return null;
+  const n = note.graceBefore?.length ?? 0;
+  if (n === 0) return null;
+  return removeGrace(score, id, 'before', n - 1);
 }
 
 /**

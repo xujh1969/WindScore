@@ -111,8 +111,11 @@ export interface PadPending {
 }
 
 export interface PadActions {
-  /** 音级：光标在音上时改音级，否则插入新音（octave 由按钮所在的八度排决定） */
-  note: (degree: number, octave: number) => void;
+  /**
+   * 音级：光标在音上时改音级，否则插入新音（octave 由按钮所在的八度排决定）。
+   * ctrl = 按住 Ctrl/Cmd 点击：不改音级，改成给选中音（或光标左侧音）追加一颗前倚音。
+   */
+  note: (degree: number, octave: number, ctrl?: boolean) => void;
   /** 0：休止符 */
   rest: () => void;
   /** X：无音高音符（打击 / 拍手 / 念节奏），发声、无固定音高 */
@@ -149,8 +152,11 @@ export interface PadActions {
   openCustomGroup: () => void;
   /** 取消本次组合，收起候选 */
   cancelGroup: () => void;
-  /** 删除（与键盘 Backspace 等价）：删替换目标，否则删光标左边的音 */
-  del: () => void;
+  /**
+   * 删除（与键盘 Backspace 等价）：删替换目标，否则删光标左边的音。
+   * ctrl = 按住 Ctrl/Cmd 点击：只从右往左删前倚音，没有倚音时什么都不删。
+   */
+  del: (ctrl?: boolean) => void;
 }
 
 /** 小节线模式的动作集（互斥：点中竖线时整个面板切换成这些） */
@@ -363,8 +369,8 @@ function OctaveRow({ row, actions, na, litDegree, litOct }: { row: OctaveRowDef;
           key={d}
           disabled={na}
           className={`v2-btn v2-pad-num${mid}${litDegree === d && litOct === row.oct ? ' is-on' : ''}`}
-          onClick={() => actions.note(d, row.oct)}
-          title={`${row.name} ${d}`}
+          onClick={(e) => actions.note(d, row.oct, e.ctrlKey || e.metaKey)}
+          title={`${row.name} ${d}（按住 Ctrl 点击 = 给选中音 / 左侧音加一颗前倚音，最多 3 颗）`}
           aria-label={`${row.name} ${d}`}
         >
           <NotationGlyph degree={d} dots={row.oct} />
@@ -588,8 +594,8 @@ export function PadBody({
           {/* 删除（Backspace 的等价按钮）：几何画的回退箭头，⌫ 字符不是每台机器都有 */}
           <button
             className="v2-btn"
-            onClick={() => actions.del()}
-            title="删除（键盘 Backspace）：批量选中时一次删光选区；否则替换模式下删当前音，插入模式下删光标左边的音"
+            onClick={(e) => actions.del(e.ctrlKey || e.metaKey)}
+            title="删除（键盘 Backspace）：批量选中时一次删光选区；否则替换模式下删当前音，插入模式下删光标左边的音。按住 Ctrl 点击则只从右往左逐颗删前倚音"
             aria-label="删除"
           >
             <DeleteGlyph />
@@ -643,7 +649,11 @@ export function PadBody({
           <button className="v2-btn" onClick={() => actions.barline()} title="小节线 |">
             <BarlineGlyph kind="single" />
           </button>
-          <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
+          <button
+            className={`v2-btn${isRest ? ' is-on' : ''}`}
+            onClick={(e) => { if (e.ctrlKey || e.metaKey) return; actions.rest(); }}
+            title="0 休止符（按住 Ctrl 不录入：休止符没有倚音）"
+          >
             <span className="v2-pad-rest-zero">0</span>
           </button>
           <button className={`v2-btn${(target?.dot ?? 0) > 0 ? ' is-on' : ''}`} onClick={() => actions.dot()} title="附点 .（目标音带附点时点亮）">
@@ -742,11 +752,19 @@ export function PadBody({
           </button>
           </>
           )}
-          <button className={`v2-btn${isRest ? ' is-on' : ''}`} onClick={() => actions.rest()} title="0 休止符">
+          <button
+            className={`v2-btn${isRest ? ' is-on' : ''}`}
+            onClick={(e) => { if (e.ctrlKey || e.metaKey) return; actions.rest(); }}
+            title="0 休止符（按住 Ctrl 不录入：休止符没有倚音）"
+          >
             <span className="v2-pad-rest-zero">0</span>
           </button>
           {!cueMode && (
-          <button className={`v2-btn${isX ? ' is-on' : ''}`} onClick={() => actions.x()} title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符">
+          <button
+            className={`v2-btn${isX ? ' is-on' : ''}`}
+            onClick={(e) => { if (e.ctrlKey || e.metaKey) return; actions.x(); }}
+            title="X 无音高音符（打击 / 拍手 / 念节奏）：发声、无固定音高，时值与附点同音符；按住 Ctrl 不录入：X 没有倚音"
+          >
             X
           </button>
           )}

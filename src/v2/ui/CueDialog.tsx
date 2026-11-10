@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  appendGraceBefore,
   applyTier,
   applyTier as applyTierOp,
   autoGroupBeats,
@@ -11,6 +12,7 @@ import {
   insertMultibarRest,
   insertNote,
   insertRest,
+  popGraceBefore,
   prevTimed,
   pressBarline,
   pressRepeatBar,
@@ -144,7 +146,19 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
   };
 
   const padActions = useMemo<PadActions>(() => ({
-    note: (d, oct) => {
+    note: (d, oct, ctrl) => {
+      // 与主谱输入板同一套 Ctrl 语义：加前倚音而不是改音级 / 插入新音
+      if (ctrl) {
+        if (d < 1 || d > 7) return;
+        const id = overId ?? padLeftId();
+        const next = appendGraceBefore(draft, id, { degree: d as Degree, octave: oct });
+        if (next) setScoreInPlace(next);
+        else {
+          const target = id ? draft.events.find((e) => e.id === id) : undefined;
+          setMsg(target?.kind === 'note' ? '前倚音最多 3 颗' : '先选中一个音符，或把光标放在音符右边');
+        }
+        return;
+      }
       if (d === 0) {
         if (overId) setScoreInPlace(setDegree(draft, overId, 0));
         else commit({ score: insertRest(draft, snap.cursor), cursor: snap.cursor + 1, anchor: null, mode: 'insert' });
@@ -281,7 +295,19 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
       if (pending) setCustomGroupOpen(true);
     },
     cancelGroup: () => setPending(null),
-    del: () => {
+    del: (ctrl) => {
+      // 与主谱输入板同一套 Ctrl 语义：只从右往左删前倚音，不删草稿谱里的音符
+      if (ctrl) {
+        if (range) {
+          setMsg('Ctrl+删除只作用于单个音符，请先取消多选');
+          return;
+        }
+        const id = overId ?? padLeftId();
+        const next = popGraceBefore(draft, id);
+        if (next) setScoreInPlace(next);
+        else setMsg('没有可删除的前倚音');
+        return;
+      }
       if (range) {
         const ids = draft.events.slice(range.lo, range.hi).map((e) => e.id);
         let s = draft;
@@ -403,6 +429,9 @@ export function CueDialog({ score, anchorId, anchorLabel, existing, preserveText
         pasteFromMain();
         return;
       }
+      // 与主编辑器一致：Ctrl/Cmd + 数字是浏览器快捷键，不接管、不录倚音；
+      // 快速加倚音只认「按住 Ctrl 点输入板的音符按钮」。
+      if ((e.ctrlKey || e.metaKey) && /^[0-9]$/.test(e.key)) return;
       // 小字谱输入板与主谱一致：# / b 走同一套循环变音
       if (!e.ctrlKey && !e.metaKey) {
         const cueKey = e.key.toLowerCase();

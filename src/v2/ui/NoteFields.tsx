@@ -12,6 +12,7 @@ import { useRef, useState } from 'react';
 import {
   annotationTextOf,
   dropGrace,
+  MAX_GRACE_NOTES,
   moveGrace,
   setAccidental,
   setFermata,
@@ -79,7 +80,8 @@ const GRACE_ROWS: { octave: number; name: string }[] = [
   { octave: -1, name: '低八度' },
 ];
 
-const GRACE_COUNT = 3;
+/** 三格录入与输入板 Ctrl 录入共用 edit.ts 的上限，避免两处各自写死 3 而漂移 */
+const GRACE_COUNT = MAX_GRACE_NOTES;
 const GRACE_SLOTS = Array.from({ length: GRACE_COUNT }, (_, i) => i);
 
 export interface FieldProps {
@@ -371,6 +373,9 @@ export function GraceField({ score, setScore, note }: FieldProps) {
   return (
     <div className="v2-field">
       <span className="v2-field-label">倚音（不占时值，最多 3 颗）</span>
+      <p className="v2-hint v2-grace-tip" title="0 和 X 没有倚音；按住 Ctrl 点输入板的删除键可从右往左逐颗删">
+        按Ctrl+音符按钮来输入倚音
+      </p>
       <div className="v2-grace-bar">
         <label className="v2-grace-check" title="勾上 = 这三格是前倚音">
           <input type="checkbox" checked={side === 'before'} onChange={() => pickSide('before')} />

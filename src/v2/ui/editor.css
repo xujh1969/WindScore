@@ -1313,6 +1313,11 @@ details.v2-side-block[open] > summary::before {
  *   - 三格是音符输入框，点开下面弹出三排按键（上高八度 / 中正常 / 低八度）
  *   - 前 / 后勾选框互斥，勾上哪边，这三格就是哪一侧的倚音
  */
+/* 倚音快速录入说明：贴在字段标题下，别把三格按钮那一排挤下去 */
+.v2-grace-tip {
+  margin: 2px 0 5px;
+}
+
 .v2-grace-bar {
   display: flex;
   align-items: center;

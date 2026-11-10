@@ -22,9 +22,11 @@ import type { ScrollRequest } from './scoreScroll';
 import { AndroidPlayer } from './AndroidPlayer';
 import type { PackBundle } from './packBundle';
 import {
+  appendGraceBefore,
   applyTier as applyTierOp,
   autoGroupBeats,
   cycleDot,
+  popGraceBefore,
   pasteEvents,
   setBarNotation,
   extendPrev,
@@ -2905,7 +2907,23 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   const padActions = useMemo<PadActions>(
     () => ({
-      note: (d, oct) => {
+      note: (d, oct, ctrl) => {
+        // 按住 Ctrl/Cmd 点音级键 = 给选中音（或光标左侧音）追加一颗前倚音：
+        // 不改音级、不插新音、不移动光标；满 3 颗或目标不是音符时只提示，绝不退化成普通输入。
+        if (ctrl) {
+          if (d < 1 || d > 7) return;
+          const id = overId ?? padLeftId();
+          const next = appendGraceBefore(score, id, { degree: d as Degree, octave: oct });
+          if (next) {
+            commit({ score: next });
+            return;
+          }
+          const target = id ? score.events.find((e) => e.id === id) : undefined;
+          toastInfo(target?.kind === 'note'
+            ? '前倚音最多 3 颗（按住 Ctrl 点删除可从右往左删掉一颗）'
+            : '先选中一个音符，或把光标放在音符右边');
+          return;
+        }
         // 反复小节（𝄍）替代整小节记谱，里面不能再写音符（GB/T 46845—2025 §5.8.4）
         if (inRepeatMeasure(score, snap.cursor)) {
           toastInfo('这一小节是小节反复（𝄍），不能再写音符——先删掉 𝄍 再输入');
@@ -3074,7 +3092,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       },
       openCustomGroup: () => setCustomGroupOpen(true),
       cancelGroup: () => setPending(null),
-      del: () => {
+      del: (ctrl) => {
+        // 按住 Ctrl/Cmd 点删除 = 只从右往左逐颗删前倚音。没有倚音时什么都不删，
+        // 绝不能落到下面「删主音 / 删选区」的普通删除路径上。
+        if (ctrl) {
+          if (range) {
+            toastInfo('Ctrl+删除只作用于单个音符，请先取消多选');
+            return;
+          }
+          const id = overId ?? padLeftId();
+          const next = popGraceBefore(score, id);
+          if (next) commit({ score: next });
+          else toastInfo('没有可删除的前倚音');
+          return;
+        }
         // 批量选中（拖选区间）→ 一次删光整个选区（与右侧「删除所选」同路径）；
         // 否则与键盘 Backspace 同一条路径：替换模式删当前音，插入模式删光标左边的音
         if (range) {
@@ -3499,6 +3530,10 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
       if (e.ctrlKey || e.metaKey) {
         const k = e.key.toLowerCase();
+        // Ctrl/Cmd + 数字是浏览器自己的指令（切换标签页、缩放），一律不接管：
+        // 既不能录音符，也不做倚音录入。快速加倚音只认「按住 Ctrl 点右侧输入板的音符按钮」，
+        // 键盘组合键这条路刻意不支持，避免和浏览器快捷键抢按键。
+        if (k >= '0' && k <= '9') return;
         if (k === 'z') {
           e.preventDefault();
           if (e.shiftKey) redo();

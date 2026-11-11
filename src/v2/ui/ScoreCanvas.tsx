@@ -249,8 +249,17 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
    * （曲库页与播放页都滚不动）。输入事件没有歧义：滚轮 / 触摸 / 方向键 /
    * 拖滚动条（点在画布右侧那一列）都算「用户要自己看」。
    */
+  /** 编辑态光标跟随的平滑滚动 rAF：用户自己滚 / 键盘导航 / 起播时都要撤掉 */
+  const caretScrollRaf = useRef<number | null>(null);
+  const cancelCaretScroll = useCallback((): void => {
+    if (caretScrollRaf.current != null) {
+      cancelAnimationFrame(caretScrollRaf.current);
+      caretScrollRaf.current = null;
+    }
+  }, []);
   const markManualScroll = (): void => {
     followRef.current = false;
+    cancelCaretScroll();
   };
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -509,11 +518,55 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
   }, [playStyle]);
 
   const lastEditPosition = useRef('');
+  /** 已消费的点击时间戳：同一位置点第二次也要重播，不能只按谱面状态去重 */
+  const lastHandledPointerAt = useRef(0);
+  /** 上一次插入点的滚动内容坐标：自动换行 / 跨连谱系统时画「光标移动」引导 */
+  const lastCaretPoint = useRef<{ x: number; y: number } | null>(null);
+  /** 最近一次按下的屏幕坐标 + 时刻：点击导致的光标跳跃，动画从点击处起步 */
+  const lastPointer = useRef<{ cx: number; cy: number; at: number } | null>(null);
+  const caretGhostRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => () => cancelCaretScroll(), [cancelCaretScroll]);
+
+  /** 编辑态滚动跟随：与「移动光标」动画同节奏（约 0.7s ease-out）平滑过去 */
+  const animateCaretScroll = useCallback((wrap: HTMLElement, top: number, left: number, smooth: boolean) => {
+    cancelCaretScroll();
+    if (!smooth) { wrap.scrollTop = top; wrap.scrollLeft = left; return; }
+    const fromTop = wrap.scrollTop, fromLeft = wrap.scrollLeft, t0 = performance.now();
+    const step = () => {
+      // 不读 rAF 回调的时间戳：某些宿主（混合 WebView / 测试环境）它的时间源
+      // 与 performance.now() 不一致，相减会得负数 → 滚动量反而飞到负几十万。
+      // 统一时钟 + 钳到 [0,1]，任何宿主都只往前滚
+      const p = Math.max(0, Math.min(1, (performance.now() - t0) / 700));
+      const e = 1 - (1 - p) ** 3;
+      wrap.scrollTop = fromTop + (top - fromTop) * e;
+      wrap.scrollLeft = fromLeft + (left - fromLeft) * e;
+      caretScrollRaf.current = p < 1 ? requestAnimationFrame(step) : null;
+    };
+    caretScrollRaf.current = requestAnimationFrame(step);
+  }, [cancelCaretScroll]);
+
   useEffect(() => {
-    if (!showBreaks || playing || lyricEdit || dragFrom) return;
-    if (document.activeElement !== canvasRef.current) return;
-    const key = `${activePartId}:${cursor}:${focusId ?? ''}`;
-    if (lastEditPosition.current === key) return;
+    // 离开编辑态（播放 / 歌词编辑 / 切页）时清掉旧位置，回来别误播动画
+    if ((!showBreaks && !showCaret) || playing || lyricEdit) {
+      lastCaretPoint.current = null;
+      lastEditPosition.current = '';
+      cancelCaretScroll();
+      return;
+    }
+    // 拖拽框选这一帧先让过去，但**绝不清旧插入点、也不落地 key**：
+    // 每次点击都会先 setDragFrom，mouseup 才清；若在这里清掉旧位置，
+    // mouseup 后就判不出「跨行跳跃」，动画永远不会出现（用户实测）
+    if (dragFrom) return;
+    // 不再要求焦点在画布上：整小节粘贴 / 点过工具栏后照样要跟住光标
+    // key 只对「同一份谱面状态」去重；**新点击必须能穿透它**：
+    // 点同一位置第二次时 cursor / focusId / events 全不变，旧实现整段 return，
+    // 用户把视口滚回去再点同一处就再没有动画与跟随（实测反馈）。
+    // 注意：点击与上层回灌 cursor 可能分两帧到达，所以点击只在动画真正
+    // 播出去之后才算「已消费」，中间那一帧不能把它吃掉。
+    const ptr = lastPointer.current;
+    const freshClick = !!ptr && ptr.at !== lastHandledPointerAt.current && performance.now() - ptr.at < 2500;
+    const key = `${activePartId}:${cursor}:${focusId ?? ''}:${score.events.length}`;
+    if (lastEditPosition.current === key && !freshClick) return;
     lastEditPosition.current = key;
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
@@ -526,14 +579,82 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     if (!point) return;
     const canvasBox = canvas.getBoundingClientRect();
     const wrapBox = wrap.getBoundingClientRect();
+    // x / y 是「滚动内容坐标」
     const x = point.x + canvasBox.left - wrapBox.left + wrap.scrollLeft;
     const y = point.y - canvasOrigin.current + canvasBox.top - wrapBox.top + wrap.scrollTop;
+    const prev = lastCaretPoint.current;
+    lastCaretPoint.current = { x, y };
+    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // 跨行 / 跨连谱系统（Δy 超过半行）才算「跳」；方块态选中也算，不再限定插入态
+    const jumped = !!prev && Math.abs(y - prev.y) > 40;
+    // 起点（本次点击处 / 旧插入点）与当前光标在**此刻视口**的屏幕位置
+    const nowX = x - wrap.scrollLeft + wrapBox.left;
+    const nowY = y - wrap.scrollTop + wrapBox.top;
+    const fromX = freshClick ? ptr!.cx : (prev ? prev.x - wrap.scrollLeft + wrapBox.left : nowX);
+    const fromY = freshClick ? ptr!.cy : (prev ? prev.y - wrap.scrollTop + wrapBox.top : nowY);
+    // 键盘换行看「光标自身跨行」；点击看「点击处→光标」是否明显分开。
+    // 后者让同一位置再点一次也能重播，不依赖光标本身有没有移动。
+    const guide = jumped || (freshClick && Math.hypot(nowX - fromX, nowY - fromY) > 40);
     const pad = 48;
-    if (y - pad < wrap.scrollTop) wrap.scrollTop = Math.max(0, y - pad);
-    else if (y + pad > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = y + pad - wrap.clientHeight;
-    if (x - pad < wrap.scrollLeft) wrap.scrollLeft = Math.max(0, x - pad);
-    else if (x + pad > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = x + pad - wrap.clientWidth;
-  }, [cursor, focusId, activePartId, score, showBreaks, playing, lyricEdit, dragFrom]);
+    let top = wrap.scrollTop, left = wrap.scrollLeft;
+    // 用户把视口滚回去后光标已被推出视口，再次明确点击也要居中跟随
+    const offscreen = y - pad < top || y + pad > top + wrap.clientHeight
+      || x - pad < left || x + pad > left + wrap.clientWidth;
+    const centerFollow = jumped || (freshClick && guide && offscreen);
+    if (centerFollow) {
+      // 多声部按整个系统块居中，别把同一系统里其它声部切出视口
+      const lineIdx = layout.lines.findIndex((ln) => Math.abs(ln.y - point.y) < 2);
+      const sys = lineIdx >= 0 ? layout.systems?.find((s) => lineIdx >= s.from && lineIdx < s.to) : undefined;
+      const centerY = sys ? (sys.top + sys.bottom) / 2 : y;
+      top = eventScrollTop(centerY, wrap.scrollHeight, wrap.clientHeight);
+      left = Math.max(0, Math.min(Math.max(0, wrap.scrollWidth - wrap.clientWidth), x - wrap.clientWidth / 2));
+    } else {
+      if (y - pad < top) top = Math.max(0, y - pad);
+      else if (y + pad > top + wrap.clientHeight) top = Math.min(wrap.scrollHeight - wrap.clientHeight, y + pad - wrap.clientHeight);
+      if (x - pad < left) left = Math.max(0, x - pad);
+      else if (x + pad > left + wrap.clientWidth) left = Math.min(wrap.scrollWidth - wrap.clientWidth, x + pad - wrap.clientWidth);
+    }
+    if (Math.abs(top - wrap.scrollTop) > 1 || Math.abs(left - wrap.scrollLeft) > 1) {
+      animateCaretScroll(wrap, top, left, !reduced);
+    }
+    const ghost = caretGhostRef.current;
+    if (guide && ghost && typeof ghost.animate === 'function') {
+      if (typeof ghost.getAnimations === 'function') for (const a of ghost.getAnimations()) a.cancel();
+      // 浮层是 position:fixed，全程用屏幕坐标，不受滚动容器裁剪 / 层叠影响。
+      // 终点 = 滚动结束后新光标在屏幕上的位置
+      const toX = x - left + wrapBox.left;
+      const toY = y - top + wrapBox.top;
+      const dx = reduced ? 0 : toX - fromX, dy = reduced ? 0 : toY - fromY;
+      const at0 = 'translate(0px, 0px)';
+      const at1 = `translate(${dx}px, ${dy}px)`;
+      const half = `translate(${dx * 0.6}px, ${dy * 0.6}px)`;
+      ghost.style.left = `${reduced ? toX : fromX}px`;
+      ghost.style.top = `${(reduced ? toY : fromY) - 16}px`;
+      // 四段节奏（总 1s）：① 在**起点先生成**一枚 I 形光标（0–170ms，带一下轻弹）
+      // ② 原地停住看清它（170–320ms）③ 平移到新光标（320–820ms）
+      // ④ 落点轻点一下再淡出（820–1000ms）。keyframe 自带 easing 才能逐段控速
+      ghost.animate(reduced
+        // 减少动态效果：不移动，只在新光标处淡入淡出，照样能指引视线
+        ? [{ opacity: 0, offset: 0 }, { opacity: 1, offset: 0.2 }, { opacity: 1, offset: 0.7 }, { opacity: 0, offset: 1 }]
+        : [
+          { transform: `${at0} scale(.55)`, opacity: 0, offset: 0, easing: 'ease-out' },
+          { transform: `${at0} scale(1.18)`, opacity: 1, offset: 0.1, easing: 'ease-out' },
+          { transform: `${at0} scale(1)`, opacity: 1, offset: 0.17, easing: 'linear' },
+          { transform: `${at0} scale(1)`, opacity: 1, offset: 0.32, easing: 'cubic-bezier(.35,.05,.2,1)' },
+          { transform: `${half} scale(1.08)`, opacity: 1, offset: 0.6, easing: 'linear' },
+          { transform: `${at1} scale(1)`, opacity: 1, offset: 0.82, easing: 'ease-out' },
+          { transform: `${at1} scale(1.12)`, opacity: 1, offset: 0.9, easing: 'ease-out' },
+          { transform: `${at1} scale(1)`, opacity: 0, offset: 1 },
+        ], { duration: reduced ? 700 : 1000, easing: 'linear' });
+      // 动画真的播了才消费这次点击：点击与 cursor 回灌分帧时，
+      // 中间那一帧 guide=false，不能把意图提前吃掉，否则动画从此不播。
+      if (freshClick && ptr) lastHandledPointerAt.current = ptr.at;
+      lastPointer.current = null;
+    } else if (ptr && !freshClick) {
+      // 过期 / 已消费的点击别留着，避免被后续无关重渲染误当成起点
+      lastPointer.current = null;
+    }
+  }, [cursor, focusId, activePartId, score, showBreaks, showCaret, playing, lyricEdit, dragFrom, animateCaretScroll, cancelCaretScroll]);
 
   /**
    * 键盘定位（跳小节 / 跳首尾）：光标与起播点到位还不够，谱面视口必须跟着走。
@@ -547,8 +668,10 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     lastScrollSeq.current = req.seq;
     const wrap = wrapRef.current;
     if (!wrap) return;
-    // 明确的导航意图 = 交还滚动控制权，别让播放跟随的 rAF 每帧把视口拽回去
+    // 明确的导航意图 = 交还滚动控制权，别让播放跟随的 rAF 每帧把视口拽回去；
+    // 也撤掉编辑态光标跟随的平滑滚动，免得两个动画抢同一个 scrollTop
     followRef.current = false;
+    cancelCaretScroll();
     if (req.edge) {
       wrap.scrollTop = edgeScrollTop(req.edge, wrap.scrollHeight, wrap.clientHeight);
       if (req.edge === 'start') wrap.scrollLeft = 0;
@@ -566,7 +689,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     const top = wrap.scrollTop;
     if (y >= top + 48 && y <= top + wrap.clientHeight - 48) return; // 已经看得见就别抖
     wrap.scrollTop = eventScrollTop(y, wrap.scrollHeight, wrap.clientHeight);
-  }, [scrollRequest]);
+  }, [scrollRequest, cancelCaretScroll]);
 
   useEffect(() => {
     if (!lyricEdit) { lyricFocusKey.current = ''; return; }
@@ -861,6 +984,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           onCueDoubleClick(cue.cueId);
         }}
         onMouseDown={(e) => {
+          // 记下点击的内容坐标：若这次点击让光标跨行 / 跨系统跳走，
+          // 「光标移动」引导动画从这里起步（用户眼睛本来就在点击处）
+          if (e.button === 0) {
+            lastPointer.current = { cx: e.clientX, cy: e.clientY, at: performance.now() };
+          }
           const clef = e.button === 0 ? clefAtPointer(e.clientX, e.clientY) : null;
           if (clef) {
             e.preventDefault();
@@ -958,6 +1086,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
           }));
         })()}
       </div> : null}
+      <div ref={caretGhostRef} className="v2-caret-ghost" aria-hidden="true" />
     </div>
   );
 }

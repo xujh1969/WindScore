@@ -3402,6 +3402,35 @@ details.v2-side-block[open] > summary::before {
 .v2-part-settings select { min-width: 0; width: 220px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; }
 .v2-lyric-tab .v2-part-tag { color: var(--accent); }
 .v2-lyric-overlay { position: absolute; inset: 0; pointer-events: none; }
+/* 光标自动换行 / 跨连谱系统跳转时的「移动光标」引导：
+   position:fixed + 屏幕坐标，不被 .v2-scroll 的 overflow 裁掉、也不受画布层叠影响。
+   起点=点击处或旧插入点，终点=滚动结束后新光标的位置；Web Animations API 平移。
+   opacity 默认 0，动画结束（fill:none）自动归零，不留残影。 */
+.v2-caret-ghost {
+  position: fixed;
+  width: 3px;
+  height: 32px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 18px 6px color-mix(in srgb, var(--accent) 55%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 95;
+  transform-origin: center center;
+}
+/* 上下两道横衬线 = 与谱面 I 形插入光标同款，起点「生成」时才认得出是光标 */
+.v2-caret-ghost::before,
+.v2-caret-ghost::after {
+  content: '';
+  position: absolute;
+  left: -5px;
+  width: 13px;
+  height: 2px;
+  border-radius: 1px;
+  background: inherit;
+}
+.v2-caret-ghost::before { top: 0; }
+.v2-caret-ghost::after { bottom: 0; }
 .v2-lyric-cell { position: absolute; pointer-events: auto; box-sizing: border-box; margin: 0; padding: 0; border: 1px solid transparent; border-radius: 3px; background: var(--surface); color: var(--text); font-family: inherit; font-weight: 700; text-align: left; outline: none; }
 .v2-lyric-cell::placeholder { color: var(--muted); opacity: .5; }
 .v2-lyric-cell:hover { border-color: var(--border); }

@@ -130,7 +130,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { loadPianoSamples } from '../pianoSamples';
 import { buildPack, PACK_EXT, packFileName, readPack } from './packBundle';
 import { flushLibraryWrites, importLibrary, updateLibraryItem, type LibraryItem } from './libraryStore';
-import { assembleParts, conductorBarlineIdOf, partScore, replacePart, scoreParts } from '../parts';
+import { assembleParts, conductorBarlineIdOf, ensembleIssues, partMeasures, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
 import {
@@ -696,6 +696,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 暂停位置（绝对 tick）：Space / 播放按钮共用；任何非暂停的停止都会清掉它。
    *  用 state 而非 ref，按钮才能据它显示「继续」。 */
   const [pausedTick, setPausedTick] = useState<number | null>(null);
+  /**
+   * 播放页 / 安卓点音符记下的续播点（绝对 tick）。与 pausedTick 分开记：
+   * 起播有异步窗口（伴奏变调变速的 WSOLA、从本地恢复、采样预载），
+   * 窗口内 playing=false 且 pausedTick=null，「点音符=改续播点」在这里
+   * 判不出来——点了的音符记进 ref，startPlayNow 在真正起播前重读它，
+   * 最后点的音符压过窗口前算死的 from。stopPlay / 改谱都会清掉。
+   */
+  const pickResumeRef = useRef<number | null>(null);
   /** 定位（跳小节 / 跳首尾）时把谱面视口一起带过去；seq 保证连按同一个键也是一次新请求 */
   const scrollRequestSeq = useRef(0);
   const [scrollRequest, setScrollRequest] = useState<ScrollRequest | null>(null);
@@ -866,6 +874,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     clockRef.current.seek(0);
     // 停止 ≠ 暂停：旧暂停点一律作废；togglePlay 会在暂停时重新写入
     setPausedTick(null);
+    pickResumeRef.current = null;
     setPlaying(false);
   }, []);
   useEffect(() => {
@@ -1605,6 +1614,32 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   );
 
   const documentScore = snap.score;
+  // 改谱 = 事件序列变了，之前记的「点音符续播点」（绝对 tick）随之失效：
+  // 留着会让下一次播放跳到旧位置（点完音符再编辑是常见操作）
+  useEffect(() => {
+    pickResumeRef.current = null;
+  }, [documentScore]);
+  /** 严格口径的多声部小节对齐差异：只用于「谱面校验」红字 */
+  const ensembleMismatch = useMemo(
+    () => (documentScore.parts?.length ? ensembleIssues(documentScore) : []),
+    [documentScore],
+  );
+  /**
+   * 播放时的浮动提示：既报「同序号小节拍数不同」（ensembleIssues），
+   * 也报「各声部小节数不同」——后者是合法写法（短声部提前结束），
+   * 严格校验并不报错，但写谱推进时用户仍想知道哪个声部还没写完。
+   */
+  const ensemblePlayHint = useMemo(() => {
+    if (!documentScore.parts?.length) return '';
+    const parts = scoreParts(documentScore);
+    const counts = parts.map((p) => partMeasures(p.events).length);
+    const differs = counts.some((c) => c !== counts[0]);
+    if (!differs && ensembleMismatch.length === 0) return '';
+    const summary = parts.map((p, i) => `${p.name} ${counts[i]}`).join(' / ');
+    return differs
+      ? `各声部小节数：${summary}；按现有内容播放`
+      : `${ensembleMismatch.length} 处小节拍数未对齐，按现有内容播放`;
+  }, [documentScore, ensembleMismatch]);
   const activePartId = scoreParts(documentScore).find((p) => p.id === snap.partId)?.id ?? scoreParts(documentScore)[0].id;
   const score = useMemo(() => partScore(documentScore, activePartId), [documentScore, activePartId]);
   /** 工具栏「示例乐谱」下拉的当前项：曲谱属性里改了 @title 就跟着显示新名 */
@@ -1863,7 +1898,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 编辑永远作用在带反复记号的原谱上；展开产物是派生的、只读的。
    * 结构有错（配对不上 / 房子越界）或谱面本来没有反复记号时，退回原谱。
    */
-  const expansion = useMemo(() => expandScore(timbreScore), [timbreScore]);
+  // 播放/时间线用「宽容模式」：多声部小节数暂时对不上（只推进了一个声部）
+  // 也必须能照常展开反复并出声；严格诊断另走 ensembleMismatch（下方）
+  const expansion = useMemo(() => expandScore(timbreScore, { tolerateEnsemble: true }), [timbreScore]);
   const playScore = expansion.score ?? timbreScore;
   const timeline = useMemo(() => buildTimeline(playScore), [playScore]);
   /**
@@ -1915,13 +1952,16 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const visibleLayout = useRef<{ layout: LayoutResult; options: LayoutOptions } | null>(null);
   const rememberLayout = useCallback((layout: LayoutResult, options: LayoutOptions) => { visibleLayout.current = { layout, options }; }, []);
 
-  /** 反复相关的诊断：阻断错误与提示一并挂到工具栏的「谱面校验」里 */
+  /** 反复相关的诊断：阻断错误与提示一并挂到工具栏的「谱面校验」里。
+   *  播放展开用了宽容模式，多声部小节对齐差异仍按严格口径报在这里（R1），
+   *  免得「能播了」就把还没写完的声部藏起来 */
   const repeatDiag = useMemo(
     () => [
+      ...ensembleMismatch.map((m) => ({ code: 'R1', message: m })),
       ...expansion.errors.map((m) => ({ code: 'R1', message: m })),
       ...expansion.warnings.map((m) => ({ code: 'R2', message: m })),
     ],
-    [expansion],
+    [expansion, ensembleMismatch],
   );
   const issues = useMemo(() => [...violations, ...repeatDiag], [violations, repeatDiag]);
 
@@ -1997,8 +2037,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     await preloadInstrumentSamples(timeline.map((e) => e.patch));
     const bpm = score.meta.bpm;
     // 勾了循环且 A/B 齐备：播放一律从 A 起（暂停续播仍由 fromOverride 指定）；
-    // 没勾循环时完全走原来的光标 / 方块起播逻辑
+    // 没勾循环时完全走原来的光标 / 方块起播逻辑。
+    // from 只是**兜底值**：真正起播前还要 resolveFrom 重读 pickResumeRef——
+    // 伴奏恢复 / 变调变速 / 采样预载的异步窗口里用户点音符时 playing=false
+    // 且 pausedTick=null，「点音符=改续播点」在 setPlayPickAt 里判不出来，
+    // 只能记进 ref，在这里取回（用户实测：点了音符却从上次暂停的位置继续）。
     const from = fromOverride ?? (abRange ? abRange.from : playFromTick);
+    /** 起播前最后一眼：窗口内点过的音符压过兜底 from，取走即清 */
+    const resolveFrom = (): number => {
+      const picked = pickResumeRef.current;
+      pickResumeRef.current = null;
+      return picked ?? from;
+    };
     // 音频模式：stem + TempoMap 齐备且用户选了「伴奏音频」。
     // **记谱页除外**：那里只放合成 MIDI——编辑时听的是「谱面写对了没有」，
     // 伴奏是对轨后的成品，混进来只会干扰；想跟伴奏去播放页，那边有开关。
@@ -2034,15 +2084,17 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       if (androidPlayer && !androidAlive.current) return;
       // 倍速下 tick↔秒 换算整体缩放，指示条与合成声部才跟得上变快的伴奏
       const playTempo = speed === 1 ? audioTempo! : scaleTempoMap(audioTempo!, speed);
+      // WSOLA await 的窗口里用户可能点了别的音符：起播前重读取最新续播点
+      const startFrom = resolveFrom();
       // 前奏：谱面记的是从进唱开始，伴奏前面还整段前奏。
       // 从头播时把起播点推到音频 0 秒（secToTick 反查，通常为负 tick = 谱面起点之前），
       // 前奏就会照常放完再进谱面；关掉则老样子——从谱面起点直接开始
       // 仅未点选音符、从谱面零拍起播时带前奏；选中首拍内的音也必须尊重其起点。
       // 循环段落不插前奏：每轮都要精确从 A 起，前奏的负 tick 会把周期起点推走
       const introTick =
-        playIntro && !abRange && !activePlayPick && snap.mode !== 'over' && from === 0
+        playIntro && !abRange && !activePlayPick && snap.mode !== 'over' && startFrom === 0
           ? Math.min(0, secToTick(playTempo, 0))
-          : from;
+          : startFrom;
       const audioLead = playerRef.current.startAudio({
         timeline,
         tempo: playTempo,
@@ -2063,11 +2115,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     // 谱中变速（小节线「速96」）→ 合成音按曲线算秒（倍速整体缩放，与伴奏同款）；
     // 指示条读 player.currentTick（tempo 驱动），时钟仅在停止后兜底显示。
     const playSynthTempo = synthTempo ? (speed === 1 ? synthTempo : scaleTempoMap(synthTempo, speed)) : null;
+    const synthFrom = resolveFrom();
     const lead = playSynthTempo
-      ? playerRef.current.start(timeline, playSynthTempo, from, transpose, abRange)
-      : playerRef.current.start(timeline, bpm * speed, from, transpose, abRange);
+      ? playerRef.current.start(timeline, playSynthTempo, synthFrom, transpose, abRange)
+      : playerRef.current.start(timeline, bpm * speed, synthFrom, transpose, abRange);
     clockRef.current.setBpm(bpm * speed);
-    clockRef.current.seek(from / TICKS_PER_BEAT);
+    clockRef.current.seek(synthFrom / TICKS_PER_BEAT);
     clockRef.current.playAfter(lead);
     setPlaying(true);
     // 起播对齐走 effect（那里读 lead）；这里只把 lead 带过去
@@ -2255,13 +2308,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const startPlayRef = useRef(startPlayNow);
   startPlayRef.current = startPlayNow;
   const startPlay = useCallback((fromOverride?: number) => {
+    // 分声部推进是常见写法：某个声部还没写完时仍允许预览播放，
+    // 只用一条自动消失的浮层说明差异，不弹红字、不拦截（也不影响展开反复）
+    if (ensemblePlayHint) {
+      toastInfo('多声部小节数不一致，已按现有内容播放', ensemblePlayHint);
+    }
     if (!shouldWaitForAudio(playSource, restoring)) {
       void startPlayRef.current(fromOverride);
       return;
     }
     setAudioMsg('伴奏正在从本地恢复，稍等一下就按伴奏放…');
     void waitRestore().then(() => startPlayRef.current(fromOverride));
-  }, [playSource, restoring, waitRestore]);
+  }, [playSource, restoring, waitRestore, ensemblePlayHint, toastInfo]);
 
   /**
    * 播放中改调：记下当前 tick，停掉，再从原位置带新调起播（听感上是「无缝换调」，
@@ -2723,6 +2781,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const tick = tickAtEvent(expanded, idx);
     stopPlay();
     setPausedTick(tick);
+    pickResumeRef.current = tick;
     clockRef.current.seek(tick / TICKS_PER_BEAT);
   };
 
@@ -3266,7 +3325,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const keepResume = pauseOnPlay && (playing || pausedTick !== null);
     stopPlay();
     // stopPlay 会作废旧暂停点并把时钟拨回 0；这里写回「被点音符」的绝对 tick，
-    // 续播时它压过 playFromTick / 光标起播，前奏也不会抢这个起点
+    // 续播时它压过 playFromTick / 光标起播，前奏也不会抢这个起点。
+    // ref 不论 keepResume 都要写：起播的异步窗口（变调/变速/恢复）里点音符时
+    // playing=false 且 pausedTick=null，keepResume 判不出来——startPlayNow
+    // 在真正起播前用 resolveFrom 取回它（用户实测「点了音符却从旧位置继续」）
+    if (pauseOnPlay) pickResumeRef.current = tick;
     if (keepResume) {
       setPausedTick(tick);
       clockRef.current.seek(tick / TICKS_PER_BEAT);
@@ -3286,7 +3349,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     setPending(null);
     commit({ score: next, partId: id ?? activePartId, ...(id ? { cursor: 0, anchor: null, mode: 'insert' as const } : {}) }, true);
     if (liveMix) {
-      const expanded = expandScore(next);
+      // 与播放展开同口径（宽容多声部小节对齐），否则播着改谱时增益会按未展开原谱重算
+      const expanded = expandScore(next, { tolerateEnsemble: true });
       playerRef.current.setPartGains(buildTimeline(expanded.score ?? next));
     }
   };
@@ -3514,6 +3578,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
        *  这样三屏行为一致，也不会被播放跟随的 rAF 把视口拉回去。 */
       const settleNavigation = (): void => {
         setPausedTick(null);
+        pickResumeRef.current = null;
         if (playing) stopPlay();
       };
       /** 跳到曲谱开头 / 末尾 */
@@ -3995,9 +4060,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           if (index < 0) return;
           const tick = tickAtEvent(expanded, index);
           // 播放中点音符 = 暂停并把续播点对准这颗音，等用户点播放键再继续；
-          // 与 PC 播放页一致，不再自己立刻起播
+          // 与 PC 播放页一致，不再自己立刻起播。
+          // pickResumeRef 同步记下：安卓起播同样有异步窗口（变调/变速/恢复），
+          // 窗口内点的音符由 startPlayNow 的 resolveFrom 取回
           setPlayPickAt({ ...pick, partId }, false);
-          androidResumeTick.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
+          androidResumeTick.current = tick; pickResumeRef.current = tick; clockRef.current.seek(tick / TICKS_PER_BEAT);
         }}
         onEnded={onAndroidScoreEnded}
       />}
@@ -4008,6 +4075,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         timbre={playTimbre}
         onChange={(t) => { if (playing) stopPlay(); setPlayTimbre(t); }}
         onClose={() => setAnTimbreOpen(false)} /> : null}
+      {/* 安卓播放页是提前 return 的分支，浮层也得挂一份：多声部小节未对齐提示等 */}
+      <ToastView toast={toast} onDismiss={toastHide} />
     </div>;
   }
   return (

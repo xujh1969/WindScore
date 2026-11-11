@@ -60,13 +60,20 @@ interface Ctx {
   pass: number;
 }
 
-export function expandScore(score: Score): ExpandResult {
+/**
+ * @param opts.tolerateEnsemble 只放「多声部小节对齐」这一类错误：
+ *   写谱时常常先推进一个声部，其余声部还没写完（既不是 0，也不是空），
+ *   此时逐小节拍数对不上是正常的中间态。带这个开关时仍照常展开/组装
+ *   展开谱，让播放 / 时间线拿到正确结果；诊断与导出照旧用严格模式。
+ *   反复 / 跳转结构错误（子声部 errors）依旧阻断——那种谱真没法展开。
+ */
+export function expandScore(score: Score, opts?: { tolerateEnsemble?: boolean }): ExpandResult {
   // 齐唱段先展开（同/分 → 各声部事件拷贝），后续反复展开与组装照旧
   score = expandUnisons(score);
   if (score.parts?.length) {
     const parts = scoreParts(score);
     const results = parts.map((part) => expandScore(withConductor(score, part.id)));
-    const errors = [...ensembleIssues(score), ...results.flatMap((r, i) => r.errors.map((e) => `${parts[i].name}：${e}`))];
+    const errors = [...(opts?.tolerateEnsemble ? [] : ensembleIssues(score)), ...results.flatMap((r, i) => r.errors.map((e) => `${parts[i].name}：${e}`))];
     const firstIndex = new Map(results.flatMap((r) => [...r.firstIndex]));
     return {
       score: errors.length || results.some((r) => !r.score) ? null : assembleParts(score, results.map((r, i) => ({ ...parts[i], events: r.score!.events, groups: r.score!.groups }))),

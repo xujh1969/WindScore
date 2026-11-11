@@ -11,6 +11,7 @@ import { expandScore } from '../src/v2/expand';
 import { buildTimeline } from '../src/v2/timeline';
 import { layoutScore } from '../src/v2/layout';
 import { validateGroups } from '../src/v2/validate';
+import { ensembleIssues } from '../src/v2/parts';
 import type { NoteEvent } from '../src/v2/types';
 import { TICKS_PER_BEAT } from '../src/v2/ticks';
 
@@ -328,6 +329,37 @@ console.log('\n[反复展开 · 幂等与 round-trip]');
     serializeDsl(twice).split('\n').pop()?.trim().slice(0, 60),
   );
   check('展开产物可 round-trip', parseDsl(serializeDsl(once)).errors.length === 0);
+}
+
+console.log('\n[多声部小节未对齐 · 宽容展开]');
+{
+  // 用户场景：先推进声部 1（每小节 4 拍），声部 2 才写了两小节、还都没写满。
+  // 旧行为：ensembleIssues 报错 → 展开谱为 null → 播放被「重奏暂不能播放」挡住，
+  // 逼着用户给没写的声部填 0 凑拍数。现在宽容展开仍要出声，严格诊断另算。
+  const src = [
+    '@format 3', '@beat 4/4',
+    '@part 1 "旋律"', '1 2 3 4 | 5 4 3 2 | 1 3 5 3 ||',
+    '@part 2 "伴奏"', '1 3 | 5 3 1 ||',
+  ].join('\n');
+  const p = parseDsl(src);
+  check('测试谱解析无错', p.errors.length === 0 && !!p.score, p.errors.join(' / '));
+  const strict = expandScore(p.score!);
+  check('严格模式报对齐差异、展开谱为 null', strict.errors.length > 0 && strict.score === null, strict.errors[0]);
+  const tolerant = expandScore(p.score!, { tolerateEnsemble: true });
+  check('宽容模式展开成功（播放不被拦截）', tolerant.errors.length === 0 && !!tolerant.score, tolerant.errors.join(' / '));
+  const tl = tolerant.score ? buildTimeline(tolerant.score) : [];
+  check('宽容模式时间线两声部都出声', tl.some((e) => e.partId === '1') && tl.some((e) => e.partId === '2'));
+  check('宽容模式展开谱仍可序列化', !!tolerant.score && parseDsl(serializeDsl(tolerant.score)).errors.length === 0);
+  check('严格诊断口径独立保留（工具栏红字）', ensembleIssues(p.score!).length > 0);
+  const single = parseDsl('@beat 4/4\n\n1 2 3 4 | 5 4 3 2 ||\n').score!;
+  check('单声部谱不受宽容开关影响',
+    expandScore(single, { tolerateEnsemble: true }).score?.events.length === expandScore(single).score?.events.length);
+  // 反复结构错误不是「声部没写完」，依旧要阻断，不能被宽容开关吞掉
+  const bad = parseDsl(
+    '@format 3\n@beat 4/4\n@part 1 "a"\n|: 1 2 3 4 | 5 4 3 2 ||\n@part 2 "b"\n|: 0 0 0 0 | 0 0 0 0 ||\n',
+  ).score!;
+  const badTol = expandScore(bad, { tolerateEnsemble: true });
+  check('反复结构错误依旧阻断', badTol.errors.length > 0 && badTol.score === null, badTol.errors[0]);
 }
 
 console.log(failed === 0 ? '\nEXPAND PASS' : `\nEXPAND FAIL (${failed})`);

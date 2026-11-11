@@ -97,10 +97,18 @@ export function groupTicks(beat: string): number {
  *   - 2 分体系（单拍子）：对半细分 —— 1、½、¼、⅛ 拍
  *   - 3 分体系（复拍子）：大拍的 1、⅔、½、⅓、¼ ——
  *     6/8 系即 1½、1、¾、½、3/8 拍；6/4 即 3、2、1½、1、¾ 拍
+ *   - 跨拍连音档：大拍的 4/3（3 个二分音均分 4 拍之类，GB/T 46845—2025
+ *     §6.3.12 连音均分原时值）——只在不超出小节容量时给出
  * 某个音数能不能凑成某档由 candidatesFor 判断，这里只给「档位表」。
  */
 export function groupTierBeats(beat: string): number[] {
   const unit = groupTicks(beat) / TICKS_PER_BEAT;
   if (unit === 1) return [1, 0.5, 0.25, 0.125];
-  return [unit, (unit * 2) / 3, unit / 2, unit / 3, unit / 4];
+  const out = [unit, (unit * 2) / 3, unit / 2, unit / 3, unit / 4];
+  // 跨拍连音档：4/3 × 大拍（如 6/4 → 4 拍档，可放 3 个二分音的三连音）。
+  // 超过小节容量（任一段的拍数）就没有意义——组不能跨小节线。
+  const wide = (unit * 4) / 3;
+  const cap = Math.max(...meterBeatOptions(beat));
+  if (wide <= cap + 1e-9) out.unshift(wide);
+  return out;
 }

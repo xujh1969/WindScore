@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { TICKS_PER_BEAT, isLegalTick } from '../ticks';
+import { TICKS_PER_BEAT } from '../ticks';
 import { beatLabel, decodeDuration, groupCandidates, MAX_BEAMS } from '../edit';
 import { ExpClose, useEscapeClose } from './ExpClose';
 
@@ -61,10 +61,12 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
   // 6/8 系里 1½ 拍÷3 = 3360 是普通八分，是自然划分，勾了反而会画出错误的「3」
   const tupletAvailable = useMemo(() => {
     if (![3, 5, 6, 7].includes(n)) return false;
-    // 连音组跨度 ≤ 1 拍（I2 对连音组恒按 1 拍封顶，两拍连音现有 DSL 写不了）
-    if (totalTicks > TICKS_PER_BEAT) return false;
+    // 连音组总跨度必须是整数拍：1 拍走传统 <3: …> 省写，多拍走 <3:2 …> 跨拍
+    // 形式（GB/T 46845—2025 §6.3.12 连音均分原时值）；组不能跨小节线，
+    // 非整数拍跨度（如 3/8 大拍 1½ 拍）没有可序列化的连音写法
+    if (totalTicks < TICKS_PER_BEAT || totalTicks % TICKS_PER_BEAT !== 0) return false;
     const each = Math.round(totalTicks / n);
-    return Number.isInteger(totalTicks / n) && each > 0 && isLegalTick(each) && !decodeDuration(each);
+    return Number.isInteger(totalTicks / n) && each > 0 && !decodeDuration(each);
   }, [n, totalTicks]);
   const tupletEach = useMemo(() => Math.round(totalTicks / n), [totalTicks, n]);
 

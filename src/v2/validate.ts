@@ -2,16 +2,17 @@
  * BeatGroup 不变量校验（M0-1 / spec §5.3）
  *
  *   I1  Σ member.ticks === group.totalTicks
- *   I2  group.totalTicks ≤ TICKS_PER_BEAT
+ *   I2  group.totalTicks ≤ 拍组上限（连音组按小节容量，其余 ≤ 一拍组）
  *   I3  memberIds 在 events 中连续（中间只允许 breath）
- *   I4  totalTicks 与成员 tick 都落在合法 tick 粒度
+ *   I4  totalTicks 与成员 tick 都落在合法 tick 粒度（均匀连音成员豁免：
+ *       成员时值由组标号统一给出，如 <3:2 …> 各 2/3 拍）
  *
  * 原则（§7.2）：只报错，绝不静默修正。
  */
 
 import { isLegalTick, LEGAL_TICKS, TICKS_PER_BEAT } from './ticks';
 import { isTimed, type Event, type RestEvent, type Score } from './types';
-import { groupTicks, meterAt, validMeter } from './meter';
+import { groupTicks, meterAt, meterBeatOptions, validMeter } from './meter';
 import { gbNote } from './gb';
 
 export type InvariantCode = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'E1' | 'E2';
@@ -84,8 +85,13 @@ export function validateGroups(score: Score): Violation[] {
       });
     }
 
-    // I2 组不跨拍
-    const maxGroup = score.format === 3 && !g.tuplet ? groupTicks(meterAt(score, index.get(g.memberIds[0]) ?? 0)) : TICKS_PER_BEAT;
+    // I2 组不跨拍。连音组可跨拍（<3:2 …> 均分多拍，GB/T 46845—2025 §6.3.12
+    // 连音均分**原时值**），但组不得跨小节线（解析端已拦），这里以小节容量为上限；
+    // 混合拍小节可以是任一段的拍数，取最大段。
+    const meter = meterAt(score, index.get(g.memberIds[0]) ?? 0);
+    const maxGroup = !g.tuplet
+      ? (score.format === 3 ? groupTicks(meter) : TICKS_PER_BEAT)
+      : Math.max(...meterBeatOptions(meter)) * TICKS_PER_BEAT;
     if (g.totalTicks > maxGroup) {
       out.push({
         code: 'I2',
@@ -120,8 +126,14 @@ export function validateGroups(score: Score): Violation[] {
         message: `组总时值 ${g.totalTicks} 不是合法 tick（候选 ${LEGAL_TICKS.join('/')}）${gbNote('duration')}`,
       });
     }
+    // 连音成员的时值由组标号统一给出（如 <3:2 …> 成员各 2/3 拍 = 4480 tick），
+    // 不在独立时值值域内是正常的——只要求成员均匀且能整除
+    const tupletN = g.tuplet;
+    const uniformTuplet = !!tupletN && members.length === tupletN
+      && g.totalTicks % tupletN === 0
+      && (members as { ticks: number }[]).every((m) => m.ticks === g.totalTicks / tupletN);
     for (const m of members as { id: string; ticks: number }[]) {
-      if (!isLegalTick(m.ticks)) {
+      if (!uniformTuplet && !isLegalTick(m.ticks)) {
         out.push({
           code: 'I4',
           groupId: g.id,

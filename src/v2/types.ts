@@ -294,9 +294,9 @@ export type TimedEvent = NoteEvent | RestEvent;
  * 拍内组（§5.3）
  * 不变量见 validate.ts：
  *   I1  Σ member.ticks === totalTicks
- *   I2  totalTicks ≤ TICKS_PER_BEAT
+ *   I2  totalTicks ≤ 拍组上限（连音组按小节容量，其余 ≤ 一拍组）
  *   I3  memberIds 在 events 中连续（中间只允许 breath）
- *   I4  totalTicks 与成员 tick 都落在合法 tick 粒度
+ *   I4  totalTicks 与成员 tick 都落在合法 tick 粒度（均匀连音成员豁免）
  */
 export interface BeatGroup {
   id: string;

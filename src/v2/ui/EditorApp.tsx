@@ -206,7 +206,7 @@ function withMeterSegment(beat: string, index: number, value: string): string {
 /** 校验违反的人话分类——I1/I3 这类内部代号用户看不懂，翻成是哪类问题 */
 const VIOLATION_LABEL: Record<string, string> = {
   I1: '拍内组',
-  I2: '拍内组超一拍',
+  I2: '拍组超上限',
   I3: '拍内组',
   I4: '时值粒度',
   I5: '连线',

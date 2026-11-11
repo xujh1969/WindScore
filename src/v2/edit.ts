@@ -1568,8 +1568,10 @@ export function beatLabel(t: number): string {
  */
 export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
   const even = totalTicks / n;
-  /** 每个音的 tick 都必须是合法粒度，否则写回去就是 I4 违反（如 3 tick） */
-  const legal = (c: TierCandidate): boolean => c.ticks.every((x) => isLegalTick(x));
+  /** 每个音的 tick 都必须是合法粒度，否则写回去就是 I4 违反（如 3 tick）；
+   *  连音候选豁免——成员时值由组标号统一给出（如 <3:2 …> 各 2/3 拍），
+   *  不在独立时值值域内是正常的，只要求是正整数 */
+  const legal = (c: TierCandidate): boolean => c.ticks.every((x) => (c.tuplet ? Number.isInteger(x) && x > 0 : isLegalTick(x)));
   const same = (a: TierCandidate, b: TierCandidate): boolean =>
     a.tuplet === b.tuplet &&
     JSON.stringify(a.ticks) === JSON.stringify(b.ticks) &&
@@ -1647,13 +1649,13 @@ export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
   // 均分殿后：均分值能写成常规时值（decodeDuration 可解）就是普通均分，
   // 不管几个音——6/8 里 3 个八分凑满一大拍是**自然划分**，不是三连音（手册 §4.2）；
   // 只有均分值本身不可书写（1 拍 ÷ 3 = 2240 这种）才挂连音标号，且仅 3/5/6/7 音。
-  // 连音组还有**跨度 ≤ 1 拍**的硬约束（I2 对连音组恒按 1 拍封顶；两拍连音
-  // 在现有 DSL 无无损写法），6/4 的 2 拍档 × 6 音就不该出六连音候选
+  // 连音组的总跨度必须是整数拍（跨拍连音 <3:2 …> 冒号后写整数拍数；1 拍走
+  // 传统 <3: …> 省写），非整数拍跨度（如 3/8 的大拍 1½ 拍）出不了可序列化的连音。
   if (Number.isInteger(even) && even > 0) {
     const plain = decodeDuration(even);
     if (plain) {
       push(out, { label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) });
-    } else if ([3, 5, 6, 7].includes(n) && totalTicks <= TICKS_PER_BEAT) {
+    } else if ([3, 5, 6, 7].includes(n) && totalTicks >= TICKS_PER_BEAT && totalTicks % TICKS_PER_BEAT === 0) {
       push(out, { label: `${n} 连音（每音 ${beatLabel(even)}，标号 ${n}）`, ticks: Array(n).fill(even), tuplet: n });
     }
     // 都不行（如 2 拍 ÷ 6 = 1/3 拍碎片：写不了常规值、连音又超跨度）就不给这档，
@@ -1729,7 +1731,12 @@ export function groupCandidates(n: number, totalTicks: number, beat?: string): T
     const cands = compoundCandidates(n, totalTicks);
     if (cands.length) return cands;
   }
-  return candidatesFor(n, totalTicks);
+  const all = candidatesFor(n, totalTicks);
+  // 跨拍档（总时值超过连通大拍）：只有连音组能合法跨拍（GB/T 46845—2025
+  // §6.3.12 连音均分原时值），普通减时线组不能跨拍（I2）——过滤掉普通候选，
+  // 否则应用「均分」就会建出违反 I2 的组
+  if (unit && totalTicks > unit) return all.filter((c) => c.tuplet);
+  return all;
 }
 
 /**

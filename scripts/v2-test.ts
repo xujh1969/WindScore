@@ -2259,6 +2259,79 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 }
 
 {
+  // 跨拍连音（GB/T 46845—2025 §6.3.12 连音均分**原时值**，手册 §3.2 两拍三连音）：
+  // <3:2 5 6 7> = 3 个四分音均分 2 拍（各 4480 tick），<3:4 …> = 3 个二分音均分 4 拍（各 8960）。
+  // 成员省写、时值由组标号统一给出——4480/8960 没有独立的除法/附点/增时线写法。
+  console.log('\n[跨拍连音 <3:2 …>]');
+  const P = TICKS_PER_BEAT;
+
+  const p2 = parseDsl('@format 3\n@beat 6/4\n\n<3:2 5 6 7> ||\n');
+  check('两拍三连音：解析无错', !p2.errors.length && !!p2.score, p2.errors.join(' / '));
+  const two = p2.score!;
+  const g2 = two.groups.find((g) => g.tuplet === 3)!;
+  check('组标号 3、总时值 2 拍', !!g2 && g2.totalTicks === P * 2, String(g2?.totalTicks));
+  const mem2 = g2.memberIds.map((id) => two.events.find((e) => e.id === id) as { ticks: number });
+  check('成员各 2/3 拍（4480）', mem2.length === 3 && mem2.every((m) => m.ticks === Math.round((P * 2) / 3)), JSON.stringify(mem2.map((m) => m.ticks)));
+  check('两拍三连音：零不变量违反', validateGroups(two).length === 0, validateGroups(two).map((v) => `${v.code}:${v.message}`).join(' / '));
+  const s2 = serializeDsl(two);
+  check('序列化输出 <3:2 …>', s2.includes('<3:2 '), s2);
+  const rt2 = parseDsl(s2);
+  const rt2Notes = rt2.score!.events.filter((e) => e.kind === 'note');
+  check('序列化回读成员时值不变', !rt2.errors.length && mem2.every((m, i) => (rt2Notes[i] as { ticks: number }).ticks === m.ticks), rt2.errors.join(' / '));
+
+  const p4 = parseDsl('@format 3\n@beat 6/4\n\n<3:4 1 2 3> ||\n');
+  check('四拍三连音：解析无错', !p4.errors.length && !!p4.score, p4.errors.join(' / '));
+  const four = p4.score!;
+  const g4 = four.groups.find((g) => g.tuplet === 3)!;
+  const mem4 = g4.memberIds.map((id) => four.events.find((e) => e.id === id) as { ticks: number });
+  check('成员各 4/3 拍（8960）', mem4.length === 3 && mem4.every((m) => m.ticks === Math.round((P * 4) / 3)), JSON.stringify(mem4.map((m) => m.ticks)));
+  check('四拍三连音：零不变量违反', validateGroups(four).length === 0, validateGroups(four).map((v) => `${v.code}:${v.message}`).join(' / '));
+  check('四拍三连音序列化输出 <3:4 …>', serializeDsl(four).includes('<3:4 '), serializeDsl(four));
+
+  // 排版：跨拍连音成员是四分/二分外形——0 条减时线，只留标号
+  const beamOfSpan = (s: Score, members: { id: string }[]) => {
+    const set = new Set(members.map((m) => m.id));
+    const line = layoutScore(s, { contentWidth: 900 }).lines[0];
+    return {
+      beams: line.items.filter((i) => set.has(i.eventId)).map((i) => i.beams),
+      label: line.tuplets.map((t) => t.text),
+    };
+  };
+  const b2 = beamOfSpan(two, mem2);
+  check('两拍三连音成员 0 条减时线（四分外形）', b2.beams.length === 3 && b2.beams.every((b) => b === 0), JSON.stringify(b2.beams));
+  check('两拍三连音仍画标号 3', b2.label.includes('3'), JSON.stringify(b2.label));
+  const b4 = beamOfSpan(four, mem4);
+  check('四拍三连音成员 0 条减时线、一条增时线（二分外形）',
+    b4.beams.length === 3 && b4.beams.every((b) => b === 0)
+    && layoutScore(four, { contentWidth: 900 }).lines[0].items.filter((i) => new Set(mem4.map((m) => m.id)).has(i.eventId)).every((i) => i.dashes === 1),
+    JSON.stringify(b4.beams));
+
+  // 候选与档位
+  check('2 拍档 × 3 音有三连音候选', candidatesFor(3, P * 2).some((c) => c.tuplet === 3 && c.ticks.every((t) => t === Math.round((P * 2) / 3))));
+  check('4 拍档 × 3 音有三连音候选', candidatesFor(3, P * 4).some((c) => c.tuplet === 3 && c.ticks.every((t) => t === Math.round((P * 4) / 3))));
+  check('3/8 大拍（1½ 拍）仍无三连音候选', !candidatesFor(3, Math.round(P * 1.5)).some((c) => c.tuplet));
+  // 跨拍档（总时值超过连通大拍）只出连音候选：普通减时线组不能跨拍（I2）
+  check('跨拍档只出连音候选', groupCandidates(3, P * 2, '6/8').every((c) => !!c.tuplet)
+    && groupCandidates(2, P * 2, '6/8').length === 0,
+    groupCandidates(3, P * 2, '6/8').map((c) => c.label).join(' | '));
+
+  // 错误路径：跨拍连音成员不能写显式时值
+  const bad = parseDsl('@format 3\n@beat 6/4\n\n<3:2 5/2 6 7> ||\n');
+  check('跨拍连音成员带除法记号报错', bad.errors.some((e) => e.includes('省写时值')), bad.errors.join(' / '));
+
+  // 传统 1 拍形式 <3: …> 不受影响（成员展开成 /n，序列化保持旧形式）
+  const legacy = parseDsl('@format 3\n@beat 4/4\n\n<3: 1 2 3> ||\n');
+  check('传统 1 拍三连音解析无错', !legacy.errors.length && !!legacy.score, legacy.errors.join(' / '));
+  const lg = legacy.score!.groups.find((g) => g.tuplet === 3)!;
+  const lgMem = lg.memberIds.map((id) => legacy.score!.events.find((e) => e.id === id) as { ticks: number });
+  check('传统三连音成员各 1/3 拍', lgMem.length === 3 && lgMem.every((m) => m.ticks === Math.round(P / 3)));
+  check('传统三连音序列化保持 <3: …> 形式', serializeDsl(legacy.score!).includes('<3: '), serializeDsl(legacy.score!));
+  const rtL = parseDsl(serializeDsl(legacy.score!));
+  check('传统三连音回读成员时值不变', !rtL.errors.length
+    && lgMem.every((m, i) => (rtL.score!.events.filter((e) => e.kind === 'note')[i] as { ticks: number }).ticks === m.ticks));
+}
+
+{
   // 档位语义（§6.2）：
   //   单选 → 档位是「这个音的时值」，可以到 3 拍（写成增时线 `5 - -`）
   //   多选 → 档位是「整个选区的总时值」。简谱里超过一拍的长音一律用增时线
@@ -3298,18 +3371,21 @@ const blank = (): Score => ({
       && groupTicks('12/8') === Math.round(P * 1.5) && groupTicks('3/8') === Math.round(P * 1.5));
   check('groupTicks 6/4 = 3 拍', groupTicks('6/4') === P * 3);
 
-  // 档位表：6/8 系 = 1½ / 1 / ¾ / ½ / 3/8 拍（手册 §4.2），6/4 = 3 / 2 / 1½ / 1 / ¾ 拍（§4.3）
+  // 档位表：6/8 系 = 2 / 1½ / 1 / ¾ / ½ / 3/8 拍，6/4 = 4 / 3 / 2 / 1½ / 1 / ¾ 拍。
+  // 4/3 × 大拍是跨拍连音档（GB/T 46845—2025 §6.3.12 连音均分原时值）：
+  // 6/8 的 2 拍档可放 3 个四分的三连音，6/4 的 4 拍档可放 3 个二分的三连音
   const t68 = groupTierOptions('6/8').map((t) => t.ticks);
-  check('6/8 档位表 = 1½/1/¾/½/3/8 拍',
-    JSON.stringify(t68) === JSON.stringify([Math.round(P * 1.5), P, Math.round(P * 0.75), P / 2, Math.round(P * 0.375)]),
+  check('6/8 档位表 = 2/1½/1/¾/½/3/8 拍',
+    JSON.stringify(t68) === JSON.stringify([P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75), P / 2, Math.round(P * 0.375)]),
     JSON.stringify(t68));
   const t64 = groupTierOptions('6/4').map((t) => t.ticks);
-  check('6/4 档位表 = 3/2/1½/1/¾ 拍',
-    JSON.stringify(t64) === JSON.stringify([P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75)]),
+  check('6/4 档位表 = 4/3/2/1½/1/¾ 拍',
+    JSON.stringify(t64) === JSON.stringify([P * 4, P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75)]),
     JSON.stringify(t64));
   const t44 = groupTierOptions('4/4').map((t) => t.ticks);
-  check('4/4 档位表 = 1/½/¼/⅛ 拍', JSON.stringify(t44) === JSON.stringify([P, P / 2, P / 4, P / 8]), JSON.stringify(t44));
-  check('groupTierBeats(6/8) 是 3 分体系细分', groupTierBeats('6/8').length === 5);
+  check('4/4 档位表 = 1/½/¼/⅛ 拍（单拍子无跨拍档）', JSON.stringify(t44) === JSON.stringify([P, P / 2, P / 4, P / 8]), JSON.stringify(t44));
+  check('groupTierBeats(6/8) 是 3 分体系细分 + 跨拍档', groupTierBeats('6/8').length === 6);
+  check('3/8 没有跨拍档（4/3 大拍超出小节容量）', !groupTierOptions('3/8').some((t) => t.ticks === P * 2));
 
   // 选区档位跟着拍号走：6/8 里 3 个音能凑 1½ 拍（标志性组合，3 个八分），
   // 4/4 里同一档不出现（1½ 拍超 1 拍连通边界）
@@ -3439,8 +3515,9 @@ const blank = (): Score => ({
         for (const c of cands) {
           combos += 1;
           const tag = `${beat} ${tier.label} × ${n} 音「${c.label}」`;
-          // 1) 成员都是合法 tick（I4 判据）
-          if (!c.ticks.every((t) => isLegalTick(t))) {
+          // 1) 成员都是合法 tick（I4 判据）；连音成员豁免——时值由组标号给出，
+          // 只要是正整数（如 <3:2 …> 各 2/3 拍 = 4480）
+          if (!c.ticks.every((t) => (c.tuplet ? Number.isInteger(t) && t > 0 : isLegalTick(t)))) {
             bad += 1;
             problems.push(`${tag} 成员含非法 tick ${JSON.stringify(c.ticks)}`);
             continue;

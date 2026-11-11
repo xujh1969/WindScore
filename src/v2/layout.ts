@@ -1397,10 +1397,13 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       const x0 = beamX0(first);
       const x1 = beamX1(last);
 
-      // 连音组（三连音 / 六连音）：一定画一条线 + 一个标号。
-      // 连音成员的 beamCount 都是 0，不能靠它判断要不要画线。
+      // 连音组（三连音 / 六连音）：标号必画；减时线级数取 tupletBeamCount——
+      // 1 拍内三连音成员是八分外形（1 条线），跨拍连音（<3:2 …> 三个四分均分
+      // 2 拍、<3:4 …> 三个二分均分 4 拍）成员是四分/二分外形，没有减时线
+      // （GB/T 46845—2025 §6.3.12，手册 §3.2 两拍三连音外形 3 个四分）。
+      // 连音成员的 item.beams 在上面就是按 tupletBeamCount 算的，直接用。
       if (g.tuplet) {
-        for (let level = 1; level <= Math.max(1, first.beams ?? 1); level++) beams.push({ x0, x1, level, gray: groupGray });
+        for (let level = 1; level <= Math.max(0, first.beams ?? 0); level++) beams.push({ x0, x1, level, gray: groupGray });
         tuplets.push({ x0, x1, text: String(g.tuplet) });
         continue;
       }

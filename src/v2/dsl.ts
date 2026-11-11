@@ -514,6 +514,12 @@ function parseSingle(text: string, modern = false): ParseResult {
   const slurStack: SlurScope[] = [];
   let slurSeq = 0;
   let currentGroup: BeatGroup | null = null;
+  /**
+   * 跨拍连音（<3:2 5 6 7> = 3 个四分音均分 2 拍）：冒号后写占几拍，
+   * 组内省写成员统一取 memberTicks；带 /n、附点或增时线的成员按显式
+   * 时值处理，组收尾时报错（GB/T 46845—2025 §6.3.12 连音均分原时值）。
+   */
+  let spanTuplet: { n: number; memberTicks: number; explicit: boolean } | null = null;
   /** 经函数取值，避免 TS 把 currentGroup 收窄成 null（赋值发生在闭包里） */
   const topGroup = (): BeatGroup | null => currentGroup;
 
@@ -545,7 +551,13 @@ function parseSingle(text: string, modern = false): ParseResult {
       return;
     }
     const dotCount = dots.length as 0 | 1 | 2;
-    const ticks = withDots(base, dotCount) + dashes.length * TICKS_PER_BEAT;
+    let ticks = withDots(base, dotCount) + dashes.length * TICKS_PER_BEAT;
+    // 跨拍连音的省写成员：时值由组标号统一给出（如 <3:2 …> 成员各 2/3 拍）
+    const span = spanTuplet;
+    if (span) {
+      if (dots === '' && !div && dashes === '') ticks = span.memberTicks;
+      else span.explicit = true;
+    }
     // X/x = 无音高音符：没有音级数值，走休止符的时值语法
     const isX = digit === 'X' || digit === 'x';
     const degree = isX ? 0 : Number(digit);
@@ -679,6 +691,7 @@ function parseSingle(text: string, modern = false): ParseResult {
 
   const openGroup = (): void => {
     if (currentGroup) errors.push('拍内组不能嵌套');
+    spanTuplet = null;
     const id = `g${++groupSeq}`;
     const g: BeatGroup = { id, totalTicks: 0, memberIds: [] };
     groups.push(g);
@@ -700,17 +713,26 @@ function parseSingle(text: string, modern = false): ParseResult {
     }
     currentGroup.totalTicks = sum;
     if (modern) {
-      const maxTicks = !currentGroup.tuplet ? groupTicks(currentBeat) : TICKS_PER_BEAT;
+      const tupletN = currentGroup.tuplet;
+      const span = spanTuplet && tupletN ? spanTuplet : null;
+      if (span && span.explicit && tupletN) {
+        errors.push(`跨拍连音 <${tupletN}:${Math.round((span.memberTicks * tupletN) / TICKS_PER_BEAT)}> 的成员要省写时值，不能带除法/附点/增时线`);
+      }
+      const maxTicks = span && tupletN
+        ? span.memberTicks * tupletN
+        : !tupletN ? groupTicks(currentBeat) : TICKS_PER_BEAT;
       if (sum > maxTicks) errors.push(`拍组时值超过 ${maxTicks / TICKS_PER_BEAT} 拍；${currentGroup.tuplet ?? ''} 连音省写必须是 <${currentGroup.tuplet ?? 3}: 1 2 3>，其他情况请明确每音时值`);
       if (currentGroup.tuplet && currentGroup.memberIds.length !== currentGroup.tuplet) errors.push(`${currentGroup.tuplet} 连音需要 ${currentGroup.tuplet} 个成员`);
     }
     currentGroup = null;
+    spanTuplet = null;
   };
 
   const pushBarline = (style: 'single' | 'double' | 'final', partial = false, hidden = false, dashed = false) => {
     if (currentGroup) {
       errors.push('拍内组不得跨小节，请先用 > 收尾');
       currentGroup = null;
+      spanTuplet = null;
     }
     const id = nextId();
     const ev: Event = partial
@@ -728,6 +750,7 @@ function parseSingle(text: string, modern = false): ParseResult {
     if (currentGroup) {
       errors.push('拍内组不得跨反复记号，请先用 > 收尾');
       currentGroup = null;
+      spanTuplet = null;
     }
     // 与 pushBarline 同口径：延音线挂起时保留连接（延音线可以跨反复线），
     // 否则反复段首音的 addTie 会报「延音线必须连接两个音符」
@@ -863,11 +886,23 @@ function parseSingle(text: string, modern = false): ParseResult {
         raw = rest;
       }
 
-      // 三连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>
-      if (raw !== '' && /^\d+:$/.test(raw)) {
+      // 三连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>（1 拍内，成员各 1/n 拍），
+      // 或跨拍连音 <3:2 5 6 7>（3 个四分音均分 2 拍，冒号后写占几拍）
+      const tupletTok = /^(\d+):(\d+)?$/.exec(raw);
+      if (raw !== '' && tupletTok) {
         const g = topGroup();
         if (g && g.memberIds.length === 0) {
-          g.tuplet = Number(raw.slice(0, -1));
+          const n = Number(tupletTok[1]);
+          g.tuplet = n;
+          if (tupletTok[2] !== undefined) {
+            const spanBeats = Number(tupletTok[2]);
+            const memberTicks = Math.round((spanBeats * TICKS_PER_BEAT) / n);
+            if (n < 2 || spanBeats < 1 || memberTicks < 1) {
+              errors.push(`连音标号无效：<${raw}>`);
+            } else {
+              spanTuplet = { n, memberTicks, explicit: false };
+            }
+          }
           raw = '';
         }
       }
@@ -1217,19 +1252,21 @@ export function renderNoteToken(
   }
 }
 
-function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDuration = false): string {
+function renderTimed(ev: TimedEvent, tieOut: boolean, modern = false, explicitDuration = false, omitDuration = false): string {
   // 升级旧谱时避免三个整拍音被新版 <3: 1 2 3> 短写重新解释成一拍。
   let duration = '';
-  try {
-    // ticks 与 dot 矛盾时（旧文件 / 早期编辑入口留下的坏状态），按能写回的附点数
-    // 重新解释同一段时值；绝不让一次序列化抛错把整页编辑界面炸掉。
-    const writableDot = normalizeDslDuration(ev.ticks, ev.dot ?? 0)?.dot ?? (ev.dot ?? 0);
-    duration = renderDuration(ev.ticks, writableDot);
-  } catch (err) {
-    // 连 tick 本身都不在合法粒度上：退回裸记号，至少让谱面能打开、能继续编辑
-    console.warn('[serializeDsl] 时值无对应写法，退回无时值记号', ev.ticks, ev.dot, err);
+  if (!omitDuration) {
+    try {
+      // ticks 与 dot 矛盾时（旧文件 / 早期编辑入口留下的坏状态），按能写回的附点数
+      // 重新解释同一段时值；绝不让一次序列化抛错把整页编辑界面炸掉。
+      const writableDot = normalizeDslDuration(ev.ticks, ev.dot ?? 0)?.dot ?? (ev.dot ?? 0);
+      duration = renderDuration(ev.ticks, writableDot);
+    } catch (err) {
+      // 连 tick 本身都不在合法粒度上：退回裸记号，至少让谱面能打开、能继续编辑
+      console.warn('[serializeDsl] 时值无对应写法，退回无时值记号', ev.ticks, ev.dot, err);
+    }
+    duration = duration || (explicitDuration ? '/1' : '');
   }
-  duration = duration || (explicitDuration ? '/1' : '');
   const short = modern ? duration.replace(/\/(2|4|8)(?!\d)/g, (_, n: string) => '/'.repeat(Math.log2(Number(n)))) : duration;
   if (ev.kind === 'rest') {
     if (ev.repeatBar) return '%';
@@ -1467,6 +1504,17 @@ function serializeSingle(score: Score): string {
           .filter((m): m is TimedEvent => !!m && (m.kind === 'note' || m.kind === 'rest'));
         // 两层记号互不相关，括号直接按事件位置排即可：
         // 连线在组内起止就写进 < > 里面，如 (3 <4/2) 2/2>
+        // 跨拍连音（<3:2 5 6 7>）：成员时值均匀、总时值恰为 拍数×连音数×每拍时，
+        // 按省写形式序列化，成员不带各自时值——4480（2/3 拍）这类时值没有
+        // 独立写法，只能靠组标号给出。
+        let spanBeats = 0;
+        const tupletN = g.tuplet;
+        if (score.format === 3 && tupletN && members.length === tupletN
+          && g.totalTicks % TICKS_PER_BEAT === 0) {
+          const s = g.totalTicks / TICKS_PER_BEAT;
+          // span=1 走传统 <3: …> 形式（省写展开成每音 /n），保持旧输出不变
+          if (s >= 2 && members.every((m) => m.ticks === g.totalTicks / tupletN)) spanBeats = s;
+        }
         const inner = members
           .map((m) => {
             const pre = slurPreOf(m);
@@ -1478,11 +1526,13 @@ function serializeSingle(score: Score): string {
                 ? [m.dynamic, m.hairpinTo ? undefined : m.hairpin].filter(Boolean).join(' ')
                 : '';
             const kc = m.kind === 'note' && m.keyChange ? `转${m.keyChange} ` : '';
-            return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null)}${midSlur}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
+            return `${octavaStartOf(m)}${rangeStart(m)}${kc}${dyn ? `${dyn} ` : ''}${pre}${renderTimed(m, tieOut(m), score.format === 3, score.format === 3 && g.tuplet != null, spanBeats > 0)}${midSlur}${post}${rangeEnd(m)}${octavaEndOf(m)}`;
           })
           .join(' ');
 
-        out.push(`<${g.tuplet ? `${g.tuplet}: ` : ''}${inner}>`);
+        out.push(spanBeats > 0
+          ? `<${g.tuplet}:${spanBeats} ${inner}>`
+          : `<${g.tuplet ? `${g.tuplet}: ` : ''}${inner}>`);
         members.forEach((m) => emitted.add(m.id));
         continue;
       }

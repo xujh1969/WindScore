@@ -281,6 +281,10 @@ interface Props {
   barlineActions: PadBarlineActions;
   jumpAfter: JumpMark | null;
   playOrder: string[] | null;
+  /**
+   * 是否首声部 / 单声部。小节线面板已统一，不再据此裁剪控件；
+   * 现在只用于音色字段的「（本声部）」标注与选区跳房子的可用性。
+   */
   canEditConductor: boolean;
   /** 选区跳房子：ok = 当前选区能设为房子（选区头前是小节线墙） */
   volta: { ok: boolean; error: string | null };
@@ -445,8 +449,8 @@ export function PadBody({
     }
   }
 
-  // 谱中换音色（patchAfter）是**声部私有**属性（0.4.22 起）：首声部与非首声部
-  // 都要能改自己这根线的音色，所以这个字段在 canEditConductor 门内外各渲染一份
+  // 谱中换音色（patchAfter）是**声部私有**属性（0.4.22 起）：面板统一后只渲染一份，
+  // 各声部改的都是自己这根线的音色、不广播；非首声部在标签里标「（本声部）」
   const patchAfterField = (
     <div className="v2-field">
       <span className="v2-field-label">此线之后的音色{canEditConductor ? '' : '（本声部）'}</span>
@@ -500,16 +504,8 @@ export function PadBody({
             </button>
           </div>
         </div>
-        {!canEditConductor ? (
-          <>
-          <p className="v2-hint">全谱的拍号、速度、反复、跳房子与跳转由首声部控制，切回首声部再编辑。音色是各声部自己的设置，在这里改本声部的。</p>
-          {patchAfterField}
-          <div className="v2-pad-tools">
-            <button className="v2-btn" onClick={() => actions.del()} aria-label="删除小节线" title="删除选中的小节线（与键盘 Del 相同）"><DeleteGlyph /></button>
-          </div>
-          </>
-        ) : (
-        <>
+        <p className="v2-hint">拍号、速度、反复、跳房子、跳转与排版作用于所有声部；音色与换气只作用于当前声部。</p>
+        <p className="v2-hint">线型（普通 / 双细 / 终止 / 虚线）与散板也同步到全部声部，跳房子括线每个声部的谱行上方各画一条。</p>
         <div className="v2-field">
           <span className="v2-field-label">此线之后的拍号</span>
           <select className="v2-meta-input" value={barline.beatAfter ?? ''} onChange={(e) => barlineActions.setBeatAfter(e.target.value || undefined)}>
@@ -579,8 +575,6 @@ export function PadBody({
           </div>
         </div>
         {playOrder ? <p className="v2-hint">演奏顺序：<b>第 {playOrder.join(' → ')} 小节</b></p> : null}
-        </>
-        )}
         </>
       ) : (
       <>
@@ -733,7 +727,7 @@ export function PadBody({
             </svg>
           </button>
           <input
-            className="v2-meta-input"
+            className="v2-meta-input v2-pad-mb-count"
             type="number"
             min={1}
             max={999}
@@ -741,7 +735,6 @@ export function PadBody({
             onChange={(e) => setMbCount(Math.max(1, Math.min(999, Math.round(Number(e.target.value) || 1))))}
             title="多小节休止的小节数（1–999）"
             aria-label="多小节休止的小节数"
-            style={{ width: 15, padding: 0, textAlign: 'center', marginLeft: 16 }}
           />
           <button
             className={`v2-btn${target?.kind === 'rest' && target.multibar ? ' is-on' : ''}`}

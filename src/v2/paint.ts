@@ -1598,7 +1598,10 @@ function paintLine(
                 : 'Fine';
     ctx.fillStyle = theme.ink;
     ctx.font = it.mark === 'segno' ? `${Math.round(17 * M.k)}px ${MUSIC_SYMBOL_FONT}` : M.markFont;
-    ctx.fillText(label, it.x + it.w / 2, y - M.markTop);
+    // 贴着谱行画（用户 2026-11-11：原先按 markTop 44k 顶到行带最上方太高，
+    // 多声部时下一声部的记号画进了上一声部）。降到技法字母层之上、
+    // 房子括线之下（36k），墨顶 ≈ y−46k（𝄋 17px ≈ y−51k）仍在 54k 上伸净空内
+    ctx.fillText(label, it.x + it.w / 2, y - 36 * M.k);
   }
   ctx.font = M.markFont;
 

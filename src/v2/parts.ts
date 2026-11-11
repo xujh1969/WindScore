@@ -98,7 +98,13 @@ export function ensembleIssues(score: Score): string[] {
   return out;
 }
 
-/** 首声部定义全谱的反复/跳转，其他声部按相同小节边界继承。 */
+/**
+ * 首声部定义全谱的**小节线结构**，其他声部按相同小节边界继承：
+ * 反复 / 跳转 / 拍号 / 速度 / 换行分页 / 跳房子，以及线型（普通 / 双细 / 终止）、
+ * 虚小节线、散板。后者早期漏在同步清单外，导致在二声部点「双细线」只有
+ * 第一声部的线变了（用户实测）；layout 按每声部自己的 bar 字段画线，
+ * 必须把这些字段一并抄过去。patchAfter（音色）与 breath（换气）仍是声部私有。
+ */
 export function withConductor(score: Score, id: string): Score {
   const target = partScore(score, id);
   if (!score.part || id === score.part.id) return target;
@@ -115,7 +121,11 @@ export function withConductor(score: Score, id: string): Score {
   if (headBar) keptBars.add(headBar.id);
   const clean = target.events.filter((e) => e.kind !== 'jump' && (e.kind !== 'barline' || keptBars.has(e.id))).map((e): Event => {
     if (e.kind !== 'barline') return e;
-    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b, breakAfter: _br, bpmAfter: _bm, ...bar } = e;
+    // style 是必填字段，不能从 rest 里剥掉：首声部该边界没有小节线时，
+    // 本声部这根线还得留着自己的单线样式，否则 DSL 序列化 / 渲染会拿到 undefined。
+    // 其余结构字段剥掉后由首声部的值统一覆盖（含「清掉」语义）。
+    const { repeat: _r, times: _t, volta: _v, voltaOpen: _o, beatAfter: _b,
+      breakAfter: _br, bpmAfter: _bm, dashed: _d, free: _f, ...bar } = e;
     return bar;
   });
   const sourceStarts = [0, ...sourceMeasures.map((m) => m.to)];
@@ -147,24 +157,81 @@ export function withConductor(score: Score, id: string): Score {
           src = rest as BarlineEvent;
         }
       }
-      const attributes = { repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen, partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter };
+      // style / dashed / free 同样是全谱结构字段：undefined 也要写进去，
+      // 才能把本声部残留的旧值清掉（spread 未传语义必须显式写键）。
+      const attributes = {
+        style: src.style ?? 'single',
+        dashed: src.dashed, free: src.free,
+        repeat: src.repeat, times: src.times, volta: src.volta, voltaOpen: src.voltaOpen,
+        partial: src.partial, beatAfter: src.beatAfter, breakAfter: src.breakAfter, bpmAfter: src.bpmAfter,
+      };
       if (clean[index]?.kind === 'barline') clean[index] = { ...clean[index], ...attributes } as BarlineEvent;
       else if (boundary === 0) {
-        clean.unshift({ id: `p${id}:conductor:start`, kind: 'barline', style: 'single', ...attributes });
+        clean.unshift({ id: `p${id}:conductor:start`, kind: 'barline', ...attributes });
         index = 0;
       }
     }
     const jumps: Event[] = [];
+    // 小节**末尾**的跳转记号（`| 4 4 4 4 $ds |` 里挂在末线之前的 $ds）：
+    // 也属于这个边界的结构。早期只收集「边界线之后」的事件，这类尾跳
+    // 不会被同步，而本声部自己的跳转又被 clean 剥掉——记号就凭空消失了
+    //（渲染预览实测：二声部的 D.S. 不见了）。
+    const tailJumps: Event[] = [];
     const following: Event[] = boundary === 0 ? sourceHead : [];
-    if (boundary > 0) for (let j = at; j < score.events.length && !('ticks' in score.events[j]); j++) following.push(score.events[j]);
+    if (boundary > 0) {
+      for (let j = at; j < score.events.length && !('ticks' in score.events[j]); j++) following.push(score.events[j]);
+      for (let j = at - 2; j >= 0 && score.events[j].kind === 'jump'; j--) tailJumps.unshift({ ...score.events[j] });
+    }
     for (const e of following) {
       if (e.kind === 'jump' || e.kind === 'barline' && e.id !== src?.id) jumps.push({ ...e, id: `p${id}:conductor:${e.id}` });
     }
     // 声部提前结束时，首声部后面的边界在本声部里没有对应的线：
     // 那些跳转记号无处可挂（index < 0 会插到谱面最前面，位置全乱），直接跳过
     if (jumps.length && index >= 0) clean.splice(index + 1, 0, ...jumps);
+    // 尾跳插在本边界小节线**之前**（与首声部里的位置一致）
+    if (tailJumps.length && index >= 0) {
+      clean.splice(index, 0, ...tailJumps.map((e) => ({ ...e, id: `p${id}:conductor:${e.id}` })));
+    }
   }
   return { ...target, events: clean };
+}
+
+/**
+ * 多声部：把「被点中的那根小节线」映射到首声部同一小节边界的线。
+ *
+ * 结构属性（拍号 / 速度 / 反复 / 跳房子 / 跳转 / 换行分页 / 线型）由首声部定义，
+ * assembleParts → withConductor 再同步给所有声部。从任意声部发起的结构编辑都要
+ * 写回首声部那根线，否则下一次 assembleParts 会把本声部的改动覆盖掉（点了没反应）。
+ * 音色 patchAfter 与换气 breath 是声部私有的，不走这条映射。
+ *
+ * 按「第几个完整小节」对齐（与 withConductor 的 sourceStarts/targetStarts 同口径）：
+ * 小节末线 / 尾部终止线精确命中；同一边界后的附加结构线归到该边界。
+ * 单声部或首声部直接返回原 id；找不到对应边界返回 null。
+ */
+export function conductorBarlineIdOf(score: Score, partId: string, localBarlineId: string): string | null {
+  const parts = scoreParts(score);
+  const first = parts[0];
+  if (!score.part || partId === first.id) return localBarlineId;
+  const local = parts.find((p) => p.id === partId);
+  if (!local) return null;
+  const idx = local.events.findIndex((e) => e.id === localBarlineId);
+  if (idx < 0) return null;
+  const localMeasures = partMeasures(local.events);
+  let boundary = localMeasures.findIndex((m) => m.to - 1 === idx);
+  if (boundary < 0) boundary = localMeasures.filter((m) => m.to - 1 < idx).length - 1;
+  if (boundary < 0) {
+    // 曲首引导小节线（前面一个时值事件都没有）不属于任何小节，
+    // 但它同样是全谱结构：映射到首声部谱头那根线（withConductor 的 boundary 0）。
+    // 漏掉它会让「选中曲首竖线后点线型按钮」在其它声部变成空操作。
+    const headEnd = first.events.findIndex((e) => 'ticks' in e);
+    const headBar = first.events.slice(0, headEnd < 0 ? first.events.length : headEnd)
+      .find((e) => e.kind === 'barline');
+    return headBar?.id ?? null;
+  }
+  const firstMeasure = partMeasures(first.events)[boundary];
+  if (!firstMeasure) return null;
+  const bar = first.events[firstMeasure.to - 1];
+  return bar?.kind === 'barline' ? bar.id : null;
 }
 
 export function addPart(score: Score): Score {

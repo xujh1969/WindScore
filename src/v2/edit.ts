@@ -2210,6 +2210,30 @@ export function canonicalDurationBase(ticks: number): number | undefined {
   return undefined;
 }
 
+/**
+ * 解析出口 / 载入兜底：tick 与附点数矛盾的状态就地修复（总时值不变）。
+ *
+ * 正常解析与全部编辑入口（cycleDot / setDot / setTicks / applyTier / removeEvent）
+ * 都已守卫，不该产出这种状态；但旧版本（0.4.71 之前）的 cycleDot 会把含增时线的
+ * 整段 ticks 乘附点系数——`x---` 点一次附点 = tick 40320 + dot 1，没有任何除法
+ * 记号可写——外部工具生成的谱面也可能把它带进来。序列化层（renderDuration）
+ * 还有最后一道自愈；这里让谱面「打开即修复」，后续编辑 / 校验 / 播放看到的都是
+ * 干净数据。
+ */
+export function healDurations(score: Score): Score {
+  let healed = false;
+  const events = score.events.map((e) => {
+    if (e.kind !== 'note' && e.kind !== 'rest') return e;
+    const t = e as TimedEvent;
+    if (decodeDslDuration(t.ticks, t.dot ?? 0)) return e;
+    const shape = normalizeDslDuration(t.ticks, t.dot ?? 0);
+    if (!shape) return e;
+    healed = true;
+    return { ...t, dot: shape.dot };
+  });
+  return healed ? { ...score, events } : score;
+}
+
 export function setDot(score: Score, id: string, dots: 0 | 1 | 2): Score {
   const ev = score.events.find((e) => e.id === id);
   if (!ev || (ev.kind !== 'note' && ev.kind !== 'rest')) return score;

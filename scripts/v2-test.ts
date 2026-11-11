@@ -50,7 +50,7 @@ import {
 import type { PlacedItem } from '../src/v2/layout';
 import { applyReseat, reseat } from '../src/v2/reseat';
 import { gapScaleOf, letterGapOf } from '../src/v2/spacing';
-import { assembleParts, namespacePart, partScore, replacePart, scoreParts, withConductor } from '../src/v2/parts';
+import { assembleParts, conductorBarlineIdOf, namespacePart, partScore, replacePart, scoreParts, withConductor } from '../src/v2/parts';
 import { buildTimeline } from '../src/v2/timeline';
 import { seamlessLoop, steadySustain } from '../src/v2/instrumentSamples';
 import { groupTicks, groupTierBeats } from '../src/v2/meter';
@@ -124,6 +124,7 @@ import {
   setBarlineStyle,
   setBarNotation,
   clearLineBreaks,
+  healDurations,
 } from '../src/v2/edit';
 import {
   beamCount,
@@ -1885,6 +1886,32 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
   const t2ev = t2.events[0] as NoteEvent;
   check('setTicks 长音档 + 复附点仍可序列化',
     parseDsl(serializeDsl(t2)).errors.length === 0, `${t2ev.ticks}/${t2ev.dot}`);
+
+  // 用户二次反馈（0.4.73 后有人报）：tick 40320（6 拍）+ dot 1 报
+  // 「没有对应的写法」。这正是旧版 cycleDot 的指纹——`x---`（4 拍）整段乘
+  // 1.5。新版三层防线：①renderDuration 本体自愈（不再可能抛）；
+  // ②解析出口 healDurations 就地修复；③编辑入口全守卫（上方已测）。
+  const sixBeats = TICKS_PER_BEAT * 6;
+  const bad6 = {
+    ...long,
+    events: long.events.map((e) => e.id === longId ? { ...e, ticks: sixBeats, dot: 1 as const } : e),
+  };
+  let b6Text = '';
+  let b6Err = '';
+  try { b6Text = serializeDsl(bad6); } catch (e) { b6Err = String(e); }
+  const b6Rt = b6Err ? null : parseDsl(b6Text);
+  const b6Ev = b6Rt?.score?.events.find((e) => e.id === longId) as NoteEvent | undefined;
+  check('tick 40320 + dot 1（旧版长音加点指纹）序列化不抛错',
+    !b6Err && !!b6Rt && b6Rt.errors.length === 0, b6Err || b6Text.split('\n').pop()?.trim());
+  check('tick 40320 坏状态自愈为 5-----（总时值 6 拍不变）',
+    b6Ev?.ticks === sixBeats && (b6Ev?.dot ?? 0) === 0 && b6Text.includes('5-----'),
+    `${b6Ev?.ticks}/${b6Ev?.dot} ${b6Text.split('\n').pop()?.trim()}`);
+  // 解析出口兜底：即便未来有入口漏了守卫，parse 出来的谱面也已修复
+  const healedDirect = healDurations(bad6);
+  const healedEv = healedDirect.events.find((e) => e.id === longId) as NoteEvent;
+  check('healDurations 打开即修复（附点数纠正、总时值不变）',
+    healedDirect !== bad6 && healedEv.ticks === sixBeats && healedEv.dot === 0,
+    `${healedEv.ticks}/${healedEv.dot}`);
 }
 
   // 拍内组守恒（用户实测踩到）：两音各半拍共用 1 拍，给一个音加附点，
@@ -4432,7 +4459,8 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
       check('volta [2] 从第一个音符处起笔', v.x0 >= 0 && Math.abs(v.x0 - firstX) < 8, `x0=${v.x0.toFixed(1)} firstNote.x=${firstX.toFixed(1)}`);
     }
   }
-  // 多声部：withConductor 把 volta 抄给每个声部，但括线只画在每系统第一行
+  // 多声部：withConductor 把 volta 抄给每个声部，括线**每个声部都画**
+  //（用户 2026-11-11 定，推翻 2026-11-06 的「只画首声部行」）
   const voltaEns = parseDsl(
     '@format 3\n@meta 1=bE 4/4 速86\n@part 1 "声部1"\n' +
     '|: 1 1 1 1 | [1] 2 2 2 2 :| [2] 换行 3 3 3 3 | 4 4 4 4 ||\n' +
@@ -4445,9 +4473,9 @@ check('高八度加 12 个半音', toMidi(1, 1, '1=G') === 67, String(toMidi(1, 
     const withV = el.lines.filter((ln) => ln.voltas.length > 0);
     // score.parts 只存第 2+ 声部（parseDsl 约定），首声部行的 partId 是 '1'
     check(
-      '多声部 volta 只画在首声部行',
-      withV.length > 0 && withV.every((ln) => ln.partId === undefined || ln.partId !== '2'),
-      JSON.stringify(withV.map((ln) => ln.partId)),
+      '多声部 volta 每个声部都画',
+      withV.length === el.lines.length && el.lines.every((ln) => ln.voltas.length > 0),
+      JSON.stringify(el.lines.map((ln) => [ln.partId, ln.voltas.length])),
     );
   }
   // 播放头候选 id 链：反复克隆 / D.C. / 底色副本的后缀都能剥回原 id
@@ -5837,6 +5865,204 @@ console.log('[多声部 · 小节线命中归属]');
   const pick1 = pickAt(L, barOf('1')!.x + barOf('1')!.w / 2, lineOf('1').y);
   check('点首声部小节线仍归首声部', pick1?.partId === '1' && pick1?.index === barOf('1')!.eventIndex);
 }
+
+console.log('\n[多声部 · 任意声部的小节线操作对全谱生效]');
+{
+  const p1 = parseDsl('@format 3\n@beat 4/4\n| 1 1 1 1 | 1 1 1 1 |') as unknown as { score?: Score; errors?: string[] };
+  const p2 = parseDsl('@format 3\n@beat 4/4\n| 2 2 2 2 | 2 2 2 2 |') as unknown as { score?: Score; errors?: string[] };
+  const base = assembleParts(
+    { ...p1.score!, meta: { ...p1.score!.meta } },
+    [
+      namespacePart(p1.score!, { id: '1', name: '一声部', gain: 1 }),
+      namespacePart(p2.score!, { id: '2', name: '二声部', gain: 1 }),
+    ],
+  );
+  const barsOf = (s: Score, id: string): BarlineEvent[] =>
+    partScore(s, id).events.filter((e): e is BarlineEvent => e.kind === 'barline');
+  const p1bars = barsOf(base, '1');
+  const p2bars = barsOf(base, '2');
+  const tail2 = p2bars[p2bars.length - 1]!;
+  const tail1 = p1bars[p1bars.length - 1]!;
+  check('二声部尾部小节线映射到首声部同一边界',
+    conductorBarlineIdOf(base, '2', tail2.id) === tail1.id,
+    `${tail2.id} → ${conductorBarlineIdOf(base, '2', tail2.id)} / ${tail1.id}`);
+  check('中间小节线也按小节序号对齐',
+    conductorBarlineIdOf(base, '2', p2bars[1]!.id) === p1bars[1]!.id);
+  check('曲首引导小节线映射到首声部谱头线',
+    conductorBarlineIdOf(base, '2', p2bars[0]!.id) === p1bars[0]!.id,
+    `${conductorBarlineIdOf(base, '2', p2bars[0]!.id)} / ${p1bars[0]!.id}`);
+  check('首声部与单声部的线映射为自身',
+    conductorBarlineIdOf(base, '1', tail1.id) === tail1.id
+    && conductorBarlineIdOf(p1.score!, '1', p1.score!.events.find((e) => e.kind === 'barline')!.id)
+      === p1.score!.events.find((e) => e.kind === 'barline')!.id);
+  check('找不到的线返回 null', conductorBarlineIdOf(base, '2', 'nope') === null);
+
+  // 模拟 applyConductor：先改首声部那根线，再走 assembleParts → withConductor 同步全谱
+  const first = partScore(base, '1');
+  const nextFirst = setBarNotation(first, tail1.id, { beatAfter: '6/8', bpmAfter: 96 });
+  const doc: Score = { ...base, events: nextFirst.events, groups: nextFirst.groups, meta: nextFirst.meta };
+  const synced = assembleParts(doc, scoreParts(doc));
+  const allTails = scoreParts(synced).map((p) => barsOf(synced, p.id).find((b) => b.id === (p.id === '1' ? tail1.id : tail2.id)));
+  check('从二声部发起的换拍号 / 变速 → 所有声部同一边界线都生效',
+    allTails.length === 2 && allTails.every((b) => b?.beatAfter === '6/8' && b?.bpmAfter === 96),
+    JSON.stringify(allTails.map((b) => [b?.beatAfter, b?.bpmAfter])));
+
+  // 核心逻辑不变：音色仍是声部私有，不随统一面板广播
+  const p2Patch: Score = {
+    ...base,
+    parts: base.parts!.map((p) => p.id === '2'
+      ? { ...p, events: p.events.map((e) => (e.id === tail2.id ? { ...e, patchAfter: 7 } : e)) }
+      : p),
+  };
+  const reSynced = assembleParts(p2Patch, scoreParts(p2Patch));
+  check('音色仍只作用于本声部（不广播）',
+    barsOf(reSynced, '2').find((b) => b.id === tail2.id)?.patchAfter === 7
+    && barsOf(reSynced, '1').find((b) => b.id === tail1.id)?.patchAfter === undefined);
+
+  // 用户实测（0.4.73 后）：在二声部尾线点双细线 / 终止线 / 虚线 / 普通线 / 散板 / 房子，
+  // 只有第一声部的线变了。根因 = withConductor 同步清单漏了 style / dashed / free：
+  // layout 按每声部自己的 bar 字段画线，首声部改了、其余声部仍按旧字段渲染。
+  const syncFromSecond = (fn: (s: Score, id: string) => Score, from: Score = base): Score => {
+    const first = partScore(from, '1');
+    const localTail = barsOf(from, '2').at(-1)!;
+    const nextFirst = fn(first, conductorBarlineIdOf(from, '2', localTail.id)!);
+    const doc: Score = { ...from, events: nextFirst.events, groups: nextFirst.groups, meta: nextFirst.meta };
+    return assembleParts(doc, scoreParts(doc));
+  };
+  const tailsOf = (s: Score) => scoreParts(s).map((p) => barsOf(s, p.id).at(-1)!);
+  const tailItems = (s: Score) => layoutScore(s, { contentWidth: 900 }).lines
+    .map((ln) => ln.items.filter((it) => it.kind === 'barline').at(-1)!);
+  const doubleDoc = syncFromSecond((s, id) => setBarlineStyle(s, id, 'double'));
+  check('二声部点双细线 → 所有声部尾线都变双细线',
+    tailsOf(doubleDoc).every((b) => b.style === 'double')
+    && tailItems(doubleDoc).every((it) => it.double === true));
+  const finalDoc = syncFromSecond((s, id) => setBarlineStyle(s, id, 'final'));
+  check('二声部点终止线 → 所有声部尾线都变终止线',
+    tailsOf(finalDoc).every((b) => b.style === 'final')
+    && tailItems(finalDoc).every((it) => it.final === true));
+  const dashedDoc = syncFromSecond((s, id) => setBarNotation(s, id, { dashed: true }));
+  check('二声部点虚线 → 所有声部尾线都画虚线',
+    tailsOf(dashedDoc).every((b) => b.dashed === true)
+    && tailItems(dashedDoc).every((it) => it.dashed === true));
+  const freeDoc = syncFromSecond((s, id) => setBarNotation(s, id, { free: true }));
+  check('二声部点散板 → 所有声部尾线都进入散板',
+    tailsOf(freeDoc).every((b) => b.free === true)
+    && tailItems(freeDoc).every((it) => it.freeAfter === true));
+  for (const n of [1, 2, 3]) {
+    const house = syncFromSecond((s, id) => setBarlineVolta(s, id, [n]));
+    check(`二声部点 [${n}] 房 → 所有声部同一边界线都带 [${n}]`,
+      tailsOf(house).every((b) => (b.volta ?? []).includes(n))
+      && tailItems(house).every((it) => (it.volta ?? []).includes(n)));
+  }
+  const backToSingle = syncFromSecond((s, id) => setBarNotation(setBarlineStyle(s, id, 'single'), id, { dashed: false }), finalDoc);
+  check('二声部点普通小节线 → 所有声部尾线都退回单线',
+    tailsOf(backToSingle).every((b) => b.style === 'single' && !b.dashed)
+    && tailItems(backToSingle).every((it) => !it.final && !it.double && !it.dashed));
+  const finalText = serializeDsl(finalDoc);
+  const back = parseDsl(finalText) as unknown as { score?: Score; errors?: string[] };
+  check('线型同步后的多声部谱可无损序列化回读',
+    (back.errors ?? []).length === 0
+    && !!back.score
+    && scoreParts(back.score).every((p) => barsOf(back.score!, p.id).at(-1)?.style === 'final'),
+    (back.errors ?? []).join('; ') || finalText);
+  const headDouble = (() => {
+    const first = partScore(base, '1');
+    const nextFirst = setBarlineStyle(first, conductorBarlineIdOf(base, '2', p2bars[0]!.id)!, 'double');
+    const doc: Score = { ...base, events: nextFirst.events };
+    return assembleParts(doc, scoreParts(doc));
+  })();
+  check('二声部曲首引导线改线型 → 所有声部谱头线同步',
+    scoreParts(headDouble).every((p) => barsOf(headDouble, p.id)[0]?.style === 'double'));
+  // 首声部没设的结构，本声部残留的旧值必须被清掉（不能只同步「有值」的那一半）
+  const stale: Score = {
+    ...base,
+    parts: base.parts!.map((p) => p.id === '2'
+      ? { ...p, events: p.events.map((e) => (e.id === tail2.id ? { ...e, dashed: true, free: true, style: 'final' as const } : e)) }
+      : p),
+  };
+  const cleaned = assembleParts(stale, scoreParts(stale));
+  check('非首声部残留的线型 / 虚线 / 散板会被首声部的值覆盖',
+    barsOf(cleaned, '2').find((b) => b.id === tail2.id)?.style === 'single'
+    && barsOf(cleaned, '2').find((b) => b.id === tail2.id)?.dashed === undefined
+    && barsOf(cleaned, '2').find((b) => b.id === tail2.id)?.free === undefined);
+  const p2Breath: Score = {
+    ...base,
+    parts: base.parts!.map((p) => p.id === '2'
+      ? { ...p, events: p.events.map((e) => (e.id === tail2.id ? { ...e, breath: true } : e)) }
+      : p),
+  };
+  const breathSynced = assembleParts(p2Breath, scoreParts(p2Breath));
+  check('换气 V 仍是声部私有（不广播）',
+    barsOf(breathSynced, '2').find((b) => b.id === tail2.id)?.breath === true
+    && barsOf(breathSynced, '1').find((b) => b.id === tail1.id)?.breath === undefined);
+
+  const partsSrc = readFileSync(join(process.cwd(), 'src/v2/parts.ts'), 'utf8');
+  const padSrc = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const appSrc = readFileSync(join(process.cwd(), 'src/v2/ui/EditorApp.tsx'), 'utf8');
+  check('各声部的小节线控制界面统一（不再按 canEditConductor 分叉）',
+    !padSrc.includes('!canEditConductor ? (')
+    && padSrc.includes('拍号、速度、反复、跳房子、跳转与排版作用于所有声部'));
+  check('结构动作走 applyConductor，音色与换气仍写本声部',
+    appSrc.includes('setBeatAfter: (v?: string) => applyConductor(')
+    && appSrc.includes('toggleJump: (mark: JumpMark | null) => applyConductor(')
+    && appSrc.includes('setScore(setBarNotation(score, barlineFocus.id, { patchAfter: v }))')
+    && appSrc.includes('setScore(setBarNotation(score, barlineFocus.id, { breath: !barlineFocus.breath }))'));
+  check('withConductor 把线型 / 虚线 / 散板纳入同步清单',
+    partsSrc.includes('style: src.style')
+    && partsSrc.includes('dashed: src.dashed, free: src.free'));
+  check('输入板的普通 / 双细 / 终止 / 虚线按钮也走全谱结构写入',
+    appSrc.includes('applyConductorAt(target, (s, id) => apply(s, id))')
+    && appSrc.includes('applyConductorAt(target, (s, id, seen) => {')
+    && !appSrc.includes('setScore(apply(score, target.id))'));
+  check('面板说明线型同步与房子括线每个声部都画',
+    padSrc.includes('线型（普通 / 双细 / 终止 / 虚线）与散板也同步到全部声部')
+    && padSrc.includes('跳房子括线每个声部的谱行上方各画一条'));
+}
+console.log('\n[多声部 · 跳转记号与跳房子括线的行带归属]');
+{
+  const a = parseDsl('@format 3\n@beat 4/4\n| 1 1 1 1 | 1 1 1 1 $ds |') as unknown as { score?: Score; errors?: string[] };
+  const b = parseDsl('@format 3\n@beat 4/4\n| 2 2 2 2 | 2 2 2 2 $ds |') as unknown as { score?: Score; errors?: string[] };
+  check('带跳转记号的两声部解析无错', (a.errors ?? []).length === 0 && (b.errors ?? []).length === 0);
+  const base = assembleParts(
+    { ...a.score!, meta: { ...a.score!.meta } },
+    [namespacePart(a.score!, { id: '1', name: '一声部', gain: 1 }), namespacePart(b.score!, { id: '2', name: '二声部', gain: 1 })],
+  );
+  const L = layoutScore(base, { contentWidth: 900 });
+  const linesOf = (id: string) => L.lines.filter((ln) => ln.partId === id);
+  const l1 = linesOf('1');
+  const l2 = linesOf('2');
+  const k = L.glyph.fontSize / 21;
+  // 旧版把基线居中在统一行高里：上伸 54k 的跳转记号行只分到行高的一半，
+  // 墨顶越过行带顶、画进上一声部。现在行带按各声部自己的 above/height 铺。
+  let bandOk = l1.length === l2.length && l1.length > 0;
+  for (let i = 0; i < Math.min(l1.length, l2.length); i++) {
+    const up = l1[i]!, dn = l2[i]!;
+    const hasJump = dn.items.some((it) => it.kind === 'jump');
+    bandOk = bandOk
+      && (!hasJump || (dn.above ?? 0) >= 54 * k - 0.5)
+      && dn.y - (dn.above ?? 0) >= up.y + ((up.height ?? 0) - (up.above ?? 0)) - 0.5;
+  }
+  check('下一声部的行带不越过上一声部（跳转记号不再写进上一声部）',
+    bandOk,
+    JSON.stringify([...l1, ...l2].map((ln) => [ln.partId, Math.round(ln.y), Math.round(ln.above ?? -1), Math.round(ln.height ?? -1)])));
+  check('小节末尾的跳转记号（$ds 挂在末线前）也同步到其它声部',
+    partScore(base, '2').events.some((e) => e.kind === 'jump' && (e as { mark?: string }).mark === 'ds'),
+    JSON.stringify(partScore(base, '2').events.filter((e) => e.kind === 'jump')));
+  // 跳房子括线：首声部第 2 根小节线挂 [1]，同步后每个声部都要画出自己的括线
+  const mid1 = partScore(base, '1').events.filter((e): e is BarlineEvent => e.kind === 'barline')[1]!;
+  const vDoc: Score = { ...base, events: setBarlineVolta(partScore(base, '1'), mid1.id, [1]).events };
+  const voltaDoc = assembleParts(vDoc, scoreParts(vDoc));
+  const Lv = layoutScore(voltaDoc, { contentWidth: 900 });
+  check('跳房子括线画到每个声部的谱行上方',
+    scoreParts(voltaDoc).every((p) => Lv.lines.filter((ln) => ln.partId === p.id).some((ln) => ln.voltas.length > 0)),
+    JSON.stringify(Lv.lines.map((ln) => [ln.partId, ln.voltas.length])));
+  const paintSrc = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
+  const ensSrc = readFileSync(join(process.cwd(), 'src/v2/ensembleLayout.ts'), 'utf8');
+  check('跳转记号贴谱行画、总谱不再剥掉非首声部的房子括线',
+    paintSrc.includes('ctx.fillText(label, it.x + it.w / 2, y - 36 * M.k);')
+    && !paintSrc.includes('ctx.fillText(label, it.x + it.w / 2, y - M.markTop);')
+    && !ensSrc.includes("voltas: [] as LayoutLine['voltas']"));
+}
 {
   // ── 合成音色：采样循环段的平铺治理（0.4.7） ──
   // 背景：MusyngKite 音色包的长音在每个循环周期（约 1 秒）回卷处有一记「断音」，
@@ -6456,10 +6682,11 @@ console.log('\n[小节线换气 V 与音符 h 滑音]');
   const paintSrc2 = readFileSync(join(process.cwd(), 'src/v2/paint.ts'), 'utf8');
   const staffPaintSrc = readFileSync(join(process.cwd(), 'src/v2/staffPaint.ts'), 'utf8');
   const staffMarksSrc = readFileSync(join(process.cwd(), 'src/v2/staffMarks.ts'), 'utf8');
-  check('点小节线后右侧栏出现「气息与技法」V 换气按钮（非首声部也有）',
+  check('点小节线后右侧栏出现「气息与技法」V 换气按钮（各声部统一面板都有）',
     padSrc.includes('气息与技法（标在小节线左上方）')
     && padSrc.includes('barlineActions.toggleBreath()')
-    && padSrc.indexOf('气息与技法（标在小节线左上方）') < padSrc.indexOf('!canEditConductor'));
+    && padSrc.indexOf('气息与技法（标在小节线左上方）')
+      < padSrc.indexOf('拍号、速度、反复、跳房子、跳转与排版作用于所有声部'));
   check('旧谱 5H 的字形定义与文字前缀逻辑保留（无连音线时仍画单音 h）',
     paintSrc2.includes("slideH: { mark: 'h', label: 'h滑音' }")
     && noteSrc.includes('g.label.startsWith(g.mark)')
@@ -6845,6 +7072,18 @@ console.log('\n[连音线贴着气息技法字母让位]');
   check('旧的整体抬到跳转记号行的写法已移除',
     !paintSrc.includes('y - M.markTop - 12 * M.k')
     && paintSrc.includes('arcYForMarks(ay, a.x0, a.x1, lift, flat, markTops, 3 * M.k)'));
+}
+
+console.log('\n[输入板 · 多小节休止小节数输入框]');
+{
+  const pad = readFileSync(join(process.cwd(), 'src/v2/ui/PadBody.tsx'), 'utf8');
+  const css = readFileSync(join(process.cwd(), 'src/v2/ui/editor.css'), 'utf8');
+  const from = pad.indexOf('v2-pad-mb-count');
+  const tag = from >= 0 ? pad.slice(from, pad.indexOf('/>', from)) : '';
+  check('小节数输入框改用专用类名，不再内联撑宽或加左缩进',
+    tag.length > 0 && !tag.includes('style=') && !tag.includes('marginLeft'));
+  check('输入框固定为原来约一半宽，并与上下各排按钮左对齐',
+    /\.v2-pad-body \.v2-meta-input\.v2-pad-mb-count \{[^}]*flex: 0 0 auto;[^}]*width: 40px;[^}]*margin-left: 0;/s.test(css));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

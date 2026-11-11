@@ -48,6 +48,16 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
     ? layoutSingle({ ...singles[0], cues: score.cues }, probeOpts).lineHeight
     : 0;
   const rowH = opts.lineHeight ?? Math.max(...measured.map((s) => s.lineHeight), cueRowH);
+  // 行带是**不对称**的：上伸（跳转记号 / 房子 / 技法字母…）与下伸（歌词 / 力度…）
+  // 差别很大。旧版把基线居中在统一 rowH 里，上伸大的声部墨迹会越出行带、
+  // 画进上一声部（用户实测：二声部的跳转记号写到第一声部里）。
+  // 改为按每个声部自己的 above 定基线、行带高 = above + below；探测排版已按
+  // 内容算好每行的 above/height，各声部取最大值。显式 lineHeight（播放页偏好）
+  // 没有内容感知的 above，退回居中（旧行为）。
+  const half = rowH / 2;
+  const rowAbove = measured.map((m) => Math.max(half, ...m.lines.map((ln) => ln.above ?? half)));
+  const rowBelow = measured.map((m) => Math.max(half, ...m.lines.map((ln) => (ln.height ?? m.lineHeight) - (ln.above ?? half))));
+  const bandH = rowAbove.map((a, pi) => Math.max(rowH, a + rowBelow[pi]));
   const left = (opts.padding ?? 40) + Math.min(112, Math.max(52, ...parts.map((p) => [...p.name].length * 12))) * k;
   const right = opts.contentWidth - (opts.padding ?? 40);
   const available = Math.max(160, right - left);
@@ -223,15 +233,18 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
   ));
   const title = placed[0].title;
   const startY = 20 + (title?.height ?? 0);
-  const systemH = parts.length * rowH + 24 * k;
+  const systemH = bandH.reduce((sum, h) => sum + h, 0) + 24 * k;
   const lines: LayoutLine[] = [];
   const hitIndex: LayoutResult['hitIndex'] = [];
   const systems: NonNullable<LayoutResult['systems']> = [];
   for (let si = 0; si <= system; si++) {
     const from = lines.length;
+    let bandTop = startY + si * systemH;
     for (let pi = 0; pi < parts.length; pi++) {
       const source = placed[pi].lines.find((line) => line.items.some((it) => positions.get(it.eventId)?.line === si));
-      const y = startY + si * systemH + pi * rowH + rowH / 2;
+      // 基线 = 本声部行带顶 + 本声部自己的上伸：跳转记号 / 技法字母多的声部
+      // 不再把墨迹顶进上一声部的行带
+      const y = bandTop + rowAbove[pi];
       // 行首拍号：每个声部的行首都画（与五线谱换拍号惯例一致——
       // 每一行谱都要能独立读出当前拍号）。x 相同，竖着对齐成一列
       const lead = systemLead[si] ?? 0;
@@ -241,20 +254,23 @@ export function layoutEnsemble(score: Score, opts: LayoutOptions, layoutSingle: 
       const line: LayoutLine = source ? {
         ...source,
         index: lines.length, y, partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved,
-        // 跳房子括线只画在**每个系统的第一行**（总谱记谱惯例）：withConductor 把
-        // volta 属性抄给了每个声部，各声部的单声部排版都会算出一份，不剥的话
-        // 每行头上都悬一个「2」（用户 2026-11-06 实测）
-        ...(pi === 0 ? {} : { voltas: [] as LayoutLine['voltas'] }),
+        // 显式写行带：播放底色整行高、小字谱锚定、band 断言都以它为准
+        above: rowAbove[pi], height: bandH[pi],
+        // 跳房子括线**每个声部都画**（用户 2026-11-11 定，推翻 2026-11-06 的
+        // 「只画第一行」）：withConductor 已把 volta 同步给所有声部，各声部的
+        // 单声部排版各算各的括线，纵向贴各自谱行上方
       } : {
         index: lines.length, y, items: [], beams: [], arcs: [], badges: [], tuplets: [], voltas: [], partId: parts[pi].id, partName: parts[pi].name, system: si, leadingMeter, meterMoved,
+        above: rowAbove[pi], height: bandH[pi],
       };
       lines.push(line);
       if (source) {
         const ids = new Set(source.items.map((it) => it.eventId));
         hitIndex.push(...placed[pi].hitIndex.filter((b) => ids.has(b.eventId)).map((b) => ({ ...b, y: b.y + y - source.y })));
       }
+      bandTop += bandH[pi];
     }
-    systems.push({ from, to: lines.length, top: lines[from].y - rowH / 2, bottom: lines[lines.length - 1].y + rowH / 2, bracketX: left - 14 * k });
+    systems.push({ from, to: lines.length, top: startY + si * systemH, bottom: bandTop, bracketX: left - 14 * k });
   }
   addPlaybackAnchors(lines, measured[0].glyph);
   // 小字谱挂到多声部的总谱行上（锚声部的行带顶）。placed[0] 是 partScore 的

@@ -130,7 +130,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { loadPianoSamples } from '../pianoSamples';
 import { buildPack, PACK_EXT, packFileName, readPack } from './packBundle';
 import { flushLibraryWrites, importLibrary, updateLibraryItem, type LibraryItem } from './libraryStore';
-import { assembleParts, partScore, replacePart, scoreParts } from '../parts';
+import { assembleParts, conductorBarlineIdOf, partScore, replacePart, scoreParts } from '../parts';
 import { PartsPanel } from './PartsPanel';
 import { pitchShiftStems } from '../pitchClient';
 import {
@@ -2905,6 +2905,44 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     [commit, snap],
   );
 
+  /**
+   * 小节线的**结构属性**在任意声部操作都要对全谱生效：
+   *  - 首声部 / 单声部：原地改（与以前一致）。
+   *  - 其他声部：把被点中的线映射到首声部同一小节边界，改首声部后走
+   *    commit(whole) → assembleParts → withConductor 同步到所有声部。
+   *    否则改动只落在当前声部，下一次 assembleParts 会被首声部的值覆盖掉。
+   *  fn 的 seen 是「用户看到的那根线」，toggle 判断按它来；写入 id 是首声部的线。
+   * 音色 patchAfter 与换气 breath 是声部私有的，不走这里。
+   *
+   * 放在 padActions 之前：输入板的「普通小节线」「虚小节线」按钮与右侧属性面板
+   * 共用同一条写入路径，不会出现面板改全谱、按钮只改本声部的分叉。
+   */
+  const applyConductorAt = useCallback(
+    (seen: BarlineEvent, fn: (s: Score, id: string, seen: BarlineEvent) => Score) => {
+      const cid = conductorBarlineIdOf(documentScore, activePartId, seen.id);
+      // 极端的旧谱（例如首声部没有曲首引导线）映射不到边界：别让按钮变成
+      // 空操作，退回原来的本声部就地编辑。
+      if (!cid) {
+        setScore(fn(score, seen.id, seen));
+        return;
+      }
+      if (canEditConductor) {
+        setScore(fn(score, cid, seen));
+        return;
+      }
+      const first = partScore(documentScore, scoreParts(documentScore)[0].id);
+      const nextFirst = fn(first, cid, seen);
+      const doc: Score = {
+        ...documentScore,
+        events: nextFirst.events,
+        groups: nextFirst.groups,
+        meta: nextFirst.meta,
+      };
+      commit({ ...snap, score: doc }, true);
+    },
+    [documentScore, activePartId, canEditConductor, score, setScore, commit, snap],
+  );
+
   const padActions = useMemo<PadActions>(
     () => ({
       note: (d, oct, ctrl) => {
@@ -3001,7 +3039,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           );
         };
         if (target) {
-          setScore(apply(score, target.id));
+          // 结构属性统一写回首声部（非首声部点了也要全谱生效）
+          applyConductorAt(target, (s, id) => apply(s, id));
           return;
         }
         const s = insertBarline(score, snap.cursor);
@@ -3016,9 +3055,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         const left = snap.cursor > 0 ? score.events[snap.cursor - 1] : undefined;
         const target = focused ?? (left && left.kind === 'barline' ? (left as BarlineEvent) : null);
         if (target) {
-          // 与双细线 / 终止线互斥：开虚线先把样式退回单线
-          const next = setBarlineStyle(setBarNotation(score, target.id, { dashed: !target.dashed }), target.id, target.dashed ? (target.style ?? 'single') : 'single');
-          setScore(target.dashed ? next : setBarlineRepeat(next, target.id, undefined));
+          // 与双细线 / 终止线互斥：开虚线先把样式退回单线。
+          // 虚线也是全谱结构，seen 用「用户看到的那根线」判断开关。
+          applyConductorAt(target, (s, id, seen) => {
+            const next = setBarlineStyle(setBarNotation(s, id, { dashed: !seen.dashed }), id, seen.dashed ? (seen.style ?? 'single') : 'single');
+            return seen.dashed ? next : setBarlineRepeat(next, id, undefined);
+          });
           return;
         }
         const s = insertBarline(score, snap.cursor);
@@ -3129,7 +3171,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         }
       },
     }),
-    [overId, score, snap, commit, setScore, setMsg, padLeftId, focus, selectedTimedIds, useTier, pending, range, deleteSelection, toastInfo],
+    [overId, score, snap, commit, setScore, setMsg, padLeftId, focus, selectedTimedIds, useTier, pending, range, deleteSelection, toastInfo, applyConductorAt],
   );
 
   /**
@@ -3155,6 +3197,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   // ─────────── 小节线属性（点谱面里那条竖线选中它，在这里改） ───────────
   const barlineFocus = focus && focus.kind === 'barline' ? (focus as BarlineEvent) : null;
+
+  /** 右侧属性面板：以当前选中的那根线为「用户看到的线」，走同一条全谱写入路径。 */
+  const applyConductor = useCallback(
+    (fn: (s: Score, id: string, seen: BarlineEvent) => Score) => {
+      if (barlineFocus) applyConductorAt(barlineFocus, fn);
+    },
+    [barlineFocus, applyConductorAt],
+  );
 
   /**
    * 展开后的**实际演奏顺序**（按小节区间）：反复与跳转是「写了不一定弹对」的
@@ -3323,9 +3373,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (repeat?: 'start' | 'end' | 'both') => {
       if (!barlineFocus) return;
       const next = barlineFocus.repeat === repeat ? undefined : repeat;
-      padActions.barlineAs(next === 'start' ? 'repeat-start' : next === 'end' ? 'repeat-end' : next === 'both' ? 'repeat-both' : 'single');
+      applyConductor((s, id) => setBarlineRepeat(
+        setBarNotation(setBarlineStyle(s, id, 'single'), id, { dashed: false }),
+        id, next, 2,
+      ));
     },
-    [barlineFocus, padActions],
+    [barlineFocus, applyConductor],
   );
 
   /** 跳房子：点一次设上、再点一次取消（同一根线只属于一个房） */
@@ -3333,74 +3386,68 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     (n: number) => {
       if (!barlineFocus) return;
       const cur = barlineFocus.volta ?? [];
-      setScore(setBarlineVolta(score, barlineFocus.id, cur.includes(n) ? undefined : [n]));
+      applyConductor((s, id) => setBarlineVolta(s, id, cur.includes(n) ? undefined : [n]));
     },
-    [barlineFocus, score, setScore],
+    [barlineFocus, applyConductor],
   );
 
   /**
-   * 浮动板的小节线动作集：与右侧检查器同一条写谱路径（点线时整个面板切换）。
+   * 浮动板的小节线动作集：结构属性一律走 applyConductor（任意声部操作都对全谱生效），
+   * 音色 / 换气是声部私有的，仍写当前声部。
    */
   const padBarlineActions = useMemo(
     () => ({
-      setBeatAfter: (v?: string) => {
-        if (!barlineFocus) return;
-        setScore(resplitOversizedGroups(setBarNotation(score, barlineFocus.id, { beatAfter: v })));
-      },
-      setBreakAfter: (v?: 'line' | 'page') => {
-        if (!barlineFocus) return;
-        setScore(setBarNotation(score, barlineFocus.id, { breakAfter: v }));
-      },
-      setBpmAfter: (v?: number) => {
-        if (!barlineFocus) return;
-        setScore(setBarNotation(score, barlineFocus.id, { bpmAfter: v }));
-      },
+      setBeatAfter: (v?: string) => applyConductor((s, id) => resplitOversizedGroups(setBarNotation(s, id, { beatAfter: v }))),
+      setBreakAfter: (v?: 'line' | 'page') => applyConductor((s, id) => setBarNotation(s, id, { breakAfter: v })),
+      setBpmAfter: (v?: number) => applyConductor((s, id) => setBarNotation(s, id, { bpmAfter: v })),
       setPatchAfter: (v?: number) => {
         if (!barlineFocus) return;
         setScore(setBarNotation(score, barlineFocus.id, { patchAfter: v }));
       },
       setRepeat,
-      setRepeatTimes: (n: number) => {
-        if (!barlineFocus) return;
-        setScore(setRepeatTimes(score, barlineFocus.id, n));
-      },
+      setRepeatTimes: (n: number) => applyConductor((s, id) => setRepeatTimes(s, id, n)),
       setVolta,
       toggleFinal: () => {
         if (!barlineFocus) return;
-        padActions.barlineAs(barlineFocus.style === 'final' && !barlineFocus.repeat ? 'single' : 'final');
+        const toSingle = barlineFocus.style === 'final' && !barlineFocus.repeat;
+        applyConductor((s, id) => setBarlineRepeat(
+          setBarNotation(setBarlineStyle(s, id, toSingle ? 'single' : 'final'), id, { dashed: false }),
+          id, undefined, 2,
+        ));
       },
       toggleDouble: () => {
         if (!barlineFocus) return;
-        padActions.barlineAs(barlineFocus.style === 'double' && !barlineFocus.repeat ? 'single' : 'double');
+        const toSingle = barlineFocus.style === 'double' && !barlineFocus.repeat;
+        applyConductor((s, id) => setBarlineRepeat(
+          setBarNotation(setBarlineStyle(s, id, toSingle ? 'single' : 'double'), id, { dashed: false }),
+          id, undefined, 2,
+        ));
       },
       toggleVoltaOpen: () => {
         if (!barlineFocus) return;
-        setScore(setBarlineVoltaOpen(score, barlineFocus.id, !barlineFocus.voltaOpen));
+        const next = !barlineFocus.voltaOpen;
+        applyConductor((s, id) => setBarlineVoltaOpen(s, id, next));
       },
       toggleDashed: () => {
         if (!barlineFocus) return;
         const next = !barlineFocus.dashed;
         // 与双细线 / 终止线互斥：开虚线先把样式退回单线
-        setScore(
-          next
-            ? setBarlineRepeat(setBarlineStyle(setBarNotation(score, barlineFocus.id, { dashed: true }), barlineFocus.id, 'single'), barlineFocus.id, undefined)
-            : setBarNotation(score, barlineFocus.id, { dashed: false }),
-        );
+        applyConductor((s, id) => next
+          ? setBarlineRepeat(setBarlineStyle(setBarNotation(s, id, { dashed: true }), id, 'single'), id, undefined)
+          : setBarNotation(s, id, { dashed: false }));
       },
       toggleFree: () => {
         if (!barlineFocus) return;
-        setScore(setBarNotation(score, barlineFocus.id, { free: !barlineFocus.free }));
+        const next = !barlineFocus.free;
+        applyConductor((s, id) => setBarNotation(s, id, { free: next }));
       },
       toggleBreath: () => {
         if (!barlineFocus) return;
         setScore(setBarNotation(score, barlineFocus.id, { breath: !barlineFocus.breath }));
       },
-      toggleJump: (mark: JumpMark | null) => {
-        if (!barlineFocus) return;
-        setScore(toggleJumpAfterBarline(score, barlineFocus.id, mark));
-      },
+      toggleJump: (mark: JumpMark | null) => applyConductor((s, id) => toggleJumpAfterBarline(s, id, mark)),
     }),
-    [barlineFocus, score, setScore, setRepeat, setVolta, padActions],
+    [barlineFocus, score, setScore, applyConductor, setRepeat, setVolta],
   );
 
   // ─────────── 键盘 ───────────

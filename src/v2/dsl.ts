@@ -30,7 +30,7 @@ import {
 } from './ticks';
 import { normalizeKey } from './timeline';
 import { isStaffInstrument, type StaffInstrument, type StaffClefSetting } from './pitch';
-import { autoGroupBeats } from './edit';
+import { autoGroupBeats, healDurations } from './edit';
 import { beatsPerMeasure, groupTicks, validMeter } from './meter';
 import { applyLyrics, lyricRows, applyLyricLinks, lyricLinkRows } from './lyrics';
 import { assembleParts, namespacePart, partScore, scoreParts } from './parts';
@@ -1172,7 +1172,9 @@ function parseSingle(text: string, modern = false): ParseResult {
     errors.push(...applied.errors);
   }
   return {
-    score,
+    // 解析出口兜底：旧版本残留 / 外部工具带入的 tick+附点矛盾状态就地修复，
+    // 后续序列化 / 校验 / 播放看到的都是可写回的干净数据
+    score: score ? healDurations(score) : score,
     errors,
   };
 }
@@ -1183,8 +1185,11 @@ function renderDuration(ticks: number, dot: 0 | 1 | 2): string {
   // 反解统一走 ticks.ts 的 decodeDslDuration（与 parse 侧的 withDots 口径同构）：
   // 先剥整拍增时线、再套附点系数，增时线数从少到多试保证还原出最短写法。
   // 编辑入口（cycleDot / setDot / setTicks）也用同一个反解，不能各写一套。
-  const shape = decodeDslDuration(ticks, dots);
-  if (!shape) throw new Error(`tick ${ticks}（附点数 ${dots}）没有对应的写法，无法无损还原`);
+  // 最后一道防线：tick 与附点矛盾时（旧版本残留 / 外部谱面）按能写回的附点数
+  // 重新解释同一段时值——序列化是打开谱面的必经之路，宁可少写一个附点，
+  // 也绝不能在这里抛错把整页编辑界面炸掉（用户实测 tick 40320+dot1 白屏）。
+  const shape = decodeDslDuration(ticks, dots) ?? normalizeDslDuration(ticks, dots);
+  if (!shape) return '';
   const div = TICK_DIVISIONS[shape.base];
   let s = dots === 1 ? '.' : dots === 2 ? '..' : '';
   if (div !== 1) s += `/${div}`;

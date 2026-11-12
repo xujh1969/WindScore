@@ -308,7 +308,7 @@ src/v2/
     ExportDialog.tsx    导出弹窗
     AudioWaveform.tsx   对轨波形
     libraryStore.ts / alignStore.ts / storeBackend.ts / storeInit.ts  曲库与标定存储
-src/scores/     内置示例谱（茉莉花、送别、欢乐颂、小星星、青花瓷）
+src/scores/     内置示例谱（茉莉花、送别、欢乐颂、小星星、青花瓷，以及二／四／六声部重奏示例）
 scripts/        回归测试（v2 / expand / beat / discover / export / store / mp3）
 skills/         windscore-jps：给大模型用的简谱转录 skill
 ```

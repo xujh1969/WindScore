@@ -17,13 +17,14 @@ import huanlesong from '../../scores/huanlesong.jps?raw';
 import xiaoxingxing from '../../scores/xiaoxingxing.jps?raw';
 import shengrikuaile from '../../scores/shengrikuaile.jps?raw';
 import ensembleDemo from '../../scores/ensemble-demo.jps?raw';
+import sextetDemo from '../../scores/sextet-demo.jps?raw';
 import './android.css';
 
 type Tab = 'library' | 'community' | 'my';
 const tabs: { id: Tab; label: string; icon: AndroidIconName }[] = [{ id: 'library', label: '曲库', icon: 'music' }, { id: 'community', label: '社区', icon: 'community' }, { id: 'my', label: '我的', icon: 'user' }];
 const collator = new Intl.Collator('zh-Hans-CN-u-co-pinyin', { numeric: true });
 function samples(): LibraryItem[] {
-  return [['茉莉花', molihua], ['送别', songbie], ['青花瓷', qinghuaci], ['欢乐颂', huanlesong], ['小星星', xiaoxingxing], ['生日快乐（3/4 拍）', shengrikuaile], ['重奏练习', ensembleDemo]].map(([name, text], i) => ({ id: `preview-${i}`, name, text, updatedAt: 0, meta: metaOfText(text, name), favorite: i === 0 || i === 2 }));
+  return [['茉莉花', molihua], ['送别', songbie], ['青花瓷', qinghuaci], ['欢乐颂', huanlesong], ['小星星', xiaoxingxing], ['生日快乐（3/4 拍）', shengrikuaile], ['重奏练习', ensembleDemo], ['六声部合奏', sextetDemo]].map(([name, text], i) => ({ id: `preview-${i}`, name, text, updatedAt: 0, meta: metaOfText(text, name), favorite: i === 0 || i === 2 }));
 }
 const preview = new URLSearchParams(location.search).get('preview') === '1';
 function initialTheme(): boolean {

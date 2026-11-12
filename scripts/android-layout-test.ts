@@ -9,7 +9,7 @@ import { partScore, scoreParts } from '../src/v2/parts';
 let failures = 0;
 let reflowed = 0;
 let cases = 0;
-for (const name of ['molihua-repeat', 'qinghuaci', 'xiaoxingxing', 'ensemble-demo', 'quartet-demo']) {
+for (const name of ['molihua-repeat', 'qinghuaci', 'xiaoxingxing', 'ensemble-demo', 'quartet-demo', 'sextet-demo']) {
   const score = parseDsl(readFileSync(`src/scores/${name}.jps`, 'utf8')).score!;
   for (const width of [320, 360, 390, 768, 1024]) for (const fontSize of [14, 21, 32, 42]) {
     const views = width < 760 && score.parts?.length ? scoreParts(score).map(part => partScore(score, part.id)) : [score];

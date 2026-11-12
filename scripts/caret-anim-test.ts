@@ -166,6 +166,24 @@ const main = async (): Promise<void> => {
   await act(() => renderWithClick(farCursor));
   check('无新点击时不重复播放', animCalls.length === 0, `calls=${animCalls.length}`);
 
+  // 方块态（Ctrl+←/→ 跳小节）：默认选中某小节第一个音符，只有方块没有 I 形插入符。
+  // 视口照旧跟随，但不该播「光标移动」补间动画（用户明确要求）。
+  const blockId = far?.items.find((it) => it.eventIndex >= 0)?.eventId ?? null;
+  check('能取到方块态定位用的 eventId', !!blockId, String(blockId));
+  const renderCaretState = (cursor: number, focusId: string | null, showCaret: boolean) =>
+    root.render(React.createElement(ScoreCanvas, {
+      score, activePartId: '1', dark: false, selectedIds: new Set<string>(), cursor,
+      timeline, playing: false, clock, showCaret, showBreaks: true,
+      focusId, onPick: () => {}, onEnded: () => {}, onLayout: (l) => { layout = l; },
+    }));
+  await act(() => renderCaretState(1, null, true)); // 先在谱首建立插入点
+  st = 0; sl = 0;
+  animCalls.length = 0;
+  await act(() => renderCaretState(farCursor, blockId, false));
+  check('方块态导航不播光标移动动画', animCalls.length === 0, `calls=${animCalls.length}`);
+  await new Promise((r) => setTimeout(r, 80));
+  check('方块态导航仍跟随视口', st > 0, `scrollTop=${st}`);
+
   root.unmount();
   console.log(failed === 0 ? '\nCARET ANIM PASS' : `\nCARET ANIM FAIL (${failed})`);
   process.exit(failed === 0 ? 0 : 1);

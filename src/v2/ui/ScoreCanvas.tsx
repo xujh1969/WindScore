@@ -618,7 +618,11 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       animateCaretScroll(wrap, top, left, !reduced);
     }
     const ghost = caretGhostRef.current;
-    if (guide && ghost && typeof ghost.animate === 'function') {
+    // 「移动光标」补间只在**插入光标真的出现**时播：showCaret=false 是方块态
+    // （选中音符、Ctrl+←/→ 跳小节），五线谱视图也不画 I 形插入符——
+    // 这些操作只让视口跟随，不做光标动画（用户明确要求）。
+    const caretVisible = showCaret !== false && notation !== 'staff';
+    if (guide && caretVisible && ghost && typeof ghost.animate === 'function') {
       if (typeof ghost.getAnimations === 'function') for (const a of ghost.getAnimations()) a.cancel();
       // 浮层是 position:fixed，全程用屏幕坐标，不受滚动容器裁剪 / 层叠影响。
       // 终点 = 滚动结束后新光标在屏幕上的位置
@@ -650,11 +654,12 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       // 中间那一帧 guide=false，不能把意图提前吃掉，否则动画从此不播。
       if (freshClick && ptr) lastHandledPointerAt.current = ptr.at;
       lastPointer.current = null;
-    } else if (ptr && !freshClick) {
-      // 过期 / 已消费的点击别留着，避免被后续无关重渲染误当成起点
+    } else if (ptr && (guide || !freshClick)) {
+      // 这次点击不会（也不该）产生动画：方块态 / 五线谱 / 已过期，清掉别残留；
+      // guide=false 的中间帧（cursor 还没回灌）仍保留，等下一帧再播。
       lastPointer.current = null;
     }
-  }, [cursor, focusId, activePartId, score, showBreaks, showCaret, playing, lyricEdit, dragFrom, animateCaretScroll, cancelCaretScroll]);
+  }, [cursor, focusId, activePartId, score, showBreaks, showCaret, playing, lyricEdit, dragFrom, notation, animateCaretScroll, cancelCaretScroll]);
 
   /**
    * 键盘定位（跳小节 / 跳首尾）：光标与起播点到位还不够，谱面视口必须跟着走。

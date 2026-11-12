@@ -11,6 +11,7 @@ import notationPhase2Demo from '../../scores/notation-phase2-demo.jps?raw';
 import lyricsDemo from '../../scores/lyrics-demo.jps?raw';
 import lyricConnectionsDemo from '../../scores/lyric-connections-demo.jps?raw';
 import quartetDemo from '../../scores/quartet-demo.jps?raw';
+import sextetDemo from '../../scores/sextet-demo.jps?raw';
 import { meterAt, meterBeatOptions, validMeter } from '../meter';
 import type { LayoutOptions, LayoutResult } from '../layout';
 import { deleteLyricPosition, insertLyricGap, lyricTrackNames, writeLyricInput, setLyricLink } from '../lyrics';
@@ -267,6 +268,7 @@ const BUILTIN: { name: string; text: string }[] = [
   { name: '多段歌词（重奏示例）', text: lyricsDemo },
   { name: '歌词延唱与英文连字', text: lyricConnectionsDemo },
   { name: '小星星（四声部示例）', text: quartetDemo },
+  { name: '晨光（六声部合奏示例）', text: sextetDemo },
 ];
 const BUILTIN_NAMES = BUILTIN.map((s) => s.name);
 

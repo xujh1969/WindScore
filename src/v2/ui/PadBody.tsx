@@ -251,9 +251,9 @@ interface Props {
   /** 时值档位（拍 / 分数拍），来自 durationTiers */
   tiers: { label: string; ticks: number }[];
   /**
-   * 音值组合档位：来自光标所在小节拍号的连通档位表（手册 §7）——
-   * 4/4 系 1/½/¼/⅛ 拍，6/8 系 1½/1/¾/½/3/8 拍，6/4 3/2/1½/1/¾ 拍。
-   * ok 由编辑器按当前选中音数算好（能不能划分出常用组合）。
+   * 音值组合档位：减时线细分档 + 整数拍跨拍连音档（GB/T 46845—2025
+   * §6.3.12，按小节容量给到 8 拍；4/4 等单拍子也有 2/3/4 拍档）。
+   * ok 由编辑器按当前选中音数算好（跨拍档只在能凑成连音时点亮）。
    */
   groupTargets: { label: string; ticks: number; ok: boolean }[];
   /** 当前选中的音符数：决定音值组合哪几档可用（2–8 个音） */
@@ -802,7 +802,7 @@ export function PadBody({
             与下面的时值排互斥：选区看这里，单音看时值排 */}
         {isRange && (
         <div className="v2-pad-row">
-          <span className="v2-field-label">音值组合（选中 2-8 个音）</span>
+          <span className="v2-field-label">音值组合（选中至少 2 个音）</span>
           <div className="v2-pad-tools">
             {groups.map((g) => (
               <button
@@ -812,7 +812,7 @@ export function PadBody({
                 onClick={() => actions.group(g.ticks)}
                 title={
                   selectedCount < 2
-                    ? '音值组合：先选中 2-8 个音'
+                    ? '音值组合：先选中至少 2 个音'
                     : g.ok
                       ? `音值组合：选中的 ${selectedCount} 个音合起来凑 ${g.label}`
                       : `${selectedCount} 个音凑不出 ${g.label}（最细分到 1/8 拍）`

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { TICKS_PER_BEAT } from '../ticks';
+import { MAX_TUPLET_NOTES, MAX_TUPLET_SPAN_BEATS, TICKS_PER_BEAT } from '../ticks';
 import { beatLabel, decodeDuration, groupCandidates, MAX_BEAMS } from '../edit';
 import { ExpClose, useEscapeClose } from './ExpClose';
 
@@ -49,41 +49,50 @@ function fallbackBeams(totalTicks: number, n: number): number {
  *
  * 覆盖性：每音的值域是封闭的（基准 ÷ 2^线 × 附点系数），任何「和恰好等于
  * 目标」的非连音组合都能逐音表达——把组合穷举变成 N 次独立单音选择。
- * 连音成员（1/3、1/5 拍…）不在此值域：成员数 3/5/6/7 时提供「按连音均分」
+ * 连音成员（1/3、1/5 拍…）不在此值域：均分值不可书写时提供「按连音均分」
  * 勾选（勾上后线/点锁定为连音标准，只剩对勾），与 candidatesFor 的连音
- * 候选同一条写回路径。
+ * 候选同一条写回路径。连音数不再圈 3/5/6/7，跨度也不再限整数拍——
+ * GB/T 46845—2025 §6.3.12 没有这两条限制。
  */
 export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, initialTuplet, onApply, onClose }: Props) {
   useEscapeClose(onClose);
   const n = members.length;
-  // 连音均分只在 3/5/6/7 音出现：2/4/8 音的均分本来就是常规时值，不需要连音。
-  // 且**均分值本身要不可书写**（1 拍÷3=2240 这种）才需要连音标号——
-  // 6/8 系里 1½ 拍÷3 = 3360 是普通八分，是自然划分，勾了反而会画出错误的「3」
+  // 运行时保护：超大选区不铺出几十万个 DOM 节点，也不把除零 / NaN 传进应用
+  const oversized = n > MAX_TUPLET_NOTES;
+  const capped = Math.min(n, MAX_TUPLET_NOTES);
+  const shownMembers = oversized ? members.slice(0, capped) : members;
+  const totalOk = Number.isFinite(totalTicks) && totalTicks > 0 && Number.isInteger(totalTicks);
+  // 连音均分：成员数≥2、跨度在 [1, 上限] 拍（允许 <2:1.5 …> 这类附点分拍）、
+  // 总 tick 能被 n 整除，且均分值本身不可书写（可书写的是自然划分，不该标连音）
   const tupletAvailable = useMemo(() => {
-    if (![3, 5, 6, 7].includes(n)) return false;
-    // 连音组总跨度必须是整数拍：1 拍走传统 <3: …> 省写，多拍走 <3:2 …> 跨拍
-    // 形式（GB/T 46845—2025 §6.3.12 连音均分原时值）；组不能跨小节线，
-    // 非整数拍跨度（如 3/8 大拍 1½ 拍）没有可序列化的连音写法
-    if (totalTicks < TICKS_PER_BEAT || totalTicks % TICKS_PER_BEAT !== 0) return false;
-    const each = Math.round(totalTicks / n);
-    return Number.isInteger(totalTicks / n) && each > 0 && !decodeDuration(each);
-  }, [n, totalTicks]);
-  const tupletEach = useMemo(() => Math.round(totalTicks / n), [totalTicks, n]);
+    if (!Number.isInteger(n) || n < 2 || n > MAX_TUPLET_NOTES || !totalOk) return false;
+    const spanBeats = totalTicks / TICKS_PER_BEAT;
+    if (spanBeats < 1 || spanBeats > MAX_TUPLET_SPAN_BEATS) return false;
+    const each = totalTicks / n;
+    return Number.isInteger(each) && each > 0 && !decodeDuration(each);
+  }, [n, totalTicks, totalOk]);
+  const tupletEach = useMemo(
+    () => (n > 0 && totalOk ? Math.round(totalTicks / n) : 0),
+    [totalTicks, n],
+  );
 
   // 预填：选区已有组合时**代入当前样子**（逐音反解为线+点，连音组合直接勾上
   // 连音模式）；全新选区取 candidatesFor 里第一个可完整反解的常规候选
   //（通常是「前八后十六」这类常见骨架），没有就按均分向下取线
   const [states, setStates] = useState<MemberState[]>(() => {
+    if (oversized || !totalOk) {
+      return Array.from({ length: capped }, () => ({ beams: 0, dots: 0 as const }));
+    }
     // 只有「选区现在已经凑成了目标时值」才代入现状。初次选中（各音还是各自
     // 原时值、合计远超目标）不能代入——否则预填出满屏灰线（用户实测）
     const initialSum = initialTicks?.reduce((a, b) => a + b, 0);
-    if (initialTicks && initialTicks.length === n && initialSum === totalTicks) {
+    if (initialTicks && initialTicks.length === capped && initialSum === totalTicks) {
       const decoded = initialTicks.map((t) => decodeDuration(t));
       if (decoded.every((d) => d)) {
         return decoded.map((d) => ({ beams: d!.beams, dots: d!.dots }));
       }
     }
-    const fromCands = groupCandidates(n, totalTicks, beat).find(
+    const fromCands = groupCandidates(capped, totalTicks, beat).find(
       (c) => !c.tuplet && c.ticks.every((t) => decodeDuration(t)),
     );
     if (fromCands) {
@@ -92,9 +101,9 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
         return { beams: d.beams, dots: d.dots };
       });
     }
-    return Array.from({ length: n }, () => ({ beams: fallbackBeams(totalTicks, n), dots: 0 as const }));
+    return Array.from({ length: capped }, () => ({ beams: fallbackBeams(totalTicks, capped), dots: 0 as const }));
   });
-  const [tupletMode, setTupletMode] = useState(initialTuplet === n && [3, 5, 6, 7].includes(n));
+  const [tupletMode, setTupletMode] = useState(tupletAvailable && initialTuplet === n);
 
   const patch = (i: number, next: Partial<MemberState>): void => {
     setStates((old) => old.map((s, j) => (j === i ? { ...s, ...next } : s)));
@@ -102,18 +111,20 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
 
   const ticks = states.map((s) => valueOf(s.beams, s.dots));
   const sum = ticks.reduce((a, b) => a + b, 0);
-  const exact = sum === totalTicks;
+  const exact = totalOk && sum === totalTicks;
   const over = sum > totalTicks;
   const diff = Math.abs(sum - totalTicks);
+  const pct = totalOk ? Math.min(100, Math.max(0, (sum / totalTicks) * 100)) : 0;
 
   const locked = tupletAvailable && tupletMode;
+  const canApply = !oversized && totalOk && (exact || locked);
 
   const apply = (): void => {
+    if (!canApply) return;
     if (locked) {
-      onApply(Array(n).fill(tupletEach), n, Array(n).fill(0));
+      onApply(Array(capped).fill(tupletEach), capped, Array(capped).fill(0));
       return;
     }
-    if (!exact) return;
     onApply(ticks, undefined, states.map((s) => s.dots));
   };
 
@@ -128,6 +139,7 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
         <div className="v2-exp-head">
           <span>
             自定义组合 · 凑成 {beatLabel(totalTicks)} · {n} 个音
+            {oversized ? `（一次最多组合 ${MAX_TUPLET_NOTES} 个音，请缩小选区）` : ''}
           </span>
           <ExpClose onClose={onClose} />
         </div>
@@ -144,7 +156,7 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
         ) : null}
 
         <div className={`v2-cg-row${locked ? ' is-locked' : ''}`}>
-          {members.map((m, i) => {
+          {shownMembers.map((m, i) => {
             const s = states[i]!;
             const shown = locked ? { beams: 1, dots: 0 as const } : s;
             const shownValue = locked ? tupletEach : ticks[i]!;
@@ -194,7 +206,7 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
             <div className="v2-cg-meter-slot">
               <div
                 className={`v2-cg-meter-fill${exact ? ' is-exact' : over ? ' is-over' : ''}`}
-                style={{ width: `${Math.min(100, (sum / totalTicks) * 100)}%` }}
+                style={{ width: `${pct}%` }}
               />
             </div>
             <div className="v2-cg-sum" role="status">
@@ -207,9 +219,9 @@ export function CustomGroupDialog({ totalTicks, beat, members, initialTicks, ini
           </div>
           <button
             type="button"
-            className={`v2-cg-apply${exact || locked ? ' is-ready' : ''}`}
-            disabled={!exact && !locked}
-            title={locked ? '应用连音均分' : exact ? '应用这个组合' : '合计还没凑齐目标时值'}
+            className={`v2-cg-apply${canApply ? ' is-ready' : ''}`}
+            disabled={!canApply}
+            title={oversized ? `一次最多组合 ${MAX_TUPLET_NOTES} 个音` : locked ? '应用连音均分' : exact ? '应用这个组合' : '合计还没凑齐目标时值'}
             onClick={apply}
           >
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

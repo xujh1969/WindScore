@@ -62,6 +62,21 @@ export const TICK_DIVISIONS: Record<number, number> = {
   840: 8,
 };
 
+/**
+ * 连音符的运行时上界（**不是记谱限制**）。
+ *
+ * GB/T 46845—2025 §6.3.12 的连音符从二连音到几十连音都有，既不限制连音数，
+ * 也不按拍号限制连音跨度；软件不该用「只支持 3/5/6/7」「只支持复拍子」把
+ * 国标允许的组合挡掉。这里的数字只用于挡住手工 DSL / 损坏谱面里的极端数值
+ * （1e9 连音会把 Array(n).fill、渲染循环、档位按钮撑爆）：
+ *   - MAX_TUPLET_NOTES：一次连音组最多 32 个成员
+ *   - MAX_TUPLET_SPAN_BEATS：连音组最多跨 8 拍
+ *   - MAX_DIVISION：传统 /n 除法记号只到 /8，更大的连音走 <n:拍数 …> 省写形式
+ */
+export const MAX_TUPLET_NOTES = 32;
+export const MAX_TUPLET_SPAN_BEATS = 8;
+export const MAX_DIVISION = Math.max(...Object.values(TICK_DIVISIONS));
+
 const BASE_DURATIONS = [26880, 13440, 6720, 3360, 1680, 840];
 
 /** 附点时值：dot=1 → ×1.5，dot=2 → ×1.75（6720 精度下全是整数，无取整误差） */
@@ -211,7 +226,8 @@ export function beamCount(ticks: number): number {  if (ticks <= 0 || ticks >= T
  *   3 连音占 2 拍   → 顶替 2 个四分   → 0 条线（只有标号）
  */
 export function tupletBeamCount(totalTicks: number, n: number): number {
-  if (n <= 1 || totalTicks <= 0) return 0;
-  const replaced = 2 ** Math.floor(Math.log2(n));
+  if (!Number.isFinite(totalTicks) || !Number.isFinite(n) || n <= 1 || totalTicks <= 0) return 0;
+  const replaced = 2 ** Math.floor(Math.log2(Math.min(n, MAX_TUPLET_NOTES)));
+  if (!Number.isFinite(replaced) || replaced < 1) return 0;
   return beamCount(Math.floor(totalTicks / replaced));
 }

@@ -23,6 +23,9 @@
 import {
   decodeDslDuration,
   DIVISION_TICKS,
+  MAX_DIVISION,
+  MAX_TUPLET_NOTES,
+  MAX_TUPLET_SPAN_BEATS,
   normalizeDslDuration,
   TICK_DIVISIONS,
   TICKS_PER_BEAT,
@@ -886,21 +889,33 @@ function parseSingle(text: string, modern = false): ParseResult {
         raw = rest;
       }
 
-      // 三连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>（1 拍内，成员各 1/n 拍），
-      // 或跨拍连音 <3:2 5 6 7>（3 个四分音均分 2 拍，冒号后写占几拍）
-      const tupletTok = /^(\d+):(\d+)?$/.exec(raw);
+      // 连音标号紧跟在 < 之后：<3: 5/3 3/3 2/3>（1 拍内，成员各 1/n 拍），
+      // 或跨拍 / 附点分拍连音 <3:2 5 6 7>（冒号后写占几拍，成员省写时值）。
+      // GB/T 46845—2025 §6.3.12 不限连音数与拍号，拍数允许半拍网格上的小数
+      // （<2:1.5 …> = 二连音均分附点分拍）；跨度只受运行时上界与整除性约束。
+      const tupletTok = /^(\d+):(\d+(?:\.\d+)?)?$/.exec(raw);
       if (raw !== '' && tupletTok) {
         const g = topGroup();
         if (g && g.memberIds.length === 0) {
           const n = Number(tupletTok[1]);
-          g.tuplet = n;
-          if (tupletTok[2] !== undefined) {
-            const spanBeats = Number(tupletTok[2]);
-            const memberTicks = Math.round((spanBeats * TICKS_PER_BEAT) / n);
-            if (n < 2 || spanBeats < 1 || memberTicks < 1) {
-              errors.push(`连音标号无效：<${raw}>`);
-            } else {
-              spanTuplet = { n, memberTicks, explicit: false };
+          if (!Number.isInteger(n) || n < 2 || n > MAX_TUPLET_NOTES) {
+            errors.push(`连音标号无效：<${raw}>（连音数须为 2–${MAX_TUPLET_NOTES} 的整数）`);
+          } else {
+            g.tuplet = n;
+            if (tupletTok[2] !== undefined) {
+              const spanBeats = Number(tupletTok[2]);
+              const spanTicks = spanBeats * TICKS_PER_BEAT;
+              const memberTicks = spanTicks / n;
+              // 损坏谱面里的极端拍数 / 不能整除的跨度，一律报错而不是造出
+              // Σ成员 ≠ 组总时值（I1）或者直接 NaN tick 的组
+              if (!Number.isFinite(spanBeats) || spanBeats < 1
+                || spanBeats > MAX_TUPLET_SPAN_BEATS
+                || !Number.isInteger(spanTicks) || !Number.isInteger(memberTicks)
+                || memberTicks < 1) {
+                errors.push(`连音标号无效：<${raw}>`);
+              } else {
+                spanTuplet = { n, memberTicks, explicit: false };
+              }
             }
           }
           raw = '';
@@ -1509,11 +1524,21 @@ function serializeSingle(score: Score): string {
         // 独立写法，只能靠组标号给出。
         let spanBeats = 0;
         const tupletN = g.tuplet;
-        if (score.format === 3 && tupletN && members.length === tupletN
-          && g.totalTicks % TICKS_PER_BEAT === 0) {
-          const s = g.totalTicks / TICKS_PER_BEAT;
-          // span=1 走传统 <3: …> 形式（省写展开成每音 /n），保持旧输出不变
-          if (s >= 2 && members.every((m) => m.ticks === g.totalTicks / tupletN)) spanBeats = s;
+        const total = g.totalTicks;
+        const uniform = !!tupletN && tupletN >= 2 && Number.isFinite(total) && total > 0
+          && Number.isInteger(total / tupletN)
+          && members.every((m) => m.ticks === total / tupletN);
+        // 跨拍 / 附点分拍连音统一写成 <n:拍数 …>（成员省写，时值由组标号给出）。
+        // 只有「1 拍跨度且 n 在 /n 记号上限内」才保留传统 <n: …> 形式，旧谱输出不变；
+        // n > /8 的 1 拍连音、1.5 拍的二连音等没有独立 /n 写法，必须走省写形式。
+        if (score.format === 3 && tupletN && tupletN >= 2 && tupletN <= MAX_TUPLET_NOTES
+          && members.length === tupletN && uniform
+          && total <= MAX_TUPLET_SPAN_BEATS * TICKS_PER_BEAT) {
+          const s = total / TICKS_PER_BEAT;
+          const spanText = Number(s.toFixed(6));
+          if (Number.isFinite(spanText) && spanText >= 1 && spanText <= MAX_TUPLET_SPAN_BEATS
+            && Number.isInteger(spanText * TICKS_PER_BEAT)
+            && (s !== 1 || tupletN > MAX_DIVISION)) spanBeats = spanText;
         }
         const inner = members
           .map((m) => {

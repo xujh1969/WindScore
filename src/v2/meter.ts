@@ -1,5 +1,5 @@
 import type { Score } from './types';
-import { TICKS_PER_BEAT } from './ticks';
+import { MAX_TUPLET_SPAN_BEATS, TICKS_PER_BEAT } from './ticks';
 
 /** 单段拍号："6/8" 这种分子/分母形式 */
 export interface MeterSegment {
@@ -93,22 +93,38 @@ export function groupTicks(beat: string): number {
 }
 
 /**
- * 该拍子里**允许共用减时线的组合总时值**（拍数，口径A），手册 §7 速查表：
+ * 该拍子里的**组合总时值档位**（拍数，口径A）：
  *   - 2 分体系（单拍子）：对半细分 —— 1、½、¼、⅛ 拍
  *   - 3 分体系（复拍子）：大拍的 1、⅔、½、⅓、¼ ——
  *     6/8 系即 1½、1、¾、½、3/8 拍；6/4 即 3、2、1½、1、¾ 拍
- *   - 跨拍连音档：大拍的 4/3（3 个二分音均分 4 拍之类，GB/T 46845—2025
- *     §6.3.12 连音均分原时值）——只在不超出小节容量时给出
+ *   - 跨拍连音档：整数拍跨度 2…小节容量（GB/T 46845—2025 §6.3.12 连音符
+ *     均分**原时值**，连音号括住整组；§6.3.13 的「减时线不跨单位拍」约束的是
+ *     普通减时线组，不是连音组）。**国标没有按拍号限制连音**，所以 4/4 也
+ *     给 2/3/4 拍档，可放两拍三连音；跨拍档由 groupCandidates 只放行连音候选。
+ * 组不得跨小节线，故上界取小节容量；另设 8 拍运行时上界防止极端拍号
+ * （parseMeter 允许分子到 32）铺出几十个档位按钮。
  * 某个音数能不能凑成某档由 candidatesFor 判断，这里只给「档位表」。
  */
 export function groupTierBeats(beat: string): number[] {
   const unit = groupTicks(beat) / TICKS_PER_BEAT;
-  if (unit === 1) return [1, 0.5, 0.25, 0.125];
-  const out = [unit, (unit * 2) / 3, unit / 2, unit / 3, unit / 4];
-  // 跨拍连音档：4/3 × 大拍（如 6/4 → 4 拍档，可放 3 个二分音的三连音）。
-  // 超过小节容量（任一段的拍数）就没有意义——组不能跨小节线。
+  // 坏拍号兜底：groupTicks/parseMeter 都不抛错，但可能给出非有限值
+  if (!Number.isFinite(unit) || unit <= 0) return [1, 0.5, 0.25, 0.125];
+  const out = unit === 1
+    ? [1, 0.5, 0.25, 0.125]
+    : [unit, (unit * 2) / 3, unit / 2, unit / 3, unit / 4];
+  const options = meterBeatOptions(beat).filter((b) => Number.isFinite(b) && b > 0);
+  const cap = options.length ? Math.max(...options) : 4;
+  // 复拍子原有的 4/3 × 大拍档（6/8 → 2 拍、6/4 → 4 拍）。非整数跨度的档
+  // 没有可序列化的连音写法，只在恰好是整数拍时保留。
   const wide = (unit * 4) / 3;
-  const cap = Math.max(...meterBeatOptions(beat));
-  if (wide <= cap + 1e-9) out.unshift(wide);
-  return out;
+  if (Number.isInteger(wide) && wide <= cap + 1e-9 && !out.some((b) => Math.abs(b - wide) < 1e-9)) {
+    out.unshift(wide);
+  }
+  const maxSpan = Math.min(Math.floor(cap + 1e-9), MAX_TUPLET_SPAN_BEATS);
+  const extra: number[] = [];
+  for (let s = 2; s <= maxSpan; s += 1) {
+    if (Number.isFinite(s) && !out.some((b) => Math.abs(b - s) < 1e-9)) extra.push(s);
+  }
+  // 档位按从大到小摆放，新增的整数拍档补在最前
+  return [...extra.reverse(), ...out];
 }

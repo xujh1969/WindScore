@@ -57,6 +57,7 @@ import { groupTicks, groupTierBeats } from '../src/v2/meter';
 import {
   applyTier as applyTierOp,
   autoGroupBeats,
+  beatLabel,
   candidatesFor,
   cycleAccidentalAt,
   cycleDot,
@@ -130,6 +131,7 @@ import {
   beamCount,
   DIVISION_TICKS,
   durationTiers,
+  MAX_TUPLET_NOTES,
   tupletBeamCount,
   undotTicks,
   isLegalTick,
@@ -2332,6 +2334,96 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 }
 
 {
+  // GB/T 46845—2025 §6.3.12 连音符既不按拍号限制跨度、也不限制连音数；
+  // §6.3.13 的「单位拍分明」约束的是普通减时线组。这里把放开后的链路
+  // 与极端输入的运行时保护一起钉死。
+  console.log('\n[国标放开 · 任意拍号 / 连音数 / 附点分拍 + 运行时保护]');
+  const P = TICKS_PER_BEAT;
+  const base = parseDsl('@format 3\n@beat 4/4\n\n5 6 7 1 ||\n').score!;
+  const ids = base.events.filter((e) => e.kind === 'note').slice(0, 3).map((e) => e.id);
+  const cands = groupCandidates(3, P * 2, '4/4');
+  check('4/4 的 2 拍档给出 3 连音候选', cands.length > 0 && cands.every((c) => c.tuplet === 3),
+    cands.map((c) => c.label).join(' | '));
+  const applied = applyTierOp(base, ids, P * 2, cands[0]!.ticks, cands[0]!.tuplet, cands[0]!.dots);
+  check('4/4 两拍三连音应用后零违反', !!applied && validateGroups(applied).length === 0,
+    validateGroups(applied ?? base).map((v) => `${v.code}:${v.message}`).join(' / '));
+  const text = applied ? serializeDsl(applied) : '';
+  check('4/4 两拍三连音写成 <3:2 …>', text.includes('<3:2 '), text);
+  const rt = parseDsl(text);
+  check('4/4 两拍三连音回读无错、成员各 2/3 拍', !rt.errors.length && !!rt.score
+    && rt.score.events.filter((e) => e.kind === 'note').slice(0, 3)
+      .every((e) => (e as { ticks: number }).ticks === Math.round((P * 2) / 3)),
+    rt.errors.join(' / '));
+  check('4/4 两拍三连音可排版且画出标号 3', !!rt.score
+    && layoutScore(rt.score, { contentWidth: 900 }).lines[0].tuplets.some((t) => t.text === '3'));
+
+  // 连音数放开：10 连音（1 拍）没有 /10 记号，自动走 <10:1 …> 省写形式
+  const ten = parseDsl('@format 3\n@beat 4/4\n\n<10:1 1 2 3 4 5 6 7 1 2 3> ||\n');
+  check('10 连音（1 拍）解析无错', !ten.errors.length && !!ten.score, ten.errors.join(' / '));
+  const tenText = ten.score ? serializeDsl(ten.score) : '';
+  check('10 连音序列化为 <10:1 …>', tenText.includes('<10:1 '), tenText);
+  const tenRt = parseDsl(tenText);
+  check('10 连音回读无错、成员各 1/10 拍', !tenRt.errors.length && !!tenRt.score
+    && tenRt.score.groups.some((g) => g.tuplet === 10)
+    && tenRt.score.events.filter((e) => e.kind === 'note')
+      .every((e) => (e as { ticks: number }).ticks === P / 10),
+    tenRt.errors.join(' / '));
+  check('candidatesFor(10, 1 拍) 给出 10 连音候选', candidatesFor(10, P).some((c) => c.tuplet === 10));
+
+  // 附点分拍连音：二连音均分 1½ 拍
+  const dup = parseDsl('@format 3\n@beat 6/8\n\n<2:1.5 5 6> ||\n');
+  check('二连音（1½ 拍附点分拍）解析无错', !dup.errors.length && !!dup.score, dup.errors.join(' / '));
+  const dupText = dup.score ? serializeDsl(dup.score) : '';
+  check('二连音序列化为 <2:1.5 …>', dupText.includes('<2:1.5 '), dupText);
+  const dupRt = parseDsl(dupText);
+  check('二连音回读无错、成员各 ¾ 拍', !dupRt.errors.length && !!dupRt.score
+    && dupRt.score.events.filter((e) => e.kind === 'note')
+      .every((e) => (e as { ticks: number }).ticks === Math.round(P * 0.75)),
+    dupRt.errors.join(' / '));
+  check('二连音零不变量违反', !!dup.score && validateGroups(dup.score).length === 0,
+    dup.score ? validateGroups(dup.score).map((v) => `${v.code}:${v.message}`).join(' / ') : '');
+
+  // 运行时保护：极端 / 损坏输入一律退化为安全值，绝不抛异常
+  const guards: Array<[string, () => boolean]> = [
+    ['n=0', () => candidatesFor(0, P).length === 0],
+    ['n=-1', () => candidatesFor(-1, P).length === 0],
+    ['n=NaN', () => candidatesFor(NaN, P).length === 0],
+    ['n=1e9', () => candidatesFor(1e9, P).length === 0],
+    ['总时值 NaN', () => candidatesFor(3, NaN).length === 0],
+    ['总时值负数', () => candidatesFor(3, -P).length === 0],
+    ['总时值 0', () => candidatesFor(3, 0).length === 0],
+    ['总时值 Infinity', () => candidatesFor(3, Infinity).length === 0],
+    ['groupCandidates n=0', () => groupCandidates(0, P, '4/4').length === 0],
+    ['groupTiers n=0', () => groupTiers(0, '4/4').length === 0],
+    ['groupTiers n=1e9', () => groupTiers(1e9, '4/4').length === 0],
+    ['坏拍号档位表', () => groupTierOptions('???').every((t) => Number.isFinite(t.ticks) && t.ticks > 0)],
+    ['beatLabel(NaN)', () => beatLabel(NaN) === '? 拍'],
+    ['tupletBeamCount n=0', () => tupletBeamCount(P, 0) === 0],
+    ['tupletBeamCount NaN', () => tupletBeamCount(NaN, NaN) === 0],
+    ['applyTier 总时值 NaN', () => applyTierOp(base, ids, NaN) === null],
+    ['applyTier 非法连音数', () => applyTierOp(base, ids, P, [P / 3, P / 3, P / 3], 99) === null],
+  ];
+  const guardFails: string[] = [];
+  for (const [name, fn] of guards) {
+    try { if (!fn()) guardFails.push(name); } catch { guardFails.push(`${name} 抛异常`); }
+  }
+  check('极端候选 / 档位 / 应用输入不抛异常且退化为安全值', guardFails.length === 0, guardFails.join(' / '));
+
+  const badTokens = ['<1: 1 2>', '<0:2 1 2>', `<${MAX_TUPLET_NOTES + 1}:2 1 2>`,
+    '<3:0 1 2 3>', '<3:99 1 2 3>', '<3:1.333 1 2 3>', '<11:2 1 2 3>'];
+  let badThrew = false;
+  let badAllReported = true;
+  try {
+    for (const tok of badTokens) {
+      const res = parseDsl(`@format 3\n@beat 4/4\n\n${tok} ||\n`);
+      if (!res.errors.length) badAllReported = false;
+      if (res.score) layoutScore(res.score, { contentWidth: 900 });
+    }
+  } catch { badThrew = true; }
+  check('坏连音标号报错而非崩溃（解析 + 排版）', !badThrew && badAllReported, badTokens.join(' '));
+}
+
+{
   // 档位语义（§6.2）：
   //   单选 → 档位是「这个音的时值」，可以到 3 拍（写成增时线 `5 - -`）
   //   多选 → 档位是「整个选区的总时值」。简谱里超过一拍的长音一律用增时线
@@ -2346,14 +2438,23 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
 
   check('单选保留长音档位（3 拍）', all.some((t) => t.ticks === TICKS_PER_BEAT * 3), all.map((t) => t.label).join(','));
 
-  // 核心断言：凡是被给出的档位，应用后都必须零不变量违反。
-  // 修复前「2 拍 / 3 拍」会建出违反 I2 的组、1/4 拍会产出 3 tick 违反 I4。
+  // 核心断言：凡是被给出的档位，按**面板里实际会用的候选**应用后都必须零违反。
+  // 跨拍档（GB/T 46845—2025 §6.3.12 允许连音均分原时值，4/4 也给 2/3/4 拍）
+  // 只给连音候选：普通减时线组不能跨拍（I2），直接 applyTier 不带候选会造出
+  // 普通跨拍组，那不是真实 UI 路径（面板/输入板一律从 groupCandidates 取候选）。
   for (const n of [2, 3, 4, 6, 8]) {
     const list = groupTiers(n, '4/4');
-    check(`n=${n} 档位不超过连通单位（1 拍）`, list.every((t) => t.ticks <= TICKS_PER_BEAT), list.map((t) => t.label).join(','));
+    const cross = list.filter((t) => t.ticks > TICKS_PER_BEAT);
+    check(`n=${n} 非跨拍档不超过连通单位（1 拍）`,
+      list.filter((t) => t.ticks <= TICKS_PER_BEAT).length > 0,
+      list.map((t) => t.label).join(','));
+    check(`n=${n} 跨拍档只给连音候选`,
+      cross.every((t) => groupCandidates(n, t.ticks, '4/4').every((c) => !!c.tuplet)),
+      cross.map((t) => t.label).join(','));
     check(`n=${n} 给出的档位都能整除`, list.length > 0, list.map((t) => t.label).join(','));
     for (const t of list) {
-      const next = applyTierOp(score, ids.slice(0, n), t.ticks);
+      const cand = groupCandidates(n, t.ticks, '4/4')[0]!;
+      const next = applyTierOp(score, ids.slice(0, n), t.ticks, cand.ticks, cand.tuplet, cand.dots);
       check(
         `n=${n} 「${t.label}」应用后零违反`,
         !!next && validateGroups(next).length === 0,
@@ -2362,8 +2463,8 @@ console.log('\n[GB 中实用度记号 · 琶音 / 震音 / 虚小节线 / 散板
     }
   }
 
-  check('n=4 不再给出 2 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 24 * TICKS_PER_BEAT));
-  check('n=4 不再给出 3 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 16 * TICKS_PER_BEAT));
+  check('n=4 不再给出 2 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 2));
+  check('n=4 不再给出 3 拍', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 3));
   check('n=4 不再给出 1/4 拍（每音 3 tick 非法）', !groupTiers(4, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 4));
   check('n=2 保留 1/4 拍（每音 6 tick 合法）', groupTiers(2, '4/4').some((t) => t.ticks === TICKS_PER_BEAT * 1 / 4));
   check('n=8 只剩 1 拍', groupTiers(8, '4/4').every((t) => t.ticks === TICKS_PER_BEAT));
@@ -3371,30 +3472,37 @@ const blank = (): Score => ({
       && groupTicks('12/8') === Math.round(P * 1.5) && groupTicks('3/8') === Math.round(P * 1.5));
   check('groupTicks 6/4 = 3 拍', groupTicks('6/4') === P * 3);
 
-  // 档位表：6/8 系 = 2 / 1½ / 1 / ¾ / ½ / 3/8 拍，6/4 = 4 / 3 / 2 / 1½ / 1 / ¾ 拍。
-  // 4/3 × 大拍是跨拍连音档（GB/T 46845—2025 §6.3.12 连音均分原时值）：
-  // 6/8 的 2 拍档可放 3 个四分的三连音，6/4 的 4 拍档可放 3 个二分的三连音
+  // 档位表 = 减时线细分档 + 整数拍跨拍连音档（2 拍…小节容量，运行时上界 8 拍）。
+  // GB/T 46845—2025 §6.3.12 没按拍号限制连音：4/4 一样给 2/3/4 拍档，
+  // 6/8 的 2 拍档可放 3 个四分的三连音，6/4 的 4 拍档可放 3 个二分的三连音。
+  // 跨拍档由 groupCandidates 只放行连音候选，普通减时线组仍受 I2 约束。
   const t68 = groupTierOptions('6/8').map((t) => t.ticks);
-  check('6/8 档位表 = 2/1½/1/¾/½/3/8 拍',
-    JSON.stringify(t68) === JSON.stringify([P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75), P / 2, Math.round(P * 0.375)]),
+  check('6/8 档位表 = 3/2/1½/1/¾/½/3/8 拍',
+    JSON.stringify(t68) === JSON.stringify([P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75), P / 2, Math.round(P * 0.375)]),
     JSON.stringify(t68));
   const t64 = groupTierOptions('6/4').map((t) => t.ticks);
-  check('6/4 档位表 = 4/3/2/1½/1/¾ 拍',
-    JSON.stringify(t64) === JSON.stringify([P * 4, P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75)]),
+  check('6/4 档位表 = 6/5/4/3/2/1½/1/¾ 拍',
+    JSON.stringify(t64) === JSON.stringify([P * 6, P * 5, P * 4, P * 3, P * 2, Math.round(P * 1.5), P, Math.round(P * 0.75)]),
     JSON.stringify(t64));
   const t44 = groupTierOptions('4/4').map((t) => t.ticks);
-  check('4/4 档位表 = 1/½/¼/⅛ 拍（单拍子无跨拍档）', JSON.stringify(t44) === JSON.stringify([P, P / 2, P / 4, P / 8]), JSON.stringify(t44));
-  check('groupTierBeats(6/8) 是 3 分体系细分 + 跨拍档', groupTierBeats('6/8').length === 6);
-  check('3/8 没有跨拍档（4/3 大拍超出小节容量）', !groupTierOptions('3/8').some((t) => t.ticks === P * 2));
+  check('4/4 档位表 = 4/3/2/1/½/¼/⅛ 拍（单拍子也有跨拍连音档）',
+    JSON.stringify(t44) === JSON.stringify([P * 4, P * 3, P * 2, P, P / 2, P / 4, P / 8]),
+    JSON.stringify(t44));
+  check('groupTierBeats(6/8) 是 3 分体系细分 + 跨拍档', groupTierBeats('6/8').length === 7);
+  check('3/8 没有跨拍档（小节容量只有 1½ 拍）', !groupTierOptions('3/8').some((t) => t.ticks === P * 2));
 
   // 选区档位跟着拍号走：6/8 里 3 个音能凑 1½ 拍（标志性组合，3 个八分），
   // 4/4 里同一档不出现（1½ 拍超 1 拍连通边界）
   check('6/8 里 n=3 给出 1½ 拍档', groupTiers(3, '6/8').some((t) => t.ticks === Math.round(P * 1.5)));
   check('4/4 里 n=3 不给 1½ 拍档', !groupTiers(3, '4/4').some((t) => t.ticks === Math.round(P * 1.5)));
+  check('4/4 里 n=3 给出 2 拍档（两拍三连音）', groupTiers(3, '4/4').some((t) => t.ticks === P * 2));
+  check('2/4 里 n=3 也给出 2 拍档', groupTiers(3, '2/4').some((t) => t.ticks === P * 2));
   check('6/8 里 n=2 给出 1 拍与 1½ 拍档',
     groupTiers(2, '6/8').some((t) => t.ticks === P) && groupTiers(2, '6/8').some((t) => t.ticks === Math.round(P * 1.5)));
-  check('9/8 的档位表与 6/8 相同（每大拍独立）',
-    JSON.stringify(groupTierOptions('9/8').map((t) => t.ticks)) === JSON.stringify(t68));
+  const t98 = groupTierOptions('9/8').map((t) => t.ticks);
+  check('9/8 覆盖 6/8 全部档位并多出 4 拍档（小节容量更大）',
+    t68.every((x) => t98.includes(x)) && t98.includes(P * 4) && !t68.includes(P * 4),
+    JSON.stringify(t98));
 
   // ── 9/8 选 3 音套 1½ 拍：候选要贴小拍网格（用户实测：全是每音带点的怪组合）──
   // 大拍档走 compoundCandidates：成员只落在小拍网格上（八分/附点四分/十六分/三十二分），

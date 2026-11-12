@@ -13,6 +13,8 @@ import { beatsPerMeasure, groupTicks, groupTierBeats, meterAt, validMeter } from
 import {
   decodeDslDuration,
   isLegalTick,
+  MAX_TUPLET_NOTES,
+  MAX_TUPLET_SPAN_BEATS,
   normalizeDslDuration,
   retickDots,
   TICKS_PER_BEAT,
@@ -1547,6 +1549,7 @@ export interface TierCandidate {
 }
 
 export function beatLabel(t: number): string {
+  if (!Number.isFinite(t)) return '? 拍';
   const beats = t / TICKS_PER_BEAT;
   if (Number.isInteger(beats)) return `${beats} 拍`;
   // 1/4 拍、1/3 拍（三连音）、3/4 拍（附点八分）都要说成人话。
@@ -1562,11 +1565,20 @@ export function beatLabel(t: number): string {
 
 /**
  * 候选划分（§6.4）：均分、前八后十六 / 前十六后八、附点切分（两音）、
- * 对称切分（三音）、二分组合，以及 n = 3/5/6/7 时的 n 连音。
+ * 对称切分（三音）、二分组合，以及 n 连音。
  * 常用组合覆盖所有音数——哪怕只有均分一档也要弹面板（用户要求：
  * 4/6/7/8 音选档位后要能看到候选并有「自定义组合」入口，不能静默画默认值）。
+ *
+ * 连音成员数不再圈定 3/5/6/7：GB/T 46845—2025 §6.3.12 的连音符从二连音到
+ * 几十连音都有，国标既不限制连音数、也不按拍号限制跨度；只要均分值写不成
+ * 常规时值（需要靠连音号给时值）、总跨度可写回 <n:拍数 …>，就给 n 连音候选。
+ * 自然划分（均分值本身就是常规时值）照旧不标连音。
  */
 export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
+  // 运行时保护：坏选区 / 损坏谱面 / 极端档位不能让 Array(n).fill、除零、NaN
+  // 一路传进排版与序列化。n=1 的单音档仍照旧返回。
+  if (!Number.isInteger(n) || n < 1 || n > MAX_TUPLET_NOTES
+    || !Number.isFinite(totalTicks) || totalTicks <= 0 || !Number.isInteger(totalTicks)) return [];
   const even = totalTicks / n;
   /** 每个音的 tick 都必须是合法粒度，否则写回去就是 I4 违反（如 3 tick）；
    *  连音候选豁免——成员时值由组标号统一给出（如 <3:2 …> 各 2/3 拍），
@@ -1648,17 +1660,20 @@ export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
   }
   // 均分殿后：均分值能写成常规时值（decodeDuration 可解）就是普通均分，
   // 不管几个音——6/8 里 3 个八分凑满一大拍是**自然划分**，不是三连音（手册 §4.2）；
-  // 只有均分值本身不可书写（1 拍 ÷ 3 = 2240 这种）才挂连音标号，且仅 3/5/6/7 音。
-  // 连音组的总跨度必须是整数拍（跨拍连音 <3:2 …> 冒号后写整数拍数；1 拍走
-  // 传统 <3: …> 省写），非整数拍跨度（如 3/8 的大拍 1½ 拍）出不了可序列化的连音。
+  // 只有均分值本身不可书写（1 拍 ÷ 3 = 2240 这种）才挂连音标号。
+  // 连音组的跨度写成 <n:拍数 …> 里的「拍数」：整数拍（<3:2 …>）与半拍网格上的
+  // 非整数拍（<7:1.5 …>）都能写回，只要总 tick 是整数、能被 n 整除、跨度不超上限；
+  // 1 拍跨度且 n ≤ /8 记号上限时序列化仍走传统 <n: …> 形式，保持旧谱输出不变。
   if (Number.isInteger(even) && even > 0) {
     const plain = decodeDuration(even);
+    const spanBeats = totalTicks / TICKS_PER_BEAT;
+    const spanOk = n >= 2 && spanBeats >= 1 && spanBeats <= MAX_TUPLET_SPAN_BEATS;
     if (plain) {
       push(out, { label: `均分，每音 ${beatLabel(even)}`, ticks: Array(n).fill(even) });
-    } else if ([3, 5, 6, 7].includes(n) && totalTicks >= TICKS_PER_BEAT && totalTicks % TICKS_PER_BEAT === 0) {
+    } else if (spanOk) {
       push(out, { label: `${n} 连音（每音 ${beatLabel(even)}，标号 ${n}）`, ticks: Array(n).fill(even), tuplet: n });
     }
-    // 都不行（如 2 拍 ÷ 6 = 1/3 拍碎片：写不了常规值、连音又超跨度）就不给这档，
+    // 都不行（如 ½ 拍 ÷ 5 写不了常规值、跨度又不到 1 拍）就不给这档，
     // 面板里该档位自然禁用——不能塞一个画不出来也写不回的候选
   }
   return out.filter(legal);
@@ -1676,7 +1691,9 @@ export function candidatesFor(n: number, totalTicks: number): TierCandidate[] {
  */
 export function compoundCandidates(n: number, unitTicks: number): TierCandidate[] {
   const C = unitTicks / 3;
-  if (!Number.isInteger(C) || C <= 0 || n < 2) return [];
+  // 运行时保护：递归枚举的分支数随 n 增长，损坏数据里的超大选区要先挡掉
+  if (!Number.isFinite(C) || !Number.isInteger(C) || C <= 0
+    || !Number.isInteger(n) || n < 2 || n > MAX_TUPLET_NOTES) return [];
   const half = C / 2;
   const quarter = C / 4;
   if (!Number.isInteger(half) || !Number.isInteger(quarter) || quarter <= 0) return [];
@@ -1726,6 +1743,8 @@ export function compoundCandidates(n: number, unitTicks: number): TierCandidate[
  * 那套模板本来就是按 2 幂体系调的，1 拍以内的划分它给得又准又常用。
  */
 export function groupCandidates(n: number, totalTicks: number, beat?: string): TierCandidate[] {
+  if (!Number.isInteger(n) || n < 1 || n > MAX_TUPLET_NOTES
+    || !Number.isFinite(totalTicks) || totalTicks <= 0 || !Number.isInteger(totalTicks)) return [];
   const unit = beat ? groupTicks(beat) : 0;
   if (unit && unit !== TICKS_PER_BEAT && totalTicks === unit) {
     const cands = compoundCandidates(n, totalTicks);
@@ -1769,11 +1788,12 @@ export function candidateGlyph(
  */
 export function groupTierOptions(beat: string): DurationTier[] {
   return groupTierBeats(beat)
+    .filter((b) => Number.isFinite(b) && b > 0)
     .map((b) => {
       const ticks = Math.round(b * TICKS_PER_BEAT);
       return { label: beatLabel(ticks), ticks };
     })
-    .filter((t) => t.ticks > 0);
+    .filter((t) => Number.isFinite(t.ticks) && t.ticks > 0);
 }
 
 /**
@@ -1787,8 +1807,9 @@ export function groupTierOptions(beat: string): DurationTier[] {
  * 4 个音分 1/4 拍 = 每音 3 tick，不是合法时值，这一档就不该出现。
  */
 export function groupTiers(n: number, beat: string): DurationTier[] {
+  if (!Number.isInteger(n) || n < 2 || n > MAX_TUPLET_NOTES) return [];
   return groupTierOptions(beat).filter(
-    (t) => n >= 2 && groupCandidates(n, t.ticks, beat).length > 0,
+    (t) => groupCandidates(n, t.ticks, beat).length > 0,
   );
 }
 
@@ -1839,7 +1860,13 @@ export function applyTier(
   tuplet?: number,
   dots?: (0 | 1 | 2)[],
 ): Score | null {
-  if (ids.length === 0) return null;
+  // 运行时保护：非法档位 / 划分 / 连音标号直接拒绝，绝不把 NaN tick 或超大数组
+  // 写进谱面（写进去会在序列化、排版、五线谱换算处连环炸）
+  if (!Number.isFinite(totalTicks) || totalTicks <= 0 || !Number.isInteger(totalTicks)) return null;
+  if (ids.length === 0 || ids.length > MAX_TUPLET_NOTES) return null;
+  if (ticks && ticks.some((t) => !Number.isFinite(t) || t <= 0 || !Number.isInteger(t))) return null;
+  if (tuplet !== undefined
+    && (!Number.isInteger(tuplet) || tuplet < 2 || tuplet > MAX_TUPLET_NOTES || tuplet !== ids.length)) return null;
 
   // 选区必须在 events 中连续，且只能是 note / rest
   const positions = ids

@@ -10,7 +10,7 @@
  * 原则（§7.2）：只报错，绝不静默修正。
  */
 
-import { isLegalTick, LEGAL_TICKS, TICKS_PER_BEAT } from './ticks';
+import { isLegalTick, LEGAL_TICKS, MAX_TUPLET_NOTES, normalizeDslDuration, TICKS_PER_BEAT } from './ticks';
 import { isTimed, type Event, type RestEvent, type Score } from './types';
 import { groupTicks, meterAt, meterBeatOptions, validMeter } from './meter';
 import { gbNote } from './gb';
@@ -89,9 +89,11 @@ export function validateGroups(score: Score): Violation[] {
     // 连音均分**原时值**），但组不得跨小节线（解析端已拦），这里以小节容量为上限；
     // 混合拍小节可以是任一段的拍数，取最大段。
     const meter = meterAt(score, index.get(g.memberIds[0]) ?? 0);
+    const options = meterBeatOptions(meter).filter((b) => Number.isFinite(b) && b > 0);
+    const capBeats = options.length ? Math.max(...options) : 4;
     const maxGroup = !g.tuplet
       ? (score.format === 3 ? groupTicks(meter) : TICKS_PER_BEAT)
-      : Math.max(...meterBeatOptions(meter)) * TICKS_PER_BEAT;
+      : capBeats * TICKS_PER_BEAT;
     if (g.totalTicks > maxGroup) {
       out.push({
         code: 'I2',
@@ -118,8 +120,10 @@ export function validateGroups(score: Score): Violation[] {
       });
     }
 
-    // I4 合法 tick 粒度
-    if (!isLegalTick(g.totalTicks)) {
+    // I4 合法 tick 粒度。组总时值只要能写回 DSL（增时线 + 基础时值 + 附点）
+    // 就算合法：5 拍组写成 `1-----` 完全可回读，不能因为封闭的常用 tick 表
+    // 没收录它就把国标允许的跨拍连音判成错误。成员仍按严格值域检查。
+    if (!isLegalTick(g.totalTicks) && !normalizeDslDuration(g.totalTicks, 0)) {
       out.push({
         code: 'I4',
         groupId: g.id,
@@ -127,11 +131,14 @@ export function validateGroups(score: Score): Violation[] {
       });
     }
     // 连音成员的时值由组标号统一给出（如 <3:2 …> 成员各 2/3 拍 = 4480 tick），
-    // 不在独立时值值域内是正常的——只要求成员均匀且能整除
+    // 不在独立时值值域内是正常的——只要求成员均匀且能整除。
+    // 损坏数据里的非法连音标号（0 / 负数 / 超大数）不享受豁免，避免 NaN 扩散。
     const tupletN = g.tuplet;
-    const uniformTuplet = !!tupletN && members.length === tupletN
-      && g.totalTicks % tupletN === 0
-      && (members as { ticks: number }[]).every((m) => m.ticks === g.totalTicks / tupletN);
+    const validTupletN = Number.isInteger(tupletN) && (tupletN ?? 0) >= 2
+      && (tupletN ?? 0) <= MAX_TUPLET_NOTES;
+    const uniformTuplet = validTupletN && members.length === tupletN
+      && g.totalTicks % (tupletN ?? 1) === 0
+      && (members as { ticks: number }[]).every((m) => m.ticks === g.totalTicks / (tupletN ?? 1));
     for (const m of members as { id: string; ticks: number }[]) {
       if (!uniformTuplet && !isLegalTick(m.ticks)) {
         out.push({

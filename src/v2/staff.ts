@@ -21,7 +21,7 @@ import { scoreParts } from './parts';
 import { resolveStaffClef } from './staffClef';
 import { lyricTextWidth, lyricTextOffset, projectLyricLines, type LyricLine } from './lyricLines';
 import { staffContentRight } from './staffBounds';
-import { TICKS_PER_BEAT } from './ticks';
+import { MAX_TUPLET_NOTES, TICKS_PER_BEAT } from './ticks';
 import type { Accidental, BeatGroup, JumpMark, MeasureNumberMode, Score } from './types';
 import { measureNumberMode } from './types';
 
@@ -418,7 +418,13 @@ export function buildStaffLayout(score: Score, layout: LayoutResult, mode: Staff
       const gid0 = groupOf.get(it.eventId);
       const group = gid0 === undefined ? undefined : groupById.get(gid0);
       const duration = ticks / (dots === 1 ? 1.5 : dots === 2 ? 1.75 : 1);
-      const baseTicks = group?.tuplet ? duration * group.tuplet / 2 ** Math.floor(Math.log2(group.tuplet)) : duration;
+      // 连音顶替的常规音数：坏数据（tuplet=0 / 1 / NaN）不能让 2**(-Infinity)
+      // 之类的值把五线谱坐标污染成 NaN，退化成「不换算」
+      const tn = group?.tuplet ?? 0;
+      const replaced = Number.isFinite(tn) && tn >= 2
+        ? 2 ** Math.floor(Math.log2(Math.min(tn, MAX_TUPLET_NOTES)))
+        : 1;
+      const baseTicks = replaced > 1 ? (duration * tn) / replaced : duration;
 
       if (it.kind === 'rest') {
         flush();

@@ -17,7 +17,10 @@ import { edgeScrollTop, eventScrollTop } from '../src/v2/ui/scoreScroll';
 import { CARET_BLINK_MS, caretBlinkActive } from '../src/v2/ui/caretBlink';
 import { LIGHT_THEME, paintLayout, resetPaintMetrics } from '../src/v2/paint';
 import {
+  NOTATION_TITLE_FONT_SIZE,
+  notationDigitInkHeight,
   notationHeaderInfoSize,
+  notationHeaderKeySize,
   notationHeaderRowHeight,
   notationHeaderSubSize,
   notationLyricFontSize,
@@ -477,11 +480,26 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
   check('排版层右列行距与绘制层说明字号同源',
     layoutSrc.includes('const rowH = notationHeaderRowHeight(fontSize);')
     && !layoutSrc.includes('const rowH = 18;'));
+  check('调号 / 速度字号明显小于标题，且大字谱下封顶',
+    sizes.every(f => notationHeaderKeySize(f) < f
+      && notationHeaderKeySize(f) <= NOTATION_TITLE_FONT_SIZE * 0.65
+      && notationHeaderKeySize(f) > notationHeaderInfoSize(f)),
+    sizes.map(f => `${f}:${notationHeaderKeySize(f).toFixed(1)}`).join(' '));
   check('标题与谱头说明共用同一字体，绘制层不再引用标题专用字体',
-    paintSrc.includes('M.titleFont = `400 28px ${NOTATION_TEXT_FAMILY}`')
+    paintSrc.includes('M.titleFont = `400 ${NOTATION_TITLE_FONT_SIZE}px ${NOTATION_TEXT_FAMILY}`')
     && paintSrc.includes('M.titleSubFont = `400 ${notationHeaderSubSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`')
     && paintSrc.includes('M.titleInfoFont = `400 ${notationHeaderInfoSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`')
     && !paintSrc.includes('NOTATION_TITLE_FAMILY'));
+  check('大标题与小标题下移一个标题字高，左右两列保持原位，调号与速度同字号且小于标题',
+    layoutSrc.includes('const colBaseY = padTop + 16;')
+    && layoutSrc.includes('const y = colBaseY + NOTATION_TITLE_FONT_SIZE;')
+    && layoutSrc.includes('const subY = y + notationDigitInkHeight(fontSize) * 3.714;')
+    && layoutSrc.includes('const colSubY = colBaseY + notationDigitInkHeight(fontSize) * 3.714;')
+    && layoutSrc.includes('const colY = colSubY - 6;')
+    && paintSrc.includes('M.titleTempoFont = `400 ${notationHeaderKeySize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`')
+    && paintSrc.includes('M.titleKeyFont = `700 ${notationHeaderKeySize(g.fontSize)}px ${NOTATION_DIGIT_FAMILY}`')
+    && paintSrc.includes('M.titleBeatFont = `700 ${notationHeaderKeySize(g.fontSize) * .9}px ${NOTATION_DIGIT_FAMILY}`')
+    && layoutSrc.includes('fontSize - notationHeaderInfoSize(fontSize)'));
   check('标题专用字体已从注册、启动加载、SVG 嵌入与资源中移除',
     !fontSrc.includes('NOTATION_TITLE_FAMILY')
     && !fontSrc.includes('notation-title.woff2')
@@ -521,6 +539,25 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     && rightCalls.every(c => Math.abs(pxOfH(c!.font) - notationHeaderInfoSize(HL.glyph.fontSize)) < 1e-6)
     && [titleCall!, subCall!, ...rightCalls.map(c => c!)].every(c => c.font.includes('WindScore Notation Text')),
     `title=${titleCall?.font} sub=${subCall?.font} right=${rightCalls[0]?.font}`);
+  check('大标题与小标题下移一个标题字高，左右两列留在原位',
+    Math.abs(HL.title!.y - (20 + 16 + NOTATION_TITLE_FONT_SIZE)) < 1e-6
+    && Math.abs(HL.title!.subY - (HL.title!.y + notationDigitInkHeight(HL.glyph.fontSize) * 3.714)) < 1e-6
+    && Math.abs(HL.title!.colY - (20 + 16 + notationDigitInkHeight(HL.glyph.fontSize) * 3.714 - 6)) < 1e-6
+    && Math.abs((subCall!.y - titleCall!.y) - notationDigitInkHeight(HL.glyph.fontSize) * 3.714) < 1e-6,
+    `y=${HL.title?.y} subY=${HL.title?.subY} colY=${HL.title?.colY}`);
+  const tempoCall = hCalls.find(c => c.text.startsWith('♩='));
+  const keyCall = hCalls.find(c => c.text === '1=');
+  check('调号与速度行同字号且都明显小于标题，右列说明与声部名仍保持小字',
+    !!tempoCall && !!keyCall
+    && Math.abs(pxOfH(tempoCall!.font) - notationHeaderKeySize(HL.glyph.fontSize)) < 1e-6
+    && Math.abs(pxOfH(keyCall!.font) - pxOfH(tempoCall!.font)) < 1e-6
+    && pxOfH(keyCall!.font) < NOTATION_TITLE_FONT_SIZE * 0.7
+    && tempoCall!.font.includes('WindScore Notation Text')
+    && rightCalls.every(c => Math.abs(pxOfH(c!.font) - notationHeaderInfoSize(HL.glyph.fontSize)) < 1e-6),
+    `key=${keyCall?.font} tempo=${tempoCall?.font} right=${rightCalls[0]?.font}`);
+  check('速度行仍让开拍号分母',
+    !!tempoCall && tempoCall!.y - (HL.title!.colY + 6 + 10) >= HL.glyph.fontSize * 0.9,
+    `gap=${tempoCall ? (tempoCall.y - (HL.title!.colY + 16)).toFixed(1) : 'n/a'}`);
   const ys = rightCalls.map(c => c!.y).sort((a, b) => a - b);
   check('右列三行按行距排开，间距大于说明字高',
     ys.length === 3
@@ -528,6 +565,16 @@ for (const f of readdirSync(DIR).filter((x) => x.endsWith('.jps'))) {
     && Math.abs(ys[2] - ys[1] - HL.title!.rowH) < 1e-6
     && Math.abs(ys[1] - ys[0] - HL.title!.rowH) < 1e-6,
     `ys=${ys.join(',')} rowH=${HL.title?.rowH}`);
+
+  // 用户图里是二声部谱：总谱走 layoutEnsemble，标题块由首声部排版带回，
+  // 必须和单声部一样「只挪中间、不动左右」，否则多声部页面会退回旧排版。
+  const ensHdr = parseDsl('@format 3\n@title 合奏\n@beat 4/4\n\n@part 1 "A"\n1 2 3 4 |\n@part 2 "B"\n5 6 7 1 |\n');
+  const EL = layoutScore(ensHdr.score!, { contentWidth: 1200 });
+  check('多声部总谱的谱头同样只下移中间标题区',
+    !!EL.title && !!EL.systems?.length
+    && Math.abs(EL.title.y - (20 + 16 + NOTATION_TITLE_FONT_SIZE)) < 1e-6
+    && Math.abs(EL.title.colY - (20 + 16 + notationDigitInkHeight(EL.glyph.fontSize) * 3.714 - 6)) < 1e-6,
+    `y=${EL.title?.y} colY=${EL.title?.colY} systems=${EL.systems?.length ?? 0}`);
 }
 
 {
@@ -7041,8 +7088,8 @@ console.log('\n[简谱编辑键盘快捷键]');
     && appKb.includes('setPlayPick(null)'));
   // 安卓进度条拖动仍保留「播放中就地续播」，所以只截取点音符那段来断言
   const androidPickSrc = appKb.slice(appKb.indexOf('onPick={pick => {'), appKb.indexOf('onEnded={onAndroidScoreEnded}'));
-  check('播放中点音符 = 暂停，续播点对准被点音符；安卓不再立即起播',
-    appKb.includes('const keepResume = pauseOnPlay && (playing || pausedTick !== null)')
+  check('点音符 = 播放起点：空闲 / 播放中 / 已暂停都写新续播点；安卓不再立即起播',
+    appKb.includes('const keepResume = pauseOnPlay;')
     && appKb.includes('setPausedTick(tick)')
     && appKb.includes('clockRef.current.seek(tick / TICKS_PER_BEAT)')
     && appKb.includes('onPick={handlePlayPick}')
@@ -7051,11 +7098,11 @@ console.log('\n[简谱编辑键盘快捷键]');
     && androidPickSrc.length > 0
     && !androidPickSrc.includes('startPlay(')
     && androidPickSrc.includes('setPlayPickAt('));
-  check('记谱页 / 伴奏对轨页点音符同样暂停续播，编辑行为不丢',
+  check('记谱页 / 伴奏对轨页点音符同样设定起点，编辑行为不丢',
     appKb.includes('const handleEditorPick = (a: ScorePick, b: ScorePick | null)')
     && appKb.includes('onPick={handleEditorPick}')
     && appKb.includes('handlePick(a, b)')
-    && appKb.includes("if (!playing || b || a.mode !== 'over' || wavePos !== null) return;")
+    && appKb.includes('if (b || wavePos !== null) return;')
     && appKb.includes('expansion.firstIndex.get(ev.id)')
     && appKb.includes('previewNote(toMidi(')
     && appKb.includes('bindPick(a.index)')
@@ -7082,6 +7129,25 @@ console.log('\n[简谱编辑键盘快捷键]');
     && canvasKb.includes('playheadIdCandidates(req.eventId)')
     && canvasKb.includes('eventScrollTop(y, wrap.scrollHeight, wrap.clientHeight)')
     && canvasKb.includes('followRef.current = false;'));
+  check('所有载入入口统一从谱头定位，不再有谱尾光标 / atStart 分支',
+    !appKb.includes('cursor: opened.events.length')
+    && !appKb.includes('atStart')
+    && !appKb.includes("entry === 'align')")
+    && (appKb.match(/cursor: 0,/g) ?? []).length >= 2
+    && appKb.includes('load(s.name, s.text, s.path, s.libraryId ?? null)')
+    && appKb.includes('adopt(res, item.id)'));
+  check('空格暂停不把视口拉回光标：播放态结束那一帧跳过跟随',
+    canvasKb.includes('playingBefore.current = playing')
+    && canvasKb.includes('if (playingBefore.current) {')
+    && canvasKb.includes('lastEditPosition.current = `${activePartId}:${cursor}:${focusId ?? ')
+    && !canvasKb.includes("lastEditPosition.current = ''"));
+  check('点音符统一设起点：缝隙点击也命中，旧暂停点作废后不回魂',
+    appKb.includes('const keepResume = pauseOnPlay;')
+    && appKb.includes('if (b || wavePos !== null) return;')
+    && !appKb.includes("if (pick.mode !== 'over') return;")
+    && !appKb.includes("a.mode !== 'over'")
+    && appKb.includes('stopPlay(); // 连旧暂停点一起作废')
+    && appKb.includes('setPausedTick(tick)'));
 }
 
 console.log('\n[插入光标闪烁]');

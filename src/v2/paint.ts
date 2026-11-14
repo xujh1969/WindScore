@@ -8,7 +8,7 @@
 import { playbackX } from './spacing';
 import { playheadIdCandidates } from './timeline';
 import { paintLyricLines, paintLyricText } from './lyricLines';
-import { NOTATION_DIGIT_FAMILY, NOTATION_TEXT_FAMILY, notationDigitInkHeight, notationHeaderInfoSize, notationHeaderSubSize, notationLyricFontSize } from './notationFont';
+import { NOTATION_DIGIT_FAMILY, NOTATION_TEXT_FAMILY, NOTATION_TITLE_FONT_SIZE, notationDigitInkHeight, notationHeaderInfoSize, notationHeaderKeySize, notationHeaderSubSize, notationLyricFontSize } from './notationFont';
 import { SEGNO_SYMBOL, MUSIC_SYMBOL_FONT } from './musicSymbols';
 import { shortInstrumentLabel } from './instrumentSamples';
 import {
@@ -235,14 +235,16 @@ const M = {
   /** 变音记号 ♯ ♭ ♮：比数字小一号，才像标记而不像主体 */
   accFont: '600 13px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
   /** 谱面标题：与谱头说明同一字体，只用字号拉开层级 */
-  titleFont: '400 28px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
+  titleFont: `400 ${NOTATION_TITLE_FONT_SIZE}px ${NOTATION_TEXT_FAMILY}`,
   /** 标题下的居中说明行（@sub）：小一号，不抢标题 */
   titleSubFont: '400 15px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
-  /** 谱头左列：调号（1=C），加粗像印刷谱 */
-  titleKeyFont: '700 17px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 谱头左列：拍号叠写的分子 / 分母 */
+  /** 谱头左列：调号（1=C），加粗像印刷谱；字号由 notationHeaderKeySize 刷新 */
+  titleKeyFont: '700 16px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+  /** 谱头左列：速度（♩=96），与调号同字号，但用中文族才画得出 ♩ */
+  titleTempoFont: '400 16px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
+  /** 谱头左列：拍号叠写的分子 / 分母（比调号略小） */
   titleBeatFont: '700 15px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
-  /** 谱头左列速度与右列说明行：比 @sub 再小一号，多行不叠字 */
+  /** 右列说明行与声部名：比 @sub 再小一号，多行不叠字 */
   titleInfoFont: '400 13px "Microsoft YaHei", "WindScore Notation Text", sans-serif',
 };
 
@@ -291,11 +293,16 @@ function applyMetrics(g: GlyphMetrics): void {
   M.markBottom = g.markBottom;
   // 标题与谱头说明同族同字重，只靠字号分层：不单独打包标题字体，
   // SVG 导出也只嵌一套中文字库；说明字号封顶，避免大字谱里右列说明叠字。
-  M.titleFont = `400 28px ${NOTATION_TEXT_FAMILY}`;
+  M.titleFont = `400 ${NOTATION_TITLE_FONT_SIZE}px ${NOTATION_TEXT_FAMILY}`;
   M.titleSubFont = `400 ${notationHeaderSubSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`;
   M.titleInfoFont = `400 ${notationHeaderInfoSize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`;
-  M.titleKeyFont = `700 ${g.fontSize}px ${NOTATION_DIGIT_FAMILY}`;
-  M.titleBeatFont = `700 ${g.fontSize * .7}px ${NOTATION_DIGIT_FAMILY}`;
+  // 左列调号 / 速度 / 拍号同源：相对音符缩小、封顶在标题的 65%，
+  // 大字谱下也不会盖过 28px 的标题
+  M.titleKeyFont = `700 ${notationHeaderKeySize(g.fontSize)}px ${NOTATION_DIGIT_FAMILY}`;
+  // 速度行与调号同字号；右列说明 / 声部名仍走 titleInfoFont，不受影响
+  M.titleTempoFont = `400 ${notationHeaderKeySize(g.fontSize)}px ${NOTATION_TEXT_FAMILY}`;
+  // 拍号叠写比调号略小；默认与旧版 g.fontSize*0.7 几乎一致，大字谱下跟着封顶
+  M.titleBeatFont = `700 ${notationHeaderKeySize(g.fontSize) * .9}px ${NOTATION_DIGIT_FAMILY}`;
 }
 
 /** 用真实字体墨迹定位线点，避免换字体后继承旧字库的基线偏差。 */
@@ -860,9 +867,12 @@ function paintTitle(ctx: CanvasRenderingContext2D, t: LayoutTitle, theme: PaintT
     ctx.font = M.titleBeatFont;
     paintMeterFractions(ctx, t.beat, bx, t.colY + 6, null, -10, 10);
   }
-  ctx.font = M.titleInfoFont;
+  ctx.font = M.titleTempoFont;
+  ctx.textAlign = 'left';
   ctx.fillText(t.tempo, t.leftX, t.tempoY);
-  // 右：说明行，右对齐（最多 4 行）
+  // 右：说明行，右对齐（最多 4 行）。速度行放大后必须显式切回小字，
+  // 否则右列说明会跟着变成大字并顶破 rowH
+  ctx.font = M.titleInfoFont;
   ctx.textAlign = 'right';
   t.rightLines.forEach((line, i) => {
     ctx.fillText(line, t.rightX, t.colY + 4 + i * t.rowH);

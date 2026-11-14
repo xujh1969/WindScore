@@ -3,6 +3,12 @@ export const NOTATION_DIGIT_FAMILY = '"WindScore Notation Digits", Arial, sans-s
 /** 谱面所有中文文字（标题、说明行、歌词）共用这一族，只靠字号分层，不单独打包标题字体。 */
 export const NOTATION_TEXT_FAMILY = '"Microsoft YaHei", "WindScore Notation Text", sans-serif';
 
+/**
+ * 谱面标题字号：固定值，不随 @size 缩放。
+ * 绘制层用它定 titleFont，排版层用它给标题上方让出整整一个字高的净空 —— 两处必须同源。
+ */
+export const NOTATION_TITLE_FONT_SIZE = 28;
+
 /** All ten tabular digits have advance 1139 in the bundled face's 2048-unit em. */
 export function notationDigitWidth(fontSize = 21): number {
   return fontSize * 1139 / 2048;
@@ -31,6 +37,15 @@ export function notationHeaderSubSize(noteSize = 21): number {
 
 export function notationHeaderInfoSize(noteSize = 21): number {
   return Math.min(notationLyricFontSize(noteSize) * 0.7, 13);
+}
+
+/**
+ * 谱头左列（调号 1=bB、速度 ♩=96、拍号叠写）的字号。
+ * 比谱面音符小一号，并且封顶在标题字号的 65%：大字谱下若跟着 @size 无限放大，
+ * 左列会盖过 28px 的标题。排版层算速度行基线、绘制层设字体共用这一个函数。
+ */
+export function notationHeaderKeySize(noteSize = 21): number {
+  return Math.min(noteSize * 0.78, NOTATION_TITLE_FONT_SIZE * 0.65);
 }
 
 /** 右列说明的行距：始终不小于该列字高的 1.35 倍，多行说明不会叠在一起。 */

@@ -517,6 +517,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     paintRef.current(headRef.current);
   }, [playStyle]);
 
+  /** 上一次「保证光标可见」effect 跑时是否处于播放态：暂停那一帧要跳过跟随 */
+  const playingBefore = useRef(false);
   const lastEditPosition = useRef('');
   /** 已消费的点击时间戳：同一位置点第二次也要重播，不能只按谱面状态去重 */
   const lastHandledPointerAt = useRef(0);
@@ -546,10 +548,22 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
   }, [cancelCaretScroll]);
 
   useEffect(() => {
-    // 离开编辑态（播放 / 歌词编辑 / 切页）时清掉旧位置，回来别误播动画
+    // 离开编辑态（播放 / 歌词编辑 / 切页）时清掉旧墨迹位置，回来别误播动画。
+    // lastEditPosition 故意保留：光标没动就不该重新滚动 / 重播动画。
     if ((!showBreaks && !showCaret) || playing || lyricEdit) {
+      playingBefore.current = playing;
       lastCaretPoint.current = null;
-      lastEditPosition.current = '';
+      cancelCaretScroll();
+      return;
+    }
+    // 刚从播放回到编辑态：播放跟随 rAF 已经把视口带到播放头，而编辑光标
+    // 往往还停在原处（甚至被推出视口）。这一帧绝不能把视口平滑拉回光标，
+    // 否则按空格暂停时页面会突然跳走（用户实测）。把当前光标登记为新基线，
+    // 之后用户真正移动光标才重新跟随。
+    if (playingBefore.current) {
+      playingBefore.current = false;
+      lastEditPosition.current = `${activePartId}:${cursor}:${focusId ?? ''}:${score.events.length}`;
+      lastCaretPoint.current = null;
       cancelCaretScroll();
       return;
     }

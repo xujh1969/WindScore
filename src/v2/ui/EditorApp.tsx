@@ -1186,7 +1186,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     [snap],
   );
 
-  /** 载入一份内容，并把「已保存」基准对齐到它 */
+  /** 载入一份内容，并把「已保存」基准对齐到它；光标一律落谱头（打开即从头看 / 从头校对） */
   const load = useCallback(
     (name: string, text: string, file: string | null = null, fromLibraryId: string | null = null) => {
       const res = fromText(text, name, file);
@@ -1198,7 +1198,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setLyricSelection(null);
       setSnap({
         score: { ...opened, format: 3 },
-        cursor: opened.events.length,
+        cursor: 0,
         anchor: null,
         mode: 'insert',
         rev: 0,
@@ -1225,6 +1225,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     if (entry === 'ocr') { load(BUILTIN[0].name, BUILTIN[0].text); return; }
     const s = loadSession();
     if (s) {
+      // 会话恢复同样从谱头开始：不把编辑光标 / 视口丢在曲谱最尾部
       load(s.name, s.text, s.path, s.libraryId ?? null);
       // 会话里的 name 是打开时的文件名 / 曲库条目名。上次若在曲谱属性里改过
       // @title 但没另存，谱面里的新名字才是当前名字——拿会话名当基线，
@@ -1248,6 +1249,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   // 把刚载入的伴奏 / 刚对好的标定与对齐点又冲掉一次（exe 读盘慢，必踩），
   // 还会把分轨重复解码一遍（表现为载入音频后长时间卡住才见波形）。
 
+  /** 与 load 同口径：换谱 / 开文件 / 曲库点歌时光标一律落谱头 */
   const adopt = useCallback(
     (res: OpenResult, fromLibraryId: string | null = null) => {
       if (!res.score && (res.text === undefined || androidPlayer)) {
@@ -1262,7 +1264,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setLyricSelection(null);
       setSnap({
         score: { ...opened, format: 3 },
-        cursor: opened.events.length,
+        cursor: 0,
         anchor: null,
         mode: 'insert',
         rev: 0,
@@ -1584,7 +1586,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         toastFail('谱面需要修复后再播放', res.errors[0], androidPlayer ? undefined : { label: '打开源码修复', onClick: () => adopt(res, item.id) });
         return false;
       }
-      adopt(res, item.id); // 记下来自曲库哪一条：保存时按 id 回写这一条
+      // 播放与对轨都从谱头定位，不再按目标分支
+      adopt(res, item.id);
       setMode(target);
       return true;
     },
@@ -2766,14 +2769,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
   /**
    * 记谱页 / 伴奏对轨页的谱面点击：选中、单音试听、绑定对齐点全部照旧，
-   * 只在播放中叠加「暂停 + 续播点对准这颗音」——与演奏页同一语义。
-   * 这里画布画的是原谱，所以下标要先经 expansion.firstIndex 映射回展开谱再算
-   * 绝对 tick；带反复的谱才不会跳错位置。OCR 内嵌的编辑器同样走这条路。
-   * 对轨配对中（wavePos 非空）或拖选时只做原本的事，不打断绑定流程。
+   * 叠加「点音符 = 播放起点」——空闲 / 播放中 / 已暂停三种状态一视同仁：
+   * 先作废旧暂停点，再把续播点对准这颗音，按播放键就从它开始。
+   * 点在音符字形上（over）或字形旁缝隙（insert）都算，index 都指向该事件；
+   * 拖选、对轨配对、点到小节线等非发声事件时不改起点。
+   * 画布画的是原谱，下标先经 expansion.firstIndex 映射回展开谱再算绝对 tick。
    */
   const handleEditorPick = (a: ScorePick, b: ScorePick | null): void => {
     handlePick(a, b);
-    if (!playing || b || a.mode !== 'over' || wavePos !== null) return;
+    if (b || wavePos !== null) return;
     const ev = score.events[a.index];
     if (!ev || !isTimed(ev)) return;
     const partId = a.partId ?? activePartId;
@@ -2781,7 +2785,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const idx = expansion.firstIndex.get(ev.id) ?? expanded.events.findIndex(e => e.id === ev.id || e.originId === ev.id);
     if (idx < 0) return;
     const tick = tickAtEvent(expanded, idx);
-    stopPlay();
+    stopPlay(); // 连旧暂停点一起作废，否则续播会被旧位置抢走
     setPausedTick(tick);
     pickResumeRef.current = tick;
     clockRef.current.seek(tick / TICKS_PER_BEAT);
@@ -3306,13 +3310,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     [playScore, notationTimeline, expandView],
   );
   /**
-   * 播放页点音符：把起播点挪到这颗音。
-   * 播放中（或已经暂停）点 = **暂停**，按钮变「▶ 继续」、视觉时钟停在这颗音；
-   * 再按继续时 togglePlay 把 pausedTick 交给 startPlay，就从这里起播。
-   * 定位键（Ctrl+←/→ 跳小节）复用同一套换算，但只移动定位点、不制造继续态。
+   * 播放页点音符：把起播点挪到这颗音。空闲 / 播放中 / 已暂停一视同仁：
+   * stopPlay 先作废旧暂停点，再写新的 pausedTick，按钮变「▶ 继续」、
+   * 视觉时钟停在这颗音；再按继续时 togglePlay 把 pausedTick 交给 startPlay。
+   * 这样暂停后改点别的音才真能改起点，不会从旧暂停位置续播。
+   * 点在字形上（over）或字形旁缝隙（insert）都算，isTimed 挡掉小节线等。
+   * 定位键（Ctrl+←/→ 跳小节）与安卓点音符走 pauseOnPlay=false：
+   * 只移动定位点、不制造继续态（安卓另用 androidResumeTick）。
    */
   const setPlayPickAt = (pick: ScorePick, pauseOnPlay: boolean): void => {
-    if (pick.mode !== 'over') return;
     const partId = pick.partId ?? activePartId;
     const shown = partScore(fullViewScore, partId);
     const event = shown.events[pick.index];
@@ -3324,7 +3330,9 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     const tick = tickAtEvent(expanded, index);
     // 这颗音的时值终点：AB 循环的 B 点要播到增时线 / 延音链走完
     const endTick = tickAtEvent(expanded, index + 1);
-    const keepResume = pauseOnPlay && (playing || pausedTick !== null);
+    // 不再要求「本来就在播放或已暂停」：空闲态点音符也要把起点定下来，
+    // 否则点完播放仍从旧的 playFromTick / 暂停位置起（用户实测混乱）
+    const keepResume = pauseOnPlay;
     stopPlay();
     // stopPlay 会作废旧暂停点并把时钟拨回 0；这里写回「被点音符」的绝对 tick，
     // 续播时它压过 playFromTick / 光标起播，前奏也不会抢这个起点。
@@ -4053,7 +4061,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
         getPlayTick={getPlayTick} showCaret={false} focusId={activePlayPick?.id ?? null}
         onPick={pick => {
-          if (pick.mode !== 'over') return;
+          // 点在字形上（over）或字形旁缝隙（insert）都算；isTimed 挡掉小节线
           const partId = pick.partId ?? (androidViewPart === 'total' ? activePartId : androidViewPart);
           const shown = partScore(fullViewScore, partId); const event = shown.events[pick.index];
           if (!event || !isTimed(event)) return;

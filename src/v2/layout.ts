@@ -15,7 +15,7 @@ import { beamCount, PX_PER_BEAT_DEFAULT, TICKS_PER_BEAT, tupletBeamCount, undotT
 import { layoutEnsemble } from './ensembleLayout';
 import { meterBeatOptions, meterAt } from './meter';
 import { projectLyricLines, lyricTextWidth, lyricTextOffset, type LyricLine } from './lyricLines';
-import { notationDigitWidth, notationDigitInkHeight, notationHeaderRowHeight, notationLyricFontSize } from './notationFont';
+import { notationDigitWidth, notationDigitInkHeight, notationHeaderInfoSize, notationHeaderRowHeight, notationLyricFontSize, NOTATION_TITLE_FONT_SIZE } from './notationFont';
 import { addPlaybackAnchors, balancedBreaks, fitSpacing, gapScaleOf, letterGapOf, positionDashes, type SpacingUnit } from './spacing';
 import type {
   Accidental,
@@ -734,14 +734,21 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
     opts.showTitle === false
       ? null
       : (() => {
-          // 谱头三区的纵向节奏：标题基线 → 说明行 → 左右两列。
-          // rowH 是右列的行距，与绘制层的右列字号同源（字号封顶后恒为 18）；
-          // 左列速度行不跟它走——拍号叠写比一行字高，速度行由 tempoY 单独给出（见下）
-          const y = padTop + 16;
+          // 谱头三区各自独立定位：中间 = 大标题 + @sub，左右 = 调号 / 拍号 / 速度 / 说明。
+          // 大标题与 @sub 一起下移整整一个标题字高（28px），左右两列保持原位不动 ——
+          // 早先把三区一起下移，相对位置没变，看起来就等于没挪过。
+          const colBaseY = padTop + 16;
+          const y = colBaseY + NOTATION_TITLE_FONT_SIZE;
           const subY = y + notationDigitInkHeight(fontSize) * 3.714;
-          const colY = subY - 6;
+          // 左右列仍按原来的印位算，不从下移后的 y / subY 派生
+          const colSubY = colBaseY + notationDigitInkHeight(fontSize) * 3.714;
+          const colY = colSubY - 6;
           const rowH = notationHeaderRowHeight(fontSize);
-          const tempoY = subY + notationDigitInkHeight(fontSize) * 1.9;
+          // 速度行基线保守地按「谱面字号 - 右列小字」多让一点，让 ♩=96 的上沿
+          // 不压住拍号分母。刻意不跟左列实际字号联动：左列字号缩小后净空只会更宽松；
+          // 若按左列字号收紧，titleBottom 会把首行谱行拉上来贴住小标题。
+          const tempoY = colSubY + notationDigitInkHeight(fontSize) * 1.9
+            + (fontSize - notationHeaderInfoSize(fontSize));
           const rightLines = (meta.notes ?? []).slice(0, 4);
           return {
             title: meta.title,
@@ -762,15 +769,17 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
             rightX: opts.contentWidth - (opts.rightPadding ?? padding),
             centerX: opts.contentWidth / 2,
             edit: {
-              // 28 = 标题字号；+20 给图标留出与歌名的间距，别贴着字
-              cx: opts.contentWidth / 2 + estimateWidth(meta.title, 28) / 2 + 20,
+              // NOTATION_TITLE_FONT_SIZE = 标题字号；+20 给图标留出与歌名的间距，别贴着字
+              cx: opts.contentWidth / 2 + estimateWidth(meta.title, NOTATION_TITLE_FONT_SIZE) / 2 + 20,
               cy: y,
               size: PENCIL_SIZE,
             },
-            // 谱头总高：两列谁伸得更低取谁，底边留净空——首行有标记/8va 时留 20
-            //（标记墨迹上探到中线上方 ~54px，别压住），干净的首行只留 8px 贴紧
+            // 谱头总高：三区谁伸得更低取谁（标题区已单独下移，必须算进来），
+            // 底边留净空——首行有标记/8va 时留 20（墨迹上探到中线上方 ~54px，别压住），
+            // 干净的首行只留 8px 贴紧
             height:
               Math.max(
+                subY + 6,
                 tempoY + 6,
                 rightLines.length > 0 ? colY + 4 + (rightLines.length - 1) * rowH + 6 : 0,
               ) + (upNeed > 30 ? 20 : 8),
@@ -1793,7 +1802,7 @@ export function layoutScore(score: Score, opts: LayoutOptions): LayoutResult {
       line.above = (up + rowGap / 2) * k;
       line.height = (up + down + rowGap) * k;
       if (line.index === 0 && title && !hasCue && !line.voltas.length && !rowNotes.some(it => it.tongue || it.fermata || it.custom || it.techniques?.length || it.octava)) {
-        const titleBottom = Math.max(title.tempoY + lyricFont * .6,
+        const titleBottom = Math.max(title.subY + lyricFont * .6, title.tempoY + lyricFont * .6,
           title.rightLines.length ? title.colY + 4 + (title.rightLines.length - 1) * title.rowH + lyricFont * .6 : 0);
         const baseline = Math.max(title.y + notationDigitInkHeight(fontSize) * 9.17, titleBottom + notationDigitInkHeight(fontSize) * 2.2 + 4 * k);
         const oldAbove = line.above;

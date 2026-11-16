@@ -78,6 +78,7 @@ import {
   insertBarline,
   insertNote,
   nextTimed,
+  playStartIndex,
   pasteEvents,
   pressBarline,
   prevTimed,
@@ -7148,6 +7149,51 @@ console.log('\n[简谱编辑键盘快捷键]');
     && !appKb.includes("a.mode !== 'over'")
     && appKb.includes('stopPlay(); // 连旧暂停点一起作废')
     && appKb.includes('setPausedTick(tick)'));
+
+  console.log('\n[点小节线 / 连谱线 = 起点设为其右侧第一颗音]');
+  const barScore = parseDsl('@beat 4/4\n\n1 2 3 4 | 0 6 7 8 | 5 ||\n').score!;
+  const barLay = layoutScore(barScore, { contentWidth: 1400 });
+  const barLine = barLay.lines[0]!;
+  const barItems = barLine.items.filter((it) => it.kind === 'barline' && it.eventIndex > 0);
+  check('真谱面有两根可点的小节线', barItems.length >= 2, `bars=${barItems.length}`);
+  const b1 = barItems[0]!;
+  const p1 = pickAt(barLay, b1.x + b1.w / 2, barLine.y);
+  check('点在小节线正中 = 命中线本身（原 isTimed 守卫在这里直接 return，只剩高亮）',
+    !!p1 && p1.index === b1.eventIndex && barScore.events[p1.index]?.kind === 'barline',
+    JSON.stringify(p1));
+  const s1 = p1 ? playStartIndex(barScore, p1.index) : -1;
+  check('第一根线 → 右侧第一个发声事件是休止符，起点不抢拍',
+    s1 === b1.eventIndex + 1 && barScore.events[s1]?.kind === 'rest',
+    `start=${s1} kind=${barScore.events[s1]?.kind}`);
+  check('起点 tick 恰好落在这根线上（线本身不推进时间）',
+    tickAtEvent(barScore, s1) === tickAtEvent(barScore, b1.eventIndex),
+    `${tickAtEvent(barScore, s1)} vs ${tickAtEvent(barScore, b1.eventIndex)}`);
+  const b2 = barItems[1]!;
+  const p2 = pickAt(barLay, b2.x + b2.w / 2, barLine.y);
+  const s2 = p2 ? playStartIndex(barScore, p2.index) : -1;
+  check('第二根线 → 右侧第一颗音是音符，起点落在那颗音上',
+    s2 === b2.eventIndex + 1 && barScore.events[s2]?.kind === 'note',
+    `start=${s2} kind=${barScore.events[s2]?.kind}`);
+  const finalIdx = barScore.events.findIndex((e, i) => i > b2.eventIndex && e.kind === 'barline');
+  check('终止线右侧再无发声事件 → 返回 -1，起点保持不变',
+    finalIdx > 0 && playStartIndex(barScore, finalIdx) === -1,
+    `final=${finalIdx} start=${finalIdx > 0 ? playStartIndex(barScore, finalIdx) : 'n/a'}`);
+  check('点音符 / 休止符原样返回，既有起点语义不变',
+    playStartIndex(barScore, 0) === 0 && s1 >= 0 && playStartIndex(barScore, s1) === s1);
+  const wrapped = parseDsl('@format 3\n@beat 4/4\n\n1 2 3 4 | 换行 5 6 7 8 | 换行 0 0 0 0 ||\n').score!;
+  const wrappedLay = layoutScore(wrapped, { contentWidth: 1200 });
+  const lead = wrappedLay.lines[1]?.leadingBarlineIndex;
+  const s3 = lead === undefined ? -1 : playStartIndex(wrapped, lead);
+  check('连谱号 / 行首拍号（layout 映射成行前小节线）→ 起点是下一行第一颗音',
+    lead !== undefined && wrappedLay.lines.length >= 2 && s3 > lead
+    && s3 >= 0 && isTimed(wrapped.events[s3]),
+    `lead=${lead} start=${s3} lines=${wrappedLay.lines.length}`);
+  check('编辑页 / 播放页 / 安卓三处点击统一解析，展开谱下标也用解析后的下标',
+    (appKb.match(/playStartIndex\(/g) ?? []).length >= 3
+    && appKb.includes('const ev = score.events[playStartIndex(score, a.index)]')
+    && (appKb.match(/const event = shown\.events\[startIndex\]/g) ?? []).length === 2
+    && (appKb.match(/const index = expandView \? startIndex :/g) ?? []).length === 2
+    && !appKb.includes('isTimed 挡掉小节线'));
 }
 
 console.log('\n[插入光标闪烁]');

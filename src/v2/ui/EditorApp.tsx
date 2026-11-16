@@ -46,6 +46,7 @@ import {
   resplitOversizedGroups,
   extendSlurRight,
   nextTimed,
+  playStartIndex,
   prevTimed,
   measureJumpCursor,
   removeEvent,
@@ -2772,13 +2773,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * 叠加「点音符 = 播放起点」——空闲 / 播放中 / 已暂停三种状态一视同仁：
    * 先作废旧暂停点，再把续播点对准这颗音，按播放键就从它开始。
    * 点在音符字形上（over）或字形旁缝隙（insert）都算，index 都指向该事件；
-   * 拖选、对轨配对、点到小节线等非发声事件时不改起点。
+   * 拖选、对轨配对时不改起点；点到小节线 / 连谱号（layout 映射成行前小节线）
+   * 则把起点定在它右侧第一个音符或休止符，不改动编辑侧的选线行为。
    * 画布画的是原谱，下标先经 expansion.firstIndex 映射回展开谱再算绝对 tick。
    */
   const handleEditorPick = (a: ScorePick, b: ScorePick | null): void => {
     handlePick(a, b);
     if (b || wavePos !== null) return;
-    const ev = score.events[a.index];
+    const ev = score.events[playStartIndex(score, a.index)];
     if (!ev || !isTimed(ev)) return;
     const partId = a.partId ?? activePartId;
     const expanded = partScore(playScore, partId);
@@ -3314,17 +3316,19 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    * stopPlay 先作废旧暂停点，再写新的 pausedTick，按钮变「▶ 继续」、
    * 视觉时钟停在这颗音；再按继续时 togglePlay 把 pausedTick 交给 startPlay。
    * 这样暂停后改点别的音才真能改起点，不会从旧暂停位置续播。
-   * 点在字形上（over）或字形旁缝隙（insert）都算，isTimed 挡掉小节线等。
+   * 点在字形上（over）或字形旁缝隙（insert）都算；点小节线 / 连谱号时
+   * playStartIndex 把起点解析到它右侧第一个音符或休止符（编辑侧的选线照旧）。
    * 定位键（Ctrl+←/→ 跳小节）与安卓点音符走 pauseOnPlay=false：
    * 只移动定位点、不制造继续态（安卓另用 androidResumeTick）。
    */
   const setPlayPickAt = (pick: ScorePick, pauseOnPlay: boolean): void => {
     const partId = pick.partId ?? activePartId;
     const shown = partScore(fullViewScore, partId);
-    const event = shown.events[pick.index];
+    const startIndex = playStartIndex(shown, pick.index);
+    const event = shown.events[startIndex];
     if (!event || !isTimed(event)) return;
     const expanded = partScore(playScore, partId);
-    const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
+    const index = expandView ? startIndex : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
     if (index < 0) return;
     const sourceIndex = partScore(documentScore, partId).events.findIndex(e => e.id === (event.originId ?? event.id));
     const tick = tickAtEvent(expanded, index);
@@ -4061,12 +4065,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         notation={notation} staffPitchMode={staffPitchMode} playing={playing} clock={clockRef.current}
         getPlayTick={getPlayTick} showCaret={false} focusId={activePlayPick?.id ?? null}
         onPick={pick => {
-          // 点在字形上（over）或字形旁缝隙（insert）都算；isTimed 挡掉小节线
+          // 点在字形上（over）或字形旁缝隙（insert）都算；小节线 / 连谱号
+          // 由 playStartIndex 解析到它右侧第一个音符或休止符
           const partId = pick.partId ?? (androidViewPart === 'total' ? activePartId : androidViewPart);
-          const shown = partScore(fullViewScore, partId); const event = shown.events[pick.index];
+          const shown = partScore(fullViewScore, partId);
+          const startIndex = playStartIndex(shown, pick.index);
+          const event = shown.events[startIndex];
           if (!event || !isTimed(event)) return;
           const expanded = partScore(playScore, partId);
-          const index = expandView ? pick.index : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
+          const index = expandView ? startIndex : expansion.firstIndex.get(event.id) ?? expanded.events.findIndex(e => e.id === event.id);
           if (index < 0) return;
           const tick = tickAtEvent(expanded, index);
           // 播放中点音符 = 暂停并把续播点对准这颗音，等用户点播放键再继续；

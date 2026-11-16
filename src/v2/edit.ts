@@ -56,6 +56,16 @@ export function nextTimed(score: Score, from: number): number {
 }
 
 /**
+ * 点中小节线也当作改播放起点：起点 = 这根线右侧第一个发声事件（音符或休止符）。
+ * 多声部连谱号 / 行首拍号的命中在 layout 里已被映射成「行前小节线」，同样走这里。
+ * 非小节线命中原样返回；终止线右侧再无发声事件时返回 -1，调用方据此不改起点。
+ */
+export function playStartIndex(score: Score, index: number): number {
+  if (score.events[index]?.kind !== 'barline') return index;
+  return nextTimed(score, index + 1);
+}
+
+/**
  * 小节跳转（Ctrl+← / Ctrl+→）：小节边界就是小节线事件，
  * 目标落在该小节第一个音符 / 休止**上**（返回缝隙下标 = 事件下标 + 1，over 模式）。
  * 已在最后一小节还往后 → 落到最后一个 timed 上；没有 timed 则返回 null（光标不动）。

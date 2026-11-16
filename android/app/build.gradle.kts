@@ -12,8 +12,8 @@ android {
         minSdk = 28          // Android 9+
         targetSdk = 34
         // 由 npm run version 与 package.json、桌面端同步递增。
-        versionCode = 206
-        versionName = "0.4.79"
+        versionCode = 207
+        versionName = "0.4.80"
     }
 
     signingConfigs {

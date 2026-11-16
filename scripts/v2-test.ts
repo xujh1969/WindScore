@@ -7083,7 +7083,7 @@ console.log('\n[简谱编辑键盘快捷键]');
     && appKb.includes("case 'ArrowLeft':") && appKb.includes("case 'ArrowRight':"));
   check('播放页按显示谱跳小节，复用起播点方块，展开反复也能映射',
     appKb.includes('const shown = partScore(fullViewScore, activePartId)')
-    && appKb.includes('measureJumpCursor(shown, shownCursor(shown), delta)')
+    && appKb.includes('measureJumpCursor(shown, anchor !== null ? anchor + 1 : shownCursor(shown), delta)')
     && appKb.includes('setPlayPickAt({ mode:')
     && appKb.includes('ev.originId === src.id')
     && appKb.includes('setPlayPick(null)'));
@@ -7111,6 +7111,20 @@ console.log('\n[简谱编辑键盘快捷键]');
   check('键盘跳小节仍只定位、不制造继续态',
     appKb.includes("setPlayPickAt({ mode: 'over', index: target - 1, partId: activePartId, cursor: target }, false)")
     && appKb.includes('const settleNavigation = (): void =>'));
+  const arrowSrc = appKb.slice(appKb.indexOf("case 'ArrowLeft':"), appKb.indexOf("case 'Backspace':"));
+  check('播放 / 暂停后按方向键：先停播、光标锚到当前播放位置再移动一格，之后跟着光标走',
+    (arrowSrc.match(/settleNavigation\(\)/g) ?? []).length === 2
+    && (arrowSrc.match(/playheadIndexIn\(score\)/g) ?? []).length === 2
+    && arrowSrc.includes("case 'ArrowRight':")
+    && arrowSrc.indexOf('playheadIndexIn') > arrowSrc.indexOf('shiftKey')
+    && appKb.includes('const playheadIndexIn = (shown: Score)')
+    && appKb.includes('const at = playing ? getPlayTick() : pausedTick')
+    && appKb.includes('playing, pausedTick, playScore'));
+  check('Ctrl+箭头跳小节同样先锚到播放位置（编辑谱与播放页两分支）',
+    appKb.includes('const anchor = playheadIndexIn(shown);')
+    && appKb.includes('const anchor = playheadIndexIn(score);')
+    && appKb.includes('anchor !== null ? anchor + 1 : shownCursor(shown)')
+    && appKb.includes('anchor !== null ? anchor + 1 : snap.cursor'));
   check('定位键不改谱面：播放中先停，编辑键仍被 canEditScore 门挡住',
     appKb.includes('if (playing) stopPlay();')
     && appKb.includes('const settleNavigation = (): void =>')

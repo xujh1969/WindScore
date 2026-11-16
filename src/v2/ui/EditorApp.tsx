@@ -3573,6 +3573,29 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       const scoreShown = !androidPlayer && (mode === 'play' || mode === 'align' || (mode === 'score' && view === 'score'));
       if (!scoreShown) return;
 
+      /** 播放头正在发声的音（shown 谱里的下标）：播放中取实时播放头，
+       *  暂停后取暂停 tick；空闲（无暂停点）返回 null，导航就不锚定。
+       *  键盘导航用它把光标 / 起播点先锚到「当前播放的位置」，再从那里移动；
+       *  锚定一次后暂停点已被 settleNavigation 清掉，连续按键就跟着光标走。
+       *  必须在 stopPlay 之前调用：播放头一停就被拨回 0。 */
+      const playheadIndexIn = (shown: Score): number | null => {
+        const at = playing ? getPlayTick() : pausedTick;
+        if (at === null) return null;
+        const expanded = partScore(playScore, activePartId);
+        let acc = 0;
+        for (let i = 0; i < expanded.events.length; i += 1) {
+          const ev = expanded.events[i]!;
+          if (ev.kind !== 'note' && ev.kind !== 'rest') continue;
+          if (at < acc + ev.ticks) {
+            const srcId = ev.originId ?? ev.id;
+            const j = shown.events.findIndex((x) => x.id === srcId || x.originId === srcId);
+            return j >= 0 ? j : null;
+          }
+          acc += ev.ticks;
+        }
+        return null;
+      };
+
       /** 当前定位点在「正在显示的声部谱」里的缝隙下标。播放页可能显示展开后的
        *  反复谱，下标口径与原谱不同，不能直接拿 snap.cursor 当显示谱下标。 */
       const shownCursor = (shown: Score): number => {
@@ -3602,12 +3625,15 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         setSnap({ ...snap, cursor: edge === 'start' ? 0 : score.events.length, anchor: null, mode: 'insert' });
         setScrollRequest({ edge, seq: ++scrollRequestSeq.current });
       };
-      /** 跳前 / 后一小节：目标压在该小节第一个音上（over 模式） */
+      /** 跳前 / 后一小节：目标压在该小节第一个音上（over 模式）。
+       *  播放中 / 暂停后按，先锚到当前播放的位置再跳（playheadIndexIn），
+       *  空闲或已锚过（暂停点已清）则按当前光标跳。 */
       const jumpMeasure = (delta: -1 | 1) => {
         if (mode === 'play') {
           // 播放页按显示出来的那份谱找小节；复用「点谱面」的映射设起播点方块
           const shown = partScore(fullViewScore, activePartId);
-          const target = measureJumpCursor(shown, shownCursor(shown), delta);
+          const anchor = playheadIndexIn(shown);
+          const target = measureJumpCursor(shown, anchor !== null ? anchor + 1 : shownCursor(shown), delta);
           if (target === null) return;
           settleNavigation();
           // 定位键只移动起播点：不把「停」升级成「暂停 / 继续」
@@ -3615,7 +3641,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           setScrollRequest({ seq: ++scrollRequestSeq.current, eventId: shown.events[target - 1]?.id ?? null });
           return;
         }
-        const target = measureJumpCursor(score, snap.cursor, delta);
+        const anchor = playheadIndexIn(score);
+        const target = measureJumpCursor(score, anchor !== null ? anchor + 1 : snap.cursor, delta);
         if (target === null) return;
         settleNavigation();
         setSnap({ ...snap, cursor: target, anchor: null, mode: 'over' });
@@ -3843,13 +3870,20 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             if (cur > 0) setSnap({ ...snap, cursor: cur - 1, anchor: snap.anchor ?? cur });
             return;
           }
-          if (snap.mode === 'over') {
-            // 方块 → 退到它左边的缝
-            setSnap({ ...snap, cursor: Math.max(0, cur - 1), anchor: null, mode: 'insert' });
-          } else {
-            // 缝 → 落到左边最近的音上；左边没音了（一头）就留在缝里
-            const k = prevTimed(score, cur);
-            if (k >= 0) setSnap({ ...snap, cursor: k + 1, anchor: null, mode: 'over' });
+          {
+            // 方向键也是导航键：播放中先停，光标先锚到「当前播放的位置」再移动一格
+            // （Shift 框选不算）。锚定一次后暂停点已清，继续按就跟着光标走。
+            const anchor = playheadIndexIn(score);
+            settleNavigation();
+            const base = anchor !== null ? anchor + 1 : cur;
+            if (anchor !== null || snap.mode === 'over') {
+              // 方块 → 退到它左边的缝
+              setSnap({ ...snap, cursor: Math.max(0, base - 1), anchor: null, mode: 'insert' });
+            } else {
+              // 缝 → 落到左边最近的音上；左边没音了（一头）就留在缝里
+              const k = prevTimed(score, base);
+              if (k >= 0) setSnap({ ...snap, cursor: k + 1, anchor: null, mode: 'over' });
+            }
           }
           return;
         case 'ArrowRight':
@@ -3858,13 +3892,18 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             if (cur < n) setSnap({ ...snap, cursor: cur + 1, anchor: snap.anchor ?? cur });
             return;
           }
-          if (snap.mode === 'over') {
-            // 方块 → 进到它右边的缝
-            setSnap({ ...snap, cursor: Math.min(n, cur), anchor: null, mode: 'insert' });
-          } else {
-            // 缝 → 落到右边最近的音上；右边没音了（一尾）就留在缝里
-            const j = nextTimed(score, cur);
-            if (j >= 0) setSnap({ ...snap, cursor: j + 1, anchor: null, mode: 'over' });
+          {
+            const anchor = playheadIndexIn(score);
+            settleNavigation();
+            const base = anchor !== null ? anchor + 1 : cur;
+            if (anchor !== null || snap.mode === 'over') {
+              // 方块 → 进到它右边的缝
+              setSnap({ ...snap, cursor: Math.min(n, base), anchor: null, mode: 'insert' });
+            } else {
+              // 缝 → 落到右边最近的音上；右边没音了（一尾）就留在缝里
+              const j = nextTimed(score, base);
+              if (j >= 0) setSnap({ ...snap, cursor: j + 1, anchor: null, mode: 'over' });
+            }
           }
           return;
         case 'Backspace':
@@ -3916,7 +3955,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, view, androidPlayer, activePartId, activePlayPick, fullViewScore, handlePlayPick, wavePos, lyricVerse, playing, markMisalign, onSave, toastInfo, cueTarget, tapping, startPlay, stopPlay, getPlayTick, togglePlay, padActions]);
+  }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, view, androidPlayer, activePartId, activePlayPick, fullViewScore, handlePlayPick, wavePos, lyricVerse, playing, pausedTick, playScore, markMisalign, onSave, toastInfo, cueTarget, tapping, startPlay, stopPlay, getPlayTick, togglePlay, padActions]);
 
   // DSL 面板：谱面变化时同步文本
   useEffect(() => {

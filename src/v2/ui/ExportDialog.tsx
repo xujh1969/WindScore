@@ -19,6 +19,7 @@ import {
 } from '../export/tasks';
 import { exportScoreVideoToFile } from '../export/videoExport';
 import { exportScoreImageToFile } from '../export/image';
+import { exportScoreMusicXmlToFile } from '../export/musicxml';
 import { VIDEO_RATIOS, recordSeconds, videoGeometry, videoLayoutFor, stripCanvasSize, type VideoRatio } from '../export/video';
 import { buildStrip } from '../export/strip';
 import { ensembleIssues, partScore, scoreParts } from '../parts';
@@ -91,7 +92,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
   const score = useMemo(() => partId ? partScore(fullScore, partId) : fullScore, [fullScore, partId]);
   const video = useMemo(() => partId ? { ...fullVideo, timeline: fullVideo.timeline.filter((e) => e.partId === partId), displayTimeline: fullVideo.displayTimeline.filter((e) => e.partId === partId) } : fullVideo, [fullVideo, partId]);
   const exportName = partId ? `${songName}-${score.part?.name ?? partId}` : songName;
-  const [tab, setTab] = useState<'pdf' | 'video' | 'image'>('pdf');
+  const [tab, setTab] = useState<'pdf' | 'video' | 'image' | 'musicxml'>('pdf');
   const [imageFormat, setImageFormat] = useState<'png' | 'svg'>('png');
   const [busy, setBusy] = useState(false);
   useEscapeClose(onClose, !busy);
@@ -284,6 +285,12 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
     return res.ok ? `已导出 ${imageFormat.toUpperCase()} 长图（连续不分页）` : '已取消保存';
   });
 
+  const doMusicXml = (): Promise<void> => run(async () => {
+    const res = await exportScoreMusicXmlToFile({ score, name: exportName });
+    if (!res.ok) return '已取消保存';
+    return 'MusicXML 导出成功（电吹管特有技法以 [WS:…] 文字标记保留）';
+  });
+
   const doVideo = (): Promise<void> =>
     run(async () => {
       const mismatch = ensembleIssues(fullScore);
@@ -363,6 +370,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
               </button>
             ) : null}
             <button className={tab === 'image' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setTab('image')} disabled={busy}>图片</button>
+            <button className={tab === 'musicxml' ? 'v2-seg is-on' : 'v2-seg'} onClick={() => setTab('musicxml')} disabled={busy}>MusicXML</button>
           </div>
           <span className="v2-exp-song" title={songName}>
             {songName}
@@ -481,6 +489,12 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             <div className="v2-exp-row"><span>外观</span><div className="v2-view-switch"><button className={!videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(false)}>浅色</button><button className={videoDark ? 'v2-seg is-on' : 'v2-seg'} disabled={busy} onClick={() => setVideoDark(true)}>深色</button></div></div>
             <div className="v2-exp-row"><label className="v2-grace-check"><input type="checkbox" checked={showTitle} disabled={busy} onChange={(e) => setShowTitle(e.target.checked)} />包含标题</label><label className="v2-grace-check"><input type="checkbox" checked={showBars} disabled={busy} onChange={(e) => setShowBars(e.target.checked)} />显示小节号</label></div>
             <p className="v2-exp-hint">与 PDF 完全同一套分页排版：每页和 PDF 预览逐像素一致（含页脚），多页纵向拼接成一张。SVG 放大不失真，文字显示使用打开设备上的字体。</p>
+          </div>
+        ) : tab === 'musicxml' ? (
+          <div className="v2-exp-body">
+            <p className="v2-exp-hint">导出标准 <b>MusicXML 4.0</b>（.musicxml），可在 Finale / Sibelius / MuseScore / 电吹管打谱软件里打开。</p>
+            <p className="v2-exp-hint">音高、时值、附点、连音、力度、换气、颤音、波音、歌词、调号拍号速度、反复跳房子用标准元素导出。电吹管特有技法（花舌 / 打音 / 上下滑音 / 弯音 / 吐音 / 自定义记号）以 <code>[WS:…]</code> 文字标记随音符保留——其它软件显示为提示文字，WindScore 导回时可还原。</p>
+            <p className="v2-exp-hint">多声部谱导出为多个 part；播放页开着「展开反复」时导出的就是拉平后的谱。</p>
           </div>
         ) : (
           <div className="v2-exp-body">
@@ -693,6 +707,7 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
                 (tab === 'pdf'
                   ? `将导出 ${preview.pages} 页 A4，文件名取歌名`
                   : tab === 'image' ? `将按 PDF 版式导出 ${imageFormat.toUpperCase()}（多页纵向拼接）`
+                  : tab === 'musicxml' ? '将导出 .musicxml 乐谱文件（标准 MusicXML 4.0）'
                   : `将录一段 ${preview.canvasW}×${preview.canvasH} 的${
                       videoDark ? '深色' : '浅色'
                     }视频，约 ${Math.floor(preview.seconds / 60)}:${String(
@@ -706,6 +721,8 @@ export function ExportDialog({ songName, score: fullScore, visibleLayout, visibl
             </button>
           ) : tab === 'image' ? (
             <button className="v2-btn v2-btn--primary" onClick={doImage} disabled={busy || !!preview.layoutError}>导出 {imageFormat.toUpperCase()}</button>
+          ) : tab === 'musicxml' ? (
+            <button className="v2-btn v2-btn--primary" onClick={doMusicXml} disabled={busy}>导出 MusicXML</button>
           ) : (
             <button className="v2-btn v2-btn--primary" onClick={doVideo} disabled={busy}>
               导出视频

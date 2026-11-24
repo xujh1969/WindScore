@@ -7,6 +7,7 @@ import { deflateRawSync } from 'node:zlib';
 import { parseDsl, serializeDsl } from '../src/v2/dsl';
 import { layoutScore } from '../src/v2/layout';
 import { musicXmlSummary, musicXmlToJps, unzipMusicXml, durationSuffix } from '../src/v2/musicxml';
+import { scoreToMusicXml } from '../src/v2/export/musicxml';
 
 let ok = 0;
 let bad = 0;
@@ -598,6 +599,115 @@ console.log('\n[MusicXML 转译 · X 无音高音符的现代省写 round-trip]'
   check('样例可解析', !!p.score, p.errors.join('/'));
   const again = p.score ? parseDsl(serializeDsl(p.score)) : { score: null, errors: ['样例未解析'] };
   check('X/ 省写序列化后可复解析', !!again.score && again.errors.length === 0, again.errors.join('/'));
+}
+
+console.log('\n[Score → MusicXML 导出 · 往返 regress]');
+{
+  // 单声部、覆盖面较全的谱：调号 / 附点 / 八度 / 休止 / 延长 / 反复
+  const dsl = [
+    '@format 3',
+    '@title 导出测试',
+    '@key 1=G',
+    '@beat 4/4',
+    '@bpm 96',
+    '',
+    '|: 5 3 5^. 6 |',
+    '5 0 3 2- |',
+    '5@ 6 7 1^ :|',
+  ].join('\n');
+  const p = parseDsl(dsl);
+  check('导出源谱解析无错', !!p.score && p.errors.length === 0, p.errors.join('/'));
+  if (p.score) {
+    const { xml, downgraded } = scoreToMusicXml(p.score);
+    check('导出含标准 MusicXML 4.0 头与 partwise',
+      xml.includes('<score-partwise version="4.0">') && xml.includes('<!DOCTYPE'));
+    check('导出含音高 step/octave 与 divisions',
+      /<step>[A-G]<\/step>/.test(xml) && xml.includes('<divisions>6720</divisions>'));
+    check('附点音 → 标准 <dot/>', xml.includes('<dot/>'));
+    check('休止 → 标准 <rest/>', xml.includes('<rest/>'));
+    check('延长 → 标准 fermata', xml.includes('<fermata'));
+    check('反复记号 → repeat forward/backward', xml.includes('repeat direction="forward"') && xml.includes('repeat direction="backward"'));
+    check('无电吹管特有技法时 downgraded 为空', downgraded.length === 0, downgraded.join(','));
+
+    // 往返：用自家导入器把导出的 XML 转回 jps，再解析，音符数守恒
+    const ids = musicXmlSummary(xml).summary.parts.map((x) => x.id);
+    const back = musicXmlToJps(xml, ids);
+    check('导出的 XML 可被导入器无错解析', back.errors.length === 0, back.errors.slice(0, 2).join('/'));
+    const reparsed = back.dsl ? parseDsl(back.dsl) : { score: null };
+    const origNotes = p.score.events.filter((e) => e.kind === 'note').length;
+    const backNotes = reparsed.score?.events.filter((e) => e.kind === 'note').length ?? -1;
+    check('往返后音符数守恒', !!reparsed.score && backNotes === origNotes, `${origNotes} -> ${backNotes}`);
+  }
+}
+
+{
+  // 电吹管特有技法：降级为 [WS:…] 文字，信息不丢
+  const dsl = '@format 3\n@title 技法\n@key 1=C\n@beat 4/4\n\n5f 6d 7H 1^[滑] | 5t 5k 5q 5 |';
+  const p = parseDsl(dsl);
+  check('技法谱解析无错', !!p.score && p.errors.length === 0, p.errors.join('/'));
+  if (p.score) {
+    const { xml, downgraded } = scoreToMusicXml(p.score);
+    check('花舌/打音等降级为 [WS:…] 文字', xml.includes('[WS:') && downgraded.length > 0, downgraded.join(','));
+    check('降级文字写在合法 <words> 元素里', /<words>\[WS:/.test(xml));
+    const ids = musicXmlSummary(xml).summary.parts.map((x) => x.id);
+    const back = musicXmlToJps(xml, ids);
+    check('含降级记号的 XML 仍可无错导入', back.errors.length === 0, back.errors.slice(0, 2).join('/'));
+    // [WS:…] 文字在导回时还原成技法字母（往返保真，不只是「能打开」）
+    const reparsed = back.dsl ? parseDsl(back.dsl).score : null;
+    const techRestored = reparsed?.events.some((e) =>
+      e.kind === 'note' && (e.techniques?.includes('flutter') || e.techniques?.includes('da') || e.techniques?.includes('slideH')));
+    check('[WS:…] 降级文字导回后还原为技法', !!techRestored);
+  }
+}
+
+{
+  // 多声部 → 多个 <part>
+  const dsl = '@format 3\n@title 重奏\n@key 1=C\n@beat 4/4\n@part 1 "A"\n5 6 7 1^ |\n@part 2 "B"\n3 2 1 7v |';
+  const p = parseDsl(dsl);
+  if (p.score) {
+    const { xml } = scoreToMusicXml(p.score);
+    check('多声部导出为多个 part', (xml.match(/<part id=/g) ?? []).length === 2);
+    const ids = musicXmlSummary(xml).summary.parts.map((x) => x.id);
+    const back = musicXmlToJps(xml, ids);
+    check('多声部导出可被导入器无错解析', back.errors.length === 0, back.errors.slice(0, 2).join('/'));
+  }
+}
+
+{
+  // 链式连音线（相邻两条共享边界音）：导出 MusicXML 再导回曾报
+  // 「连音线至少要括住两个音」——导入器把边界音写成 (4) 单音弧。
+  // 修法=边界音写成中段 )(，修复后应无错、且两条弧都在。
+  // 用序列化器认可的共享边界写法 (1 2)( 3 4)：音2 是两条弧的边界
+  const dsl = '@format 3\n@title 链式连线\n@key 1=C\n@beat 4/4\n\n(1 2)( 3 4) 5 6 ||\n';
+  const p = parseDsl(dsl);
+  check('链式连线源谱解析无错', !!p.score && p.errors.length === 0, p.errors.join('/'));
+  if (p.score) {
+    const { xml } = scoreToMusicXml(p.score);
+    const ids = musicXmlSummary(xml).summary.parts.map((x) => x.id);
+    const back = musicXmlToJps(xml, ids);
+    check('链式连音线导出→导回无错（不再报单音弧）', back.errors.length === 0, back.errors.slice(0, 2).join('/'));
+    const backScore = back.dsl ? parseDsl(back.dsl) : { score: null };
+    check('往返后谱面可干净重解析', !!backScore.score && backScore.errors.length === 0, backScore.errors.slice(0, 2).join('/'));
+    const slurEdges = (s: NonNullable<typeof backScore.score>) =>
+      s.events.reduce((n, e) => n + (e.kind === 'note' ? (e.ties ?? []).filter((t) => t.kind === 'slur').length : 0), 0);
+    check('往返后两条连音线都在（边数守恒）',
+      !!backScore.score && slurEdges(backScore.score) === slurEdges(p.score!),
+      `${slurEdges(p.score!)} -> ${backScore.score ? slurEdges(backScore.score) : -1}`);
+  }
+}
+
+{
+  // 歌词 → 标准 <lyric>
+  const dsl = '@format 3\n@title 歌词\n@key 1=C\n@beat 4/4\n\n5 6 7 1^ |\n歌词1:啊 呀 哦 啦\n';
+  const p = parseDsl(dsl);
+  check('歌词谱解析无错', !!p.score && p.errors.length === 0, p.errors.join('/'));
+  if (p.score) {
+    const { xml } = scoreToMusicXml(p.score);
+    check('歌词 → 标准 <lyric><text>', /<lyric number="1">[\s\S]*?<text>啊<\/text>/.test(xml));
+    const ids = musicXmlSummary(xml).summary.parts.map((x) => x.id);
+    const back = musicXmlToJps(xml, ids);
+    check('含歌词的 XML 仍可无错导入', back.errors.length === 0, back.errors.slice(0, 2).join('/'));
+  }
 }
 
 console.log(`\n${bad === 0 ? 'MUSICXML PASS' : `MUSICXML FAIL (${bad})`}`);

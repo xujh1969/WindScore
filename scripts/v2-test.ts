@@ -207,6 +207,7 @@ import {
   arcYForMarks,
   beamOffset,
   DOT_R,
+  headForLine,
   lowDotOffset,
   SEL_HALF_H,
   TECHNIQUE_GLYPH,
@@ -7125,6 +7126,10 @@ console.log('\n[简谱编辑键盘快捷键]');
     && appKb.includes('const anchor = playheadIndexIn(score);')
     && appKb.includes('anchor !== null ? anchor + 1 : shownCursor(shown)')
     && appKb.includes('anchor !== null ? anchor + 1 : snap.cursor'));
+  check('播放头映射回显示谱下标：精确 id 优先，剥 originId 只作回退（展开第二遍不落回第一遍）',
+    appKb.includes('const exact = shown.events.findIndex((x) => x.id === ev.id);')
+    && appKb.includes('if (exact >= 0) return exact;')
+    && appKb.indexOf('const exact = shown.events.findIndex') < appKb.indexOf('const srcId = ev.originId ?? ev.id;'));
   check('定位键不改谱面：播放中先停，编辑键仍被 canEditScore 门挡住',
     appKb.includes('if (playing) stopPlay();')
     && appKb.includes('const settleNavigation = (): void =>')
@@ -7141,7 +7146,7 @@ console.log('\n[简谱编辑键盘快捷键]');
     (appKb.match(/scrollRequest=\{scrollRequest\}/g) ?? []).length === 2
     && canvasKb.includes('scrollRequest?: ScrollRequest | null')
     && canvasKb.includes('edgeScrollTop(req.edge, wrap.scrollHeight, wrap.clientHeight)')
-    && canvasKb.includes('playheadIdCandidates(req.eventId)')
+    && canvasKb.includes('lineIndexOfEvent(layout, req.eventId)')
     && canvasKb.includes('eventScrollTop(y, wrap.scrollHeight, wrap.clientHeight)')
     && canvasKb.includes('followRef.current = false;'));
   check('所有载入入口统一从谱头定位，不再有谱尾光标 / atStart 分支',
@@ -7163,6 +7168,91 @@ console.log('\n[简谱编辑键盘快捷键]');
     && !appKb.includes("a.mode !== 'over'")
     && appKb.includes('stopPlay(); // 连旧暂停点一起作废')
     && appKb.includes('setPausedTick(tick)'));
+
+  check('播放跟随找行号候选优先：精确 id 先扫全部行，裸 id 后回退（反复第二遍不落到第一遍）',
+    canvasKb.includes('export function lineIndexOfEvent(layout: LayoutResult, id: string): number')
+    && canvasKb.includes('for (const cand of playheadIdCandidates(id))')
+    && canvasKb.includes('ln.items.some((it) => it.eventId === cand)')
+    && (canvasKb.match(/lineIndexOfEvent\(layout,/g) ?? []).length >= 2
+    && !canvasKb.includes('ln.items.some((it) => cands.includes(it.eventId))'));
+
+  console.log('\n[播放跟随 · 反复第二遍换行的行号解析]');
+  // 真实反复谱：展开后第二遍的音 id 带 ~2，裸 id 在第一遍行。旧实现逐行找
+  // 「含任一候选」会命中第一遍的裸 id 行（line0），target 一直停在 sys0，
+  // 观感是「第一行播完不滚、播到下一遍中段才跳」。候选优先才能落到 line3。
+  const repeatPath = join(process.cwd(), 'music', '在希望的田野上(梦之旅合唱组合].jps');
+  if (existsSync(repeatPath)) {
+    const rptScore = parseDsl(readFileSync(repeatPath, 'utf-8')).score!;
+    const rptExp = expandScore(rptScore, { tolerateEnsemble: true });
+    const rptPlay = rptExp.score ?? rptScore;
+    const rptLay = layoutScore(rptPlay, { contentWidth: 1200 });
+    const rptTl = buildTimeline(rptPlay, { ids: 'own', mergeTies: false });
+    const lineIndexOf = (id: string): number => {
+      for (const cand of playheadIdCandidates(id)) {
+        const li = rptLay.lines.findIndex((ln) => ln.items.some((it) => it.eventId === cand));
+        if (li >= 0) return li;
+      }
+      return -1;
+    };
+    const sysOf = (li: number) => rptLay.systems?.findIndex((s) => li >= s.from && li < s.to) ?? -1;
+    // 展开谱 layout 里第二遍系统的音 id 带 ~2；timeline（ids:'own'）第二遍播放头也带 ~2。
+    // 取 timeline 中第一个带 ~2 的 id，它应解析到第二遍系统（sys1），而不是被
+    // 第一遍裸 id 所在行（sys0/line0）抢先命中。
+    const secondEntry = rptTl.find((e) => /~\d+$/.test(e.eventId));
+    const secondId = secondEntry?.eventId;
+    check('反复谱展开有 ≥2 个连谱系统', (rptLay.systems?.length ?? 0) >= 2, `systems=${rptLay.systems?.length}`);
+    check('展开谱 timeline 有带 ~2 的反复第二遍音', !!secondId, String(secondId));
+    check('带 ~2 的反复音解析到第二遍系统（不是被第一遍裸 id 抢先命中）',
+      !!secondId && lineIndexOf(secondId) >= 0 && sysOf(lineIndexOf(secondId)) === 1,
+      `second=${secondId} li=${secondId ? lineIndexOf(secondId) : -1} sys=${secondId ? sysOf(lineIndexOf(secondId)) : -1}`);
+    // 旧实现逐行「含任一候选」会命中 sys0（裸 id 行），这里断言它确实不同
+    const oldLi = secondId ? rptLay.lines.findIndex((ln) =>
+      ln.items.some((it) => playheadIdCandidates(secondId).includes(it.eventId))) : -1;
+    check('旧口径（逐行含任一候选）确实错落到 sys0，证明回归有效',
+      !!secondId && sysOf(oldLi) === 0 && sysOf(lineIndexOf(secondId)) === 1,
+      `oldLi=${oldLi} oldSys=${sysOf(oldLi)} newLi=${lineIndexOf(secondId!)} newSys=${sysOf(lineIndexOf(secondId!))}`);
+
+    // 播放进度条：展开谱第二遍播放时，headForLine 只让第二遍那行画，
+    // 第一遍行（含裸 id）不得因剥后缀回退而误亮（用户实测「两处光标」）
+    if (secondId) {
+      const bareId = playheadIdCandidates(secondId).at(-1)!; // p1:e3
+      const secondLi = lineIndexOf(secondId);
+      const bareLi = rptLay.lines.findIndex((ln) => ln.items.some((it) => it.eventId === bareId));
+      const globalHead = { eventId: secondId, frac: 0.3 };
+      const allIds = new Set(rptLay.lines.flatMap((ln) => ln.items.map((it) => it.eventId)));
+      const headOn = (li: number) => headForLine(rptLay.lines[li]!, globalHead, undefined, allIds);
+      check('第二遍裸 id 与 ~2 id 分属不同行（两遍都铺在展开谱上）',
+        bareLi >= 0 && secondLi >= 0 && bareLi !== secondLi, `bare=${bareLi} second=${secondLi}`);
+      check('进度条只在第二遍行画（精确 id 命中）',
+        headOn(secondLi)?.eventId === secondId, String(headOn(secondLi)?.eventId));
+      check('第一遍行不因回退误画进度条（精确 id 在别的行 → 本行不画）',
+        headOn(bareLi) === null, String(headOn(bareLi)?.eventId));
+      // 原谱视图场景：layout 里只有裸 id、没有 ~2 → 允许回退（反复回跳光标不能消失）
+      const bareOnlyIds = new Set([bareId]);
+      const bareLine = rptLay.lines[bareLi]!;
+      check('原谱视图（layout 无 ~2）仍允许剥后缀回退点亮',
+        headForLine(bareLine, globalHead, undefined, bareOnlyIds)?.eventId === secondId,
+        String(headForLine(bareLine, globalHead, undefined, bareOnlyIds)?.eventId));
+
+      // Ctrl+箭头锚点：播放头在第二遍带 ~2 的音，映射回 shown（展开谱）下标
+      // 必须精确命中第二遍，不能被 originId 剥成裸 id 落回第一遍。
+      const shownPart = partScore(rptPlay, '1');
+      const expandedPart = partScore(rptPlay, '1');
+      const mapIndex = (ev: any): number => {
+        const exact = shownPart.events.findIndex((x) => x.id === ev.id);
+        if (exact >= 0) return exact;
+        const srcId = ev.originId ?? ev.id;
+        return shownPart.events.findIndex((x) => x.id === srcId || x.originId === srcId);
+      };
+      const secondEv = expandedPart.events.find((e: any) => e.id === secondId)!;
+      const secondShownIdx = mapIndex(secondEv);
+      const oldShownIdx = shownPart.events.findIndex((x) =>
+        x.id === (secondEv.originId ?? secondEv.id) || x.originId === (secondEv.originId ?? secondEv.id));
+      check('第二遍播放头映射回展开谱下标：精确命中第二遍，不落回第一遍',
+        secondShownIdx >= 0 && shownPart.events[secondShownIdx]?.id === secondId && secondShownIdx > oldShownIdx,
+        `fixed=${secondShownIdx}(${shownPart.events[secondShownIdx]?.id}) old=${oldShownIdx}(${shownPart.events[oldShownIdx]?.id})`);
+    }
+  }
 
   console.log('\n[点小节线 / 连谱线 = 起点设为其右侧第一颗音]');
   const barScore = parseDsl('@beat 4/4\n\n1 2 3 4 | 0 6 7 8 | 5 ||\n').score!;

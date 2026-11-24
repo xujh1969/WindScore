@@ -492,6 +492,28 @@ export function lowDotOffset(beams: number): number {
   return beams > 0 ? beamOffset(beams) + M.octaveClear : M.octaveBase;
 }
 
+/**
+ * 决定某一行该画哪一个播放头。展开反复谱里同一遍会铺出两份音：第一遍的
+ * 裸 id（p1:e3）与第二遍的派生 id（p1:e3~2）**同时**存在于 layout。
+ * 若只靠 paintLine 的剥后缀回退，播到第二遍 p1:e3~2 时，第一遍那行会因
+ * 回退到 p1:e3 而误亮 → 两处一起画进度条（用户实测）。
+ * 判据：精确 id 在本行 → 画它；本行没有但精确 id 在整份谱里根本不存在
+ * （原谱视图里反复回跳、layout 只有裸 id）→ 才允许回退；精确 id 存在于
+ * **别的行**（展开谱两遍都在）→ 本行不画，交给那一行的严格匹配。
+ */
+export function headForLine(
+  line: LayoutLine,
+  playhead: { eventId: string; frac: number } | null | undefined,
+  playheads: { eventId: string; frac: number }[] | undefined,
+  allIds: ReadonlySet<string>,
+): { eventId: string; frac: number } | null {
+  const exact = playheads?.find((h) => line.items.some((it) => it.eventId === h.eventId));
+  if (exact) return exact;
+  if (!playhead) return null;
+  if (line.items.some((it) => it.eventId === playhead.eventId)) return playhead;
+  return allIds.has(playhead.eventId) ? null : playhead;
+}
+
 export interface PaintOptions {
   selectedIds?: ReadonlySet<string>;
   /** 光标位置（已由调用方换算成画布坐标） */
@@ -619,6 +641,11 @@ export function paintLayout(
     }
   }
 
+  // 全谱事件 id 集合：展开反复谱里同一音的裸 id / ~2 id 并存，
+  // headForLine 据此判断「精确 id 是否在别的行」，决定是否允许剥后缀回退
+  const allIds = new Set<string>();
+  for (const ln of layout.lines) for (const it of ln.items) allIds.add(it.eventId);
+
   for (const line of layout.lines) {
     if (line.partName) {
       ctx.font = M.titleInfoFont;
@@ -628,13 +655,13 @@ export function paintLayout(
       ctx.fillText(line.partName, (bracket ?? line.items[0]?.x ?? 70) - 10 * M.k, line.y, 108 * M.k);
       ctx.textAlign = 'left';
     }
-    const head = opts.playheads?.find((h) => line.items.some((it) => it.eventId === h.eventId));
+    const head = headForLine(line, opts.playhead, opts.playheads, allIds);
     ctx.font = M.font;
     paintLine(ctx, line, theme, {
       lineHeight: line.height ?? layout.lineHeight,
       selectedIds: opts.selectedIds,
       caret: opts.caret ?? null,
-      playhead: head ?? opts.playhead ?? null,
+      playhead: head,
       focusId: opts.focusId ?? null,
       cue: opts.cue ?? null,
       playStyle: opts.playStyle ?? 'head',

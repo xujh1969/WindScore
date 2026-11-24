@@ -10,6 +10,19 @@
  * 深浅两档是同一套「纸与墨 + 金」：变的只有明暗，不变的是强调色与层级。
  */
 
+/* 根级 color-scheme：滚动条 / 表单 / 默认画布底色由 html 决定，按 head 里的
+   meta[name=color-scheme] 映射；基础值保持 light dark（无 JS 时跟随系统）。 */
+:root {
+  color-scheme: light dark;
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+}
+
 body.ws-home {
   margin: 0;
   min-height: 100%;

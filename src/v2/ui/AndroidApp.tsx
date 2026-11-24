@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { syncColorSchemeMeta } from '../colorScheme';
 import { EditorApp } from './EditorApp';
 import { AndroidSongList } from './AndroidSongList';
 import { AndroidLanUpload, useLanUpload } from './AndroidLanUpload';
@@ -90,6 +91,7 @@ export function AndroidApp() {
   useEffect(() => {
     try { localStorage.setItem('ws-theme', dark ? 'dark' : 'light'); } catch { /* 不影响切换 */ }
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#151d19' : '#f6f7f2');
+    syncColorSchemeMeta(dark);
   }, [dark]);
   useEffect(() => {
     history.replaceState({ windscoreAndroid: true, tab: 'library', song: null }, '');

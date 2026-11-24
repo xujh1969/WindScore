@@ -33,8 +33,9 @@ define('requestAnimationFrame', (fn: (t: number) => void) => dom.window.requestA
 define('cancelAnimationFrame', (id: number) => dom.window.cancelAnimationFrame(id));
 
 let st = 0, sl = 0;
+const stWrites: number[] = []; // 记录每次 scrollTop 赋值，用来断言播放跟随的「第一帧」落点
 const proto = dom.window.Element.prototype as unknown as Record<string, unknown>;
-Object.defineProperty(proto, 'scrollTop', { get: () => st, set: (v: number) => { st = Number(v) || 0; }, configurable: true });
+Object.defineProperty(proto, 'scrollTop', { get: () => st, set: (v: number) => { st = Number(v) || 0; stWrites.push(st); }, configurable: true });
 Object.defineProperty(proto, 'scrollLeft', { get: () => sl, set: (v: number) => { sl = Number(v) || 0; }, configurable: true });
 for (const [k, v] of Object.entries({ clientHeight: 600, clientWidth: 900, scrollHeight: 4000, scrollWidth: 1000 })) {
   Object.defineProperty(proto, k, { get: () => v, configurable: true });
@@ -183,6 +184,51 @@ const main = async (): Promise<void> => {
   check('方块态导航不播光标移动动画', animCalls.length === 0, `calls=${animCalls.length}`);
   await new Promise((r) => setTimeout(r, 80));
   check('方块态导航仍跟随视口', st > 0, `scrollTop=${st}`);
+
+  // 播放跟随：换 system / 换行时 target 阶梯跳变，scrollTop 必须当帧到位。
+  // 旧实现每帧只缓动 8%，跳到新行时第一帧只走 5px、十几帧才追上——
+  // 观感就是「第一行播完不滚、播到行中间才开始滚」（用户实测）。
+  const { activeMainAt, playheadIdCandidates } = await import('../src/v2/timeline');
+  const lineIndexOfTick = (tick: number): number => {
+    const act = activeMainAt(timeline, tick);
+    if (!act) return -1;
+    const cands = playheadIdCandidates(act.entry.eventId);
+    return layout!.lines.findIndex((ln) => ln.items.some((it) => cands.includes(it.eventId)));
+  };
+  let earlyTick = -1, lateTick = -1;
+  for (const e of timeline) {
+    const tick = Math.min(e.startTick + 1, e.endTick - 1);
+    if (tick <= 0) continue;
+    const li = lineIndexOfTick(tick);
+    if (li === 0 && earlyTick < 0) earlyTick = tick;
+    if (li === layout!.lines.length - 1 && lateTick < 0) lateTick = tick;
+  }
+  check('能定位首行与末行的播放 tick', earlyTick > 0 && lateTick > earlyTick,
+    `early=${earlyTick} late=${lateTick} lines=${layout!.lines.length}`);
+  if (earlyTick > 0 && lateTick > earlyTick) {
+    let curTick = earlyTick;
+    st = 0; stWrites.length = 0;
+    const renderPlaying = () => root.render(React.createElement(ScoreCanvas, {
+      score, activePartId: '1', dark: false, selectedIds: new Set<string>(), cursor: 0,
+      timeline, playing: true, clock, playStyle: 'head', getPlayTick: () => curTick,
+      showCaret: false, showBreaks: true,
+      onPick: () => {}, onEnded: () => {}, onLayout: (l) => { layout = l; },
+    }));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    await act(() => renderPlaying());
+    await sleep(150); // 起播稳定在首行 target（snapped=true、lastFollowTarget=首行）
+    const stEarly = st;
+    stWrites.length = 0;
+    curTick = lateTick; // 下一帧读到末行 target（阶梯跳变），不重新 render，effect 不重启
+    const deadline = Date.now() + 2000;
+    while (stWrites.length === 0 && Date.now() < deadline) await sleep(1);
+    const firstWrite = stWrites[0] ?? -1;
+    await sleep(150);
+    const stLate = st;
+    check('播放换行确实触发大跨度滚动', stLate - stEarly > 40, `stEarly=${stEarly} stLate=${stLate}`);
+    check('target 跳变当帧直接到位（非 8% 缓动）', Math.abs(firstWrite - stLate) < 3,
+      `firstWrite=${firstWrite} stLate=${stLate} diff=${Math.abs(firstWrite - stLate)}`);
+  }
 
   root.unmount();
   console.log(failed === 0 ? '\nCARET ANIM PASS' : `\nCARET ANIM FAIL (${failed})`);

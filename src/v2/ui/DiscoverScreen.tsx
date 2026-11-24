@@ -151,7 +151,12 @@ export function DiscoverScreen({ onOpen, homeHref, onHelp, msg, dark, onDark }: 
             placeholder="搜歌名 / 标题，回车搜索"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') runSearch(query);
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                // 中文 / 日文等输入法用回车确认候选字：composition 中不能触发搜索
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                runSearch(query);
+              }
               if (e.key === 'Escape') {
                 setQuery('');
                 setSearched('');

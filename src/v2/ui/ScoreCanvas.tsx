@@ -33,6 +33,20 @@ import { CARET_BLINK_MS, caretBlinkActive } from './caretBlink';
 /** 一次命中的结果，判定逻辑在 layout.pickAt（纯几何，可单测） */
 export type ScorePick = LayoutPick;
 
+/**
+ * 按 eventId 在排版行里找行号。**候选优先**：先用精确 id（带反复克隆 ~n、
+ * D.C./D.S. #n、底色副本 +rb 等后缀）扫全部行，找不到才剥后缀回退。
+ * 不能反过来逐行检查「是否含任一候选」——那样反复第二遍的 p1:e3~2 会被
+ * 裸 id p1:e3 所在的第一遍行抢先命中（findIndex 取最靠前的行）。
+ */
+export function lineIndexOfEvent(layout: LayoutResult, id: string): number {
+  for (const cand of playheadIdCandidates(id)) {
+    const li = layout.lines.findIndex((ln) => ln.items.some((it) => it.eventId === cand));
+    if (li >= 0) return li;
+  }
+  return -1;
+}
+
 interface Props {
   score: Score;
   activePartId?: string;
@@ -517,6 +531,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     paintRef.current(headRef.current);
   }, [playStyle]);
 
+  /** 播放跟随的上一帧目标：target 跳变（换 system）时直接到位，别慢慢缓动 */
+  const lastFollowTarget = useRef(-1);
   /** 上一次「保证光标可见」effect 跑时是否处于播放态：暂停那一帧要跳过跟随 */
   const playingBefore = useRef(false);
   const lastEditPosition = useRef('');
@@ -699,9 +715,8 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     if (!req.eventId) return;
     const layout = layoutRef.current;
     if (!layout) return;
-    // 展开反复的谱里事件 id 带副本后缀，用播放头同款候选去匹配
-    const cands = playheadIdCandidates(req.eventId);
-    const li = layout.lines.findIndex((ln) => ln.items.some((it) => cands.includes(it.eventId)));
+    // 展开反复的谱里事件 id 带副本后缀，候选优先找行（反复第二遍不落到第一遍）
+    const li = lineIndexOfEvent(layout, req.eventId);
     if (li < 0) return;
     const system = layout.systems?.find((s) => li >= s.from && li < s.to);
     const y = system ? (system.top + system.bottom) / 2 : layout.lines[li].y;
@@ -789,6 +804,7 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
     let cachedTrack: ReturnType<typeof buildBallTrack> = null;
     // 起播即恢复自动跟随：用户手动滚过之后，本次播放期间不再抢控制权
     followRef.current = true;
+    lastFollowTarget.current = -1;
 
     const loop = () => {
       const tick = getPlayTick ? getPlayTick() : clock.currentBeat * TICKS_PER_BEAT;
@@ -860,22 +876,25 @@ const cueRef = useRef<{ eventId: string; beatsLeft: number; pulse: number } | nu
       if (layout && wrap) {
         // 前奏期间没有 act（还没进谱面），这时的跟随目标就是入拍提醒那个音——
         // 否则提醒闪在屏幕外，等于没提醒
+        // 找行号用候选优先（lineIndexOfEvent）：反复第二遍的 ~2 id 不会被
+        // 第一遍裸 id 的行抢先命中，换行 target 才不会停在旧系统（用户实测）
         const followId = act
-          ? headsRef.current.find((h) => layout.lines.some((line) => line.items.some((it) => it.eventId === h.eventId)))?.eventId ?? act.entry.eventId
+          ? headsRef.current.find((h) => lineIndexOfEvent(layout, h.eventId) >= 0)?.eventId ?? act.entry.eventId
           : cueRef.current?.eventId ?? null;
         if (followId) {
-          const cands = playheadIdCandidates(followId);
-          const li = layout.lines.findIndex((ln) =>
-            ln.items.some((it) => cands.includes(it.eventId)),
-          );
+          const li = lineIndexOfEvent(layout, followId);
           if (li >= 0) {
             const system = layout.systems?.find((s) => li >= s.from && li < s.to);
             const target = Math.max(0, system ? (system.top + system.bottom) / 2 - wrap.clientHeight / 2 : layout.lines[li].y - wrap.clientHeight / 2);
             if (followRef.current) {
-              // 起播第一帧直接到位（从文档顶端滑过去太远），之后每帧缓动
-              wrap.scrollTop = snapped
-                ? wrap.scrollTop + (target - wrap.scrollTop) * 0.08
-                : target;
+              // 起播第一帧直接到位。
+              // 换 system（换行 / 反复跳段）时 target 会阶梯式跳变：旧实现仍按
+              // 每帧 8% 缓动，第一帧只走 5px、十几帧才追上，观感就是「跳到
+              // 新行不滚、播到行中间才开始滚」（用户实测）。此时直接到位；
+              // 只在 system 内（target 几乎不变）才用缓动消除细碎抖动。
+              const jumped = !snapped || Math.abs(target - lastFollowTarget.current) > 1;
+              wrap.scrollTop = jumped ? target : wrap.scrollTop + (target - wrap.scrollTop) * 0.08;
+              lastFollowTarget.current = target;
             }
             snapped = true;
           }

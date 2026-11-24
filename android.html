@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f6f7f2" />
     <title>WindScore · 随时看谱</title>
     <script>
@@ -12,6 +13,8 @@
           var t = localStorage.getItem('ws-theme');
           if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.dataset.theme = 'dark';
+            // 原生滚动条 / 表单 / 画布底色也跟着深（FOUC 前就定下，防闪白）
+            document.querySelector('meta[name="color-scheme"]').content = 'dark';
             // 组件挂载前先把画布压暗，避免深色用户看到一帧白底
             document.documentElement.style.background = '#18181b';
           }

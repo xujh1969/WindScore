@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { EditorApp, type DiagnosticsSnapshot } from '../../v2/ui/EditorApp';
 import { ThemeToggle } from '../../v2/ui/ThemeToggle';
+import { syncColorSchemeMeta } from '../../v2/colorScheme';
 import type { Binary, RecognizedScore } from '../adapter/installOcr';
 import { joinPhotos, loadPhotoSource, sortByName, type PhotoSource } from '../adapter/joinPhotos';
 import { decodePdfPageBins, joinPdfPageBins } from '../adapter/pdfPages';
@@ -104,6 +105,7 @@ export function OcrPage() {
 
   const toggleDark = (d: boolean): void => {
     setDark(d);
+    syncColorSchemeMeta(d);
     try {
       localStorage.setItem('ws-theme', d ? 'dark' : 'light');
     } catch {

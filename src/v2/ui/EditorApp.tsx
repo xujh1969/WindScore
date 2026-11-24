@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { syncColorSchemeMeta } from '../colorScheme';
 import molihua from '../../scores/molihua.jps?raw';
 import molihuaRepeat from '../../scores/molihua-repeat.jps?raw';
 import songbie from '../../scores/songbie.jps?raw';
@@ -413,6 +414,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   const setDark = setOwnDark;
   useEffect(() => {
     if (!androidPlayer) localStorage.setItem('ws-theme', dark ? 'dark' : 'light');
+    // 原生滚动条 / 表单 / 画布底色也跟着主题走（与 head 里 FOUC 脚本同一开关）
+    syncColorSchemeMeta(dark);
   }, [dark, androidPlayer]);
   // 真实钢琴起音采样：进页面就后台拉取（440KB，CC-BY Salamander），
   // 失败静默——renderNote 检测不到采样时自动回退纯合成音色
@@ -3587,6 +3590,12 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           const ev = expanded.events[i]!;
           if (ev.kind !== 'note' && ev.kind !== 'rest') continue;
           if (at < acc + ev.ticks) {
+            // 精确 id 优先：展开谱里第二遍的音 id 带 ~2，裸 id（originId）在
+            // 第一遍。若先剥 originId 再 findIndex，会落到第一遍（用户实测
+            // 「播到第二遍按 Ctrl+← 跳回第一遍」）。shown 是展开谱时精确 id
+            // 就在其中，直接命中；shown 是原谱（没有 ~2）才回退到裸 id。
+            const exact = shown.events.findIndex((x) => x.id === ev.id);
+            if (exact >= 0) return exact;
             const srcId = ev.originId ?? ev.id;
             const j = shown.events.findIndex((x) => x.id === srcId || x.originId === srcId);
             return j >= 0 ? j : null;
@@ -3704,8 +3713,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
           // 复制选区（画布上没有文本选区，浏览器默认复制行为无意义）
           if (range) {
             e.preventDefault();
-            setClip(JSON.parse(JSON.stringify(score.events.slice(range[0], range[1]))) as Event[]);
-            setClipGroups(JSON.parse(JSON.stringify(score.groups)) as BeatGroup[]);
+            setClip(structuredClone(score.events.slice(range[0], range[1])));
+            setClipGroups(structuredClone(score.groups));
             setMsg(`已复制 ${range[1] - range[0]} 个事件`);
           }
         } else if (k === 'v') {

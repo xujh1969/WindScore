@@ -238,7 +238,13 @@ function BpmAfterField({ value, prevBpm, onCommit }: { value?: number; prevBpm: 
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
       />
       {outOfRange ? <p className="v2-hint">超出 20–300，将按边界处理</p> : null}
       {jump ? <p className="v2-hint">与该线之前的 {prevBpm} BPM 相比变化超过一倍，请确认是否需要这么大的幅度</p> : null}

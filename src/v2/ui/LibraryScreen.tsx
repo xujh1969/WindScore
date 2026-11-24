@@ -405,7 +405,12 @@ export function LibraryScreen({ onOpen, onEdit, onNotify, onToast, msg, readOnly
                   onChange={(e) => setRenameValue(e.target.value)}
                   onBlur={() => setRenaming(null)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(it.id);
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      // 输入法回车是选字，不该提前提交改名
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                      void commitRename(it.id);
+                    }
                     if (e.key === 'Escape') setRenaming(null);
                   }}
                 />

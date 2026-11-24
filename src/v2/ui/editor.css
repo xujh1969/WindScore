@@ -14,6 +14,20 @@ body,
   margin: 0;
 }
 
+/* 主题：根级声明 color-scheme（滚动条 / 表单 / 默认画布底色由 html 决定），
+   meta[name=color-scheme] 是唯一开关（FOUC 脚本 + React 切换点同步它）。
+   基础值必须是 light dark（跟随系统），显式 light / dark 由 meta 映射，勿硬编码根默认。 */
+:root {
+  color-scheme: light dark;
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+}
+
 body {
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
 }
@@ -50,7 +64,7 @@ body {
 
 /* 主题由 .v2-app 的 data-theme 决定，不跟系统走——用户要有得切。
    浅色是上面的默认值，这里只覆盖深色那一套。
-   color-scheme 让原生滚动条 / 数字输入框也跟着深。 */
+   color-scheme 由 :root 按 meta 映射统一管，此处不再重复声明。 */
 .v2-app[data-theme='dark'] {
   --surface: #18181b;
   --surface-2: #09090b;
@@ -62,7 +76,6 @@ body {
   --ok: #4ade80;
   --warn: #fbbf24;
   --error: #f87171;
-  color-scheme: dark;
 }
 
 /* ── 顶栏 ── */

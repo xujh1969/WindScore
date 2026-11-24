@@ -262,6 +262,10 @@ interface XNote {
   pre?: string[];
   /** 附着在音符后的独立 token（]hairpin、]8），转换期注入 */
   post?: string[];
+  /** 从 WindScore [WS:…] 降级文字还原的技法字母（f/d/s/x/q/h/H 等），导回时注入后缀 */
+  wsTech?: string;
+  /** 从 [指法:n] 还原的指法数字 */
+  wsFingering?: string;
 }
 
 type MeasureItem =
@@ -274,6 +278,8 @@ type MeasureItem =
       wedge?: 'cresc' | 'dim' | 'stop';
       /** 八度演奏段（octave-shift → 8va[ / 8vb[ / ]8） */
       octShift?: 'up' | 'down' | 'stop';
+      /** WindScore 导出的电吹管技法降级文字 [WS:…] / [指法:n]，导回时还原成技法字母 */
+      ws?: string[];
     }
   | { kind: 'note'; note: XNote }
   | { kind: 'barline'; location: string; repeat?: 'forward' | 'backward'; times: number; barStyle?: string; ending?: string };
@@ -365,6 +371,13 @@ const DYNAMIC_MAP: Record<string, string> = {
   mp: 'mp', mf: 'mf',
   f: 'f', ff: 'ff', fff: 'ff', ffff: 'ff',
   sf: 'f', sfz: 'f', sffz: 'ff', sfp: 'f', fp: 'f', fz: 'f', rf: 'f', rfz: 'f',
+};
+
+/** WindScore [WS:标签] → jps 技法后缀字母（与 dsl.ts TECHNIQUE_LETTER 对应） */
+const WS_LABEL_LETTER: Record<string, string> = {
+  换气: 'V', 颤音: 'r', 花舌: 'f', 打音: 'd', 上波音: 'm', 下波音: 'w',
+  上滑音: 's', 下滑音: 'x', h滑音: 'H', 上弯音: 'q', 下弯音: 'h', 回音: 'u',
+  单吐: 't', 双吐: 'k',
 };
 
 function parseNote(node: XNode, skipped: Record<string, number>): XNote {
@@ -487,6 +500,7 @@ function parseScoreXml(xml: string): { title: string; parts: PartModel[]; errors
           let dynamic: string | undefined;
           let wedge: 'cresc' | 'dim' | 'stop' | undefined;
           let octShift: 'up' | 'down' | 'stop' | undefined;
+          let wsWords: string[] | undefined;
           for (const dt of kids(child, 'direction-type')) {
             for (const d of dt.children) {
               if (d.tag === 'wedge') {
@@ -512,7 +526,14 @@ function parseScoreXml(xml: string): { title: string; parts: PartModel[]; errors
               } else if (d.tag === 'segno' || d.tag === 'coda') {
                 bump('跳转记号（Segno / Coda）');
               } else if (d.tag === 'words') {
-                bump('文字记号（速度 / 表情术语，如 rit. / accel.）');
+                const txt = textOf(d);
+                const wsMatch = txt.match(/\[WS:([^\]]+)\]/);
+                const fingMatch = txt.match(/\[指法:(\d)\]/);
+                if (wsMatch || fingMatch) {
+                  (wsWords ??= []).push(wsMatch ? wsMatch[1]! : `指法:${fingMatch![1]}`);
+                } else {
+                  bump('文字记号（速度 / 表情术语，如 rit. / accel.）');
+                }
               }
             }
           }
@@ -528,6 +549,7 @@ function parseScoreXml(xml: string): { title: string; parts: PartModel[]; errors
             ...(dynamic ? { dynamic } : {}),
             ...(wedge ? { wedge } : {}),
             ...(octShift ? { octShift } : {}),
+            ...(wsWords?.length ? { ws: wsWords } : {}),
           });
         } else if (child.tag === 'forward') {
           // <forward> = 时间推进（鼓谱常拿它代替休止）→ 转成休止 0，
@@ -989,15 +1011,20 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
     }
     let prefix = '';
     let suffix = '';
-    for (const sn of note.slurStart) {
-      if (!openSlurs.has(sn)) {
-        openSlurs.add(sn);
-        prefix += '(';
-      }
-    }
+    const freshStarts = note.slurStart.filter((sn) => !openSlurs.has(sn));
     const stops = note.slurStop.filter((sn) => openSlurs.has(sn));
+    for (const sn of freshStarts) openSlurs.add(sn);
     for (const sn of stops) openSlurs.delete(sn);
-    suffix += ')'.repeat(stops.length);
+    if (stops.length && freshStarts.length) {
+      // 共享边界音（既收上一条又开下一条）：必须用 token **中段** `)` + `(`，
+      // 让本音先喂给旧 scope（notes≥2），再收旧弧、以本音播种开新弧。
+      // 若写成前缀 `(` + 后缀 `)`（形如 (4)），DSL 读成「只括住一个音的空弧」
+      // 会报「连音线至少要括住两个音」（导入器既有缺陷，链式连线必踩）。
+      suffix += ')'.repeat(stops.length) + '('.repeat(freshStarts.length);
+    } else {
+      prefix = '('.repeat(freshStarts.length);
+      suffix = ')'.repeat(stops.length);
+    }
     if (note.tieStart) suffix += '~';
     for (const a of note.arts) {
       if (a === 'staccato') suffix += '!';
@@ -1015,6 +1042,9 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
     if (note.mordentDown) suffix += 'w';
     if (note.tremolo) suffix += 'z'.repeat(note.tremolo);
     if (note.arpeggio) suffix += 'a';
+    // 从 WindScore [WS:…] 降级文字还原的技法字母 / 指法（导出→导入往返）
+    if (note.wsTech) suffix += note.wsTech;
+    if (note.wsFingering) suffix += note.wsFingering;
     return { prefix, bare: `${acc}${deg}${octaveDots(octOff)}`, token: `${acc}${deg}${octaveDots(octOff)}${suf}`, suffix };
   };
 
@@ -1114,6 +1144,8 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
   // 范围记号（cresc[ / 8va[）的收尾 token 挂到段内最后一个音符的 post 上。
   // 段内音符数不足时解析器会报错，所以收尾前数一遍，不足就摘掉开头 token。
   let pendingPre: string[] = [];
+  let pendingWs: string[] = []; // 从 [WS:…] 降级文字还原的技法字母，附到下一个音符
+  let pendingFing: string | undefined;
   let lastPushed: XNote | null = null;
   let hairpin: { kind: 'cresc' | 'dim'; count: number } | null = null;
   let octava: { count: number } | null = null;
@@ -1328,6 +1360,8 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
         n.pre = pendingPre;
         pendingPre = [];
       }
+      if (pendingWs.length) { n.wsTech = pendingWs.join(''); pendingWs = []; }
+      if (pendingFing) { n.wsFingering = pendingFing; pendingFing = undefined; }
       notes.push(n);
       lastPushed = n;
       if (!n.rest && !n.grace) {
@@ -1362,6 +1396,13 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
           } else {
             model.skippedMarks[`力度记号 ${item.dynamic}`] = (model.skippedMarks[`力度记号 ${item.dynamic}`] ?? 0) + 1;
           }
+        } else if (item.ws) {
+          for (const w of item.ws) {
+            const letter = WS_LABEL_LETTER[w];
+            if (letter) pendingWs.push(letter);
+            else if (w.startsWith('指法:')) pendingFing = w.slice(3);
+            else model.skippedMarks[`自定义记号 ${w}`] = (model.skippedMarks[`自定义记号 ${w}`] ?? 0) + 1;
+          }
         }
         continue;
       }
@@ -1379,6 +1420,8 @@ function convertPartModel(model: PartModel, warnings: string[], melody: MelodySt
           n.pre = pendingPre;
           pendingPre = [];
         }
+        if (pendingWs.length) { n.wsTech = pendingWs.join(''); pendingWs = []; }
+        if (pendingFing) { n.wsFingering = pendingFing; pendingFing = undefined; }
         rawNotes.push(n);
         lastPushed = n;
         if (!n.rest && !n.grace) {

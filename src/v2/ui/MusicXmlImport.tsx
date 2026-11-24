@@ -3,6 +3,7 @@ import { musicXmlSummary, musicXmlToJps, readMusicXmlFile, type MusicXmlSummary 
 import { saveSession } from '../session';
 import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
+import { syncColorSchemeMeta } from '../colorScheme';
 
 /**
  * 乐谱导入（MusicXML 转译，实验性测试功能，2026-10-31）：
@@ -31,6 +32,7 @@ export function MusicXmlImport() {
 
   const toggleDark = (d: boolean): void => {
     setDark(d);
+    syncColorSchemeMeta(d);
     try {
       localStorage.setItem('ws-theme', d ? 'dark' : 'light');
     } catch {

@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>WindScore · 电吹管动态谱</title>
     <meta name="description" content="WindScore：简谱写谱器、对轨（伴奏对齐）与曲库，一体化动态谱制作工具" />
     <link rel="icon" href="/favicon.svg" />
@@ -15,6 +16,8 @@
           var t = localStorage.getItem('ws-theme');
           if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.dataset.theme = 'dark';
+            // 原生滚动条 / 表单 / 画布底色也跟着深（FOUC 前就定下，防闪白）
+            document.querySelector('meta[name="color-scheme"]').content = 'dark';
           }
         } catch (e) { /* 隐私模式读不了 localStorage，落浅色 */ }
       })();
@@ -142,6 +145,7 @@
       var dark = document.documentElement.dataset.theme === 'dark';
       var next = dark ? 'light' : 'dark';
       document.documentElement.dataset.theme = next;
+      document.querySelector('meta[name="color-scheme"]').content = next;
       try {
         localStorage.setItem('ws-theme', next);
       } catch (e) { /* 隐私模式写不进就算了，本次会话内仍有效 */ }

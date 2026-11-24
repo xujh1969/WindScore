@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import guide from '../../../docs/user-guide.md?raw';
 import { ExpClose } from './ExpClose';
 import { ThemeToggle } from './ThemeToggle';
+import { syncColorSchemeMeta } from '../colorScheme';
 import './help.css';
 
 // 顺序必须与 docs/user-guide.md 的「## 」章节一一对应；增删章节时同步此处，
@@ -116,6 +117,7 @@ export function HelpPage() {
   });
   useEffect(() => {
     try { localStorage.setItem('ws-theme', dark ? 'dark' : 'light'); } catch { /* 存不了就算了 */ }
+    syncColorSchemeMeta(dark);
   }, [dark]);
   const initialTopic = location.hash.slice(1) || 'quick-start';
   // 与其他页面同一枚图标开关：深色 = 太阳，浅色 = 月亮

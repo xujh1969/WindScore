@@ -215,7 +215,10 @@ export async function exportScorePdf(opts: PdfExportOptions): Promise<PdfExportR
   return { bytes, pageCount: plans.length, diagnosticPath };
   } catch (error) {
     await logPdfExport({ phase: 'error', message: String(error) });
-    throw new Error(`${error instanceof Error ? error.message : error} ${DIAG()}${diagnosticPath ? `；诊断日志：${diagnosticPath}` : ''}`);
+    throw new Error(
+      `${error instanceof Error ? error.message : error} ${DIAG()}${diagnosticPath ? `；诊断日志：${diagnosticPath}` : ''}`,
+      { cause: error },
+    );
   }
 }
 

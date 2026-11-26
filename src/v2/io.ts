@@ -3,7 +3,7 @@
  * Tauri 下走对话框 + fs；浏览器预览下退化为下载 / 文件选择框。
  */
 
-import { parseDsl, serializeDsl } from './dsl';
+import { parseDsl, serializeDsl, type ParseResult } from './dsl';
 import type { Score } from './types';
 
 export function isTauri(): boolean {
@@ -40,6 +40,8 @@ export interface OpenResult {
   text?: string;
   score: Score | null;
   errors: string[];
+  /** 完整解析诊断（行号 / token / 事件）；局部错误的谱面照常打开，提示仍要能显示与定位 */
+  diagnostics?: ParseResult;
   /** 真实文件路径；浏览器下用文件选择框，拿不到路径 */
   path: string | null;
   /** 浏览器下用 File System Access API 打开时拿到的句柄（之后可原地写回） */
@@ -317,5 +319,8 @@ export function nameOf(path: string): string {
 
 export function fromText(text: string, name: string, path: string | null = null): OpenResult {
   const res = parseDsl(text);
-  return { name, text, score: res.errors.length ? null : res.score, errors: res.errors, path };
+  // parseDsl 已用 fatalErrors 区分「结构性损坏」与「局部记号问题」：前者 score=null，
+  // 后者仍产出可显示可播放的谱面。这里若再按 errors.length 清零，局部问题
+  // （一个连音线少括一个音、一处标注写法）就会把整份谱挡在源码视图里。
+  return { name, text, score: res.score, errors: res.errors, path, diagnostics: res };
 }

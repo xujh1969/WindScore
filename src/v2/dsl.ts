@@ -125,9 +125,55 @@ export const DEFAULT_META: ScoreMeta = {
   patch: 0,
 };
 
+/** 一条解析诊断：message 与 errors[i] 逐项对应，附带可定位的源码/事件上下文 */
+export interface ParseIssue {
+  message: string;
+  /** 原始文本里的行号（1-based）；谱头/歌词行也算 */
+  line?: number;
+  /** 出错的那个记号（token） */
+  token?: string;
+  /** 出错时已经解析出的最后一个事件，供 UI 双击高亮 */
+  eventId?: string;
+  /** 多声部谱里的声部名 */
+  part?: string;
+  /** 结构性错误：谱面无法安全构建；其余是局部问题，谱面照常显示 */
+  fatal?: boolean;
+}
+
 export interface ParseResult {
   score: Score | null;
   errors: string[];
+  /** 与 errors 一一对应的结构化诊断（老调用方继续读 errors 即可） */
+  issues?: ParseIssue[];
+  /** 行号（1-based）→ 该行解析出的事件 id；多声部用 `声部名#行号` 作 key */
+  lineEvents?: Record<string, string[]>;
+}
+
+/** 只有结构性损坏才挡住渲染；token 级问题只提示，不阻止出谱 */
+const FATAL_ERROR_RE = /不支持的 JPS 语法版本|多声部文件需要在谱头写|多声部文件的音符必须写在|谱面为空|声明应为|编号 \d+ 重复|锚定范围不合法|锚定音符不存在|歌词/;
+
+/** 收集错误文本的同时自动记下当前源码位置，避免逐个 errors.push 手工带位置 */
+class DiagCollector extends Array<string> {
+  readonly issues: ParseIssue[] = [];
+  ctx: Omit<ParseIssue, 'message'> = {};
+  push(...items: string[]): number {
+    for (const item of items) {
+      this.issues.push({
+        ...this.ctx,
+        message: item,
+        ...(FATAL_ERROR_RE.test(item) ? { fatal: true } : {}),
+      });
+    }
+    return super.push(...items);
+  }
+}
+
+export function isFatalIssue(issue: ParseIssue): boolean {
+  return issue.fatal === true || FATAL_ERROR_RE.test(issue.message);
+}
+
+export function fatalErrors(result: ParseResult): boolean {
+  return (result.issues ?? result.errors.map((message) => ({ message }))).some(isFatalIssue);
 }
 
 /**
@@ -225,8 +271,11 @@ export function parseDsl(text: string): ParseResult {
   if (!modern) return parseSingle(text);
   const header: string[] = [];
   const blocks: { id: string; name: string; gain: number; muted?: boolean; solo?: boolean; hidden?: boolean; patch?: number; patchOctave?: number; lyricNames?: string[]; staffInstrument?: StaffInstrument; staffClef?: StaffClefSetting; lines: string[] }[] = [];
-  const errors: string[] = [];
-  for (const raw of text.split(/\r?\n/)) {
+  const errors = new DiagCollector();
+  const headerLines = text.split(/\r?\n/);
+  for (let srcIdx = 0; srcIdx < headerLines.length; srcIdx++) {
+    const raw = headerLines[srcIdx];
+    errors.ctx = { line: srcIdx + 1 };
     const line = raw.trim();
     if (/^@part\b/i.test(line)) {
       const match = /^@part\s+([1-9]\d*)\s+("(?:[^"\\]|\\.)*")\s*$/i.exec(line);
@@ -277,8 +326,23 @@ export function parseDsl(text: string): ParseResult {
   // @小谱 块统一收口：声明/锚定错误随解析错误一起阻断；
   // 块体文本顺带解析成事件挂 cues（布局 / 播放直接用，text 留作回写真源）
   const withCues = (r: ParseResult): ParseResult => {
-    if (cueErrors.length) return { score: null, errors: [...r.errors, ...cueErrors] };
-    if (!cueBlocks.length || !r.score) return r;
+    const preIssues: ParseIssue[] = r.issues ?? r.errors.map((message) => ({ message }));
+    // 汇总必须放在 cueBlocks.map **之后**：锚定错误正是在 map 里产生，提前汇总会漏掉。
+    const finish = (cues?: CueStaff[]): ParseResult => {
+      const allErrors = [...r.errors, ...cueErrors];
+      const allIssues: ParseIssue[] = [
+        ...preIssues,
+        ...cueErrors.map((message) => ({ message })),
+      ];
+      const blocked = allIssues.some(isFatalIssue);
+      return {
+        ...r,
+        errors: allErrors,
+        issues: allIssues,
+        score: blocked || !r.score ? null : cues ? { ...r.score, cues } : r.score,
+      };
+    };
+    if (preIssues.some(isFatalIssue) || !cueBlocks.length || !r.score) return finish();
     const cues: CueStaff[] = cueBlocks.map((cb, i) => {
       const anchor = cb.nth !== undefined ? `${cb.anchorStart}/${cb.nth}`
         : cb.anchorStart === cb.anchorEnd ? `${cb.anchorStart}` : `${cb.anchorStart}-${cb.anchorEnd}`;
@@ -290,7 +354,7 @@ export function parseDsl(text: string): ParseResult {
       const parsed = modern
         ? (() => {
             const pr = parseSingle(normalizeModern(body), true);
-            return pr.score && !pr.errors.length ? { ...pr, score: autoGroupBeats(pr.score) } : pr;
+            return pr.score ? { ...pr, score: autoGroupBeats(pr.score) } : pr;
           })()
         : parseDsl(body);
       const base: CueStaff = {
@@ -305,24 +369,34 @@ export function parseDsl(text: string): ParseResult {
           : { anchorStart: cb.anchorStart, anchorEnd: cb.anchorEnd }),
         text: cb.lines.join('\n'),
       };
-      if (parsed.errors.length || !parsed.score) {
-        cueErrors.push(...parsed.errors.map((e) => `小字谱（锚${anchor}）：${e}`));
-        return base;
-      }
+      if (parsed.errors.length) cueErrors.push(...parsed.errors.map((e) => `小字谱（锚${anchor}）：${e}`));
+      if (!parsed.score) return base;
       return { ...base, events: parsed.score.events, groups: parsed.score.groups };
     });
-    if (cueErrors.length) return { score: null, errors: [...r.errors, ...cueErrors] };
-    return { ...r, score: { ...r.score, cues } };
+    return finish(cues);
   };
-  if (errors.length) return withCues({ score: null, errors });
+  if (fatalErrors({ score: null, errors })) return withCues({ score: null, errors, issues: errors.issues, lineEvents: {} });
   if (!blocks.length) {
     const result = parseSingle(normalizeModern(text), true);
-    return withCues({ ...result, score: result.score && !result.errors.length ? autoGroupBeats(result.score) : null });
+    return withCues({ ...result, score: result.score ? autoGroupBeats(result.score) : null });
   }
-  if (header.some((l) => l.trim() && !l.trim().startsWith('@') && !l.trim().startsWith('//'))) return { score: null, errors: ['多声部文件的音符必须写在 @part 声部声明之后'] };
+  if (header.some((l) => l.trim() && !l.trim().startsWith('@') && !l.trim().startsWith('//'))) {
+    errors.push('多声部文件的音符必须写在 @part 声部声明之后');
+    return withCues({ score: null, errors, issues: errors.issues, lineEvents: {} });
+  }
   const parsed = blocks.map((b) => ({ block: b, result: parseSingle(normalizeModern([...header, ...b.lines].join('\n')), true) }));
-  for (const { block, result } of parsed) errors.push(...result.errors.map((e) => `${block.name}：${e}`));
-  if (errors.length || parsed.some((p) => !p.result.score)) return { score: null, errors };
+  // 各声部的行号是相对各自文本的，合并时加声部名前缀，双击诊断才能按「声部 + 行」回跳
+  const mergedLineEvents: Record<string, string[]> = {};
+  for (const { block, result } of parsed) {
+    for (const [ln, ids] of Object.entries(result.lineEvents ?? {})) mergedLineEvents[`${block.name}#${ln}`] = ids;
+    for (const issue of result.issues ?? result.errors.map((message) => ({ message }))) {
+      errors.push(`${block.name}：${issue.message}`);
+      const added = errors.issues[errors.issues.length - 1];
+      // 声部错误保留子解析里的行号/记号/事件，只补上声部名（行号相对该声部文本）
+      if (added) Object.assign(added, { ...issue, part: block.name, message: added.message });
+    }
+  }
+  if (fatalErrors({ score: null, errors }) || parsed.some((p) => !p.result.score)) return withCues({ score: null, errors, issues: errors.issues, lineEvents: mergedLineEvents });
   return withCues({ score: assembleParts(parsed[0].result.score!, parsed.map(({ block, result }) => {
     const { lines: _lines, ...info } = block;
     // 序列化器对每个声部都写 @mix（on/solo 等），手写文件却常省略这一行——
@@ -333,7 +407,7 @@ export function parseDsl(text: string): ParseResult {
       solo: info.solo ?? false,
       hidden: info.hidden ?? false,
     });
-  })), errors });
+  })), errors, issues: errors.issues, lineEvents: mergedLineEvents });
 }
 
 function normalizeModern(text: string): string {
@@ -351,9 +425,11 @@ function normalizeModern(text: string): string {
 }
 
 function parseSingle(text: string, modern = false): ParseResult {
-  const errors: string[] = [];
+  const errors = new DiagCollector();
   const meta: ScoreMeta = { ...DEFAULT_META };
   const body: string[] = [];
+  const bodyLineNo: number[] = [];
+  const lineEvents: Record<string, string[]> = {};
   // 谱面里到底写没写东西（扣除空行、分隔线、注释、谱头与歌词行）。
   // 新建的空谱子是合法初始状态，不该报「谱面为空」——只有真写了内容
   // 却一个事件都没解析出来才算错（用户实测：新建谱子就报红）
@@ -366,7 +442,10 @@ function parseSingle(text: string, modern = false): ParseResult {
   const lyricLinks: string[] = [];
   const linkNumbers = new Set<number>();
 
-  for (const raw of text.split(/\r?\n/)) {
+  const srcLines = text.split(/\r?\n/);
+  for (let srcIdx = 0; srcIdx < srcLines.length; srcIdx++) {
+    const raw = srcLines[srcIdx];
+    errors.ctx = { line: srcIdx + 1 };
     const line = raw.trim();
     if (!line || line === '---') continue;
     if (line.startsWith('//')) continue;
@@ -472,6 +551,7 @@ function parseSingle(text: string, modern = false): ParseResult {
       continue;
     }
     body.push(line);
+    bodyLineNo.push(srcIdx + 1);
   }
 
   const events: Event[] = [];
@@ -809,15 +889,41 @@ function parseSingle(text: string, modern = false): ParseResult {
   };
 
 
-  for (const line of body) {
+  // (文字标注) 里允许带空格（如 (副歌 弦乐齐奏)）：分词前先把整块保护成一个
+  // token，否则会被 split(/\s+/) 切成 `(副歌` + `弦乐齐奏)`——前者误开一条半截
+  // 连音线，后者报「连音线至少要括住两个音」。判据保守：括号内必须含文字且
+  // 不含任何音符/DSL 记号字符（数字、八度点、附点、时值线、连线/组、小节线等），
+  // 混了记号的一律交回原解析路径，连音线 (5 6 5) 等写法完全不受影响。
+  const protectTextParen = (s: string): string =>
+    s.replace(/\(([^()]*)\)/g, (whole, inner: string) =>
+      /\s/.test(inner) && /[\u4e00-\u9fffA-Za-z]/.test(inner)
+        && !/[\d/^~.<>|#{}[\]$:@]/.test(inner)
+        ? whole.replace(/\s+/g, '\u0000')
+        : whole);
+
+  for (let bodyIdx = 0; bodyIdx < body.length; bodyIdx++) {
+    const line = body[bodyIdx];
+    const lineNo = bodyLineNo[bodyIdx] ?? bodyIdx + 1;
+    const eventStart = events.length;
+    errors.ctx = { line: lineNo };
     // 延音线写作连写的 5~5（§10.2），这里把 ~ 变成左附着的分词边界：5~ 5
     // 只在 ~ 后面（可隔空白）跟着音符时才切分：5~@（延音+延长号）这类「~ 后带技法
     // 后缀」的合法写法（NOTE_RE 允许）必须保持整 token，否则 @ 会被孤成独立记号报错。
-    const tokens = line.replace(/~(?=\s*[0-7Xx])/g, '~ ').split(/\s+/).filter(Boolean)
+    const tokens = protectTextParen(line.replace(/~(?=\s*[0-7Xx])/g, '~ '))
+      .split(/\s+/).filter(Boolean)
       // 小节线后缀记号允许紧贴书写（|速96 / |同2-3 / |分 / |V）：
       // 序列化产物是分开的 token（`| 速96`），但用户手写紧贴很自然——拆开再走各自的分支
-      .flatMap((t) => (/^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页|V)/.test(t) ? ['|', t.slice(1)] : [t]));
+      .flatMap((t) => (/^\|(?:散|拍|速\d|音\d|同[\d,，\-—~至]|分|换行|分页|V)/.test(t) ? ['|', t.slice(1)] : [t]))
+      // 哨兵还原：空格放回文字标注里，交给下面的 deco 分支识别
+      .map((t) => t.replace(/\u0000/g, ' '));
     for (let raw of tokens) {
+      // 每条错误都记下出错的记号与最近的一个音符/休止符（UI 双击据此回跳并高亮；
+      // directive 不会被 paint 画高亮，所以不能拿它当定位目标）
+      let lastTimedId: string | undefined;
+      for (let k = events.length - 1; k >= 0 && k >= events.length - 12; k -= 1) {
+        if (events[k].kind === 'note' || events[k].kind === 'rest') { lastTimedId = events[k].id; break; }
+      }
+      errors.ctx = { line: lineNo, token: raw, eventId: lastTimedId };
       /*
        * 左右括号记号：**全角** （ ）
        * 半角 ( ) 已经被连音线占了（(5 6 5)），所以括号字形用全角——中文输入法
@@ -1157,6 +1263,8 @@ function parseSingle(text: string, modern = false): ParseResult {
         else closeGroup();
       }
     }
+    const ids = events.slice(eventStart).map((e) => e.id);
+    if (ids.length) lineEvents[lineNo] = ids;
   }
 
   // 未闭合的记号：从内到外逐个报错
@@ -1226,6 +1334,8 @@ function parseSingle(text: string, modern = false): ParseResult {
     // 后续序列化 / 校验 / 播放看到的都是可写回的干净数据
     score: score ? healDurations(score) : score,
     errors,
+    issues: errors.issues,
+    lineEvents,
   };
 }
 

@@ -100,11 +100,12 @@ export function isJpsFile(name: string): boolean {
   return n.endsWith('.jps') || n.endsWith('.txt');
 }
 
-/** 从 .jps 文本提取摘要；解析失败标记为 broken（导入校验用） */
+/** 从 .jps 文本提取摘要；只有结构性错误才标 broken（导入校验用） */
 export function metaOfText(text: string, fallbackName = ''): LibraryMeta {
   const fallback = normalizeName(fallbackName);
   const res = parseDsl(text);
-  if (!res.score || res.errors.length) return { ...EMPTY_META, title: fallback, broken: true };
+  // 与打开谱面 / 源码应用同一口径：局部记号错误仍有可用谱面，不能把整首标成无法解析
+  if (!res.score) return { ...EMPTY_META, title: fallback, broken: true };
   const meta = res.score.meta;
   const bars = res.score.events.filter((e) => e.kind === 'barline').length;
   const notes = res.score.events.filter((e) => e.kind === 'note').length;
@@ -121,6 +122,18 @@ export function metaOfText(text: string, fallbackName = ''): LibraryMeta {
     notes,
     broken: false,
   };
+}
+
+/**
+ * 旧版本把「有局部解析错误」也标成 broken，升级后按当前解析器重算。
+ * 只碰已标记的条目；不改 updatedAt（列表顺序不动）、不改用户重命名过的名字。
+ */
+export function refreshBrokenMeta(items: LibraryItem[]): LibraryItem[] {
+  return items.map((it) => {
+    if (!it.meta?.broken) return it;
+    const fresh = metaOfText(it.text, it.name);
+    return fresh.broken ? it : { ...it, meta: fresh };
+  });
 }
 
 /** 最近的排前面；同一毫秒入库的按名字兜底，保证顺序稳定 */
@@ -186,7 +199,9 @@ function readLocalDoc(): LibraryDoc {
     const doc = JSON.parse(raw) as LibraryDoc;
     if (!doc || doc.version !== VERSION || !Array.isArray(doc.items)) return { version: VERSION, items: [] };
     const deleted = validDeletedIds(doc);
-    return { version: VERSION, items: sortLibrary(doc.items.filter(isItem).filter(it => !deleted.includes(it.id))), deletedIds: deleted };
+    // 旧版本留下的 broken 标记按当前解析器重算，否则升级后列表永远显示「无法解析」
+    const items = refreshBrokenMeta(doc.items.filter(isItem).filter(it => !deleted.includes(it.id)));
+    return { version: VERSION, items: sortLibrary(items), deletedIds: deleted };
   } catch {
     return { version: VERSION, items: [] };
   }
@@ -267,7 +282,7 @@ export async function hydrateLibrary(): Promise<void> {
   local = readLocalDoc();
   deletedIds = new Set([...validDeletedIds(local), ...validDeletedIds(doc)]);
   const folder = doc?.version === VERSION && Array.isArray(doc.items) ? doc.items.filter(isItem) : [];
-  mem = mergeLibrary(folder, local.items).merged.filter(it => !deletedIds.has(it.id));
+  mem = refreshBrokenMeta(mergeLibrary(folder, local.items).merged.filter(it => !deletedIds.has(it.id)));
   const mergedDoc = docOf(mem);
   try {
     localStorage.setItem(KEY, JSON.stringify(mergedDoc));

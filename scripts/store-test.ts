@@ -11,7 +11,7 @@ import {
   audioNameOf,
   type AlignPersist,
 } from '../src/v2/ui/alignStore';
-import { isItem, mergeLibrary, searchLibrary, sortLibrary, type LibraryItem } from '../src/v2/ui/libraryStore';
+import { isItem, mergeLibrary, metaOfText, refreshBrokenMeta, searchLibrary, sortLibrary, type LibraryItem } from '../src/v2/ui/libraryStore';
 
 let failed = 0;
 function check(name: string, ok: boolean, extra = ''): void {
@@ -124,6 +124,27 @@ console.log('[跨端曲库 · 汉字与拼音检索]');
   }
   check('无匹配不返回曲目', searchLibrary(items, '不存在的乐谱').length === 0);
   check('空查询保留原曲库', searchLibrary(items, '  ') === items);
+}
+
+console.log('\n[曲库摘要 · broken 自愈]');
+{
+  // 局部记号错误不该标成「无法解析」，结构性错误仍要标
+  const local = metaOfText('@beat 4/4\n\n(副歌 1 2 3 4 ||', '测试');
+  check('局部记号错误不标 broken', !local.broken, JSON.stringify(local));
+  const structure = metaOfText('@format 2\n\n1 2 3 4', '坏谱');
+  check('结构性错误仍标 broken', structure.broken, JSON.stringify(structure));
+
+  const stale: LibraryItem = {
+    id: 'lib-old', name: '爱琴海的珍珠', text: '@title 珍珠\n@beat 4/4\n\n1 2 3 4 ||', updatedAt: 123,
+    meta: { title: '爱琴海的珍珠', key: '', beat: '', bpm: null, measures: 0, notes: 0, broken: true },
+  };
+  const healed = refreshBrokenMeta([stale])[0]!;
+  check('旧 broken 标记自愈', !healed.meta.broken, JSON.stringify(healed.meta));
+  check('自愈不动 id / 曲库名 / 时间戳', healed.id === stale.id && healed.name === stale.name && healed.updatedAt === stale.updatedAt);
+  check('自愈后补出真实摘要', healed.meta.title === '珍珠' && healed.meta.notes === 4, JSON.stringify(healed.meta));
+
+  const stillBad: LibraryItem = { ...stale, id: 'lib-bad', text: '@format 2\n\n1 2 3 4' };
+  check('真结构性错误不自愈', refreshBrokenMeta([stillBad])[0]!.meta.broken);
 }
 
 console.log(failed === 0 ? '\n存储后端测试全部通过' : `\n存储后端测试失败 ${failed} 项`);

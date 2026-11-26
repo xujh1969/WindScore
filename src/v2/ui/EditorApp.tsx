@@ -72,7 +72,7 @@ import {
 import type { BeatClock } from '../clock';
 import { BeatClock as Clock } from '../clock';
 import { Player } from '../audio';
-import { DEFAULT_META, locateAnchorId, parseDsl, serializeDsl } from '../dsl';
+import { DEFAULT_META, locateAnchorId, parseDsl, serializeDsl, type ParseIssue, type ParseResult } from '../dsl';
 import type { CueStaff } from '../types';
 import {
   canWriteInPlace,
@@ -713,6 +713,8 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 定位（跳小节 / 跳首尾）时把谱面视口一起带过去；seq 保证连按同一个键也是一次新请求 */
   const scrollRequestSeq = useRef(0);
   const [scrollRequest, setScrollRequest] = useState<ScrollRequest | null>(null);
+  /** 打开文件时留下的诊断：局部错误不挡渲染，但红字提示必须跟着谱面保留 */
+  const [openDiag, setOpenDiag] = useState<ParseResult | null>(null);
   /** 会丢内容的动作改成内联二次确认，不另开弹窗 */
   const [newConfirm, setNewConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
@@ -1171,6 +1173,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
    */
   const commit = useCallback(
     (next: Partial<Snap>, whole = false) => {
+      setOpenDiag(null); // 谱面内容已变，打开时的诊断不再对应
       setPast((p) => [...p, snap].slice(-200));
       setFuture([]);
       setSnap((s) => {
@@ -1197,8 +1200,17 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       if (!res.score && androidPlayer) return;
       const opened = res.score ?? emptyScore();
       sourceRecoveryRef.current = !res.score; setSourceRecovery(!res.score);
-      setSavedSource(!res.score ? text : null);
-      if (!res.score) { setDraft(text); setView('source'); setMode('score'); setMsg(`已打开源码修复：${res.errors[0] ?? '谱面无法解析'}`); }
+      // 有错误就留原文：结构性错误进源码修复，局部错误的谱照常显示但也让源码视图看到真实错误
+      setSavedSource(res.errors.length ? text : null);
+      setOpenDiag(res.errors.length ? res.diagnostics ?? null : null);
+      if (!res.score) {
+        setDraft(text); setView('source'); setMode('score');
+        setMsg(`已打开源码修复：${res.errors[0] ?? '谱面无法解析'}`);
+      } else if (res.errors.length) {
+        // 原文必须进 draft，否则源码视图显示的是规范化后的文本，错误已经不在了
+        setDraft(text);
+        setMsg(`已打开，有 ${res.errors.length} 处解析问题（点顶部「谱面解析」查看，双击可定位）`);
+      }
       setLyricSelection(null);
       setSnap({
         score: { ...opened, format: 3 },
@@ -1263,8 +1275,14 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       }
       const opened = res.score ?? emptyScore();
       sourceRecoveryRef.current = !res.score; setSourceRecovery(!res.score);
-      setSavedSource(!res.score ? res.text! : null);
-      if (!res.score) { setDraft(res.text!); setView('source'); setMode('score'); }
+      // 与 load 同口径：有错误就留原文（局部错误也要让源码视图看到真实错误）
+      setSavedSource(res.errors.length ? res.text ?? null : null);
+      setOpenDiag(res.errors.length ? res.diagnostics ?? null : null);
+      if (!res.score) {
+        setDraft(res.text!); setView('source'); setMode('score');
+      } else if (res.errors.length && res.text !== undefined) {
+        setDraft(res.text);
+      }
       setLyricSelection(null);
       setSnap({
         score: { ...opened, format: 3 },
@@ -1282,7 +1300,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
       setFileHandle(res.handle ?? null);
       setLibraryId(fromLibraryId);
       setSavedRev(0);
-      setMsg(res.score ? `已打开 ${res.name}` : `已打开源码修复：${res.errors[0] ?? '谱面无法解析'}；原文完整保留`);
+      setMsg(!res.score
+        ? `已打开源码修复：${res.errors[0] ?? '谱面无法解析'}；原文完整保留`
+        : res.errors.length
+          ? `已打开 ${res.name}，有 ${res.errors.length} 处解析问题（点顶部「谱面解析」查看，双击可定位）`
+          : `已打开 ${res.name}`);
       if (!res.score) toastInfo('已打开源码修复', '原始内容已保留，可继续修改或保存草稿');
       stopPlay();
       // 换谱面 = 换歌：旧伴奏与对轨标定作废（同 onNew），播放源回合成音
@@ -3966,10 +3988,11 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     return () => window.removeEventListener('keydown', onKey);
   }, [score, snap, commit, undo, redo, useTier, doSlur, range, clip, clipGroups, mode, view, androidPlayer, activePartId, activePlayPick, fullViewScore, handlePlayPick, wavePos, lyricVerse, playing, pausedTick, playScore, markMisalign, onSave, toastInfo, cueTarget, tapping, startPlay, stopPlay, getPlayTick, togglePlay, padActions]);
 
-  // DSL 面板：谱面变化时同步文本
+  // DSL 面板：谱面变化时同步文本。
+  // 有解析诊断时 draft 装的是原文（非法记号不会被序列化写回），不能被规范化文本冲掉。
   useEffect(() => {
-    if (!sourceRecoveryRef.current) setDraft(serialized);
-  }, [serialized, sourceRecovery]);
+    if (!sourceRecoveryRef.current && !openDiag) setDraft(serialized);
+  }, [serialized, sourceRecovery, openDiag]);
 
   // 切到源码视图就把焦点交给编辑器，省一次多余的点击
   useEffect(() => {
@@ -3981,15 +4004,17 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   useEffect(() => {
     if (androidPlayer) return;
     const t = window.setTimeout(() => {
-      saveSession({ text: view === 'source' ? draft : serialized, name: active, path, libraryId });
+      // 有解析错误时 draft 才是原文（serialized 已经把非法记号规范化掉）；
+      // 会话也要存原文，否则刷新后错误提示凭空消失
+      saveSession({ text: (openDiag !== null || view === 'source') ? draft : serialized, name: active, path, libraryId });
     }, 600);
     return () => window.clearTimeout(t);
-  }, [serialized, view, draft, active, path, libraryId]);
+  }, [serialized, view, draft, active, path, libraryId, openDiag]);
 
   const applyDraft = () => {
     const res = parseDsl(draft);
-    if (!res.score || res.errors.length) {
-      // 错误已经在下方的实时解析列表里了，不用重复弹
+    if (!res.score) {
+      // 只有结构性错误才挡住应用；局部问题的谱面照常出，错误项留在下方列表提示
       setMsg(res.errors.length ? res.errors[0] : '解析失败');
       return;
     }
@@ -3997,23 +4022,26 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
     // 谱面在它底下被换掉，新旧两套布局来回拉扯就是「画面一直抖」
     stopPlay();
     sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
-    setMsg('源码已应用，可继续编辑谱面');
+    setMsg(res.errors.length
+      ? `源码已应用（仍有 ${res.errors.length} 处提示：${res.errors[0]}）`
+      : '源码已应用，可继续编辑谱面');
     commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
   };
 
   /**
    * 切视图。从源码回简谱时，**草稿能解析就自动应用**——
    * 以前必须手动按「应用」，忘了就出现「源码改了、谱面没变」的错位；
-   * 解析不过则留在源码视图（错误就在列表里），切过去只会看到旧谱面，更糊涂。
+   * 结构性错误才留在源码视图；局部记号错误照常切过去，错误列表仍可查看/双击定位。
    */
   const switchView = useCallback(
     (next: 'score' | 'source') => {
       if (next === 'score' && view === 'source' && draft !== serialized) {
         const res = parseDsl(draft);
-        if (res.score && !res.errors.length) {
+        if (res.score) {
           stopPlay();
           sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
           commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
+          if (res.errors.length) setMsg(`已应用，仍有 ${res.errors.length} 处提示（源码视图可双击定位）`);
         } else {
           setMsg(res.errors.length ? res.errors[0] : '解析失败');
           return false;
@@ -4034,12 +4062,64 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
   /** 源码视图的**实时**解析：编辑过程中错误列表跟着变，修好立即消失 */
   const draftParse = useMemo(() => (view === 'source' ? parseDsl(draft) : null), [view, draft]);
   const draftErrors = draftParse?.errors ?? [];
+  // 源码视图看草稿的实时诊断；简谱视图看打开时留存的诊断（局部错误不挡渲染，红字也不能消失）
+  const visibleParseErrors = view === 'source' ? draftErrors : (openDiag?.errors ?? []);
+
+  /**
+   * 双击诊断条目：切到谱面、滚到相关行并高亮音符。
+   * fromDraft=true 时诊断来自正在编辑的源码，需要先应用草稿；
+   * false 时来自打开谱面时留存的诊断，谱面已经是那份内容。
+   */
+  const locateIn = (diag: ParseResult | null, index: number, fromDraft: boolean) => {
+    if (!diag) return;
+    const issue: ParseIssue = diag.issues?.[index] ?? { message: diag.errors[index] ?? '' };
+    let eventId = issue.eventId;
+    const lineEvent = (line?: number): string | undefined => {
+      if (line === undefined) return undefined;
+      const key = issue.part ? `${issue.part}#${line}` : String(line);
+      return diag.lineEvents?.[key]?.[0] ?? diag.lineEvents?.[String(line)]?.[0];
+    };
+    if (!eventId) eventId = lineEvent(issue.line);
+    if (!eventId && issue.token && fromDraft) {
+      const token = issue.token;
+      eventId = lineEvent(draft.split(/\r?\n/).findIndex((l) => l.includes(token)) + 1);
+    }
+    const keepOpenDiag = openDiag;
+    let located = score;
+    if (fromDraft && view === 'source' && draft !== serialized) {
+      const res = parseDsl(draft);
+      if (!res.score) { setMsg('这份源码有结构性错误，修好后再定位'); return; }
+      stopPlay();
+      sourceRecoveryRef.current = false; setSourceRecovery(false); setSavedSource(null);
+      commit({ score: res.score, partId: res.score.part?.id, cursor: res.score.events.length, anchor: null }, true);
+      located = res.score;
+      if (keepOpenDiag) setOpenDiag(keepOpenDiag); // commit 会清，这里恢复，便于连续定位多条
+    }
+    setView('score');
+    if (!eventId) { setMsg(`第 ${issue.line ?? '?'} 行：${issue.message}（这一条没有关联到音符）`); return; }
+    // 走方块光标系统：cursor + mode:'over' 才会被 ScoreCanvas 的
+    // 「保证光标可见」和焦点高亮同时认领；单独塞 focusId 会被那个 effect 抢回旧位置。
+    const idx = located.events.findIndex((e) => e.id === eventId);
+    if (idx < 0) { setMsg(`第 ${issue.line ?? '?'} 行：${issue.message}（对应音符已不在谱面里）`); return; }
+    setSnap((s) => ({
+      ...s,
+      score: located,
+      cursor: idx + 1,
+      anchor: null,
+      mode: 'over',
+      partId: located.part?.id,
+    }));
+    setScrollRequest({ seq: ++scrollRequestSeq.current, eventId });
+    setMsg(`已定位：第 ${issue.line ?? '?'} 行 · ${issue.message}`);
+  };
+  const locateIssue = (index: number) => locateIn(draftParse, index, true);
+  const locateOpenIssue = (index: number) => locateIn(openDiag, index, false);
 
   // 校验结果上报给外层页面顶栏（OCR 页用）：issues/draftErrors 都是 memo/状态，变化才回调
   useEffect(() => {
     if (!onDiagnostics) return;
     onDiagnostics({
-      draftErrors,
+      draftErrors: visibleParseErrors,
       issues: issues.map((v) => ({
         code: v.code,
         label: VIOLATION_LABEL[v.code] ?? '谱面',
@@ -4047,7 +4127,7 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
         warn: v.code === 'I4' || v.code === 'R2',
       })),
     });
-  }, [onDiagnostics, issues, draftErrors]);
+  }, [onDiagnostics, issues, visibleParseErrors]);
 
   const notes = score.events.filter((e) => e.kind === 'note').length;
 
@@ -4187,18 +4267,30 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
             OCR 页（entry='ocr'）这层是嵌在双栏右区的编辑器，校验块上移到页面顶栏显示，这里不再重复 */}
         <div className="v2-head-check" style={entry === 'ocr' || mode === 'library' ? { display: 'none' } : undefined}>
           <button
-            className={issues.length === 0 && !draftErrors.length ? 'v2-check is-ok' : 'v2-check is-bad'}
+            className={issues.length === 0 && visibleParseErrors.length === 0 ? 'v2-check is-ok' : 'v2-check is-bad'}
             onClick={() => setCheckOpen((v) => !v)}
             title={
-              draftErrors.length ? '请按源码下方的错误提示修复；原文仍可保存' : issues.length === 0
+              visibleParseErrors.length ? '解析有问题；点开明细，双击可定位到谱面' : issues.length === 0
                 ? '每小节拍数、拍内组、连线、反复结构都没问题'
                 : '点开看具体问题'
             }
           >
-            {draftErrors.length ? `源码校验：${draftErrors.length} 处问题` : issues.length === 0 ? '谱面校验通过' : `谱面校验：${issues.length} 处问题`}
+            {visibleParseErrors.length
+              ? `谱面解析：${visibleParseErrors.length} 处问题`
+              : issues.length === 0 ? '谱面校验通过' : `谱面校验：${issues.length} 处问题`}
           </button>
-          {checkOpen && issues.length > 0 ? (
+          {checkOpen && (visibleParseErrors.length > 0 || issues.length > 0) ? (
             <ul className="v2-diag v2-check-list">
+              {visibleParseErrors.map((e, i) => (
+                <li
+                  key={`parse-${i}`}
+                  className="is-error v2-check-parse"
+                  title="双击定位到谱面中的对应位置"
+                  onDoubleClick={() => (view === 'source' ? locateIssue(i) : locateOpenIssue(i))}
+                >
+                  <b>解析</b> {e}
+                </li>
+              ))}
               {issues.map((v, i) => (
                 <li key={i} className={v.code === 'I4' || v.code === 'R2' ? 'is-warn' : 'is-error'}>
                   <b>{VIOLATION_LABEL[v.code] ?? '谱面'}</b> {v.message}
@@ -5274,12 +5366,21 @@ export function EditorApp({ entry = 'app', androidItem, androidDark, androidPrev
               </div>
               {/* 实时解析：改一个字符就重查，修好了红字立即消失，不用先「应用」再验证 */}
               {draftErrors.length > 0 ? (
-                <ul className="v2-diag">
-                  {draftErrors.map((e, i) => (
-                    <li key={i} className="is-error">
-                      {e}
-                    </li>
-                  ))}
+                <ul className="v2-diag v2-diag-locatable">
+                  {draftErrors.map((e, i) => {
+                    const issue = draftParse?.issues?.[i];
+                    return (
+                      <li
+                        key={i}
+                        className="is-error"
+                        title="双击定位到谱面中的对应位置"
+                        onDoubleClick={() => locateIssue(i)}
+                      >
+                        {issue?.line ? <span className="v2-diag-line">第{issue.line}行 · </span> : null}
+                        {e}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <ul className="v2-diag">

@@ -26,7 +26,7 @@ import {
   notationLyricFontSize,
 } from '../src/v2/notationFont';
 import { BeatClock } from '../src/v2/clock';
-import { DEFAULT_META, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
+import { DEFAULT_META, isFatalIssue, parseDsl, parseUnisonTargets, renderNoteToken, serializeDsl } from '../src/v2/dsl';
 import { expandUnisons } from '../src/v2/unison';
 import type { BarlineEvent, RestEvent } from '../src/v2/types';
 import {
@@ -5573,6 +5573,33 @@ console.log('\n[(文字) 装饰记号：前奏 / 间奏标注]');
   const slur = parseDsl('@beat 4/4\n\n(5 6 5) 6 6 ||');
   check('(5 6 5) 仍是连音线（不变成文字）', slur.errors.length === 0 && !slur.score!.events.some((e) => e.kind === 'directive' && (e as { type?: string }).type === 'text'), slur.errors.join('；'));
 
+  // 回归（用户 wspack 导入报错）：标注文字里带空格，分词时必须整块保护。
+  // 旧行为切成 `(副歌` + `弦乐齐奏)` → 半截连音线 + 「至少要括住两个音」。
+  for (const label of ['副歌 弦乐齐奏', '尾声 女声啊', '副歌 小号伴奏', '尾声 钢琴']) {
+    const r = parseDsl(`@beat 4/4\n\n(${label}) 1 2 3 4 ||`);
+    const d = r.score?.events.find((e) => e.kind === 'directive' && (e as { type?: string }).type === 'text');
+    check(`(${label}) 解析无错误`, r.errors.length === 0, r.errors.join('；'));
+    check(
+      `(${label}) 识别为文字标注`,
+      !!d && (d as { value?: string }).value === label,
+      d ? JSON.stringify(d) : '没找到',
+    );
+    if (r.score && !r.errors.length) {
+      const text = serializeDsl(r.score);
+      check(`(${label}) 回写保留空格`, text.includes(`(${label})`), text);
+      check(`(${label}) 回读无错`, parseDsl(text).errors.length === 0);
+    }
+  }
+  // 音符连音线里同样带空格 / 小节线，不能被文字保护误吞
+  for (const body of ['(5 6 5) 6 6 ||', '(2^- | 2^) 3 4 ||', '(1 2)( 3 4) 5 5 ||']) {
+    const r = parseDsl(`@beat 4/4\n\n${body}`);
+    check(
+      `连音线 ${body} 不误判为文字`,
+      r.errors.length === 0 && !r.score!.events.some((e) => e.kind === 'directive' && (e as { type?: string }).type === 'text'),
+      r.errors.join('；'),
+    );
+  }
+
   // 成对检查：只有半个括号 → 明确报错并提示成对写法
   const unpaired = parseDsl('@beat 4/4\n\n(前奏 1 2 3 4 ||');
   check(
@@ -7485,6 +7512,45 @@ console.log('\n[输入板 · 多小节休止小节数输入框]');
     tag.length > 0 && !tag.includes('style=') && !tag.includes('marginLeft'));
   check('输入框固定为原来约一半宽，并与上下各排按钮左对齐',
     /\.v2-pad-body \.v2-meta-input\.v2-pad-mb-count \{[^}]*flex: 0 0 auto;[^}]*width: 40px;[^}]*margin-left: 0;/s.test(css));
+}
+
+console.log('\n[解析诊断：位置信息 / 局部错误不挡渲染]');
+{
+  // 局部记号错误：谱面照常产出，错误项带行号 + 出错 token，双击可据此回跳
+  const bad = parseDsl('@beat 4/4\n\n(副歌 1 2 3 4 ||');
+  check('局部错误仍产出谱面（不阻断渲染）', !!bad.score, bad.errors.join('；'));
+  check('错误带源码行号', bad.issues?.[0]?.line === 3, JSON.stringify(bad.issues));
+  check('错误带出错记号', !!bad.issues?.[0]?.token, JSON.stringify(bad.issues));
+  check('局部错误不标致命', !bad.issues?.some((i) => isFatalIssue(i)), JSON.stringify(bad.issues));
+
+  const badToken = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n1 $$ 3 4 ||');
+  check('无法解析的记号仍产出谱面', !!badToken.score);
+  check('行号指向真正出错的那一行', badToken.issues?.some((i) => i.line === 4), JSON.stringify(badToken.issues));
+  check('出错 token 被记录', badToken.issues?.some((i) => i.token === '$$'), JSON.stringify(badToken.issues));
+
+  // 结构性错误仍挡住（版本 / 多声部前缀 / 裸文本），且标记为致命
+  const fatal = parseDsl('@format 2\n\n1 2 3 4');
+  check('结构性错误仍挡住谱面', !fatal.score && fatal.errors.length > 0, fatal.errors.join('；'));
+  check('结构性错误被判致命', fatal.errors.some((e) => isFatalIssue({ message: e })), fatal.errors.join('；'));
+
+  // 行 → 事件映射：双击诊断时据此找到第一个事件做高亮
+  const mapped = parseDsl('@beat 4/4\n\n1 2 3 4 ||\n5 6 7 1 ||');
+  check('第 3 行有事件映射', (mapped.lineEvents?.[3]?.length ?? 0) > 0, JSON.stringify(mapped.lineEvents));
+  check('第 4 行有事件映射', (mapped.lineEvents?.[4]?.length ?? 0) > 0, JSON.stringify(mapped.lineEvents));
+
+  // 多声部：局部错误同样不该把整份谱挡掉
+  const multi = parseDsl('@format 3\n@beat 4/4\n\n@part 1 "A"\n1 2 (3 4 ||\n\n@part 2 "B"\n5 6 7 1 ||');
+  check('多声部局部错误仍产出谱面', !!multi.score, multi.errors.join('；'));
+  check('多声部错误保留声部名', multi.issues?.some((i) => i.part === 'A'), JSON.stringify(multi.issues));
+  check('多声部行事件映射按声部名合并', !!multi.lineEvents?.['A#3'] && !!multi.lineEvents?.['B#3'], JSON.stringify(Object.keys(multi.lineEvents ?? {})));
+
+  // UI 链路：错误项双击 → 高亮 + 滚动，三处接线不能被后续重构误删
+  const app = readFileSync(join(process.cwd(), 'src', 'v2', 'ui', 'EditorApp.tsx'), 'utf-8');
+  check('错误项绑定双击定位', app.includes('onDoubleClick={() => locateIssue(i)}'));
+  check('诊断定位接入方块光标高亮', app.includes("mode: 'over',") && app.includes('focusId={overEvent?.id ?? null}'));
+  check('诊断定位触发滚动请求', app.includes('setScrollRequest({ seq: ++scrollRequestSeq.current, eventId })'));
+  check('简谱视图顶栏显示解析错误数', app.includes('谱面解析：${visibleParseErrors.length} 处问题'));
+  check('顶栏解析项可双击定位', app.includes('locateIssue(i) : locateOpenIssue(i)'));
 }
 
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);

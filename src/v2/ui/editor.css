@@ -140,6 +140,18 @@ body {
   text-align: left;
 }
 
+/* 解析错误项：双击可回跳谱面定位 */
+.v2-check-list .v2-check-parse {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.v2-check-list .v2-check-parse:hover {
+  background: var(--surface-2);
+  text-decoration: underline;
+}
+
 .v2-brand {
   font-size: var(--fs-title);
   font-weight: 700;
@@ -713,6 +725,23 @@ details.v2-side-block[open] > summary::before {
 
 .v2-diag .is-error {
   color: var(--error);
+}
+
+/* 解析诊断：双击可跳到谱面对应位置，给出可点击的视觉提示 */
+.v2-diag-locatable li {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.v2-diag-locatable li:hover {
+  background: var(--surface-2);
+  text-decoration: underline;
+}
+
+.v2-diag-line {
+  opacity: 0.65;
+  font-size: 0.9em;
 }
 
 /* textarea 是替换元素，默认按 cols 定宽，不会自动撑满——必须显式给 100% */

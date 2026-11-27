@@ -251,7 +251,7 @@ export function paintExportPage(
     const staff = layout.staff;
     paintStaffLayout(ctx, { ...staff,
       title: plan.from === 0 ? layout.title : null,
-    }, theme, { background: false, lineRange: plan, showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false });
+    }, theme, { background: false, lineRange: plan, showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false, showPatchLabel: false });
   } else paintLayout(
     ctx,
     {
@@ -265,6 +265,7 @@ export function paintExportPage(
       height: (pageH - marginTop - marginBottom) / scale + lineSlack(layout),
       showMeasureNumbers: opts.showMeasureNumbers ?? true,
       showTitleEdit: false,
+      showPatchLabel: false,
     },
   );
 
@@ -328,7 +329,7 @@ export function paintExportImageBand(
   ctx.fillRect(0, 0, opts.bandW, opts.bandH);
   ctx.setTransform(geo.scale, 0, 0, geo.scale, geo.marginX, geo.marginTop - opts.bandTop);
   const { from, to } = imageBandLineRange(layout, geo, opts.bandTop, opts.bandH);
-  const paintOpts = { showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false };
+  const paintOpts = { showMeasureNumbers: opts.showMeasureNumbers ?? true, showTitleEdit: false, showPatchLabel: false };
   if (layout.staff) {
     paintStaffLayout(ctx, layout.staff, theme, { ...paintOpts, background: false, lineRange: { from, to } });
   } else {
@@ -432,6 +433,7 @@ export function paintVideoFrame(
     ball: opts.ball,
     showMeasureNumbers: opts.showMeasureNumbers ?? true,
     showTitleEdit: false,
+    showPatchLabel: false,
   };
   const left = Math.max((opts.scrollX ?? 0) / scale, opts.redraw?.left ?? -Infinity);
   const right = Math.min((opts.scrollX ?? 0) / scale + canvasW / scale, opts.redraw?.right ?? Infinity);

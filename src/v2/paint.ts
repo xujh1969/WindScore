@@ -570,6 +570,12 @@ export interface PaintOptions {
    * 只在交互页传 true：PDF / PNG / SVG / 视频导出不带这种编辑辅助记号。
    */
   showCueAnchors?: boolean;
+  /**
+   * 是否在小节线上方画换音色名称（「音N」对应的短乐器名）。
+   * 谱面编辑时保留；PDF / PNG / SVG / 视频导出统一传 false——音色标注是制作辅助信息。
+   * 缺省显示（与老版本一致）。
+   */
+  showPatchLabel?: boolean;
 }
 
 export function paintLayout(
@@ -672,6 +678,7 @@ export function paintLayout(
       pairingStart: opts.pairingStart ?? false,
       focusBarX,
       focusBarSystem,
+      showPatchLabel: opts.showPatchLabel !== false,
     });
   }
 
@@ -1012,6 +1019,8 @@ interface LinePaint {
    */
   focusBarX: number | null;
   focusBarSystem: number | null;
+  /** 小节线上方是否画换音色名称（导出时关掉） */
+  showPatchLabel: boolean;
 }
 
 /**
@@ -1650,7 +1659,7 @@ function paintLine(
     if (it.kind !== 'barline') continue;
     const parts: string[] = [];
     if (it.bpmAfter !== undefined) parts.push(`♩=${it.bpmAfter}`);
-    if (it.patchAfter !== undefined) parts.push(shortInstrumentLabel(it.patchAfter) ?? `音色 ${it.patchAfter}`);
+    if (o.showPatchLabel && it.patchAfter !== undefined) parts.push(shortInstrumentLabel(it.patchAfter) ?? `音色 ${it.patchAfter}`);
     if (it.unisonAfter?.length) parts.push(`同${it.unisonAfter.join('-')}`);
     if (it.splitAfter) parts.push('分');
     if (!parts.length) continue;

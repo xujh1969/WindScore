@@ -7553,5 +7553,49 @@ console.log('\n[解析诊断：位置信息 / 局部错误不挡渲染]');
   check('顶栏解析项可双击定位', app.includes('locateIssue(i) : locateOpenIssue(i)'));
 }
 
+console.log('\n[导出不显示换音色标注]');
+{
+  // 同一份带「音73」（长笛）的谱面绘制两遍：界面模式保留，导出模式不画。
+  const patchScore = parseDsl('@format 3\n@beat 4/4\n\n1 2 3 4 |音73 1 2 3 4 ||').score!;
+  check('前提：小节线带 patchAfter', patchScore.events.some((e) => e.kind === 'barline' && e.patchAfter === 73));
+  const PL = layoutScore(patchScore, { contentWidth: 1400 });
+  const drawnTexts = (opts: object = {}): string[] => {
+    const out: string[] = [];
+    const px = (f: string) => Number(/([\d.]+)px/.exec(f)?.[1] ?? 21);
+    const stack: Record<string, unknown>[] = [];
+    const target: Record<string, unknown> = {
+      font: '', textAlign: 'left', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '',
+      lineWidth: 1, globalAlpha: 1,
+      measureText: (x: string) => ({ width: Array.from(x).length * px(target.font as string) * 0.62 }),
+      fillText: (x: string) => { out.push(String(x)); },
+      save: () => {
+        stack.push({
+          font: target.font, textAlign: target.textAlign, textBaseline: target.textBaseline,
+          fillStyle: target.fillStyle, strokeStyle: target.strokeStyle,
+          lineWidth: target.lineWidth, globalAlpha: target.globalAlpha,
+        });
+      },
+      restore: () => { const s = stack.pop(); if (s) Object.assign(target, s); },
+    };
+    const c = new Proxy(target, {
+      get(t, k: string) { return k in t ? t[k] : () => undefined; },
+      set(t, k: string, v) { t[k] = v; return true; },
+    });
+    resetPaintMetrics();
+    paintLayout(c as unknown as CanvasRenderingContext2D, PL, LIGHT_THEME, opts);
+    return out;
+  };
+  check('界面模式画出音色名', drawnTexts().some((t) => t.includes('长笛')));
+  check('导出模式不画音色名', !drawnTexts({ showPatchLabel: false }).some((t) => t.includes('长笛')));
+
+  const renderSrc = readFileSync(join(process.cwd(), 'src/v2/export/render.ts'), 'utf-8');
+  check('PDF / PNG / SVG / 视频四条导出链路全部关闭音色标注',
+    (renderSrc.match(/showPatchLabel: false/g) ?? []).length >= 4);
+  const staffSrc = readFileSync(join(process.cwd(), 'src/v2/staffPaint.ts'), 'utf-8');
+  check('五线谱绘制同样受开关控制',
+    staffSrc.includes('if (showPatchLabel && s.patchAfter !== undefined)')
+    && staffSrc.includes('drawBarline(ctx, s, bottom, sp, theme, o.showPatchLabel !== false)'));
+}
+
 console.log(failed === 0 ? '\nV2 M0 PASS' : `\nV2 M0 FAIL (${failed})`);
 process.exit(failed === 0 ? 0 : 1);

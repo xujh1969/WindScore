@@ -197,7 +197,7 @@ function drawStaffLine(
 
   // 小节线 / 反复记号
   for (const s of line.symbols) {
-    if (s.kind === 'barline') drawBarline(ctx, s, bottom, sp, theme);
+    if (s.kind === 'barline') drawBarline(ctx, s, bottom, sp, theme, o.showPatchLabel !== false);
     if (s.kind === 'meter') {
       const [num, den] = s.beat.split('/');
       ctx.font = `700 ${Math.round(sp * 2.3)}px ${FAM}`;
@@ -487,6 +487,7 @@ function drawBarline(
   bottom: number,
   sp: number,
   theme: PaintTheme,
+  showPatchLabel: boolean,
 ): void {
   const y0 = bottom - 4 * sp;
   ctx.save();
@@ -544,7 +545,7 @@ function drawBarline(
   // muted 灰不抢音符的注意力；音色只写简略名，括号备注只留在下拉列表里
   const labels: string[] = [];
   if (s.bpmAfter !== undefined) labels.push(`♩=${s.bpmAfter}`);
-  if (s.patchAfter !== undefined) labels.push(shortInstrumentLabel(s.patchAfter) ?? `音色 ${s.patchAfter}`);
+  if (showPatchLabel && s.patchAfter !== undefined) labels.push(shortInstrumentLabel(s.patchAfter) ?? `音色 ${s.patchAfter}`);
   if (labels.length) {
     ctx.save();
     ctx.font = `600 ${Math.round(sp * 1.4)}px ${FAM}`;

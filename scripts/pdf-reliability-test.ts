@@ -10,7 +10,8 @@ for (const landscape of [false, true]) for (const dpi of [96, 150, 300]) {
   assert.ok(Number.isInteger(geo.pageW) && Number.isInteger(geo.pageH), `PDF 图片尺寸必须为整数：${dpi}dpi ${geo.pageW}×${geo.pageH}`);
 }
 assert.throws(() => buildPdf([{ jpeg: new Uint8Array([255, 216, 255, 217]), width: 1240.17, height: 1753.94 }], 595.28, 841.89), /尺寸/);
-const raw = '@title 待修复\r\n\r\n( 5 6 错误记号 |\r\n';
+// 用结构性错误（版本不支持）：局部记号错误按新语义仍有可用谱面，不会走「解析失败」恢复路径
+const raw = '@format 2\r\n@title 待修复\r\n\r\n5 6 |\r\n';
 const opened = fromText(raw, '原始文件', 'C:/scores/原始文件.jps');
 assert.equal(opened.score, null);
 assert.ok(opened.errors.length > 0);
